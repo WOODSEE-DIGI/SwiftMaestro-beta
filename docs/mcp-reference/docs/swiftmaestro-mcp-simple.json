@@ -1,0 +1,38 @@
+{
+  "mcpServers": {
+    "ai-context-bridge": {
+      "args": ["~/SM-BU-publish/mcp-local/ai-context-bridge/server.js"]
+    },
+    "crawlkit-mcp": {
+      "args": ["~/SM-BU-publish/mcp-local/crawlkit-mcp/server.js"]
+    },
+    "firecrawl-mcp": {
+      "args": ["~/SM-BU-publish/mcp-local/firecrawl-mcp/index.js"]
+    },
+    "playwright-mcp": {
+      "args": ["~/SM-BU-publish/mcp-local/playwright-mcp/cli.js"]
+    },
+    "swift-terminals": {
+      "args": ["~/SM-BU-publish/mcp-local/swift-terminals/index.js"]
+    },
+    "webclaw-mcp": {
+      "args": ["~/SM-BU-publish/mcp-local/webclaw-mcp/server.js"]
+    },
+    "read-website-fast": {
+      "args": ["~/SM-BU-publish/mcp-local/read-website-fast/server.js"]
+    },
+    "whatsapp-mcp": {
+      "args": ["~/SM-BU-publish/mcp-local/whatsapp-mcp/whatsapp-mcp-server/.venv/bin/python", "~/SM-BU-publish/mcp-local/whatsapp-mcp/whatsapp-mcp-server/main.py"]
+    },
+    "xcodebuildmcp": {
+      "args": ["~/SM-BU-publish/mcp-local/xcodebuildmcp/cli.js"]
+    },
+    "swiftmaestro-mcp": {
+      "args": ["~/SM-BU-publish/mcp-local/swiftmaestro-mcp-server/swiftmaestro-mcp-server"]
+    },
+    "sm-bu": {
+      "args": ["~/SM-BU-publish/mcp-local/sm-bu/server.js"]
+    }
+  }
+}
+FILEEOF ; echo "__SWIFTMAESTRO_CWD__=$(pwd)"
