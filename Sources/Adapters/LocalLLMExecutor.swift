@@ -67,8 +67,8 @@ final class LocalLLMExecutor {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         
-        if let apiKey = apiKey {
-            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        if let resolved = Self.resolvedKey(from: apiKey), !resolved.isEmpty {
+            request.setValue("Bearer \(resolved)", forHTTPHeaderField: "Authorization")
         }
         
         let body = try Self.buildRequestBody(
@@ -148,8 +148,8 @@ final class LocalLLMExecutor {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
-        if let apiKey = apiKey {
-            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        if let resolved = Self.resolvedKey(from: apiKey), !resolved.isEmpty {
+            request.setValue("Bearer \(resolved)", forHTTPHeaderField: "Authorization")
         }
         
         let actualModelID = modelID ?? config.modelIdentifier
@@ -200,5 +200,16 @@ final class LocalLLMExecutor {
     
     private static func apiMessage(from message: Message) -> [String: Any] {
         ["role": message.role.rawValue, "content": message.content]
+    }
+
+    /// Resolves the API key, supporting `secret://<name>` references that are
+    /// looked up in the Keychain only at send time, so the raw value never
+    /// appears in any object the model sees or that gets persisted.
+    private static func resolvedKey(from apiKey: String?) -> String? {
+        guard let apiKey, !apiKey.isEmpty else { return nil }
+        if apiKey.hasPrefix(SecretsStore.referencePrefix) {
+            return SecretsStore.resolve(reference: apiKey, currentProject: nil)
+        }
+        return apiKey
     }
 }

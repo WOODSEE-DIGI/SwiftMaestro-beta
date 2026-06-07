@@ -71,6 +71,23 @@ targets:
         product: Tokenizers
       - package: swift-transformers
         product: Hub
+    scheme:
+      testTargets:
+        - SwiftMaestroTests
+
+  SwiftMaestroTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests
+      - path: Sources/Services/SecretsStore.swift
+      - path: Sources/Services/KeychainService.swift
+    settings:
+      SWIFT_VERSION: 6.3
+      MACOSX_DEPLOYMENT_TARGET: 14.0
+      GENERATE_INFOPLIST_FILE: YES
+      PRODUCT_BUNDLE_IDENTIFIER: com.woodseedigi.swiftmaestrotests
+      CODE_SIGN_IDENTITY: "-"
 
 defaultLanguage: Swift
 platforms: []

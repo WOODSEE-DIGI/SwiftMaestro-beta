@@ -1,6 +1,88 @@
 import SwiftUI
 
-// MARK: - Settings View (4-tab layout matching original SwiftMaestro)
+enum SwiftMaestroSettingsStore {
+    private static let allowedModelsKey = "settings.models.allowedModels"
+    private static let authorizedFoldersKey = "settings.context.authorizedFolders"
+    private static let filesInMemoryKey = "settings.context.filesInMemory"
+    private static let lastImportDateKey = "settings.context.lastImportDate"
+    private static let mcpServersKey = "settings.mcp.servers"
+    private static let agentRulesKey = "settings.rules.agentRules"
+
+    static func loadAllowedModels() -> [String] {
+        UserDefaults.standard.stringArray(forKey: allowedModelsKey) ?? []
+    }
+
+    static func saveAllowedModels(_ models: [String]) {
+        UserDefaults.standard.set(models, forKey: allowedModelsKey)
+    }
+
+    static func loadAuthorizedFolders() -> [AuthorizedFolder] {
+        guard
+            let data = UserDefaults.standard.data(forKey: authorizedFoldersKey),
+            let folders = try? JSONDecoder().decode([AuthorizedFolder].self, from: data)
+        else {
+            return [
+                AuthorizedFolder(path: "~/.ai-context", enabled: true),
+                AuthorizedFolder(path: "~/GitHub", enabled: true),
+            ]
+        }
+        return folders
+    }
+
+    static func saveAuthorizedFolders(_ folders: [AuthorizedFolder]) {
+        if let data = try? JSONEncoder().encode(folders) {
+            UserDefaults.standard.set(data, forKey: authorizedFoldersKey)
+        }
+    }
+
+    static func loadFilesInMemory() -> Int {
+        UserDefaults.standard.integer(forKey: filesInMemoryKey)
+    }
+
+    static func saveFilesInMemory(_ count: Int) {
+        UserDefaults.standard.set(count, forKey: filesInMemoryKey)
+    }
+
+    static func loadLastImportDate() -> String {
+        UserDefaults.standard.string(forKey: lastImportDateKey) ?? ""
+    }
+
+    static func saveLastImportDate(_ value: String) {
+        UserDefaults.standard.set(value, forKey: lastImportDateKey)
+    }
+
+    static func loadMCPServers() -> [MCPServerEntry] {
+        guard
+            let data = UserDefaults.standard.data(forKey: mcpServersKey),
+            let servers = try? JSONDecoder().decode([MCPServerEntry].self, from: data)
+        else {
+            return MCPServerEntry.defaults
+        }
+        return servers
+    }
+
+    static func saveMCPServers(_ servers: [MCPServerEntry]) {
+        if let data = try? JSONEncoder().encode(servers) {
+            UserDefaults.standard.set(data, forKey: mcpServersKey)
+        }
+    }
+
+    static func loadRules() -> [AgentRule] {
+        guard
+            let data = UserDefaults.standard.data(forKey: agentRulesKey),
+            let rules = try? JSONDecoder().decode([AgentRule].self, from: data)
+        else {
+            return AgentRule.defaults
+        }
+        return rules
+    }
+
+    static func saveRules(_ rules: [AgentRule]) {
+        if let data = try? JSONEncoder().encode(rules) {
+            UserDefaults.standard.set(data, forKey: agentRulesKey)
+        }
+    }
+}
 
 struct SettingsView: View {
     @Environment(ModelCatalog.self) private var catalog
@@ -12,48 +94,249 @@ struct SettingsView: View {
                 .tabItem { Label("Models", systemImage: "cpu") }
             TuningSettingsTab()
                 .tabItem { Label("Tuning", systemImage: "slider.horizontal.3") }
+            RulesSettingsTab()
+                .tabItem { Label("Rules", systemImage: "list.bullet.rectangle") }
             ContextSettingsTab()
                 .tabItem { Label("Context", systemImage: "folder") }
             MCPSettingsTab()
                 .tabItem { Label("MCP", systemImage: "server.rack") }
+            SecretsSettingsTab()
+                .tabItem { Label("Secrets", systemImage: "key.fill") }
         }
-        .frame(width: 620, height: 680)
+        .frame(minWidth: 620, idealWidth: 720, minHeight: 680, idealHeight: 760)
+        #if os(macOS)
+        .background(
+            WindowSizeConfigurator(
+                minSize: CGSize(width: 620, height: 680),
+                defaultSize: CGSize(width: 720, height: 760)
+            )
+        )
+        #endif
     }
 }
 
-// MARK: - Models Tab
+// MARK: - Secrets tab
+
+struct SecretsSettingsTab: View {
+    @State private var secrets: [SecretMetadata] = []
+    @State private var showingAdd = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                GroupBox("Stored Secrets") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if secrets.isEmpty {
+                            Text("No secrets stored yet. Add a token below; the agent references it by name and never sees the raw value.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        ForEach(secrets) { meta in
+                            HStack(alignment: .top) {
+                                Image(systemName: "key.fill").foregroundStyle(.orange)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(meta.name).font(.body.bold())
+                                    HStack(spacing: 8) {
+                                        scopeBadge(meta)
+                                        if meta.synced {
+                                            Label("iCloud", systemImage: "icloud")
+                                                .font(.caption2).foregroundStyle(.blue)
+                                        }
+                                        Text("\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    if let used = meta.lastUsedAt {
+                                        Text("last used \(used.formatted(date: .abbreviated, time: .shortened))")
+                                            .font(.caption2).foregroundStyle(.secondary)
+                                    }
+                                }
+                                Spacer()
+                                Button(role: .destructive) { delete(meta) } label: {
+                                    Image(systemName: "trash")
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            Divider()
+                        }
+                        let projects = Set(secrets.compactMap { $0.projectId }).sorted()
+                        if !projects.isEmpty {
+                            ForEach(projects, id: \.self) { pid in
+                                HStack {
+                                    Text("Project scope: \(pid)").font(.caption).foregroundStyle(.secondary)
+                                    Spacer()
+                                    Button("Purge project secrets", role: .destructive) { purge(pid) }
+                                        .font(.caption)
+                                }
+                            }
+                        }
+                        HStack {
+                            Button("Add Secret") { showingAdd = true }
+                            Spacer()
+                            if let errorMessage {
+                                Text(errorMessage).font(.caption).foregroundStyle(.red)
+                            }
+                        }
+                    }
+                    .padding(8)
+                }
+                GroupBox("How secrets are used") {
+                    Text("Reference a secret anywhere a token is needed as secret://<name>. SwiftMaestro and sibling agents (via ai-context-bridge) resolve it from the Keychain at the moment of the request \u{2014} the value is never written to chat history, logs, or the shared memory store.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .padding(8)
+                }
+                Spacer()
+            }
+            .padding()
+        }
+        .onAppear { reload() }
+        .sheet(isPresented: $showingAdd) {
+            AddSecretSheet { name, value, scope, synced, note in
+                add(name: name, value: value, scope: scope, synced: synced, note: note)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func scopeBadge(_ meta: SecretMetadata) -> some View {
+        switch meta.scope {
+        case .global:
+            Label("Permanent", systemImage: "globe").font(.caption2).foregroundStyle(.green)
+        case .project(let id):
+            Label("Project: \(id)", systemImage: "folder").font(.caption2).foregroundStyle(.purple)
+        }
+    }
+
+    private func reload() {
+        secrets = SecretsStore.listMetadata().sorted { $0.name < $1.name }
+    }
+
+    private func add(name: String, value: String, scope: SecretScope, synced: Bool, note: String?) {
+        do {
+            try SecretsStore.upsert(name: name, value: value, scope: scope, synced: synced, note: note)
+            errorMessage = nil
+            reload()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func delete(_ meta: SecretMetadata) {
+        do { try SecretsStore.delete(meta); reload() }
+        catch { errorMessage = error.localizedDescription }
+    }
+
+    private func purge(_ projectId: String) {
+        do { try SecretsStore.purgeProject(projectId); reload() }
+        catch { errorMessage = error.localizedDescription }
+    }
+}
+
+private struct AddSecretSheet: View {
+    enum ScopeChoice: String, CaseIterable, Identifiable {
+        case permanent, project
+        var id: String { rawValue }
+    }
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var value = ""
+    @State private var scopeChoice: ScopeChoice = .permanent
+    @State private var projectId = ""
+    @State private var syncAcrossMacs = true
+    @State private var note = ""
+
+    let onSave: (String, String, SecretScope, Bool, String?) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Add Secret").font(.title3.bold())
+            Form {
+                TextField("Name (e.g. github_token)", text: $name)
+                SecureField("Value (paste token)", text: $value)
+                Picker("Scope", selection: $scopeChoice) {
+                    Text("Permanent (all projects)").tag(ScopeChoice.permanent)
+                    Text("This project only").tag(ScopeChoice.project)
+                }
+                .pickerStyle(.radioGroup)
+                .onChange(of: scopeChoice) { _, newValue in
+                    syncAcrossMacs = (newValue == .permanent)
+                }
+                if scopeChoice == .project {
+                    TextField("Project name", text: $projectId)
+                }
+                Toggle("Sync across my Macs (iCloud Keychain)", isOn: $syncAcrossMacs)
+                TextField("Note (optional)", text: $note)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button("Save") {
+                    let scope: SecretScope = scopeChoice == .project
+                        ? .project(projectId.trimmingCharacters(in: .whitespaces))
+                        : .global
+                    onSave(name, value, scope, syncAcrossMacs, note.isEmpty ? nil : note)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canSave)
+            }
+        }
+        .padding()
+        .frame(width: 460)
+    }
+
+    private var canSave: Bool {
+        !name.trimmingCharacters(in: .whitespaces).isEmpty
+            && !value.isEmpty
+            && (scopeChoice == .permanent || !projectId.trimmingCharacters(in: .whitespaces).isEmpty)
+    }
+}
 
 struct ModelsSettingsTab: View {
     @Environment(ModelCatalog.self) private var catalog
     @Environment(MLXInferenceEngine.self) private var engine
-
-    @AppStorage("models.endpointURL") private var endpointURL: String = "http://localhost:8000"
-    @AppStorage("models.modelID") private var modelID: String = ""
+    @Environment(OMLXServerManager.self) private var serverManager
+    @AppStorage("models.endpointURL") private var endpointURL: String = "http://localhost:8012"
+    @AppStorage("models.modelID") private var modelID: String = "Qwen3.5-122B-A10B-4bit"
+    @AppStorage("models.allowSub70B") private var allowSub70B: Bool = false
     @AppStorage("models.requiresAPIKey") private var requiresAPIKey: Bool = false
     @State private var connectionStatus: String = "Connection not checked yet."
     @State private var connectionOK: Bool? = nil
     @State private var allowedModels: [String] = []
     @State private var hubModelID: String = ""
+    @State private var saveMessage: String?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-
-                // Default LLM Connection
                 GroupBox("Default LLM Connection") {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Selected backend default endpoint: \(endpointURL)")
                             .font(.caption).foregroundStyle(.secondary)
-
                         LabeledContent("Endpoint URL") {
-                            TextField("http://localhost:8000", text: $endpointURL)
+                            TextField("http://localhost:8012", text: $endpointURL)
                                 .textFieldStyle(.roundedBorder)
                         }
                         LabeledContent("Model ID") {
                             TextField("e.g. mlx-community/Qwen3-8B-4bit", text: $modelID)
                                 .textFieldStyle(.roundedBorder)
                         }
-
+                        if let tier = ModelTierPolicy.extractTierB(from: modelID) {
+                            Text("Detected model tier: \(tier, specifier: "%.1f")B")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        if ModelTierPolicy.isBelowPreferredTier(modelID), !allowSub70B {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Sub-70B model detected. Current policy prefers 70B+ for reliability.")
+                                    .font(.caption)
+                                    .foregroundStyle(.red)
+                                Button("Use recommended 122B model") {
+                                    modelID = ModelTierPolicy.recommendedModelID
+                                }
+                                .buttonStyle(.bordered)
+                            }
+                        }
                         HStack {
                             Button("Add Current Model to Allow List") {
                                 if !modelID.isEmpty && !allowedModels.contains(modelID) {
@@ -62,39 +345,29 @@ struct ModelsSettingsTab: View {
                             }
                             Button("Clear Allow List") { allowedModels.removeAll() }
                         }
-
                         if !allowedModels.isEmpty {
                             Text("Allowed Models").font(.caption.bold())
                             ForEach(allowedModels, id: \.self) { m in
                                 Text(m).font(.caption).foregroundStyle(.secondary)
                             }
                         }
-
-                        Button("Discover Models") {
-                            // TODO: query endpoint /v1/models
-                        }
-
+                        Button("Discover Models") {}
                         Divider()
-
                         HStack {
                             Circle()
                                 .fill(connectionOK == true ? .green : connectionOK == false ? .red : .gray)
                                 .frame(width: 8, height: 8)
                             Text(connectionStatus).font(.caption).foregroundStyle(.secondary)
                         }
-
                         HStack {
                             Toggle("Requires API Key", isOn: $requiresAPIKey)
                             Spacer()
-                            Button("Test Connection") {
-                                testConnection()
-                            }
+                            Button("Test Connection") { testConnection() }
                         }
+                        Toggle("Allow models below 70B", isOn: $allowSub70B)
                     }
                     .padding(8)
                 }
-
-                // Built-in MLX Models
                 GroupBox("Built-in MLX Models (download on first use)") {
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(catalog.models) { model in
@@ -126,24 +399,65 @@ struct ModelsSettingsTab: View {
                     }
                     .padding(8)
                 }
-
-                // Agent Model Assignment
-                GroupBox("Agent Model Assignment") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Per-agent model overrides will appear here once agents are configured.")
-                            .font(.caption).foregroundStyle(.secondary)
-                        // TODO: iterate agents, show connection + model picker per agent
+                GroupBox("oMLX Startup") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Toggle(
+                            "Auto-start oMLX on launch",
+                            isOn: Binding(
+                                get: { serverManager.autoStartEnabled },
+                                set: { serverManager.autoStartEnabled = $0 }
+                            )
+                        )
+                        TextField(
+                            "Startup script path",
+                            text: Binding(
+                                get: { serverManager.startupScriptPath },
+                                set: { serverManager.startupScriptPath = $0 }
+                            )
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        HStack {
+                            Button("Check Health") {
+                                Task { _ = await serverManager.checkHealth() }
+                            }
+                            Button("Start Now") {
+                                serverManager.ensureServerReadyOnLaunch()
+                            }
+                            Text(serverStatusText)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     .padding(8)
                 }
-
                 Spacer()
-                HStack { Spacer(); Button("Save Settings") { /* persisted via AppStorage */ } }
+                HStack {
+                    if let saveMessage {
+                        Text(saveMessage).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Save Settings") {
+                        SwiftMaestroSettingsStore.saveAllowedModels(allowedModels)
+                        saveMessage = "Saved"
+                    }
+                }
             }
             .padding()
         }
+        .onAppear {
+            allowedModels = SwiftMaestroSettingsStore.loadAllowedModels()
+        }
     }
 
+    private var serverStatusText: String {
+        switch serverManager.state {
+        case .idle: return "idle"
+        case .checking: return "checking..."
+        case .launching: return "launching..."
+        case .ready: return "ready"
+        case .failed(let message): return "failed: \(message)"
+        }
+    }
     private func testConnection() {
         connectionStatus = "Testing..."
         connectionOK = nil
@@ -170,8 +484,6 @@ struct ModelsSettingsTab: View {
     }
 }
 
-// MARK: - Tuning Tab
-
 struct TuningSettingsTab: View {
     @AppStorage("tuning.temperature") private var temperature: Double = 0.7
     @AppStorage("tuning.maxTokens") private var maxTokens: Int = 4096
@@ -179,11 +491,11 @@ struct TuningSettingsTab: View {
     @AppStorage("tuning.repetitionPenalty") private var repetitionPenalty: Double = 1.05
     @AppStorage("tuning.contextBudget") private var contextBudget: Int = 18000
     @AppStorage("tuning.factBudget") private var factBudget: Int = 8000
+    @State private var saveMessage: String?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-
                 GroupBox("Sampling Parameters") {
                     VStack(spacing: 12) {
                         HStack {
@@ -196,92 +508,139 @@ struct TuningSettingsTab: View {
                             Slider(value: $topP, in: 0...1, step: 0.05)
                             Text(String(format: "%.2f", topP)).monospacedDigit().frame(width: 44)
                         }
-                        HStack {
-                            Text("Repetition Penalty").frame(width: 140, alignment: .leading)
-                            Slider(value: $repetitionPenalty, in: 1.0...1.5, step: 0.01)
-                            Text(String(format: "%.2f", repetitionPenalty)).monospacedDigit().frame(width: 44)
-                        }
                     }
                     .padding(8)
                 }
-
-                GroupBox("Limits") {
-                    VStack(spacing: 12) {
-                        Stepper("Max tokens: \(maxTokens)", value: $maxTokens, in: 256...32768, step: 256)
-                    }
-                    .padding(8)
-                }
-
-                GroupBox("Memory Budgets") {
-                    VStack(spacing: 12) {
-                        Stepper("Context budget: \(contextBudget) chars", value: $contextBudget, in: 1000...100000, step: 1000)
-                        Stepper("Fact budget: \(factBudget) chars", value: $factBudget, in: 1000...50000, step: 1000)
-                        Text("Memory recall budgets control how much context and fact data is injected into each prompt.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    .padding(8)
-                }
-
                 Spacer()
-                HStack { Spacer(); Button("Save Settings") { } }
+                HStack {
+                    if let saveMessage {
+                        Text(saveMessage).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Save Settings") {
+                        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "settings.tuning.lastSavedAt")
+                        saveMessage = "Saved"
+                    }
+                }
             }
             .padding()
         }
     }
 }
 
-// MARK: - Context Tab
+struct RulesSettingsTab: View {
+    @State private var rules: [AgentRule] = []
+    @State private var selectedScope: String = "All"
+    @State private var saveMessage: String?
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                GroupBox("Agent Rules") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Text("Scope")
+                            Picker("", selection: $selectedScope) {
+                                Text("All Agents").tag("All")
+                                ForEach(Agent.defaultAgentNames, id: \.self) { name in
+                                    Text(name).tag(name)
+                                }
+                            }
+                            .frame(width: 200)
+                        }
+                        Text(selectedScope == "All"
+                             ? "Rules applied to every agent."
+                             : "Rules applied to \(selectedScope), in addition to All Agents rules.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Divider()
+                        if !rules.contains(where: { $0.scope == selectedScope }) {
+                            Text("No rules yet. Add a rule below; enabled rules are injected as a system instruction at the start of each conversation.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        ForEach($rules) { $rule in
+                            if rule.scope == selectedScope {
+                                HStack(alignment: .top) {
+                                    Toggle("", isOn: $rule.enabled).labelsHidden()
+                                    TextField("Rule text", text: $rule.text, axis: .vertical)
+                                        .textFieldStyle(.roundedBorder)
+                                        .lineLimit(1...6)
+                                    Button { rules.removeAll { $0.id == rule.id } } label: {
+                                        Image(systemName: "trash").foregroundStyle(.red)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                        Button {
+                            rules.append(AgentRule(text: "", enabled: true, scope: selectedScope))
+                        } label: {
+                            Label("Add Rule", systemImage: "plus")
+                        }
+                    }
+                    .padding(8)
+                }
+                Spacer()
+                HStack {
+                    if let saveMessage {
+                        Text(saveMessage).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Save Settings") {
+                        let cleaned = rules.filter {
+                            !$0.text.trimmingCharacters(in: .whitespaces).isEmpty
+                        }
+                        SwiftMaestroSettingsStore.saveRules(cleaned)
+                        rules = cleaned
+                        saveMessage = "Saved"
+                    }
+                }
+            }
+            .padding()
+        }
+        .onAppear {
+            rules = SwiftMaestroSettingsStore.loadRules()
+        }
+    }
+}
 
 struct ContextSettingsTab: View {
-    @State private var selectedAgent: String = "Navi"
-    @State private var authorizedFolders: [AuthorizedFolder] = [
-        AuthorizedFolder(path: "~/.ai-context", enabled: true),
-        AuthorizedFolder(path: "~/GitHub", enabled: true),
-    ]
+    @State private var selectedAgent: String = "All"
+    @State private var authorizedFolders: [AuthorizedFolder] = []
     @State private var newFolderPath: String = ""
     @State private var importScope: String = "Navigator (parent)"
     @State private var importFolderPath: String = ""
     @State private var importStatus: String = ""
     @State private var filesInMemory: Int = 0
     @State private var lastImportDate: String = ""
+    @State private var saveMessage: String?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-
-                // Authorized Folders
                 GroupBox("Authorized Folders") {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
                             Text("Agent")
                             Picker("", selection: $selectedAgent) {
-                                Text("Navi").tag("Navi")
                                 Text("All Agents").tag("All")
+                                ForEach(Agent.defaultAgentNames, id: \.self) { name in
+                                    Text(name).tag(name)
+                                }
                             }
                             .frame(width: 150)
                         }
-
                         ForEach($authorizedFolders) { $folder in
                             HStack {
                                 Image(systemName: "folder.fill").foregroundStyle(.blue)
-                                Text(folder.path)
-                                    .font(.caption)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
+                                Text(folder.path).font(.caption).lineLimit(1).truncationMode(.middle)
                                 Spacer()
-                                Toggle("", isOn: $folder.enabled)
-                                    .labelsHidden()
+                                Toggle("", isOn: $folder.enabled).labelsHidden()
                                 Button { authorizedFolders.removeAll { $0.id == folder.id } } label: {
                                     Image(systemName: "minus.circle").foregroundStyle(.red)
                                 }
                                 .buttonStyle(.plain)
                             }
                         }
-
-                        Button("Grant Folder Access...") {
-                            // TODO: NSOpenPanel for sandbox bookmark
-                        }
-
                         HStack {
                             TextField("/absolute/path", text: $newFolderPath)
                                 .textFieldStyle(.roundedBorder)
@@ -291,22 +650,10 @@ struct ContextSettingsTab: View {
                                 newFolderPath = ""
                             }
                         }
-
-                        Text("Use \"Grant Folder Access...\" to request sandbox read/write permission and save a bookmark. \"Add Path\" appends a folder path and reuses an existing bookmark if available.")
-                            .font(.caption).foregroundStyle(.secondary)
-
-                        if authorizedFolders.contains(where: { $0.enabled }) {
-                            HStack {
-                                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                                Text("Granted access to \(authorizedFolders.filter { $0.enabled }.count) folder(s).")
-                                    .font(.caption).foregroundStyle(.green)
-                            }
-                        }
+                        Text(importStatus).font(.caption).foregroundStyle(.secondary)
                     }
                     .padding(8)
                 }
-
-                // Import Folder Into Memory
                 GroupBox("Import Folder Into Memory (v2)") {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
@@ -317,85 +664,78 @@ struct ContextSettingsTab: View {
                             }
                             .pickerStyle(.segmented)
                         }
-
-                        Text("No explicit Navigator agent found; import still uses navigator parent memory scope.")
-                            .font(.caption).foregroundStyle(.secondary)
-
                         HStack {
                             TextField("/absolute/path", text: $importFolderPath)
                                 .textFieldStyle(.roundedBorder)
-                            Button("Choose Folder...") {
-                                // TODO: NSOpenPanel
+                            Button("Import Folder") {
+                                importStatus = "Importing..."
                             }
                         }
-
-                        Button("Import Folder") {
-                            // TODO: scan UTF-8 files and import into memory context store
-                            importStatus = "Importing..."
-                        }
-
-                        Text("Imports UTF-8 text files into the native memory context store. Use Navigator scope for shared parent knowledge and Agent project scope for project-specific child memory.")
-                            .font(.caption).foregroundStyle(.secondary)
-
                         if filesInMemory > 0 {
-                            HStack {
-                                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                                VStack(alignment: .leading) {
-                                    Text("\(filesInMemory) file(s) in memory").font(.caption.bold())
-                                    Text(lastImportDate).font(.caption).foregroundStyle(.secondary)
-                                }
-                            }
-                            .padding(8)
-                            .background(Color.green.opacity(0.1))
-                            .cornerRadius(8)
+                            Text("\(filesInMemory) file(s) in memory — \(lastImportDate)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                     }
                     .padding(8)
                 }
-
                 Spacer()
-                HStack { Spacer(); Button("Save Settings") { } }
+                HStack {
+                    if let saveMessage {
+                        Text(saveMessage).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Save Settings") {
+                        SwiftMaestroSettingsStore.saveAuthorizedFolders(authorizedFolders)
+                        SwiftMaestroSettingsStore.saveFilesInMemory(filesInMemory)
+                        SwiftMaestroSettingsStore.saveLastImportDate(lastImportDate)
+                        saveMessage = "Saved"
+                    }
+                }
             }
             .padding()
+        }
+        .onAppear {
+            authorizedFolders = SwiftMaestroSettingsStore.loadAuthorizedFolders()
+            filesInMemory = SwiftMaestroSettingsStore.loadFilesInMemory()
+            lastImportDate = SwiftMaestroSettingsStore.loadLastImportDate()
         }
     }
 }
 
-// MARK: - MCP Tab
-
 struct MCPSettingsTab: View {
-    @State private var servers: [MCPServerEntry] = MCPServerEntry.defaults
+    @State private var servers: [MCPServerEntry] = []
+    @State private var saveMessage: String?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-
-                HStack {
-                    Text("Self-Hosted MCP Servers").font(.headline)
-                    Spacer()
-                    let readyCount = servers.filter { $0.enabled }.count
-                    Text("\(readyCount)/\(servers.count) ready").foregroundStyle(.green).font(.caption.bold())
-                }
-
-                Text("Configure local stdio MCP servers. Use Fields for guided entry or Snippet to paste a JSON config block.")
-                    .font(.caption).foregroundStyle(.secondary)
-
                 ForEach($servers) { $server in
                     MCPServerRow(server: $server, onDelete: {
                         servers.removeAll { $0.id == server.id }
                     })
                 }
-
                 Button {
                     servers.append(MCPServerEntry(name: "new-server", command: "/opt/homebrew/bin/node", scriptPath: "", env: "", workingDir: "", timeout: 8, enabled: false))
                 } label: {
                     Label("Add Server", systemImage: "plus")
                 }
-
                 Spacer()
-                HStack { Spacer(); Button("Save Settings") { } }
+                HStack {
+                    if let saveMessage {
+                        Text(saveMessage).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Save Settings") {
+                        SwiftMaestroSettingsStore.saveMCPServers(servers)
+                        saveMessage = "Saved"
+                    }
+                }
             }
             .padding()
+        }
+        .onAppear {
+            servers = SwiftMaestroSettingsStore.loadMCPServers()
         }
     }
 }
@@ -414,41 +754,24 @@ struct MCPServerRow: View {
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 200)
                     Spacer()
-                    Text("Enabled")
                     Toggle("", isOn: $server.enabled).labelsHidden()
                     Button { onDelete() } label: {
                         Image(systemName: "trash").foregroundStyle(.red)
                     }.buttonStyle(.plain)
                 }
-
                 HStack {
-                    Button(showFields ? "Fields" : "Fields") {
-                        showFields = true
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(showFields ? .blue : .gray)
-                    Button("Snippet") {
-                        showFields = false
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(!showFields ? .blue : .gray)
+                    Button("Fields") { showFields = true }
+                        .buttonStyle(.bordered)
+                        .tint(showFields ? .blue : .gray)
+                    Button("Snippet") { showFields = false }
+                        .buttonStyle(.bordered)
+                        .tint(!showFields ? .blue : .gray)
                 }
-
                 if showFields {
-                    TextField("Command (e.g. /opt/homebrew/bin/node)", text: $server.command)
-                        .textFieldStyle(.roundedBorder)
-                    TextField("Script path", text: $server.scriptPath)
-                        .textFieldStyle(.roundedBorder)
-                    TextField("Env (KEY=VALUE, comma-separated)", text: $server.env)
-                        .textFieldStyle(.roundedBorder)
-                    TextField("Working directory", text: $server.workingDir)
-                        .textFieldStyle(.roundedBorder)
-                    HStack {
-                        Text("Startup Timeout (seconds)")
-                        Spacer()
-                        Stepper("\(server.timeout)", value: $server.timeout, in: 1...60)
-                            .frame(width: 100)
-                    }
+                    TextField("Command", text: $server.command).textFieldStyle(.roundedBorder)
+                    TextField("Script path", text: $server.scriptPath).textFieldStyle(.roundedBorder)
+                    TextField("Env", text: $server.env).textFieldStyle(.roundedBorder)
+                    TextField("Working directory", text: $server.workingDir).textFieldStyle(.roundedBorder)
                 }
             }
             .padding(6)
@@ -456,16 +779,25 @@ struct MCPServerRow: View {
     }
 }
 
-// MARK: - Supporting Types
-
-struct AuthorizedFolder: Identifiable {
-    let id = UUID()
+struct AuthorizedFolder: Identifiable, Codable {
+    var id: UUID = UUID()
     var path: String
     var enabled: Bool
 }
 
-struct MCPServerEntry: Identifiable {
-    let id = UUID()
+/// A single behavioral rule for an agent. `scope` is either "All" (applies to
+/// every agent) or a specific agent name.
+struct AgentRule: Identifiable, Codable {
+    var id: UUID = UUID()
+    var text: String
+    var enabled: Bool
+    var scope: String
+
+    static let defaults: [AgentRule] = []
+}
+
+struct MCPServerEntry: Identifiable, Codable {
+    var id: UUID = UUID()
     var name: String
     var command: String
     var scriptPath: String
@@ -475,41 +807,9 @@ struct MCPServerEntry: Identifiable {
     var enabled: Bool
 
     static let defaults: [MCPServerEntry] = [
-        MCPServerEntry(
-            name: "ai-context-bridge",
-            command: "/opt/homebrew/bin/node",
-            scriptPath: "~/.ai-context/mcp-server/server.js",
-            env: "",
-            workingDir: "~/Library/Mobile Documents/com~apple~CloudDocs/.ai-context",
-            timeout: 8,
-            enabled: true
-        ),
-        MCPServerEntry(
-            name: "crawlkit-mcp",
-            command: "/opt/homebrew/bin/node",
-            scriptPath: "~/.ai-context/mcp-crawlkit/server.js",
-            env: "",
-            workingDir: "",
-            timeout: 8,
-            enabled: true
-        ),
-        MCPServerEntry(
-            name: "firecrawl-mcp",
-            command: "/opt/homebrew/bin/node",
-            scriptPath: "",
-            env: "",
-            workingDir: "",
-            timeout: 8,
-            enabled: false
-        ),
-        MCPServerEntry(
-            name: "playwright",
-            command: "/opt/homebrew/bin/node",
-            scriptPath: "",
-            env: "",
-            workingDir: "",
-            timeout: 8,
-            enabled: false
-        ),
+        MCPServerEntry(name: "ai-context-bridge", command: "/opt/homebrew/bin/node", scriptPath: "~/.ai-context/mcp-server/server.js", env: "", workingDir: "~/Library/Mobile Documents/com~apple~CloudDocs/.ai-context", timeout: 8, enabled: true),
+        MCPServerEntry(name: "crawlkit-mcp", command: "/opt/homebrew/bin/node", scriptPath: "~/.ai-context/mcp-crawlkit/server.js", env: "", workingDir: "", timeout: 8, enabled: true),
+        MCPServerEntry(name: "firecrawl-mcp", command: "/opt/homebrew/bin/node", scriptPath: "", env: "", workingDir: "", timeout: 8, enabled: false),
+        MCPServerEntry(name: "playwright", command: "/opt/homebrew/bin/node", scriptPath: "", env: "", workingDir: "", timeout: 8, enabled: false),
     ]
 }
