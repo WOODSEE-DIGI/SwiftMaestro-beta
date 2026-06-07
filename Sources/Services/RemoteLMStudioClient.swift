@@ -47,7 +47,13 @@ final class RemoteLMStudioClient {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
+        // Support `secret://<name>` references resolved from Keychain at send time.
+        let resolvedKey = config.apiKey.hasPrefix(SecretsStore.referencePrefix)
+            ? (SecretsStore.resolve(reference: config.apiKey, currentProject: nil) ?? "")
+            : config.apiKey
+        if !resolvedKey.isEmpty {
+            request.setValue("Bearer \(resolvedKey)", forHTTPHeaderField: "Authorization")
+        }
         
         var body: [String: Any] = [
             "model": model,

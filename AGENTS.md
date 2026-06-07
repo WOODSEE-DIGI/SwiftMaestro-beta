@@ -51,6 +51,8 @@ Run `~/.ai-context/scripts/sync-mcp.sh` to push config to all tools.
 | **SimpleMemoryStore** | `Sources/Memory/SimpleMemoryStore.swift` | File-based shared memory (→ `~/.ai-context/memory/`) |
 | **MaestroURI** | `Sources/MaestroURI.swift` | Memory URI scheme |
 | **ModelRouter** | `Sources/Services/ModelRouter.swift` | Model selection (35B/122B) |
+| **KeychainService** | `Sources/Services/KeychainService.swift` | macOS Keychain wrapper (legacy login keychain; iCloud-sync aware) |
+| **SecretsStore** | `Sources/Services/SecretsStore.swift` | Secret metadata index, `secret://` resolution, redaction |
 
 ---
 
@@ -85,9 +87,19 @@ open SwiftMaestro.xcodeproj
 - **Project gen:** xcodegen (`project.yml`)
 - **No App Store sandbox** — full system access for macOS integration
 - **No external Swift package dependencies** (oMLX provides ML inference)
-- **Secrets:** Keychain only
+- **Secrets:** macOS Keychain only via `KeychainService` / `SecretsStore` (see Secrets Management). Never hard-code secrets in source.
 
 ---
+
+## Secrets Management
+
+Auth tokens / API keys are stored in the macOS **Keychain** (service `com.woodseedigi.SwiftMaestro`), never in source, JSON config, UserDefaults, logs, or `~/.ai-context/memory/`.
+
+- **Add/manage:** Settings → **Secrets** tab. Each secret has a scope — **Permanent** (`secret.global.<name>`) or **This project only** (`secret.project.<projectId>.<name>`, persists until purged) — and an optional **iCloud Keychain sync** toggle (on by default for Permanent) so the same token works across all signed-in Macs (end-to-end encrypted).
+- **Reference, never inline:** anywhere a token is needed, use `secret://<name>`. It is resolved from the Keychain only at the HTTP boundary (`LocalLLMExecutor`, `RemoteLMStudioClient`); the raw value never enters the prompt, chat history, or memory store.
+- **Redaction:** `SecretRedactor` strips any known secret value from content before it is written to the shared memory store.
+- **Storage detail:** values live in the Keychain; non-secret descriptors live in machine-local `~/Library/Application Support/SwiftMaestro/secrets-index.json` (only Keychain values sync via iCloud). We stay on the legacy login keychain so the `security` CLI can read the same items.
+- **Cross-agent (ai-context-bridge):** `list_secrets` (names + scope only), `use_secret` (injects the secret into a request header server-side and returns only the response — never the raw value), and `set_secret` (creates a machine-local secret; use the app for iCloud-synced ones). A raw `get_secret` is intentionally omitted.
 
 ## Security Policy
 

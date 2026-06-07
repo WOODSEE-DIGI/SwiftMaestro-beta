@@ -1,5 +1,41 @@
 import Foundation
 
+enum ModelTierPolicy {
+    static let preferredMinimumB: Double = 70
+    static let recommendedModelID = "Qwen3.5-122B-A10B-4bit"
+
+    static func extractTierB(from modelID: String) -> Double? {
+        guard
+            let regex = try? NSRegularExpression(
+                pattern: "(?:^|[-_])([0-9]+(?:\\.[0-9]+)?)B(?=$|[-_])",
+                options: [.caseInsensitive]
+            )
+        else {
+            return nil
+        }
+
+        let range = NSRange(modelID.startIndex..<modelID.endIndex, in: modelID)
+        let matches = regex.matches(in: modelID, options: [], range: range)
+
+        let tiers = matches.compactMap { match -> Double? in
+            guard
+                match.numberOfRanges > 1,
+                let tierRange = Range(match.range(at: 1), in: modelID)
+            else {
+                return nil
+            }
+            return Double(modelID[tierRange])
+        }
+
+        return tiers.max()
+    }
+
+    static func isBelowPreferredTier(_ modelID: String) -> Bool {
+        guard let tier = extractTierB(from: modelID) else { return false }
+        return tier < preferredMinimumB
+    }
+}
+
 // MARK: - Message roles
 
 enum MessageRole: String {
@@ -50,6 +86,10 @@ struct Agent: Identifiable {
         self.rules = rules
         self.messages = messages
     }
+
+    /// Single source of truth for the built-in agent names. Used to seed the
+    /// sidebar and to populate per-agent scope pickers in Settings.
+    static let defaultAgentNames = ["General", "Coding"]
 }
 
 // MARK: - Provider types
@@ -84,8 +124,8 @@ struct LocalLLMConfig: Identifiable, Codable {
     init(
         id: UUID = UUID(),
         name: String = "Default",
-        endpointURL: String = "http://localhost:8000",
-        modelIdentifier: String = "qwen3.5-35b",
+        endpointURL: String = "http://localhost:8012",
+        modelIdentifier: String = "Qwen3.5-122B-A10B-4bit",
         requiresAPIKey: Bool = false,
         runtimeBackend: LocalModelRuntimeBackend = .omLX,
         requestTimeoutSeconds: TimeInterval = 300
@@ -120,7 +160,7 @@ enum LocalModelRuntimeBackend: String, Codable {
     
     var defaultEndpointURL: String {
         switch self {
-        case .omLX: return "http://localhost:8000"
+        case .omLX: return "http://localhost:8012"
         case .mlx: return "http://localhost:8080"
         case .liteLLM: return "http://localhost:4000"
         }

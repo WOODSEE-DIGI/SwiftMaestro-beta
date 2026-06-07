@@ -30,7 +30,10 @@ final class SimpleMemoryStore {
         let fileURL = url(for: uri)
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), 
                                                  withIntermediateDirectories: true)
-        try content.write(to: fileURL, atomically: true, encoding: .utf8)
+        // Safety net: strip any known secret values before they can land in the
+        // shared ~/.ai-context/memory/ store (read by all AI tools).
+        let safeContent = SecretRedactor.redact(content)
+        try safeContent.write(to: fileURL, atomically: true, encoding: .utf8)
     }
     
     func load(_ uri: MaestroURI) throws -> String? {
