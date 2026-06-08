@@ -162,7 +162,11 @@ actor MCPClientService {
             if isError == true {
                 return #"{"error": \#(Self.jsonEncoded(text))}"#
             }
-            return text.isEmpty ? "{}" : text
+            // Be explicit about a successful-but-empty result so the model does
+            // not fabricate a plausible-looking output to fill the gap.
+            return text.isEmpty
+                ? #"{"status": "ok", "output": ""}"#
+                : text
         } catch {
             NSLog("[MCP] !! \(name) failed: \(error.localizedDescription)")
             return #"{"error": "\#(error.localizedDescription)"}"#

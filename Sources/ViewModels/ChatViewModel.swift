@@ -102,6 +102,25 @@ class ChatViewModel: ObservableObject {
         messages = [Self.systemMessage(for: agent)]
     }
 
+    /// Hard rules governing tool use. The tools wired into this app are REAL and
+    /// run on the user's machine, so fabricated calls/outputs are actively harmful.
+    /// This is injected into every agent's system prompt.
+    private static let toolDiscipline = """
+        TOOL USE — STRICT RULES:
+        - Your tools are REAL and execute on the user's actual system. Use them by \
+        making a real tool call. NEVER write a tool call, shell command, JSON, or a \
+        tool's output as plain text or inside a code block to simulate it.
+        - NEVER invent, guess, paraphrase, or pre-write tool results. Only state what \
+        a tool ACTUALLY returned to you after you called it.
+        - Make ONE tool call at a time, then wait for its real result before deciding \
+        the next step. Do not narrate a sequence of imaginary calls.
+        - If a tool returns empty or no output, say exactly that — do not fabricate a \
+        plausible-looking result (e.g. fake file listings, paths, or timestamps).
+        - If you cannot or did not call a tool, say so plainly. Never claim an action \
+        (creating a file, running a command) happened unless a real tool result \
+        confirms it.
+        """
+
     /// Builds the seed system message, appending any enabled rules that apply
     /// to this agent (global "All" rules plus rules scoped to the agent name).
     private static func systemMessage(for agent: Agent) -> Message {
@@ -115,7 +134,7 @@ class ChatViewModel: ObservableObject {
         default:
             base = "You are \(agent.name), a helpful AI assistant."
         }
-        var content = base
+        var content = base + "\n\n" + Self.toolDiscipline
         let applicable = SwiftMaestroSettingsStore.loadRules().filter { rule in
             rule.enabled
                 && !rule.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -131,11 +150,33 @@ class ChatViewModel: ObservableObject {
     }
 
     private func messagesForInference() -> [Message] {
-        var output = messages
+        // Strip the display-only "🔧 called `name`" markers we inject for the UI.
+        // They are NOT real tool-call tokens; if replayed as assistant history
+        // the model imitates them as plain text and fabricates tool calls/results.
+        var output: [Message] = messages.compactMap { message in
+            guard message.role == .assistant else { return message }
+            let cleaned = Self.stripToolMarkers(message.content)
+            // Drop assistant turns that were nothing but tool-call markers.
+            if cleaned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return message.content.isEmpty ? message : nil
+            }
+            var copy = message
+            copy.content = cleaned
+            return copy
+        }
         if let last = output.last, last.role == .assistant, last.content.isEmpty {
             output.removeLast()
         }
         return output
+    }
+
+    /// Remove lines containing the injected tool-call indicator.
+    private static func stripToolMarkers(_ content: String) -> String {
+        content
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.contains("🔧 called") }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     nonisolated private static func discoverEndpointModelID(endpointURL: String) async -> String? {
