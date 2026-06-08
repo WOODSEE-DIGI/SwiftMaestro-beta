@@ -145,6 +145,7 @@ struct SwiftMaestroApp: App {
     @State private var engine = MLXInferenceEngine()
     @State private var catalog = ModelCatalog()
     @State private var serverManager = OMLXServerManager()
+    private let mcpService = MCPClientService()
 
     var body: some Scene {
         WindowGroup {
@@ -155,6 +156,10 @@ struct SwiftMaestroApp: App {
                 .task {
                     SwiftMaestroDefaultsMigration.applyIfNeeded()
                     serverManager.ensureServerReadyOnLaunch()
+                    // Wire client-side MCP tools into the inference engine and
+                    // spawn the user-enabled servers (permissioned by MCP flags).
+                    engine.mcpService = mcpService
+                    await mcpService.startEnabledServers()
                 }
         }
         .defaultSize(width: 1100, height: 760)

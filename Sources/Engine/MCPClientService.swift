@@ -1,0 +1,303 @@
+import Foundation
+import MCP
+import MLXLMCommon
+
+#if canImport(System)
+    import System
+#else
+    import SystemPackage
+#endif
+
+// MARK: - MCP tool source
+//
+// Client-side MCP integration: SwiftMaestro spawns the user-enabled MCP servers
+// (from the MCP settings tab) as subprocesses, speaks JSON-RPC over stdio via the
+// official Swift MCP SDK, discovers their tools, and bridges them into the SAME
+// agentic loop used by native tools (see MLXInferenceEngine + MaestroTools).
+//
+// Permissioning is the user's MCP `enabled` flags — not agent-imposed gating.
+// This is the deliberate VISION: full tool access, controlled by the user.
+
+/// One live connection to a spawned MCP server.
+private final class MCPConnection {
+    let serverName: String
+    let process: Process
+    /// Retained so the underlying pipe file descriptors stay open for the
+    /// connection's lifetime (FileHandle closes its fd on dealloc).
+    let stdinPipe: Pipe
+    let stdoutPipe: Pipe
+    let client: Client
+    var tools: [MCP.Tool]
+
+    init(
+        serverName: String,
+        process: Process,
+        stdinPipe: Pipe,
+        stdoutPipe: Pipe,
+        client: Client,
+        tools: [MCP.Tool]
+    ) {
+        self.serverName = serverName
+        self.process = process
+        self.stdinPipe = stdinPipe
+        self.stdoutPipe = stdoutPipe
+        self.client = client
+        self.tools = tools
+    }
+}
+
+/// Manages MCP client connections and exposes discovered tools to the agent.
+actor MCPClientService {
+
+    private var connections: [MCPConnection] = []
+    /// Maps a discovered tool name -> the connection that owns it.
+    private var routing: [String: MCPConnection] = [:]
+    private var started = false
+
+    // MARK: - Lifecycle
+
+    /// Spawn and connect every enabled MCP server that has a script path.
+    /// Idempotent: a second call is a no-op once started.
+    func startEnabledServers() async {
+        guard !started else { return }
+        started = true
+
+        let entries = await MainActor.run { SwiftMaestroSettingsStore.loadMCPServers() }
+        for entry in entries where entry.enabled && !entry.scriptPath.isEmpty {
+            do {
+                try await connect(to: entry)
+            } catch {
+                NSLog("[MCP] Failed to connect to \(entry.name): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func connect(to entry: MCPServerEntry) async throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: entry.command)
+        process.arguments = [entry.scriptPath]
+        process.environment = mergedEnvironment(entry.env)
+        if !entry.workingDir.isEmpty {
+            process.currentDirectoryURL = URL(fileURLWithPath: entry.workingDir)
+        } else {
+            process.currentDirectoryURL = URL(fileURLWithPath: entry.scriptPath)
+                .deletingLastPathComponent()
+        }
+
+        let stdinPipe = Pipe()   // SwiftMaestro -> server stdin
+        let stdoutPipe = Pipe()  // server stdout -> SwiftMaestro
+        process.standardInput = stdinPipe
+        process.standardOutput = stdoutPipe
+        // stderr is left inherited so server logs surface in the console.
+
+        try process.run()
+
+        let transport = StdioTransport(
+            input: FileDescriptor(rawValue: stdoutPipe.fileHandleForReading.fileDescriptor),
+            output: FileDescriptor(rawValue: stdinPipe.fileHandleForWriting.fileDescriptor)
+        )
+        let client = Client(name: "SwiftMaestro", version: "1.0.0")
+
+        // Bound handshake + discovery so a misbehaving server can't hang startup.
+        let timeout = max(entry.timeout, 4)
+        let tools = try await withTimeout(seconds: timeout) {
+            try await client.connect(transport: transport)
+            let (tools, _) = try await client.listTools()
+            return tools
+        }
+
+        let connection = MCPConnection(
+            serverName: entry.name,
+            process: process,
+            stdinPipe: stdinPipe,
+            stdoutPipe: stdoutPipe,
+            client: client,
+            tools: tools
+        )
+        connections.append(connection)
+        for tool in tools {
+            routing[tool.name] = connection
+        }
+        NSLog("[MCP] Connected to \(entry.name): \(tools.count) tool(s) — \(tools.map { $0.name }.joined(separator: ", "))")
+    }
+
+    /// Terminate all spawned servers.
+    func shutdown() {
+        for connection in connections {
+            connection.process.terminate()
+        }
+        connections.removeAll()
+        routing.removeAll()
+        started = false
+    }
+
+    // MARK: - Tool surface (for the agentic loop)
+
+    /// MCP tool schemas in mlx `ToolSpec` (OpenAI function) format.
+    func currentSchemas() -> [ToolSpec] {
+        routing.values.uniqued().flatMap { connection in
+            connection.tools.map { Self.toolSpec(for: $0) }
+        }
+    }
+
+    /// Whether an MCP server owns the named tool.
+    func handles(_ name: String) -> Bool {
+        routing[name] != nil
+    }
+
+    /// Execute an MCP tool call and return a string result to feed back to the model.
+    func execute(_ call: ToolCall) async -> String {
+        let name = call.function.name
+        guard let connection = routing[name] else {
+            return #"{"error": "unknown MCP tool: \#(name)"}"#
+        }
+        do {
+            let arguments = try Self.convertArguments(call.function.arguments)
+            NSLog("[MCP] -> \(connection.serverName)/\(name) args=\(arguments ?? [:])")
+            let (content, isError) = try await connection.client.callTool(
+                name: name, arguments: arguments
+            )
+            let text = Self.stringify(content)
+            NSLog("[MCP] <- \(name) isError=\(isError ?? false) result=\(text.prefix(300))")
+            if isError == true {
+                return #"{"error": \#(Self.jsonEncoded(text))}"#
+            }
+            return text.isEmpty ? "{}" : text
+        } catch {
+            NSLog("[MCP] !! \(name) failed: \(error.localizedDescription)")
+            return #"{"error": "\#(error.localizedDescription)"}"#
+        }
+    }
+
+    // MARK: - Conversions
+
+    /// Build an mlx `ToolSpec` from an MCP tool definition.
+    private static func toolSpec(for tool: MCP.Tool) -> ToolSpec {
+        let parameters: any Sendable = sendable(from: tool.inputSchema)
+        return [
+            "type": "function",
+            "function": [
+                "name": tool.name,
+                "description": tool.description ?? "",
+                "parameters": parameters,
+            ] as [String: any Sendable],
+        ]
+    }
+
+    /// Recursively convert an MCP `Value` (JSON) into native Sendable Swift values
+    /// suitable for the chat-template serializer.
+    private static func sendable(from value: MCP.Value) -> any Sendable {
+        switch value {
+        case .null:
+            return NSNull()
+        case .bool(let b):
+            return b
+        case .int(let i):
+            return i
+        case .double(let d):
+            return d
+        case .string(let s):
+            return s
+        case .data(_, let data):
+            return data.base64EncodedString()
+        case .array(let arr):
+            return arr.map { sendable(from: $0) } as [any Sendable]
+        case .object(let obj):
+            return obj.mapValues { sendable(from: $0) } as [String: any Sendable]
+        }
+    }
+
+    /// Convert mlx tool-call arguments (`[String: JSONValue]`) into MCP `[String: Value]`.
+    private static func convertArguments(_ args: [String: JSONValue]) throws -> [String: MCP.Value]? {
+        guard !args.isEmpty else { return nil }
+        let data = try JSONEncoder().encode(args)
+        return try JSONDecoder().decode([String: MCP.Value].self, from: data)
+    }
+
+    /// Flatten MCP tool result content into a single string for the model.
+    private static func stringify(_ content: [MCP.Tool.Content]) -> String {
+        var parts: [String] = []
+        for item in content {
+            switch item {
+            case .text(let text, _, _):
+                parts.append(text)
+            case .image(_, let mimeType, _, _):
+                parts.append("[image: \(mimeType)]")
+            case .audio(_, let mimeType, _, _):
+                parts.append("[audio: \(mimeType)]")
+            case .resource(let resource, _, _):
+                parts.append("[resource: \(resource.uri)]")
+            case .resourceLink(let uri, _, _, _, _, _):
+                parts.append("[resource: \(uri)]")
+            }
+        }
+        return parts.joined(separator: "\n")
+    }
+
+    private static func jsonEncoded(_ string: String) -> String {
+        guard let data = try? JSONEncoder().encode(string),
+              let encoded = String(data: data, encoding: .utf8)
+        else { return "\"\"" }
+        return encoded
+    }
+
+    // MARK: - Environment
+
+    /// Merge the process environment with the entry's `env` string and ensure a
+    /// sane PATH/HOME (GUI apps inherit a minimal environment).
+    private func mergedEnvironment(_ envString: String) -> [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        if env["HOME"] == nil {
+            env["HOME"] = NSHomeDirectory()
+        }
+        let extraPaths = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+        env["PATH"] = (env["PATH"].map { "\($0):\(extraPaths)" }) ?? extraPaths
+
+        // Parse "KEY=VALUE" pairs separated by newlines, semicolons, or commas.
+        let separators = CharacterSet(charactersIn: "\n;,")
+        for pair in envString.components(separatedBy: separators) {
+            let trimmed = pair.trimmingCharacters(in: .whitespaces)
+            guard let eq = trimmed.firstIndex(of: "=") else { continue }
+            let key = String(trimmed[..<eq]).trimmingCharacters(in: .whitespaces)
+            let value = String(trimmed[trimmed.index(after: eq)...])
+            if !key.isEmpty { env[key] = value }
+        }
+        return env
+    }
+}
+
+// MARK: - Helpers
+
+private extension Sequence where Element == MCPConnection {
+    /// De-duplicate connections (routing map may reference the same connection
+    /// from many tool names).
+    func uniqued() -> [MCPConnection] {
+        var seen = Set<ObjectIdentifier>()
+        var result: [MCPConnection] = []
+        for item in self where seen.insert(ObjectIdentifier(item)).inserted {
+            result.append(item)
+        }
+        return result
+    }
+}
+
+/// Run an async operation with a timeout (seconds). Throws `MCPTimeoutError` on expiry.
+private func withTimeout<T: Sendable>(
+    seconds: Int,
+    _ operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask { try await operation() }
+        group.addTask {
+            try await Task.sleep(nanoseconds: UInt64(seconds) * 1_000_000_000)
+            throw MCPTimeoutError()
+        }
+        guard let result = try await group.next() else { throw MCPTimeoutError() }
+        group.cancelAll()
+        return result
+    }
+}
+
+struct MCPTimeoutError: Error, LocalizedError {
+    var errorDescription: String? { "MCP server timed out" }
+}
