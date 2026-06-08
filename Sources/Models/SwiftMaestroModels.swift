@@ -2,7 +2,15 @@ import Foundation
 
 enum ModelTierPolicy {
     static let preferredMinimumB: Double = 70
+    /// High-quality model recommended when the user wants maximum capability
+    /// (e.g. the "Use recommended model" button, Turbo Mode).
     static let recommendedModelID = "Qwen3.5-122B-A10B-4bit"
+    /// Model loaded by default on launch: a fast MoE that balances speed and
+    /// quality. Used for the startup default and the oMLX configured-model
+    /// fallback so the app does not preload the 65GB 122B every launch.
+    static let defaultModelID = "Qwen3.6-35B-A3B-MLX-4bit"
+    /// The previous auto-set default, migrated away from on first launch.
+    static let legacyDefaultModelID = "Qwen3.5-122B-A10B-4bit"
 
     static func extractTierB(from modelID: String) -> Double? {
         guard

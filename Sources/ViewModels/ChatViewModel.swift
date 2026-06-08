@@ -110,6 +110,10 @@ class ChatViewModel: ObservableObject {
         - Your tools are REAL and execute on the user's actual system. Use them by \
         making a real tool call. NEVER write a tool call, shell command, JSON, or a \
         tool's output as plain text or inside a code block to simulate it.
+        - When a request can be answered by a tool you have, CALL IT rather than \
+        declining or telling the user to do it themselves. For system/shell questions \
+        (current directory, files, processes, date, etc.) use the execute_command \
+        tool to run the appropriate command (e.g. `pwd`, `ls`, `whoami`).
         - NEVER invent, guess, paraphrase, or pre-write tool results. Only state what \
         a tool ACTUALLY returned to you after you called it.
         - Make ONE tool call at a time, then wait for its real result before deciding \
