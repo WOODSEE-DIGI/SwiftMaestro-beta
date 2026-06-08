@@ -1,6 +1,9 @@
 import Foundation
+import MLXLMCommon
 
-/// ChatViewModel — uses native MLX inference as primary backend.
+/// ChatViewModel — uses the local oMLX endpoint as the primary backend (faster
+/// decode for the hybrid MoE model) with the in-process native MLX engine as a
+/// fallback. Both paths support native + MCP tool calling.
 @MainActor
 class ChatViewModel: ObservableObject {
     @Published var messages: [Message]
@@ -32,56 +35,60 @@ class ChatViewModel: ObservableObject {
 
         generateTask = Task {
             let requestMessages = messagesForInference()
+            let defaults = UserDefaults.standard
+            let endpoint = defaults.string(forKey: "models.endpointURL") ?? "http://localhost:8012"
+            let thinking = (defaults.object(forKey: "tuning.enableThinking") as? Bool) ?? false
+            let temperature = (defaults.object(forKey: "tuning.temperature") as? Double)
+                ?? model.recTemperature ?? 1.0
+            let topP = (defaults.object(forKey: "tuning.topP") as? Double)
+                ?? model.recTopP ?? 0.95
+
+            // Advertise tools only for verified models (native + MCP sources).
+            var toolSpecs: [ToolSpec] = []
+            if model.supportsTools {
+                toolSpecs = MaestroTools.schemas
+                if let mcp = engine.mcpService {
+                    toolSpecs += await mcp.currentSchemas()
+                }
+            }
+
             do {
-                let stream = try await engine.generate(
-                    messages: requestMessages,
-                    model: model
+                // Primary: oMLX endpoint (faster decode for the hybrid MoE model)
+                // with OpenAI function-calling for tools.
+                let executor = OMLXAgentExecutor(
+                    endpointURL: endpoint, modelID: model.huggingFaceID
                 )
-                for await output in stream {
+                let stream = executor.run(
+                    messages: requestMessages,
+                    toolSpecs: toolSpecs,
+                    mcp: engine.mcpService,
+                    temperature: temperature,
+                    topP: topP,
+                    thinkingEnabled: thinking
+                )
+                for try await output in stream {
                     guard !Task.isCancelled else { break }
                     switch output {
                     case .token(let token):
-                        if let idx = messages.lastIndex(where: { $0.role == .assistant }) {
-                            messages[idx].content += token
-                        }
+                        appendToAssistant(token)
                     case .toolCall(let name):
-                        if let idx = messages.lastIndex(where: { $0.role == .assistant }) {
-                            messages[idx].content += "\n🔧 called `\(name)`\n"
-                        }
-                    case .info:
-                        break
+                        appendToAssistant("\n🔧 called `\(name)`\n")
+                    case .info(let tps):
+                        engine.reportExternalTokensPerSecond(tps)
                     }
                 }
             } catch {
+                // Fallback: in-process native MLX engine (also tool-capable).
                 do {
-                    let defaults = UserDefaults.standard
-                    let endpoint = defaults.string(forKey: "models.endpointURL") ?? "http://localhost:8012"
-                    let configuredModel = defaults.string(forKey: "models.modelID") ?? ""
-                    let discoveredModelID = await Self.discoverEndpointModelID(endpointURL: endpoint)
-                    let resolvedModelID: String
-
-                    if !configuredModel.isEmpty {
-                        resolvedModelID = configuredModel
-                    } else if let discoveredModelID {
-                        resolvedModelID = discoveredModelID
-                    } else {
-                        resolvedModelID = model.huggingFaceID
-                    }
-
-                    let fallbackConfig = LocalLLMConfig(
-                        name: "Endpoint Fallback",
-                        endpointURL: endpoint,
-                        modelIdentifier: resolvedModelID,
-                        requiresAPIKey: defaults.bool(forKey: "models.requiresAPIKey"),
-                        runtimeBackend: .omLX,
-                        requestTimeoutSeconds: 300
+                    let stream = try await engine.generate(
+                        messages: requestMessages, model: model
                     )
-                    let executor = LocalLLMExecutor(config: fallbackConfig)
-                    let fallbackStream = try await executor.stream(messages: requestMessages)
-                    for try await token in fallbackStream {
+                    for await output in stream {
                         guard !Task.isCancelled else { break }
-                        if let idx = messages.lastIndex(where: { $0.role == .assistant }) {
-                            messages[idx].content += token
+                        switch output {
+                        case .token(let token): appendToAssistant(token)
+                        case .toolCall(let name): appendToAssistant("\n🔧 called `\(name)`\n")
+                        case .info: break
                         }
                     }
                 } catch {
@@ -89,6 +96,12 @@ class ChatViewModel: ObservableObject {
                 }
             }
             isStreaming = false
+        }
+    }
+
+    private func appendToAssistant(_ text: String) {
+        if let idx = messages.lastIndex(where: { $0.role == .assistant }) {
+            messages[idx].content += text
         }
     }
 
