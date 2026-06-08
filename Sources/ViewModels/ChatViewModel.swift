@@ -105,7 +105,17 @@ class ChatViewModel: ObservableObject {
     /// Builds the seed system message, appending any enabled rules that apply
     /// to this agent (global "All" rules plus rules scoped to the agent name).
     private static func systemMessage(for agent: Agent) -> Message {
-        var content = "You are \(agent.name), a helpful AI assistant."
+        let base: String
+        switch agent.name {
+        case "Coding":
+            base = "You are a coding assistant skilled across many languages "
+                + "(Swift, JavaScript, Python, Rust, and more). Help with software "
+                + "development, debugging, and code review. Do not assume a specific "
+                + "programming language unless the user states one — ask if it's unclear."
+        default:
+            base = "You are \(agent.name), a helpful AI assistant."
+        }
+        var content = base
         let applicable = SwiftMaestroSettingsStore.loadRules().filter { rule in
             rule.enabled
                 && !rule.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

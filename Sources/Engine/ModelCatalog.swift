@@ -14,6 +14,15 @@ struct MaestroModel: Identifiable, Hashable {
     let isVision: Bool
     let localPath: String?
     let estimatedMemoryGB: Int
+    /// Whether this model has passed the tool-calling round-trip verification.
+    /// Per the verify-per-model rule, only verified models get tools advertised;
+    /// unverified models run as plain chat to avoid a broken tool path.
+    var supportsTools: Bool = false
+    /// Per-model recommended sampling, used unless the user overrides via the
+    /// Tuning tab. Avoids running every model at one global temperature.
+    var recTemperature: Double? = nil
+    var recTopP: Double? = nil
+    var recRepetitionPenalty: Double? = nil
 
     var modelConfiguration: ModelConfiguration {
         if let localPath {
@@ -61,7 +70,9 @@ final class ModelCatalog {
             huggingFaceID: "Qwen3.6-35B-A3B-MLX-4bit",
             isVision: true,
             localPath: "\(localModelPath)/swiftmaestro-models/Qwen3.6-35B-A3B-MLX-4bit",
-            estimatedMemoryGB: 20
+            estimatedMemoryGB: 20,
+            supportsTools: true,  // verified: get_current_time round-trip passed
+            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05
         ),
         MaestroModel(
             id: "local-qwen3-coder-30b-a3b",
@@ -69,7 +80,8 @@ final class ModelCatalog {
             huggingFaceID: "Qwen3-Coder-30B-A3B-Instruct-MLX-4bit",
             isVision: false,
             localPath: "\(localModelPath)/swiftmaestro-models/Qwen3-Coder-30B-A3B-Instruct-MLX-4bit",
-            estimatedMemoryGB: 17
+            estimatedMemoryGB: 17,
+            recTemperature: 0.7, recTopP: 0.8, recRepetitionPenalty: 1.05
         ),
         MaestroModel(
             id: "local-qwen3.5-27b",

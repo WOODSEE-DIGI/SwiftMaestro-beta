@@ -211,17 +211,29 @@ final class MLXInferenceEngine {
         // is passed to the model's chat template via additionalContext.
         let defaults = UserDefaults.standard
         let thinkingEnabled = (defaults.object(forKey: "tuning.enableThinking") as? Bool) ?? false
+        // Precedence: explicit arg > user's global Tuning override (only if set) >
+        // per-model recommended > hard default. Keeps each model on its own
+        // sampling instead of one global temperature.
         let resolvedTemp = temperature
-            ?? Float((defaults.object(forKey: "tuning.temperature") as? Double) ?? 1.0)
-        let resolvedTopP = Float((defaults.object(forKey: "tuning.topP") as? Double) ?? 0.95)
-        let resolvedRepPenalty = Float((defaults.object(forKey: "tuning.repetitionPenalty") as? Double) ?? 1.05)
+            ?? (defaults.object(forKey: "tuning.temperature") as? Double).map { Float($0) }
+            ?? model.recTemperature.map { Float($0) }
+            ?? 1.0
+        let resolvedTopP = (defaults.object(forKey: "tuning.topP") as? Double).map { Float($0) }
+            ?? model.recTopP.map { Float($0) }
+            ?? 0.95
+        let resolvedRepPenalty = (defaults.object(forKey: "tuning.repetitionPenalty") as? Double).map { Float($0) }
+            ?? model.recRepetitionPenalty.map { Float($0) }
+            ?? 1.05
         let parameters = GenerateParameters(
             temperature: resolvedTemp,
             topP: resolvedTopP,
             repetitionPenalty: resolvedRepPenalty
         )
 
-        let toolSchemas = MaestroTools.schemas
+        // Verify-per-model: only advertise tools to models whose tool round-trip
+        // has been confirmed. Unverified models (e.g. Qwen3-Coder, pending its
+        // tool-call format support) run as plain chat — no broken tool path.
+        let toolSchemas: [ToolSpec]? = model.supportsTools ? MaestroTools.schemas : nil
 
         return AsyncStream<GenerationOutput> { continuation in
             self.generateTask = Task {
