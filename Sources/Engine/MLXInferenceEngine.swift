@@ -131,7 +131,9 @@ final class MLXInferenceEngine {
     var mcpService: MCPClientService?
 
     init() {
-        // Limit GPU cache to avoid OOM on large models
+        // Baseline GPU buffer cache. (A larger RAM-scaled cache was tried and
+        // regressed throughput on this machine, so we keep the conservative
+        // value while we diagnose the real bottleneck.)
         MLX.GPU.set(cacheLimit: 20 * 1024 * 1024)
     }
 
@@ -283,6 +285,7 @@ final class MLXInferenceEngine {
                             case .chunk(let chunk):
                                 continuation.yield(.token(chunk))
                             case .info(let info):
+                                NSLog("[PERF] prompt=\(info.promptTokenCount) tok in \(String(format: "%.2f", info.promptTime))s (\(String(format: "%.0f", info.promptTokensPerSecond)) tok/s prefill); gen=\(info.generationTokenCount) tok in \(String(format: "%.2f", info.generateTime))s (\(String(format: "%.1f", info.tokensPerSecond)) tok/s)")
                                 await MainActor.run {
                                     self.tokensPerSecond = info.tokensPerSecond
                                 }

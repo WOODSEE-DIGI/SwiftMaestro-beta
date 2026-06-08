@@ -35,7 +35,7 @@ final class OMLXServerManager {
     }
 
     var configuredModelID: String {
-        UserDefaults.standard.string(forKey: "models.modelID") ?? ModelTierPolicy.recommendedModelID
+        UserDefaults.standard.string(forKey: "models.modelID") ?? ModelTierPolicy.defaultModelID
     }
 
     var configuredModelIsAvailable: Bool {
@@ -125,8 +125,9 @@ enum SwiftMaestroDefaultsMigration {
         let defaults = UserDefaults.standard
         let endpointKey = "models.endpointURL"
         let modelKey = "models.modelID"
+        let modelMigrationKey = "migration.defaultModel.v2"
         let targetEndpoint = "http://localhost:8012"
-        let targetModel = ModelTierPolicy.recommendedModelID
+        let targetModel = ModelTierPolicy.defaultModelID
 
         let currentEndpoint = defaults.string(forKey: endpointKey)
         if currentEndpoint == nil || currentEndpoint == "http://localhost:8000" {
@@ -136,7 +137,14 @@ enum SwiftMaestroDefaultsMigration {
         let currentModel = defaults.string(forKey: modelKey)
         if currentModel == nil || currentModel?.isEmpty == true {
             defaults.set(targetModel, forKey: modelKey)
+        } else if currentModel == ModelTierPolicy.legacyDefaultModelID,
+                  !defaults.bool(forKey: modelMigrationKey) {
+            // One-time: move installs off the old auto-set 122B default (which
+            // preloaded a 65GB model every launch) to the fast MoE default.
+            // Gated by a flag so a later deliberate 122B choice is never clobbered.
+            defaults.set(targetModel, forKey: modelKey)
         }
+        defaults.set(true, forKey: modelMigrationKey)
     }
 }
 

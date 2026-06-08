@@ -298,7 +298,7 @@ struct ModelsSettingsTab: View {
     @Environment(OMLXServerManager.self) private var serverManager
     @AppStorage("models.endpointURL") private var endpointURL: String = "http://localhost:8012"
     @AppStorage("models.modelID") private var modelID: String = "Qwen3.6-35B-A3B-MLX-4bit"
-    @AppStorage("models.allowSub70B") private var allowSub70B: Bool = false
+    @AppStorage("models.allowSub70B") private var allowSub70B: Bool = true
     @AppStorage("models.requiresAPIKey") private var requiresAPIKey: Bool = false
     @State private var connectionStatus: String = "Connection not checked yet."
     @State private var connectionOK: Bool? = nil
@@ -793,7 +793,31 @@ struct AgentRule: Identifiable, Codable {
     var enabled: Bool
     var scope: String
 
-    static let defaults: [AgentRule] = []
+    /// Starter rules shown in the Rules tab and injected into the system prompt.
+    /// These are user-editable; deleting or toggling them only affects the soft
+    /// guidance layer — the hard anti-fabrication safety rules live in code and
+    /// always apply. "All" rules apply to every agent; named scopes add on top.
+    static let defaults: [AgentRule] = [
+        AgentRule(text: "When a question can be answered with a tool you have, call "
+            + "that tool instead of guessing or telling the user to do it themselves "
+            + "(e.g. use execute_command for shell/system info, memory tools for "
+            + "stored context, CrawlKit for web content).", enabled: true, scope: "All"),
+        AgentRule(text: "Never claim you ran a command, created a file, or performed "
+            + "any action unless a real tool result confirms it. If a tool returns "
+            + "nothing, say exactly that — do not invent output.", enabled: true, scope: "All"),
+        AgentRule(text: "After using a tool, report what it actually returned, then "
+            + "answer the user's question based on that real result.", enabled: true, scope: "All"),
+        AgentRule(text: "Be concise and direct. Skip filler, preamble, and repeated "
+            + "disclaimers.", enabled: true, scope: "All"),
+        AgentRule(text: "This is a self-hosted, offline-first macOS assistant. Prefer "
+            + "the user's local models, files, and tools over external services.", enabled: true, scope: "All"),
+        AgentRule(text: "If a request is ambiguous, ask one short clarifying question "
+            + "instead of assuming.", enabled: true, scope: "All"),
+        AgentRule(text: "Default to Swift for macOS/iOS work; do not assume Python or "
+            + "any other language unless the user specifies it.", enabled: true, scope: "Coding"),
+        AgentRule(text: "Provide complete, runnable code and explain only the "
+            + "non-obvious parts.", enabled: true, scope: "Coding"),
+    ]
 }
 
 struct MCPServerEntry: Identifiable, Codable {
