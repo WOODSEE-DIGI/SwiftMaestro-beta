@@ -185,7 +185,7 @@ final class MLXInferenceEngine {
     func generate(
         messages: [Message],
         model: MaestroModel,
-        temperature: Float = 0.7,
+        temperature: Float? = nil,
         maxTokens: Int = 4096
     ) async throws -> AsyncStream<GenerationOutput> {
         cancel()
@@ -203,11 +203,26 @@ final class MLXInferenceEngine {
             return Chat.Message(role: role, content: msg.content)
         }
 
-        let userInput = UserInput(chat: chat)
+        // Thinking mode + sampling come from SwiftMaestro's own settings
+        // (self-hosted — independent of any oMLX/server-side config).
+        // Thinking defaults OFF for a clean, fast chat experience; reasoning can
+        // be re-enabled via the `tuning.enableThinking` setting. `enable_thinking`
+        // is passed to the model's chat template via additionalContext.
+        let defaults = UserDefaults.standard
+        let thinkingEnabled = (defaults.object(forKey: "tuning.enableThinking") as? Bool) ?? false
+        let userInput = UserInput(
+            chat: chat,
+            additionalContext: ["enable_thinking": thinkingEnabled]
+        )
+
+        let resolvedTemp = temperature
+            ?? Float((defaults.object(forKey: "tuning.temperature") as? Double) ?? 1.0)
+        let resolvedTopP = Float((defaults.object(forKey: "tuning.topP") as? Double) ?? 0.95)
+        let resolvedRepPenalty = Float((defaults.object(forKey: "tuning.repetitionPenalty") as? Double) ?? 1.05)
         let parameters = GenerateParameters(
-            temperature: temperature,
-            topP: 0.9,
-            repetitionPenalty: 1.05
+            temperature: resolvedTemp,
+            topP: resolvedTopP,
+            repetitionPenalty: resolvedRepPenalty
         )
 
         return AsyncStream<GenerationOutput> { continuation in

@@ -3,6 +3,19 @@
 This file provides context for AI agents (Amy/Oz in Warp, Qwen Code CLI, or any MCP-connected agent) working in this repository.
 
 ---
+## Agent Operating Rules (read first)
+
+These are mandatory working agreements for this repo. Follow them every session.
+
+1. **Orient before acting.** Before changing code, read this file and `~/.ai-context/README.md`, and query the `ai-context-bridge` MCP memory for relevant prior context. Confirm where the project stands before editing.
+2. **Verify every build.** After code changes, run `xcodegen generate` if files were added/removed, then run `xcodebuild ... build` and confirm `** BUILD SUCCEEDED **` before claiming a task is done. Do not commit generated `SwiftMaestro.xcodeproj/` or `.derivedData/` output.
+3. **Protect the Mac when touching oMLX.** Never trigger a second large-model load. Use `scripts/smoke-test-safe.sh` for endpoint/model checks. It is read-only by default; only force a chat probe against an already-resident model after confirming it will not load another large model.
+4. **Scan downloads.** Any downloaded file gets a two-stage malware scan: quick scan, then deep scan, before use.
+5. **Before any public push.** Deep-scrub for PII that could be used maliciously. The name `woodsee` may remain.
+6. **Git discipline.** Commit only when explicitly asked. Every commit message must include `Co-Authored-By: Oz <oz-agent@warp.dev>`.
+7. **Conventions.** Use 24-hour time `HH:mm:ss` with an AM/PM indicator. Name plans for Warp rules and AI-context rules as `YY.MM.DD-Plan name`.
+
+---
 
 ## Project Identity
 
@@ -47,7 +60,11 @@ Run `~/.ai-context/scripts/sync-mcp.sh` to push config to all tools.
 | **ChatView** | `Sources/Views/ChatView.swift` | Main chat UI with fixed auto-scroll |
 | **MessageBubble** | `Sources/Views/MessageBubble.swift` | Markdown/code block rendering |
 | **ChatViewModel** | `Sources/ViewModels/ChatViewModel.swift` | Chat logic (streaming, file attachments) |
-| **LocalLLMExecutor** | `Sources/Adapters/LocalLLMExecutor.swift` | HTTP client for oMLX |
+| **MLXInferenceEngine** | `Sources/Engine/MLXInferenceEngine.swift` | Primary native MLX inference path |
+| **LocalLLMExecutor** | `Sources/Adapters/LocalLLMExecutor.swift` | OpenAI-compatible HTTP client for oMLX fallback |
+| **OMLXServerManager** | `Sources/Services/OMLXServerManager.swift` | oMLX endpoint health/readiness + startup |
+| **SettingsView** | `Sources/Views/SettingsView.swift` | Settings tabs: Models, Tuning, Rules, Context, MCP, Secrets |
+| **WindowSizeConfigurator** | `Sources/Views/WindowSizeConfigurator.swift` | AppKit bridge enforcing min/default window sizes |
 | **SimpleMemoryStore** | `Sources/Memory/SimpleMemoryStore.swift` | File-based shared memory (→ `~/.ai-context/memory/`) |
 | **MaestroURI** | `Sources/MaestroURI.swift` | Memory URI scheme |
 | **ModelRouter** | `Sources/Services/ModelRouter.swift` | Model selection (35B/122B) |
@@ -68,15 +85,22 @@ Models stored at: `~/Ai-models/`
 ## Build & Run
 
 ```bash
-# Start oMLX with model
-omlx serve "~/Ai-models/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit" --port 8000
+# Start oMLX with model (app talks to http://localhost:8012 by default)
+omlx serve "~/Ai-models/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit" --port 8012
 
-# Generate Xcode project
+# Generate Xcode project (xcodeproj is gitignored — regenerate after pulling)
 xcodegen generate
 
 # Build and run
 open SwiftMaestro.xcodeproj
 # Cmd+R in Xcode
+
+# Headless build check
+xcodebuild -project SwiftMaestro.xcodeproj -scheme SwiftMaestro -configuration Debug \
+  -destination "platform=macOS" CODE_SIGNING_REQUIRED=NO build
+
+# Safe endpoint/state check (read-only by default)
+bash scripts/smoke-test-safe.sh status
 ```
 
 ---
@@ -86,7 +110,7 @@ open SwiftMaestro.xcodeproj
 - **Language:** Swift 6.3, SwiftUI, macOS 14.0+
 - **Project gen:** xcodegen (`project.yml`)
 - **No App Store sandbox** — full system access for macOS integration
-- **No external Swift package dependencies** (oMLX provides ML inference)
+- **Swift package dependencies** (see `project.yml`): `mlx-swift-lm` (MLXLLM/MLXVLM/MLXLMCommon) and `swift-transformers` (Tokenizers/Hub) power the native `MLXInferenceEngine`; oMLX is the HTTP backend used as fallback and for larger models
 - **Secrets:** macOS Keychain only via `KeychainService` / `SecretsStore` (see Secrets Management). Never hard-code secrets in source.
 
 ---
