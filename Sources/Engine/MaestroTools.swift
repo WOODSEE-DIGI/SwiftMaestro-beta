@@ -43,6 +43,14 @@ enum MaestroTools {
     /// Tool schemas to advertise to the model via `UserInput(tools:)`.
     static var schemas: [ToolSpec] { all.map { $0.schema } }
 
+    /// Whether a native (in-process) tool owns the given name. Used by the
+    /// agentic loop to route a tool call to the native registry before MCP.
+    static func handles(_ name: String) -> Bool {
+        schemas.contains { spec in
+            (spec["function"] as? [String: any Sendable])?["name"] as? String == name
+        }
+    }
+
     /// Execute a parsed tool call and return a JSON string to feed back to the model.
     static func execute(_ call: ToolCall) async -> String {
         switch call.function.name {

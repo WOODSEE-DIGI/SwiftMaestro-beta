@@ -125,6 +125,11 @@ final class MLXInferenceEngine {
     private let hubDownloader = HFHubDownloader()
     private var generateTask: Task<Void, any Error>?
 
+    /// Client-side MCP tool source. Set during app launch. When present (and the
+    /// model supports tools), discovered MCP tools join the same agentic loop as
+    /// the native tools.
+    var mcpService: MCPClientService?
+
     init() {
         // Limit GPU cache to avoid OOM on large models
         MLX.GPU.set(cacheLimit: 20 * 1024 * 1024)
@@ -233,14 +238,26 @@ final class MLXInferenceEngine {
         // Verify-per-model: only advertise tools to models whose tool round-trip
         // has been confirmed. Unverified models (e.g. Qwen3-Coder, pending its
         // tool-call format support) run as plain chat — no broken tool path.
-        let toolSchemas: [ToolSpec]? = model.supportsTools ? MaestroTools.schemas : nil
+        //
+        // Tool sources are merged here: native (in-process) tools plus any tools
+        // discovered from user-enabled MCP servers. The loop below is
+        // source-agnostic and routes each call to whichever source owns it.
+        let mcp = mcpService
+        let toolSchemas: [ToolSpec]?
+        if model.supportsTools {
+            var specs = MaestroTools.schemas
+            if let mcp { specs += await mcp.currentSchemas() }
+            toolSchemas = specs.isEmpty ? nil : specs
+        } else {
+            toolSchemas = nil
+        }
 
         return AsyncStream<GenerationOutput> { continuation in
             self.generateTask = Task {
                 // Agentic loop: generate -> if the model calls tools, execute them,
                 // feed results back as tool messages, and re-generate until it
                 // produces a final answer or the iteration cap is hit. The loop is
-                // tool-source-agnostic; MCP tools will plug into MaestroTools later.
+                // tool-source-agnostic: calls route to native tools or MCP.
                 var conversation = chat
                 let maxToolIterations = 5
                 do {
@@ -277,9 +294,18 @@ final class MLXInferenceEngine {
                         // No tool calls -> the model produced its final answer.
                         if pendingCalls.isEmpty { break iterations }
                         // Execute each tool call and feed the result back for the next round.
+                        // Native tools take precedence; otherwise route to MCP.
                         for call in pendingCalls {
-                            continuation.yield(.toolCall(name: call.function.name))
-                            let result = await MaestroTools.execute(call)
+                            let name = call.function.name
+                            continuation.yield(.toolCall(name: name))
+                            let result: String
+                            if MaestroTools.handles(name) {
+                                result = await MaestroTools.execute(call)
+                            } else if let mcp, await mcp.handles(name) {
+                                result = await mcp.execute(call)
+                            } else {
+                                result = await MaestroTools.execute(call)
+                            }
                             conversation.append(.tool(result))
                         }
                     }
