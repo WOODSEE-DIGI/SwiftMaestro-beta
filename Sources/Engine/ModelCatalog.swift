@@ -54,6 +54,23 @@ final class ModelCatalog {
 
     static let builtInModels: [MaestroModel] = [
         // === Local models (already downloaded) ===
+        // Served by oMLX from the swiftmaestro-models scan dir.
+        MaestroModel(
+            id: "local-qwen3.6-35b-a3b",
+            displayName: "Qwen 3.6 35B-A3B (default)",
+            huggingFaceID: "Qwen3.6-35B-A3B-MLX-4bit",
+            isVision: true,
+            localPath: "\(localModelPath)/swiftmaestro-models/Qwen3.6-35B-A3B-MLX-4bit",
+            estimatedMemoryGB: 20
+        ),
+        MaestroModel(
+            id: "local-qwen3-coder-30b-a3b",
+            displayName: "Qwen 3 Coder 30B-A3B (Instruct)",
+            huggingFaceID: "Qwen3-Coder-30B-A3B-Instruct-MLX-4bit",
+            isVision: false,
+            localPath: "\(localModelPath)/swiftmaestro-models/Qwen3-Coder-30B-A3B-Instruct-MLX-4bit",
+            estimatedMemoryGB: 17
+        ),
         MaestroModel(
             id: "local-qwen3.5-27b",
             displayName: "Qwen 3.5 27B (Opus Distilled)",

@@ -297,7 +297,7 @@ struct ModelsSettingsTab: View {
     @Environment(MLXInferenceEngine.self) private var engine
     @Environment(OMLXServerManager.self) private var serverManager
     @AppStorage("models.endpointURL") private var endpointURL: String = "http://localhost:8012"
-    @AppStorage("models.modelID") private var modelID: String = "Qwen3.5-122B-A10B-4bit"
+    @AppStorage("models.modelID") private var modelID: String = "Qwen3.6-35B-A3B-MLX-4bit"
     @AppStorage("models.allowSub70B") private var allowSub70B: Bool = false
     @AppStorage("models.requiresAPIKey") private var requiresAPIKey: Bool = false
     @State private var connectionStatus: String = "Connection not checked yet."

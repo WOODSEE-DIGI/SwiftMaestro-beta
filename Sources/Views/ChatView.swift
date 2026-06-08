@@ -27,6 +27,8 @@ struct ChatView: View {
                         MessageBubble(message: message)
                             .id(message.id)
                     }
+                    loadingIndicator
+                        .id("loading-indicator")
                 }
                 .padding(.vertical, 12)
             }
@@ -37,6 +39,40 @@ struct ChatView: View {
                     }
                 }
             }
+            .onChange(of: vm.isStreaming) {
+                if vm.isStreaming {
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        proxy.scrollTo("loading-indicator", anchor: .bottom)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Shows a spinner + engine state while a model is loading or the first
+    /// token is pending (the assistant bubble is still empty). A large model's
+    /// first load can take a while, so this signals progress instead of a hang.
+    @ViewBuilder
+    private var loadingIndicator: some View {
+        if vm.isStreaming, (vm.messages.last?.content.isEmpty ?? false) {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text(loadingText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var loadingText: String {
+        switch engine.state {
+        case .loading(let name): return "Loading \(name)… (first load can take a while)"
+        case .generating:        return "Generating…"
+        case .error(let msg):    return msg
+        default:                 return "Working…"
         }
     }
 
