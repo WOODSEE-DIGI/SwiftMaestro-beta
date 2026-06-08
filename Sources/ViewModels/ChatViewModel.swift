@@ -39,10 +39,17 @@ class ChatViewModel: ObservableObject {
                 )
                 for await output in stream {
                     guard !Task.isCancelled else { break }
-                    if case .token(let token) = output {
+                    switch output {
+                    case .token(let token):
                         if let idx = messages.lastIndex(where: { $0.role == .assistant }) {
                             messages[idx].content += token
                         }
+                    case .toolCall(let name):
+                        if let idx = messages.lastIndex(where: { $0.role == .assistant }) {
+                            messages[idx].content += "\n🔧 called `\(name)`\n"
+                        }
+                    case .info:
+                        break
                     }
                 }
             } catch {

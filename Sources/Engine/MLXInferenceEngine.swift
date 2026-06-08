@@ -21,6 +21,7 @@ enum EngineState: Equatable {
 enum GenerationOutput: Sendable {
     case token(String)
     case info(tokensPerSecond: Double)
+    case toolCall(name: String)
 }
 
 // MARK: - Tokenizer Loader
@@ -210,11 +211,6 @@ final class MLXInferenceEngine {
         // is passed to the model's chat template via additionalContext.
         let defaults = UserDefaults.standard
         let thinkingEnabled = (defaults.object(forKey: "tuning.enableThinking") as? Bool) ?? false
-        let userInput = UserInput(
-            chat: chat,
-            additionalContext: ["enable_thinking": thinkingEnabled]
-        )
-
         let resolvedTemp = temperature
             ?? Float((defaults.object(forKey: "tuning.temperature") as? Double) ?? 1.0)
         let resolvedTopP = Float((defaults.object(forKey: "tuning.topP") as? Double) ?? 0.95)
@@ -225,34 +221,58 @@ final class MLXInferenceEngine {
             repetitionPenalty: resolvedRepPenalty
         )
 
+        let toolSchemas = MaestroTools.schemas
+
         return AsyncStream<GenerationOutput> { continuation in
             self.generateTask = Task {
+                // Agentic loop: generate -> if the model calls tools, execute them,
+                // feed results back as tool messages, and re-generate until it
+                // produces a final answer or the iteration cap is hit. The loop is
+                // tool-source-agnostic; MCP tools will plug into MaestroTools later.
+                var conversation = chat
+                let maxToolIterations = 5
                 do {
-                    nonisolated(unsafe) let capturedInput = userInput
-                    let stream = try await container.perform { context in
-                        let lmInput = try await context.processor.prepare(input: capturedInput)
-                        return try MLXLMCommon.generate(
-                            input: lmInput,
-                            parameters: parameters,
-                            context: context
+                    iterations: for _ in 0 ..< maxToolIterations {
+                        let input = UserInput(
+                            chat: conversation,
+                            tools: toolSchemas,
+                            additionalContext: ["enable_thinking": thinkingEnabled]
                         )
-                    }
-                    for await generation in stream {
-                        guard !Task.isCancelled else { break }
-                        switch generation {
-                        case .chunk(let chunk):
-                            continuation.yield(.token(chunk))
-                        case .info(let info):
-                            await MainActor.run {
-                                self.tokensPerSecond = info.tokensPerSecond
+                        nonisolated(unsafe) let capturedInput = input
+                        var pendingCalls: [ToolCall] = []
+                        let stream = try await container.perform { context in
+                            let lmInput = try await context.processor.prepare(input: capturedInput)
+                            return try MLXLMCommon.generate(
+                                input: lmInput,
+                                parameters: parameters,
+                                context: context
+                            )
+                        }
+                        for await generation in stream {
+                            guard !Task.isCancelled else { break iterations }
+                            switch generation {
+                            case .chunk(let chunk):
+                                continuation.yield(.token(chunk))
+                            case .info(let info):
+                                await MainActor.run {
+                                    self.tokensPerSecond = info.tokensPerSecond
+                                }
+                                continuation.yield(.info(tokensPerSecond: info.tokensPerSecond))
+                            case .toolCall(let call):
+                                pendingCalls.append(call)
                             }
-                            continuation.yield(.info(tokensPerSecond: info.tokensPerSecond))
-                        case .toolCall:
-                            break
+                        }
+                        // No tool calls -> the model produced its final answer.
+                        if pendingCalls.isEmpty { break iterations }
+                        // Execute each tool call and feed the result back for the next round.
+                        for call in pendingCalls {
+                            continuation.yield(.toolCall(name: call.function.name))
+                            let result = await MaestroTools.execute(call)
+                            conversation.append(.tool(result))
                         }
                     }
                 } catch {
-                    // Propagate via the stream — caller handles errors
+                    // Propagate via the stream — caller handles errors / fallback
                 }
                 continuation.finish()
                 await MainActor.run {
