@@ -383,6 +383,12 @@ final class MLXInferenceEngine {
         }
     }
 
+    /// Report generation throughput from an external backend (e.g. the oMLX
+    /// path) so the status bar reflects it.
+    func reportExternalTokensPerSecond(_ tps: Double) {
+        tokensPerSecond = tps
+    }
+
     func unloadModel(_ modelID: String) {
         modelCache.removeObject(forKey: modelID as NSString)
         promptCache.reset()
