@@ -5,8 +5,8 @@ struct ChatView: View {
     @Environment(ModelCatalog.self) private var catalog
     @ObservedObject var vm: ChatViewModel
 
-    init(agent: Agent) {
-        _vm = ObservedObject(wrappedValue: ChatViewModel(agent: agent))
+    init(vm: ChatViewModel) {
+        _vm = ObservedObject(wrappedValue: vm)
     }
 
     var body: some View {

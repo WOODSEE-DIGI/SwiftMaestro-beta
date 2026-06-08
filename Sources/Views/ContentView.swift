@@ -7,6 +7,8 @@ struct ContentView: View {
     @State private var agents: [Agent] = Agent.defaultAgentNames.map {
         Agent(name: $0, providerType: .mlx)
     }
+    /// Per-agent chat view-models, kept alive so switching agents preserves history.
+    @State private var chatCache = ChatViewModelCache()
 
     var body: some View {
         @Bindable var catalog = catalog
@@ -33,7 +35,7 @@ struct ContentView: View {
         } detail: {
             if let agentID = selectedAgentID,
                let agent = agents.first(where: { $0.id == agentID }) {
-                ChatView(agent: agent)
+                ChatView(vm: chatCache.viewModel(for: agent))
             } else {
                 ContentUnavailableView(
                     "Select an Agent",
@@ -142,5 +144,22 @@ struct EngineStatusBar: View {
 
     private func shortModelName(_ id: String) -> String {
         id.count > 32 ? "\(id.prefix(29))…" : id
+    }
+}
+
+// MARK: - Chat view-model cache
+
+/// Keeps one `ChatViewModel` per agent alive for the session so switching
+/// agents preserves each conversation. Plain reference type (not observable):
+/// mutating its cache during a view body does not trigger SwiftUI updates.
+@MainActor
+final class ChatViewModelCache {
+    private var byID: [UUID: ChatViewModel] = [:]
+
+    func viewModel(for agent: Agent) -> ChatViewModel {
+        if let existing = byID[agent.id] { return existing }
+        let vm = ChatViewModel(agent: agent)
+        byID[agent.id] = vm
+        return vm
     }
 }
