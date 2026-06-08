@@ -130,6 +130,13 @@ final class MLXInferenceEngine {
     /// the native tools.
     var mcpService: MCPClientService?
 
+    /// Persistent prompt KV cache for cross-turn prefix reuse. The big, fixed
+    /// `[system + tools]` block (~3k tokens) dominates prefill; keeping its KV
+    /// across turns and re-prefilling only the changed suffix turns a ~40s wait
+    /// into a one-time cost. Single slot: it "follows" the active conversation
+    /// via common-prefix matching (switching chats just pays one full prefill).
+    private let promptCache = PromptCache()
+
     init() {
         // Baseline GPU buffer cache. (A larger RAM-scaled cache was tried and
         // regressed throughput on this machine, so we keep the conservative
@@ -270,11 +277,54 @@ final class MLXInferenceEngine {
                             additionalContext: ["enable_thinking": thinkingEnabled]
                         )
                         nonisolated(unsafe) let capturedInput = input
+                        nonisolated(unsafe) let pc = self.promptCache
+                        let modelID = model.id
                         var pendingCalls: [ToolCall] = []
                         let stream = try await container.perform { context in
                             let lmInput = try await context.processor.prepare(input: capturedInput)
+                            let fullTokens = lmInput.text.tokens.asArray(Int.self)
+
+                            // Reuse the persistent prompt cache when it belongs to
+                            // the same model and is trimmable. Common-prefix match
+                            // against the previously-fed tokens, trim the cache to
+                            // that prefix, and prefill only the changed suffix.
+                            let canReuse = pc.isReady
+                                && pc.modelID == modelID
+                                && !pc.caches.isEmpty
+                                && pc.caches.allSatisfy { $0.isTrimmable }
+                            var prefix = 0
+                            if canReuse {
+                                let minOffset = pc.caches.map { $0.offset }.min() ?? 0
+                                prefix = MLXInferenceEngine.commonPrefixLength(pc.tokens, fullTokens)
+                                // Clamp: keep ≥1 token to prefill, never exceed what
+                                // the cache actually holds (e.g. after a cancel).
+                                prefix = min(prefix, minOffset, fullTokens.count - 1)
+                                if prefix < 0 { prefix = 0 }
+                            }
+
+                            let inputForGen: LMInput
+                            let cacheForGen: [KVCache]
+                            if canReuse && prefix > 0 {
+                                for c in pc.caches { c.trim(c.offset - prefix) }
+                                let deltaInts = Array(fullTokens[prefix...]).map { Int32($0) }
+                                let deltaArray = MLXArray(deltaInts).reshaped([1, deltaInts.count])
+                                inputForGen = LMInput(text: .init(tokens: deltaArray))
+                                cacheForGen = pc.caches
+                                NSLog("[PERF] cache reuse: prefix=\(prefix)/\(fullTokens.count), prefill delta=\(deltaInts.count) tok")
+                            } else {
+                                let fresh = context.model.newCache(parameters: parameters)
+                                pc.caches = fresh
+                                inputForGen = lmInput
+                                cacheForGen = fresh
+                                NSLog("[PERF] cache fresh: prefill full=\(fullTokens.count) tok")
+                            }
+                            pc.tokens = fullTokens
+                            pc.modelID = modelID
+                            pc.isReady = true
+
                             return try MLXLMCommon.generate(
-                                input: lmInput,
+                                input: inputForGen,
+                                cache: cacheForGen,
                                 parameters: parameters,
                                 context: context
                             )
@@ -335,6 +385,7 @@ final class MLXInferenceEngine {
 
     func unloadModel(_ modelID: String) {
         modelCache.removeObject(forKey: modelID as NSString)
+        promptCache.reset()
         if case .ready(let name) = state, name == modelID {
             state = .idle
         }
@@ -342,6 +393,38 @@ final class MLXInferenceEngine {
 
     func unloadAll() {
         modelCache.removeAllObjects()
+        promptCache.reset()
         state = .idle
+    }
+
+    /// Length of the shared leading run of two token sequences.
+    fileprivate nonisolated static func commonPrefixLength(_ a: [Int], _ b: [Int]) -> Int {
+        let n = min(a.count, b.count)
+        var i = 0
+        while i < n && a[i] == b[i] { i += 1 }
+        return i
+    }
+}
+
+// MARK: - Prompt KV cache holder
+
+/// Reference-type holder for the persistent prompt KV cache and the exact token
+/// sequence it represents. A class (not a struct) so it can be shared by
+/// reference into the model container's isolated `perform` closure; access is
+/// safe because generations are strictly serialized (see `cancel()` in
+/// `generate`).
+private final class PromptCache {
+    var caches: [KVCache] = []
+    /// The full prompt token sequence most recently fed (prefix of what the
+    /// cache holds, modulo trailing generated tokens).
+    var tokens: [Int] = []
+    var modelID: String = ""
+    var isReady = false
+
+    func reset() {
+        caches = []
+        tokens = []
+        modelID = ""
+        isReady = false
     }
 }

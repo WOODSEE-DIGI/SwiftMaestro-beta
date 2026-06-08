@@ -68,7 +68,11 @@ final class ModelCatalog {
             id: "local-qwen3.6-35b-a3b",
             displayName: "Qwen 3.6 35B-A3B (default)",
             huggingFaceID: "Qwen3.6-35B-A3B-MLX-4bit",
-            isVision: true,
+            // Although this checkpoint is multimodal, we load it through the
+            // text MoE path (LLMModelFactory recognizes model_type `qwen3_5_moe`).
+            // The VLM pipeline ran ~3x slower (12 vs ~40 tok/s on oMLX); chat is
+            // text-only, so the vision tower is pure overhead.
+            isVision: false,
             localPath: "\(localModelPath)/swiftmaestro-models/Qwen3.6-35B-A3B-MLX-4bit",
             estimatedMemoryGB: 20,
             supportsTools: true,  // verified: get_current_time round-trip passed
