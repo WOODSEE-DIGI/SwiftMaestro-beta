@@ -52,6 +52,12 @@ class ChatViewModel: ObservableObject {
                 }
             }
 
+            // Tool fidelity: a high temperature (good for creative chat) lets the
+            // model occasionally "creatively" narrate results it didn't fetch.
+            // Fidelity testing showed low temp is reliably faithful, so clamp the
+            // sampling temperature low whenever tools are advertised.
+            let effectiveTemp = toolSpecs.isEmpty ? temperature : min(temperature, 0.3)
+
             do {
                 // Primary: oMLX endpoint (faster decode for the hybrid MoE model)
                 // with OpenAI function-calling for tools.
@@ -62,7 +68,7 @@ class ChatViewModel: ObservableObject {
                     messages: requestMessages,
                     toolSpecs: toolSpecs,
                     mcp: engine.mcpService,
-                    temperature: temperature,
+                    temperature: effectiveTemp,
                     topP: topP,
                     thinkingEnabled: thinking
                 )
