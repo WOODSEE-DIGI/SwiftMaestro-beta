@@ -153,6 +153,7 @@ struct SwiftMaestroApp: App {
     @State private var engine = MLXInferenceEngine()
     @State private var catalog = ModelCatalog()
     @State private var serverManager = OMLXServerManager()
+    @State private var workspace = WorkspaceStore()
     private let mcpService = MCPClientService()
 
     var body: some Scene {
@@ -161,9 +162,12 @@ struct SwiftMaestroApp: App {
                 .environment(engine)
                 .environment(catalog)
                 .environment(serverManager)
+                .environment(workspace)
                 .task {
                     SwiftMaestroDefaultsMigration.applyIfNeeded()
                     serverManager.ensureServerReadyOnLaunch()
+                    // Expose the workspace to native delegation/workspace tools.
+                    MaestroTools.workspace = workspace
                     // Wire client-side MCP tools into the inference engine and
                     // spawn the user-enabled servers (permissioned by MCP flags).
                     engine.mcpService = mcpService
@@ -178,6 +182,7 @@ struct SwiftMaestroApp: App {
                 .environment(engine)
                 .environment(catalog)
                 .environment(serverManager)
+                .environment(workspace)
         }
         .defaultSize(width: 720, height: 760)
         #endif

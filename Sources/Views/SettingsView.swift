@@ -770,6 +770,17 @@ struct MCPServerRow: View {
                 if showFields {
                     TextField("Command", text: $server.command).textFieldStyle(.roundedBorder)
                     TextField("Script path", text: $server.scriptPath).textFieldStyle(.roundedBorder)
+                    TextField("Arguments (one per line; overrides script path)", text: Binding(
+                        get: { (server.args ?? []).joined(separator: "\n") },
+                        set: { newValue in
+                            let parts = newValue
+                                .split(separator: "\n", omittingEmptySubsequences: true)
+                                .map(String.init)
+                            server.args = parts.isEmpty ? nil : parts
+                        }
+                    ), axis: .vertical)
+                        .textFieldStyle(.roundedBorder)
+                        .lineLimit(1...5)
                     TextField("Env", text: $server.env).textFieldStyle(.roundedBorder)
                     TextField("Working directory", text: $server.workingDir).textFieldStyle(.roundedBorder)
                 }
@@ -829,10 +840,19 @@ struct MCPServerEntry: Identifiable, Codable {
     var workingDir: String
     var timeout: Int
     var enabled: Bool
+    /// Explicit argument vector passed to `command` verbatim. Needed for servers
+    /// that take subcommands (e.g. `cli.js mcp`) or multiple args, which a single
+    /// `scriptPath` can't express. When nil/empty the launcher falls back to
+    /// `[scriptPath]`. Optional so older persisted configs still decode.
+    var args: [String]? = nil
+
+    static let xcodeBuildMCPPath =
+        "~/GitHub/AI-ML-Agents/XcodeBuildMCP"
 
     static let defaults: [MCPServerEntry] = [
         MCPServerEntry(name: "ai-context-bridge", command: "/opt/homebrew/bin/node", scriptPath: "~/.ai-context/mcp-server/server.js", env: "", workingDir: "~/Library/Mobile Documents/com~apple~CloudDocs/.ai-context", timeout: 8, enabled: true),
         MCPServerEntry(name: "crawlkit-mcp", command: "/opt/homebrew/bin/node", scriptPath: "~/.ai-context/mcp-crawlkit/server.js", env: "", workingDir: "", timeout: 8, enabled: true),
+        MCPServerEntry(name: "xcodebuildmcp", command: "/opt/homebrew/bin/node", scriptPath: "\(xcodeBuildMCPPath)/build/cli.js", env: "XCODEBUILDMCP_ENABLED_WORKFLOWS=session-management,project-discovery,macos,simulator,utilities", workingDir: xcodeBuildMCPPath, timeout: 15, enabled: true, args: ["\(xcodeBuildMCPPath)/build/cli.js", "mcp"]),
         MCPServerEntry(name: "firecrawl-mcp", command: "/opt/homebrew/bin/node", scriptPath: "", env: "", workingDir: "", timeout: 8, enabled: false),
         MCPServerEntry(name: "playwright", command: "/opt/homebrew/bin/node", scriptPath: "", env: "", workingDir: "", timeout: 8, enabled: false),
     ]

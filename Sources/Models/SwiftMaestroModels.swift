@@ -46,7 +46,7 @@ enum ModelTierPolicy {
 
 // MARK: - Message roles
 
-enum MessageRole: String {
+enum MessageRole: String, Codable {
     case user = "user"
     case assistant = "assistant"
     case system = "system"
@@ -54,15 +54,30 @@ enum MessageRole: String {
 
 // MARK: - Message
 
-struct Message: Identifiable {
+struct Message: Identifiable, Codable {
     var id: UUID
     var role: MessageRole
     var content: String
-    
-    init(id: UUID = UUID(), role: MessageRole, content: String) {
+    /// Attached images (raw PNG/JPEG bytes), sent to vision-capable models as
+    /// data URIs. Optional so older persisted chats (without the field) still
+    /// decode (synthesized Codable uses decodeIfPresent for optionals).
+    var imageData: [Data]?
+    /// Names of tools this assistant turn invoked, shown as a compact collapsed
+    /// "activity" disclosure (kept out of `content` so it doesn't bloat the chat).
+    var toolSteps: [String]?
+
+    init(
+        id: UUID = UUID(),
+        role: MessageRole,
+        content: String,
+        imageData: [Data]? = nil,
+        toolSteps: [String]? = nil
+    ) {
         self.id = id
         self.role = role
         self.content = content
+        self.imageData = imageData
+        self.toolSteps = toolSteps
     }
 }
 

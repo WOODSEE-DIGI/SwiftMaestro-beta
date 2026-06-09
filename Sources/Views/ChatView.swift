@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 
 struct ChatView: View {
     @Environment(MLXInferenceEngine.self) private var engine
@@ -11,12 +13,65 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            workingDirBar
+            Divider()
             messageList
             Divider()
             errorBanner
+            streamingStatus
+            attachmentStrip
             inputBar
         }
         .navigationTitle("Chat")
+        .onDrop(of: [.image, .fileURL], isTargeted: nil) { providers in
+            handleProviders(providers)
+        }
+        .onPasteCommand(of: [.image, .fileURL]) { providers in
+            _ = handleProviders(providers)
+        }
+    }
+
+    /// Always-visible base-directory control at the top-left of the chat. Opens a
+    /// folder picker; the choice is injected into the agent's prompt + shell cwd.
+    private var workingDirBar: some View {
+        HStack(spacing: 6) {
+            Button { pickWorkingDirectory() } label: {
+                Image(systemName: "folder")
+                Text(workingDirLabel)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .buttonStyle(.plain)
+            .help(vm.workingDirectory ?? "Choose the agent's working directory")
+            if vm.workingDirectory != nil {
+                Button { vm.setWorkingDirectory(nil) } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.plain)
+                .help("Clear working directory")
+            }
+            Spacer()
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+    }
+
+    private var workingDirLabel: String {
+        guard let wd = vm.workingDirectory else { return "Set working directory…" }
+        return (wd as NSString).lastPathComponent
+    }
+
+    private func pickWorkingDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Use as Working Directory"
+        if let wd = vm.workingDirectory { panel.directoryURL = URL(fileURLWithPath: wd) }
+        guard panel.runModal() == .OK, let url = panel.urls.first else { return }
+        vm.setWorkingDirectory(url.path)
     }
 
     private var messageList: some View {
@@ -94,8 +149,64 @@ struct ChatView: View {
         }
     }
 
+    /// Persistent, compact "agent is working" line shown for the whole turn
+    /// (Warp-style), so the user always sees progress even across many tool
+    /// rounds. Reflects the live activity (e.g. "Running read_notes…").
+    @ViewBuilder
+    private var streamingStatus: some View {
+        if vm.isStreaming {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text(vm.currentActivity ?? "Thinking\u{2026}")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+        }
+    }
+
+    /// Thumbnails of images staged for the next message, each removable.
+    @ViewBuilder
+    private var attachmentStrip: some View {
+        if !vm.pendingImages.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(Array(vm.pendingImages.enumerated()), id: \.offset) { index, data in
+                        if let nsImage = NSImage(data: data) {
+                            ZStack(alignment: .topTrailing) {
+                                Image(nsImage: nsImage)
+                                    .resizable()
+                                    .scaledToFill()
+                                    .frame(width: 56, height: 56)
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                                Button {
+                                    vm.pendingImages.remove(at: index)
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundStyle(.white, .black.opacity(0.6))
+                                }
+                                .buttonStyle(.plain)
+                                .padding(2)
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.top, 8)
+            }
+        }
+    }
+
     private var inputBar: some View {
         HStack(spacing: 8) {
+            Button { pickImages() } label: {
+                Image(systemName: "paperclip")
+            }
+            .buttonStyle(.plain)
+            .help("Attach image")
+
             TextField("Message...", text: $vm.inputText, axis: .vertical)
                 .textFieldStyle(.plain)
                 .lineLimit(1...5)
@@ -113,13 +224,73 @@ struct ChatView: View {
                     vm.send(engine: engine, model: catalog.selectedModel)
                 } label: {
                     Image(systemName: "arrow.up.circle.fill")
-                        .foregroundColor(vm.inputText.isEmpty ? .secondary : .blue)
+                        .foregroundColor(
+                            vm.inputText.isEmpty && vm.pendingImages.isEmpty ? .secondary : .blue)
                 }
-                .disabled(vm.inputText.isEmpty)
+                .disabled(vm.inputText.isEmpty && vm.pendingImages.isEmpty)
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .background(.background)
+    }
+
+    // MARK: - Image attachment intake
+
+    /// Open a file picker for one or more images.
+    private func pickImages() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.image]
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls {
+            if let data = Self.pngData(fromFileURL: url) { vm.pendingImages.append(data) }
+        }
+    }
+
+    /// Load images from dropped/pasted item providers (NSImage or file URL).
+    @discardableResult
+    private func handleProviders(_ providers: [NSItemProvider]) -> Bool {
+        var handled = false
+        for provider in providers {
+            if provider.canLoadObject(ofClass: NSImage.self) {
+                handled = true
+                _ = provider.loadObject(ofClass: NSImage.self) { object, _ in
+                    guard let image = object as? NSImage,
+                          let data = Self.pngData(from: image) else { return }
+                    Task { @MainActor in vm.pendingImages.append(data) }
+                }
+            } else if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                handled = true
+                _ = provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
+                    var url: URL?
+                    if let u = item as? URL { url = u }
+                    else if let d = item as? Data {
+                        url = URL(dataRepresentation: d, relativeTo: nil)
+                    }
+                    guard let url, let data = Self.pngData(fromFileURL: url) else { return }
+                    Task { @MainActor in vm.pendingImages.append(data) }
+                }
+            }
+        }
+        return handled
+    }
+
+    /// Normalize an NSImage to PNG bytes so the data URI's declared type is honest.
+    private static func pngData(from image: NSImage) -> Data? {
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:])
+        else { return nil }
+        return png
+    }
+
+    /// Load a file URL as PNG bytes (re-encoding via NSImage), falling back to raw.
+    private static func pngData(fromFileURL url: URL) -> Data? {
+        if let image = NSImage(contentsOf: url), let png = pngData(from: image) {
+            return png
+        }
+        return try? Data(contentsOf: url)
     }
 }

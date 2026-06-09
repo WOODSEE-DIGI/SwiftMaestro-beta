@@ -3,46 +3,22 @@ import SwiftUI
 struct ContentView: View {
     @Environment(MLXInferenceEngine.self) private var engine
     @Environment(ModelCatalog.self) private var catalog
+    @Environment(WorkspaceStore.self) private var workspace
     @State private var selectedAgentID: UUID?
-    @State private var agents: [Agent] = Agent.defaultAgentNames.map {
-        Agent(name: $0, providerType: .mlx)
-    }
-    /// Per-agent chat view-models, kept alive so switching agents preserves history.
+    /// Per-agent chat view-models, kept alive so switching agents preserves the
+    /// in-flight view state (history itself is persisted by ChatHistoryStore).
     @State private var chatCache = ChatViewModelCache()
+    @State private var showingNewAgent = false
+    @State private var newProjectName = ""
+    @State private var newAgentName = ""
 
     var body: some View {
         @Bindable var catalog = catalog
 
         NavigationSplitView {
-            List(agents, selection: $selectedAgentID) { agent in
-                Text(agent.name)
-            }
-            .navigationTitle("SwiftMaestro")
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        agents.append(Agent(id: UUID(), name: "New Agent", providerType: .mlx))
-                    } label: {
-                        Image(systemName: "plus")
-                    }
-                }
-            }
-            .safeAreaInset(edge: .bottom) {
-                EngineStatusBar()
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 8)
-            }
+            sidebar
         } detail: {
-            if let agentID = selectedAgentID,
-               let agent = agents.first(where: { $0.id == agentID }) {
-                ChatView(vm: chatCache.viewModel(for: agent))
-            } else {
-                ContentUnavailableView(
-                    "Select an Agent",
-                    systemImage: "bubble.left.and.text.bubble.right",
-                    description: Text("Choose an agent from the sidebar to start chatting")
-                )
-            }
+            detail
         }
         .toolbar {
             ToolbarItem(placement: .automatic) {
@@ -63,6 +39,129 @@ struct ContentView: View {
             )
         )
         #endif
+        .sheet(isPresented: $showingNewAgent) { newAgentSheet }
+        .onAppear {
+            if selectedAgentID == nil { selectedAgentID = workspace.navigator.id }
+        }
+    }
+
+    // MARK: - Sidebar (Navigator + Projects → project agents)
+
+    private var sidebar: some View {
+        List(selection: $selectedAgentID) {
+            Section("Navigator") {
+                Label(workspace.navigator.name,
+                      systemImage: "point.3.connected.trianglepath.dotted")
+                    .tag(workspace.navigator.id)
+            }
+            ForEach(workspace.projects) { project in
+                Section(project.name) {
+                    ForEach(workspace.projectAgents(in: project.id)) { agent in
+                        Text(agent.name)
+                            .tag(agent.id)
+                            .contextMenu {
+                                Button("Clear Chat") {
+                                    chatCache.viewModel(for: agent, projectName: project.name)
+                                        .clearChat()
+                                }
+                                Button("Remove Agent", role: .destructive) {
+                                    removeAgent(agent)
+                                }
+                            }
+                    }
+                }
+            }
+        }
+        .navigationTitle("SwiftMaestro")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { showingNewAgent = true } label: {
+                    Image(systemName: "plus")
+                }
+                .help("New project agent")
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            EngineStatusBar()
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
+        }
+    }
+
+    @ViewBuilder
+    private var detail: some View {
+        if let id = selectedAgentID, let agent = workspace.agent(id: id) {
+            ChatView(vm: chatCache.viewModel(for: agent,
+                                             projectName: workspace.projectName(for: agent)))
+                .id(agent.id)
+                .toolbar {
+                    ToolbarItem(placement: .destructiveAction) {
+                        Button {
+                            chatCache.viewModel(
+                                for: agent,
+                                projectName: workspace.projectName(for: agent)
+                            ).clearChat()
+                        } label: {
+                            Label("Clear Chat", systemImage: "eraser")
+                        }
+                        .help("Clear this chat (keeps project memory)")
+                    }
+                }
+        } else {
+            ContentUnavailableView(
+                "Select an Agent",
+                systemImage: "bubble.left.and.text.bubble.right",
+                description: Text("Choose an agent from the sidebar to start chatting")
+            )
+        }
+    }
+
+    // MARK: - New project agent sheet
+
+    private var newAgentSheet: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("New Project Agent").font(.title3.bold())
+            Text("Creates the project if it doesn't exist yet.")
+                .font(.caption).foregroundStyle(.secondary)
+            Form {
+                TextField("Project name", text: $newProjectName)
+                TextField("Agent name", text: $newAgentName)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { resetNewAgent() }
+                Button("Create") { createAgent() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(
+                        newProjectName.trimmingCharacters(in: .whitespaces).isEmpty
+                            || newAgentName.trimmingCharacters(in: .whitespaces).isEmpty
+                    )
+            }
+        }
+        .padding()
+        .frame(width: 420)
+    }
+
+    private func createAgent() {
+        let created = workspace.createProjectAgent(
+            projectName: newProjectName.trimmingCharacters(in: .whitespaces),
+            agentName: newAgentName.trimmingCharacters(in: .whitespaces)
+        )
+        selectedAgentID = created.id
+        resetNewAgent()
+    }
+
+    private func resetNewAgent() {
+        newProjectName = ""
+        newAgentName = ""
+        showingNewAgent = false
+    }
+
+    private func removeAgent(_ agent: AgentRecord) {
+        let wasSelected = selectedAgentID == agent.id
+        workspace.archiveAgent(id: agent.id)
+        chatCache.drop(agent.id)
+        if wasSelected { selectedAgentID = workspace.navigator.id }
     }
 }
 
@@ -156,10 +255,13 @@ struct EngineStatusBar: View {
 final class ChatViewModelCache {
     private var byID: [UUID: ChatViewModel] = [:]
 
-    func viewModel(for agent: Agent) -> ChatViewModel {
+    func viewModel(for agent: AgentRecord, projectName: String?) -> ChatViewModel {
         if let existing = byID[agent.id] { return existing }
-        let vm = ChatViewModel(agent: agent)
+        let vm = ChatViewModel(agent: agent, projectName: projectName)
         byID[agent.id] = vm
         return vm
     }
+
+    /// Drop a cached view-model (e.g. after archiving its agent).
+    func drop(_ id: UUID) { byID[id] = nil }
 }
