@@ -264,13 +264,14 @@ final class MLXInferenceEngine {
         return AsyncStream<GenerationOutput> { continuation in
             self.generateTask = Task {
                 // Agentic loop: generate -> if the model calls tools, execute them,
-                // feed results back as tool messages, and re-generate until it
-                // produces a final answer or the iteration cap is hit. The loop is
-                // tool-source-agnostic: calls route to native tools or MCP.
+                // feed results back as tool messages, and re-generate until the
+                // model produces a final answer. No iteration budget (local
+                // inference has no token cost); termination is the model finishing
+                // or the user cancelling. The loop is tool-source-agnostic: calls
+                // route to native tools or MCP.
                 var conversation = chat
-                let maxToolIterations = 5
                 do {
-                    iterations: for _ in 0 ..< maxToolIterations {
+                    iterations: while !Task.isCancelled {
                         let input = UserInput(
                             chat: conversation,
                             tools: toolSchemas,

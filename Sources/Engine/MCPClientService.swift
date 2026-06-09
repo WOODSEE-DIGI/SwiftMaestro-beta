@@ -75,7 +75,13 @@ actor MCPClientService {
     private func connect(to entry: MCPServerEntry) async throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: entry.command)
-        process.arguments = [entry.scriptPath]
+        // Prefer the explicit arg vector (supports subcommands like `cli.js mcp`);
+        // fall back to the single scriptPath for simple single-script servers.
+        if let args = entry.args, !args.isEmpty {
+            process.arguments = args
+        } else {
+            process.arguments = [entry.scriptPath]
+        }
         process.environment = mergedEnvironment(entry.env)
         if !entry.workingDir.isEmpty {
             process.currentDirectoryURL = URL(fileURLWithPath: entry.workingDir)
@@ -257,8 +263,10 @@ actor MCPClientService {
         let extraPaths = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
         env["PATH"] = (env["PATH"].map { "\($0):\(extraPaths)" }) ?? extraPaths
 
-        // Parse "KEY=VALUE" pairs separated by newlines, semicolons, or commas.
-        let separators = CharacterSet(charactersIn: "\n;,")
+        // Parse "KEY=VALUE" pairs separated by newlines or semicolons. (Commas
+        // are NOT separators: values themselves can contain commas, e.g. an
+        // XCODEBUILDMCP_ENABLED_WORKFLOWS list.)
+        let separators = CharacterSet(charactersIn: "\n;")
         for pair in envString.components(separatedBy: separators) {
             let trimmed = pair.trimmingCharacters(in: .whitespaces)
             guard let eq = trimmed.firstIndex(of: "=") else { continue }

@@ -31,4 +31,16 @@ echo "Models included:"
 ls -1 "$CURATED_DIR"
 echo ""
 
-exec omlx serve --model-dir "$CURATED_DIR" --port "$PORT"
+# Prefix cache: reuse KV for the shared [system + tools + history] prefix across
+# agentic rounds so each tool round-trip only prefills the new delta instead of
+# re-prefilling the whole (large) prompt. Hot cache keeps recent prefixes in RAM
+# (fast; the M1 Ultra has headroom); the paged SSD cache extends/persists it.
+CACHE_DIR="${OMLX_CACHE_DIR:-$MODEL_ROOT/.omlx-prefix-cache}"
+mkdir -p "$CACHE_DIR"
+
+exec omlx serve \
+  --model-dir "$CURATED_DIR" \
+  --port "$PORT" \
+  --hot-cache-max-size "${OMLX_HOT_CACHE:-24GB}" \
+  --paged-ssd-cache-dir "$CACHE_DIR" \
+  --paged-ssd-cache-max-size "${OMLX_SSD_CACHE:-100GB}"

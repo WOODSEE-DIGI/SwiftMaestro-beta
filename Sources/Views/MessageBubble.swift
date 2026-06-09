@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct MessageBubble: View {
     let message: Message
@@ -14,6 +15,21 @@ struct MessageBubble: View {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 4)
                 
+                if let images = message.imageData, !images.isEmpty {
+                    VStack(alignment: isUser ? .trailing : .leading, spacing: 6) {
+                        ForEach(Array(images.enumerated()), id: \.offset) { _, data in
+                            if let nsImage = NSImage(data: data) {
+                                Image(nsImage: nsImage)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(maxWidth: 280, maxHeight: 280)
+                                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                }
+
                 if let reasoning = parsed.reasoning, !isUser {
                     DisclosureGroup {
                         Text(reasoning)
@@ -24,6 +40,26 @@ struct MessageBubble: View {
                             .padding(.top, 2)
                     } label: {
                         Label("Reasoning", systemImage: "brain")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 12)
+                }
+
+                if let steps = message.toolSteps, !steps.isEmpty, !isUser {
+                    DisclosureGroup {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(Array(groupedSteps.enumerated()), id: \.offset) { _, group in
+                                Text(group.count > 1 ? "\(group.name) \u{00d7}\(group.count)" : group.name)
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, 2)
+                    } label: {
+                        Label("\(steps.count) tool step\(steps.count == 1 ? "" : "s")",
+                              systemImage: "wrench.and.screwdriver")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -70,6 +106,22 @@ struct MessageBubble: View {
             return (reasoning.isEmpty ? nil : reasoning, "")
         }
         return (nil, content)
+    }
+
+    /// Collapse consecutive identical tool names into name + count for a compact
+    /// activity list (e.g. `read_note ×7`).
+    private var groupedSteps: [(name: String, count: Int)] {
+        guard let steps = message.toolSteps else { return [] }
+        var result: [(name: String, count: Int)] = []
+        for step in steps {
+            if var last = result.last, last.name == step {
+                last.count += 1
+                result[result.count - 1] = last
+            } else {
+                result.append((name: step, count: 1))
+            }
+        }
+        return result
     }
 
     private var roleLabel: String {
