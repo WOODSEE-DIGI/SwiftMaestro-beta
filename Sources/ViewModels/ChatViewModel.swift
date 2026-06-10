@@ -294,6 +294,13 @@ class ChatViewModel: ObservableObject {
         actually called create_plan / edit_plan and got a result back.
         - Plans are personal to you by default. To make/manage a plan SHARED with a \
         specific project's agents, pass project="<ProjectName>" to the plan tools.
+
+        MESSAGING:
+        - You can leave durable messages for other agents with send_agent_message \
+        (address the conductor as agent "Navigator") and read your own inbox with \
+        read_agent_messages. Use these to hand off context or coordinate work.
+        - To send a message you MUST call send_agent_message. NEVER say a message \
+        was sent unless you actually called the tool and got a result back.
         """
 
     /// Routing guidance so the model uses the Xcode-aware xcodebuildmcp tools for

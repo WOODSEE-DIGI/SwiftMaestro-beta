@@ -36,6 +36,9 @@ enum MaestroTools {
     /// Shared plan store (per-agent markdown plan documents). Set at app launch.
     @MainActor static weak var planStore: PlanStore?
 
+    /// Shared inter-agent message store (per-agent inboxes). Set at app launch.
+    @MainActor static weak var messageStore: AgentMessageStore?
+
     /// Returns the real local date/time. Unambiguously verifiable: the model
     /// cannot know the true current time without calling this, so a correct
     /// answer proves the tool round-trip actually fired.
@@ -64,10 +67,34 @@ enum MaestroTools {
     /// Tool schemas for an agent. Project agents get the base set; the Navigator
     /// additionally gets workspace + delegation tools.
     static func schemas(navigator: Bool) -> [ToolSpec] {
-        // Every agent gets the live todo + plan tools; Navigator also gets workspace tools.
-        var specs = schemas + todoToolSpecs + planToolSpecs
+        // Every agent gets the live todo + plan + messaging tools; Navigator also
+        // gets workspace/delegation tools.
+        var specs = schemas + todoToolSpecs + planToolSpecs + messagingToolSpecs
         if navigator { specs += navigatorToolSpecs }
         return specs
+    }
+
+    // MARK: - Inter-agent messaging tools (caller agent_id injected by executor)
+
+    private static let messagingToolNames: Set<String> = [
+        "send_agent_message", "read_agent_messages",
+    ]
+
+    private static var messagingToolSpecs: [ToolSpec] {
+        [
+            rawSpec("send_agent_message",
+                "Leave a message in another agent's inbox (durable across runs). Use to "
+                + "hand off context or coordinate. Address the Navigator as agent \"Navigator\".",
+                properties: [
+                    "to_agent": ["type": "string", "description": "Recipient agent name (or 'Navigator')."],
+                    "to_project": ["type": "string", "description": "Optional project to disambiguate the recipient."],
+                    "subject": ["type": "string", "description": "Short subject line."],
+                    "message": ["type": "string", "description": "The message body."],
+                ], required: ["to_agent", "message"]),
+            rawSpec("read_agent_messages",
+                "Read the messages in YOUR inbox (and mark them read).",
+                properties: [:], required: []),
+        ]
     }
 
     // MARK: - Live todo tools (per-agent checklist; agent_id injected by executor)
@@ -225,7 +252,7 @@ enum MaestroTools {
     /// executor's delegation interceptor handles it.
     static func handles(_ name: String) -> Bool {
         if workspaceToolNames.contains(name) || todoToolNames.contains(name)
-            || planToolNames.contains(name) { return true }
+            || planToolNames.contains(name) || messagingToolNames.contains(name) { return true }
         return schemas.contains { spec in
             (spec["function"] as? [String: any Sendable])?["name"] as? String == name
         }
@@ -263,6 +290,10 @@ enum MaestroTools {
             return await planReadList(call)
         case "read_plan":
             return await planReadOne(call)
+        case "send_agent_message":
+            return await sendAgentMessage(call)
+        case "read_agent_messages":
+            return await readAgentMessages(call)
         default:
             return errorJSON("unknown tool: \(call.function.name)")
         }
@@ -568,6 +599,101 @@ enum MaestroTools {
 
     private static func renderPlan(_ plan: Plan) -> String {
         "Plan \"\(plan.title)\" (id \(plan.id.uuidString)):\n\n\(plan.content)"
+    }
+
+    // MARK: - Messaging implementations
+
+    private struct SendMessageArgs: Decodable {
+        let to_agent: String?; let to_project: String?
+        let subject: String?; let message: String?; let agent_id: String?
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            to_agent = try? c.decodeIfPresent(String.self, forKey: .to_agent)
+            to_project = try? c.decodeIfPresent(String.self, forKey: .to_project)
+            subject = try? c.decodeIfPresent(String.self, forKey: .subject)
+            // Accept the body under common synonyms.
+            var resolved: String?
+            for key in [CodingKeys.message, .body, .text, .content] {
+                if let v = (try? c.decodeIfPresent(String.self, forKey: key)) ?? nil, !v.isEmpty {
+                    resolved = v; break
+                }
+            }
+            message = resolved
+            agent_id = try? c.decodeIfPresent(String.self, forKey: .agent_id)
+        }
+        enum CodingKeys: String, CodingKey {
+            case to_agent, to_project, subject, message, body, text, content, agent_id
+        }
+    }
+    private struct ReadMessagesArgs: Codable { let agent_id: String? }
+
+    private static func sendAgentMessage(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: SendMessageArgs.self) else {
+            return errorJSON("could not parse arguments")
+        }
+        let toName = (args.to_agent ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !toName.isEmpty else {
+            return errorJSON("'to_agent' (recipient name, or 'Navigator') is required")
+        }
+        let body = (args.message ?? "")
+        guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return errorJSON("'message' (the body text) is required")
+        }
+        let subject = (args.subject ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return await MainActor.run {
+            guard let ws = workspace else { return errorJSON("workspace unavailable") }
+            guard let store = messageStore else { return errorJSON("message store unavailable") }
+            guard let recipient = resolveRecipient(ws, name: toName, project: args.to_project) else {
+                let where_ = args.to_project.map { " in project '\($0)'" } ?? ""
+                return errorJSON("no agent named '\(toName)'\(where_). Use list_workspace to see agents.")
+            }
+            let fromName = agentUUID(args.agent_id).flatMap { ws.agent(id: $0)?.name } ?? "an agent"
+            store.send(
+                to: recipient.id, fromName: fromName, fromAgentId: args.agent_id,
+                subject: subject.isEmpty ? "(no subject)" : subject, body: body)
+            return jsonString([
+                "status": "sent", "to": recipient.name,
+                "subject": subject.isEmpty ? "(no subject)" : subject,
+            ])
+        }
+    }
+
+    private static func readAgentMessages(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: ReadMessagesArgs.self),
+              let id = agentUUID(args.agent_id) else {
+            return errorJSON("missing agent context (agent_id is injected automatically; just call the tool again)")
+        }
+        return await MainActor.run {
+            guard let store = messageStore else { return errorJSON("message store unavailable") }
+            let msgs = store.inbox(for: id)
+            let rendered = renderMessages(msgs)
+            store.markAllRead(for: id)
+            return rendered
+        }
+    }
+
+    /// Resolve a recipient agent by name (+ optional project). "Navigator" maps to
+    /// the conductor; otherwise prefer a project match, else any agent by name.
+    @MainActor
+    private static func resolveRecipient(
+        _ ws: WorkspaceStore, name: String, project: String?
+    ) -> AgentRecord? {
+        if name.caseInsensitiveCompare("navigator") == .orderedSame { return ws.navigator }
+        if let project, !project.trimmingCharacters(in: .whitespaces).isEmpty {
+            return ws.findAgent(projectName: project, agentName: name)
+        }
+        return ws.agents.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+    }
+
+    private static func renderMessages(_ msgs: [AgentMessage]) -> String {
+        guard !msgs.isEmpty else { return "Your inbox is empty." }
+        let df = DateFormatter()
+        df.dateStyle = .short; df.timeStyle = .short
+        let blocks = msgs.enumerated().map { i, m -> String in
+            "\(i + 1). From \(m.fromName) — \(m.subject) (\(df.string(from: m.date)))\n   \(m.body)"
+        }
+        let unread = msgs.filter { !$0.read }.count
+        return "Inbox (\(msgs.count) message(s), \(unread) unread):\n" + blocks.joined(separator: "\n")
     }
 
     // MARK: - Workspace tool implementations

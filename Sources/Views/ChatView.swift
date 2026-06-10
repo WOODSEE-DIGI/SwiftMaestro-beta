@@ -8,8 +8,10 @@ struct ChatView: View {
     @Environment(TodoStore.self) private var todoStore
     @Environment(PlanStore.self) private var planStore
     @Environment(WorkspaceStore.self) private var workspace
+    @Environment(AgentMessageStore.self) private var messageStore
     @ObservedObject var vm: ChatViewModel
     @State private var showingPlans = false
+    @State private var showingMessages = false
 
     init(vm: ChatViewModel) {
         _vm = ObservedObject(wrappedValue: vm)
@@ -38,6 +40,7 @@ struct ChatView: View {
             // of body evaluation so persisted items show after relaunch.
             _ = todoStore.todos(for: vm.agent.id)
             _ = planStore.plans(in: .agent(vm.agent.id))
+            _ = messageStore.inbox(for: vm.agent.id)
         }
         .onDrop(of: [.image, .fileURL], isTargeted: nil) { providers in
             handleProviders(providers)
@@ -46,6 +49,23 @@ struct ChatView: View {
             _ = handleProviders(providers)
         }
         .toolbar {
+            ToolbarItem {
+                Button { showingMessages = true } label: {
+                    let unread = messageStore.unreadCount(for: vm.agent.id)
+                    Image(systemName: unread > 0 ? "tray.full.fill" : "tray")
+                        .overlay(alignment: .topTrailing) {
+                            if unread > 0 {
+                                Text("\(unread)")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 3).padding(.vertical, 1)
+                                    .background(Capsule().fill(.red))
+                                    .offset(x: 8, y: -7)
+                            }
+                        }
+                }
+                .help("Inbox")
+            }
             ToolbarItem {
                 Button { showingPlans = true } label: {
                     Image(systemName: "doc.text")
@@ -60,6 +80,10 @@ struct ChatView: View {
                 defaultProjectName: vm.agent.kind == .navigator ? nil : vm.projectName
             )
             .environment(planStore)
+        }
+        .sheet(isPresented: $showingMessages) {
+            MessagesSheet(agentId: vm.agent.id, agentName: vm.agent.name)
+                .environment(messageStore)
         }
     }
 
