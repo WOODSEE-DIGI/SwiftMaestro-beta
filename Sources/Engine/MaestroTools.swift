@@ -244,6 +244,25 @@ enum MaestroTools {
                 ],
                 required: ["project", "agent", "task"]
             ),
+            rawSpec("ask_project_agents",
+                "Delegate tasks to SEVERAL project agents in one call and get all their "
+                + "answers back together. Provide 'requests', a list of {project, agent, task}. "
+                + "Use to coordinate multiple specialists, then synthesize their results.",
+                properties: [
+                    "requests": [
+                        "type": "array",
+                        "description": "The delegations to run.",
+                        "items": [
+                            "type": "object",
+                            "properties": [
+                                "project": ["type": "string", "description": "Project name of the target agent."],
+                                "agent": ["type": "string", "description": "Target project agent name."],
+                                "task": ["type": "string", "description": "Task/question for that agent."],
+                            ] as [String: any Sendable],
+                            "required": ["agent", "task"],
+                        ] as [String: any Sendable],
+                    ] as [String: any Sendable],
+                ], required: ["requests"]),
         ]
     }
 

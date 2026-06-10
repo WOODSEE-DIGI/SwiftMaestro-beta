@@ -332,8 +332,10 @@ class ChatViewModel: ObservableObject {
                 project agents (create_project_agent), list the workspace (list_workspace), \
                 remove agents that are no longer needed (archive_project_agent), and \
                 delegate a task to a project agent (ask_project_agent) then synthesize \
-                their result for the user. Create a project agent when the user wants \
-                ongoing work focused on a specific project.
+                their result for the user. To delegate to SEVERAL agents at once, use \
+                ask_project_agents with a 'requests' list of {project, agent, task}. \
+                Create a project agent when the user wants ongoing work focused on a \
+                specific project.
                 """
         } else {
             let proj = projectName ?? "this project"

@@ -159,11 +159,14 @@ final class OMLXAgentExecutor: Sendable {
     private static func nudgeInstruction(for content: String) -> String {
         let t = content.lowercased()
         let messageish = ["message", "inbox", "sent", "messaged", "notified", "deliver"]
-        let planish = ["plan"]
         if messageish.contains(where: { t.contains($0) }) {
             return "Call send_agent_message with to_agent, subject, and message."
         }
-        if planish.contains(where: { t.contains($0) }) {
+        if t.contains("agent") {
+            return "Call create_project_agent with 'project' and 'agent' (or ask_project_agent "
+                + "to delegate a task)."
+        }
+        if t.contains("plan") {
             return "Call edit_plan (or create_plan) and put the new text in its 'content' argument "
                 + "(set append=true to add to an existing plan)."
         }
@@ -177,9 +180,9 @@ final class OMLXAgentExecutor: Sendable {
     private static func claimsToolBackedMutation(_ text: String) -> Bool {
         let t = text.lowercased()
         guard !t.isEmpty else { return false }
-        let nouns = ["plan", "task", "todo", "to-do", "checklist", "message", "inbox"]
+        let nouns = ["plan", "task", "todo", "to-do", "checklist", "message", "inbox", "agent"]
         let verbs = ["updated", "created", "added", "marked", "edited", "appended",
-                     "deleted", "renamed", "removed", "completed",
+                     "deleted", "renamed", "removed", "completed", "archived",
                      "sent", "messaged", "notified", "delivered"]
         return nouns.contains { t.contains($0) } && verbs.contains { t.contains($0) }
     }
@@ -225,6 +228,9 @@ final class OMLXAgentExecutor: Sendable {
         // live endpoint/model/MCP to run the target agent's own loop.
         if tc.name == "ask_project_agent" {
             return await delegate(argumentsJSON: tc.arguments, mcp: mcp)
+        }
+        if tc.name == "ask_project_agents" {
+            return await delegateMany(argumentsJSON: tc.arguments, mcp: mcp)
         }
 
         var argsJSON = Self.injectProject(
@@ -313,46 +319,53 @@ final class OMLXAgentExecutor: Sendable {
 
     // MARK: - Delegation (true multi-agent)
 
-    /// Run a project agent's loop for a delegated task, persist the exchange to
-    /// its history, and return its answer. The delegate gets project tools but
-    /// not the Navigator tools, so delegation cannot recurse.
-    private func delegate(
-        argumentsJSON: String, mcp: MCPClientService?
-    ) async -> String {
-        guard
-            let data = argumentsJSON.data(using: .utf8),
-            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let projectName = obj["project"] as? String,
-            let agentName = obj["agent"] as? String,
-            let task = obj["task"] as? String,
-            !task.trimmingCharacters(in: .whitespaces).isEmpty
-        else {
-            NSLog("[DELEGATE] bad args: \(argumentsJSON.prefix(300))")
-            return MaestroTools.errorJSON(
-                "ask_project_agent requires non-empty 'project', 'agent', and 'task'")
-        }
-        NSLog("[DELEGATE] -> project='\(projectName)' agent='\(agentName)' task='\(task.prefix(120))'")
+    private struct DelegateResult: Sendable {
+        let project: String
+        let agent: String
+        let answer: String?
+        let error: String?
+    }
 
-        // Resolve target + assemble its prompt on the MainActor.
-        let prep: (AgentRecord, [Message])? = await MainActor.run {
-            guard let ws = MaestroTools.workspace,
-                  let target = ws.findAgent(projectName: projectName, agentName: agentName)
-            else { return nil }
-            var msgs = ChatHistoryStore.load(agentId: target.id)
-                ?? [ChatViewModel.systemMessage(for: target, projectName: projectName)]
-            msgs.append(Message(role: .user, content: task))
-            return (target, msgs)
+    /// Delegate ONE task to a project agent: resolve the target, run its own loop
+    /// (project tools only, so it can't recurse), persist the exchange, and return
+    /// the result. The sub-agent gets its own agentID so its todo/plan/messaging
+    /// tools work.
+    private func delegateOne(
+        projectName: String?, agentName: String, task: String, mcp: MCPClientService?
+    ) async -> DelegateResult {
+        let trimmedTask = task.trimmingCharacters(in: .whitespaces)
+        guard !agentName.trimmingCharacters(in: .whitespaces).isEmpty, !trimmedTask.isEmpty else {
+            return DelegateResult(project: projectName ?? "", agent: agentName, answer: nil,
+                error: "each request needs a non-empty 'agent' and 'task'")
         }
-        guard let (target, messages) = prep else {
-            NSLog("[DELEGATE] target not found for project='\(projectName)' agent='\(agentName)'")
-            return MaestroTools.errorJSON(
-                "no agent named '\(agentName)' in project '\(projectName)'")
+        // Resolve target + assemble its prompt on the MainActor.
+        let prep: (AgentRecord, String, [Message])? = await MainActor.run {
+            guard let ws = MaestroTools.workspace else { return nil }
+            let target: AgentRecord?
+            if let p = projectName, !p.trimmingCharacters(in: .whitespaces).isEmpty {
+                target = ws.findAgent(projectName: p, agentName: agentName)
+            } else {
+                target = ws.agents.first {
+                    $0.kind == .project && $0.name.caseInsensitiveCompare(agentName) == .orderedSame
+                }
+            }
+            guard let target else { return nil }
+            let proj = ws.projectName(for: target) ?? (projectName ?? "")
+            var msgs = ChatHistoryStore.load(agentId: target.id)
+                ?? [ChatViewModel.systemMessage(
+                    for: target, projectName: proj.isEmpty ? nil : proj)]
+            msgs.append(Message(role: .user, content: trimmedTask))
+            return (target, proj, msgs)
+        }
+        guard let (target, proj, messages) = prep else {
+            return DelegateResult(project: projectName ?? "", agent: agentName, answer: nil,
+                error: "no project agent named '\(agentName)'")
         }
 
         // Delegate tool surface: project tools only (no Navigator tools).
         var specs = MaestroTools.schemas(navigator: false)
         if let mcp { specs += await mcp.currentSchemas() }
-        NSLog("[DELEGATE] running sub-agent '\(target.name)' with \(specs.count) tools")
+        NSLog("[DELEGATE] -> '\(target.name)' (project='\(proj)') with \(specs.count) tools")
 
         // Sub-agent uses the SAME backend as the parent (in-process or oMLX).
         let sub = OMLXAgentExecutor(endpointURL: endpointURL, modelID: modelID, backend: backend)
@@ -361,15 +374,14 @@ final class OMLXAgentExecutor: Sendable {
             for try await output in sub.run(
                 messages: messages, toolSpecs: specs, mcp: mcp,
                 temperature: 0.3, topP: 0.95, thinkingEnabled: false,
-                project: projectName
+                project: proj.isEmpty ? nil : proj, agentID: target.id.uuidString
             ) {
                 if case .token(let token) = output { answer += token }
             }
         } catch {
-            NSLog("[DELEGATE] sub-run threw: \(error.localizedDescription)")
-            return MaestroTools.errorJSON("delegate failed: \(error.localizedDescription)")
+            return DelegateResult(project: proj, agent: target.name, answer: nil,
+                error: "delegate failed: \(error.localizedDescription)")
         }
-        NSLog("[DELEGATE] <- answer=\(answer.count) chars")
 
         // Persist the delegated exchange to the target agent's own history.
         await MainActor.run {
@@ -377,15 +389,59 @@ final class OMLXAgentExecutor: Sendable {
             msgs.append(Message(role: .assistant, content: answer))
             ChatHistoryStore.save(msgs, agentId: target.id)
         }
+        return DelegateResult(project: proj, agent: target.name, answer: answer, error: nil)
+    }
 
-        let payload: [String: Any] = [
-            "project": projectName, "agent": agentName, "answer": answer,
-        ]
-        if let out = try? JSONSerialization.data(withJSONObject: payload),
-           let string = String(data: out, encoding: .utf8) {
-            return string
+    /// `ask_project_agent` — delegate a single task and return its answer.
+    private func delegate(argumentsJSON: String, mcp: MCPClientService?) async -> String {
+        guard
+            let data = argumentsJSON.data(using: .utf8),
+            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let agentName = obj["agent"] as? String,
+            let task = obj["task"] as? String
+        else {
+            return MaestroTools.errorJSON("ask_project_agent requires 'project', 'agent', and 'task'")
         }
-        return answer
+        let r = await delegateOne(
+            projectName: obj["project"] as? String, agentName: agentName, task: task, mcp: mcp)
+        if let err = r.error { return MaestroTools.errorJSON(err) }
+        return Self.json(["project": r.project, "agent": r.agent, "answer": r.answer ?? ""])
+    }
+
+    /// `ask_project_agents` — delegate to several agents and aggregate the answers.
+    /// Runs sequentially: the on-device model is shared (a single KV-prefix cache),
+    /// so generations must be serialized for correctness; the value here is
+    /// one-shot multi-agent delegation + aggregation. A concurrency-safe server
+    /// backend could run these in parallel.
+    private func delegateMany(argumentsJSON: String, mcp: MCPClientService?) async -> String {
+        guard
+            let data = argumentsJSON.data(using: .utf8),
+            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let requests = obj["requests"] as? [[String: Any]], !requests.isEmpty
+        else {
+            return MaestroTools.errorJSON(
+                "ask_project_agents requires 'requests': a non-empty list of {project, agent, task}")
+        }
+        NSLog("[DELEGATE] fan-out to \(requests.count) agent(s)")
+        var results: [[String: Any]] = []
+        for req in requests {
+            let r = await delegateOne(
+                projectName: req["project"] as? String,
+                agentName: (req["agent"] as? String) ?? "",
+                task: (req["task"] as? String) ?? "", mcp: mcp)
+            if let err = r.error {
+                results.append(["project": r.project, "agent": r.agent, "error": err])
+            } else {
+                results.append(["project": r.project, "agent": r.agent, "answer": r.answer ?? ""])
+            }
+        }
+        return Self.json(["results": results])
+    }
+
+    private static func json(_ obj: [String: Any]) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: obj),
+              let string = String(data: data, encoding: .utf8) else { return "{}" }
+        return string
     }
 
     /// Build an mlx `ToolCall` from an OpenAI tool call so we can reuse the
