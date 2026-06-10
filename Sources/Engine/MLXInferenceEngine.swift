@@ -439,6 +439,13 @@ final class MLXInferenceEngine {
                 cacheForGen = pc.caches
                 NSLog("[PERF] cache reuse: prefix=\(prefix)/\(fullTokens.count), prefill delta=\(deltaInts.count) tok")
             } else {
+                // Diagnose WHY reuse failed so cache regressions are visible in logs:
+                // which gate failed (ready/model/empty/trimmable) or how early the
+                // token prefix diverged (rawPrefix) vs what the cache held (offset).
+                let trimmable = pc.caches.filter { $0.isTrimmable }.count
+                let rawPrefix = MLXInferenceEngine.commonPrefixLength(pc.tokens, fullTokens)
+                let minOffset = pc.caches.map { $0.offset }.min() ?? 0
+                NSLog("[PERF] cache miss: ready=\(pc.isReady) modelMatch=\(pc.modelID == modelID) slots=\(pc.caches.count) trimmable=\(trimmable) rawPrefix=\(rawPrefix) minOffset=\(minOffset) prevTok=\(pc.tokens.count) newTok=\(fullTokens.count)")
                 let fresh = context.model.newCache(parameters: parameters)
                 pc.caches = fresh
                 inputForGen = lmInput

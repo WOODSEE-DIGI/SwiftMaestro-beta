@@ -181,17 +181,59 @@ actor MCPClientService {
 
     // MARK: - Conversions
 
-    /// Build an mlx `ToolSpec` from an MCP tool definition.
+    /// Build an mlx `ToolSpec` from an MCP tool definition. The spec is SLIMMED:
+    /// descriptions truncated and schema noise dropped. With many MCP servers
+    /// connected, the full tool surface dominates the prompt (85 tools ≈ 11k
+    /// tokens here), and on hybrid-cache models (non-trimmable KV — e.g. Qwen
+    /// 3.6) every fresh conversation pays that as a full prefill.
     private static func toolSpec(for tool: MCP.Tool) -> ToolSpec {
-        let parameters: any Sendable = sendable(from: tool.inputSchema)
+        let parameters = slim(sendable(from: tool.inputSchema))
         return [
             "type": "function",
             "function": [
                 "name": tool.name,
-                "description": tool.description ?? "",
+                "description": truncate(tool.description ?? "", limit: 200),
                 "parameters": parameters,
             ] as [String: any Sendable],
         ]
+    }
+
+    /// Trim a tool/parameter description to its leading sentence(s) within `limit`.
+    private static func truncate(_ text: String, limit: Int) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > limit else { return trimmed }
+        let head = String(trimmed.prefix(limit))
+        if let cut = head.range(of: ". ", options: .backwards),
+           head.distance(from: head.startIndex, to: cut.upperBound) > limit / 2 {
+            return String(head[..<cut.upperBound]).trimmingCharacters(in: .whitespaces)
+        }
+        return head + "…"
+    }
+
+    /// Schema keys that cost prompt tokens without improving tool-call accuracy.
+    private static let droppedSchemaKeys: Set<String> = [
+        "examples", "title", "$schema", "additionalProperties", "default",
+    ]
+
+    /// Recursively slim a JSON schema: truncate nested descriptions, drop noise
+    /// keys. Structure (type/properties/required/enum/items) is preserved.
+    private static func slim(_ value: any Sendable) -> any Sendable {
+        if let dict = value as? [String: any Sendable] {
+            var out: [String: any Sendable] = [:]
+            for (key, v) in dict {
+                if droppedSchemaKeys.contains(key) { continue }
+                if key == "description", let s = v as? String {
+                    out[key] = truncate(s, limit: 120)
+                } else {
+                    out[key] = slim(v)
+                }
+            }
+            return out as [String: any Sendable]
+        }
+        if let arr = value as? [any Sendable] {
+            return arr.map { slim($0) } as [any Sendable]
+        }
+        return value
     }
 
     /// Recursively convert an MCP `Value` (JSON) into native Sendable Swift values

@@ -173,7 +173,8 @@ final class OMLXAgentExecutor: Sendable {
                           "let me ", "now i", "next, i", "next i", "i can now ", "i need to "]
         let actionVerbs = ["mark", "update", "set ", "call ", "create", "add ",
                            "remove", "delete", "run ", "fix", "make ", "check ",
-                           "read ", "find ", "search", "review", "look "]
+                           "read ", "find ", "search", "review", "look ",
+                           "try ", "use ", "scrape", "fetch", "get "]
         let hasCue = futureCues.contains { t.contains($0) }
         let hasVerb = actionVerbs.contains { t.contains($0) }
         return hasCue && hasVerb
@@ -201,7 +202,10 @@ final class OMLXAgentExecutor: Sendable {
             return "Call edit_plan (or create_plan) and put the new text in its 'content' argument "
                 + "(set append=true to add to an existing plan)."
         }
-        return "Call update_todo_status (or create_todo_list) to change the task checklist."
+        if t.contains("todo") || t.contains("task") || t.contains("checklist") {
+            return "Call update_todo_status (or create_todo_list) to change the task checklist."
+        }
+        return "Make the tool call that actually performs the action you just described."
     }
 
     /// Heuristic: does this text CLAIM (often in past tense) that a tool-backed
@@ -220,12 +224,17 @@ final class OMLXAgentExecutor: Sendable {
 
     /// Heuristic: does this text CLAIM the model delegated to / consulted project
     /// agents (and is likely reporting fabricated answers) without calling the
-    /// delegation tool? Requires the word "agent" plus a delegation/answer cue.
+    /// delegation tool? Requires the word "agent" plus a PAST-TENSE completed-
+    /// action cue. Present-tense capability descriptions ("I delegate tasks to
+    /// specialists when needed") must NOT match — flagging those nudges the model
+    /// into delegating spuriously (e.g. on "what's your role?").
     private static func claimsDelegation(_ text: String) -> Bool {
         let t = text.lowercased()
         guard t.contains("agent") else { return false }
-        let cues = ["asked", "delegat", "consulted", "queried", "their response",
-                    "their suggestion", "suggested", "responses", "both agents"]
+        let cues = ["i asked", "i've asked", "i have asked", "asked both",
+                    "delegated", "consulted", "queried", "their response",
+                    "their suggestion", "suggested", "responded", "replied",
+                    "both agents"]
         return cues.contains { t.contains($0) }
     }
 
