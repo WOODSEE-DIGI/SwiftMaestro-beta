@@ -122,6 +122,10 @@ enum MaestroTools {
         "create_plan", "edit_plan", "read_plans", "read_plan",
     ]
 
+    private static let projectScopeDesc =
+        "Optional project name to scope this plan to that project's SHARED plans "
+        + "(visible to the project's agents). Omit for your own personal plans."
+
     private static var planToolSpecs: [ToolSpec] {
         [
             rawSpec("create_plan",
@@ -130,6 +134,7 @@ enum MaestroTools {
                 properties: [
                     "title": ["type": "string", "description": "Short plan title."],
                     "content": ["type": "string", "description": "Plan body in markdown."],
+                    "project": ["type": "string", "description": projectScopeDesc],
                 ], required: ["title", "content"]),
             rawSpec("edit_plan",
                 "Edit an existing plan, identified by 'plan_id' (preferred) or 'title'. "
@@ -143,14 +148,18 @@ enum MaestroTools {
                     "new_title": ["type": "string", "description": "Optional new title."],
                     "content": ["type": "string", "description": "The new/added markdown text (required to change the body)."],
                     "append": ["type": "boolean", "description": "true = append content; false/omit = replace."],
+                    "project": ["type": "string", "description": projectScopeDesc],
                 ], required: []),
-            rawSpec("read_plans", "List your plans with their ids, titles, and count.",
-                properties: [:], required: []),
+            rawSpec("read_plans", "List plans with their ids, titles, and count.",
+                properties: [
+                    "project": ["type": "string", "description": projectScopeDesc],
+                ], required: []),
             rawSpec("read_plan",
                 "Read a plan's full markdown content, identified by 'plan_id' or 'title'.",
                 properties: [
                     "plan_id": ["type": "string", "description": "Id of the plan to read."],
                     "title": ["type": "string", "description": "Alternative to plan_id: match by title text."],
+                    "project": ["type": "string", "description": projectScopeDesc],
                 ], required: []),
         ]
     }
@@ -419,11 +428,11 @@ enum MaestroTools {
     // MARK: - Plan implementations
 
     private struct PlanCreateArgs: Codable {
-        let title: String?; let content: String?; let agent_id: String?
+        let title: String?; let content: String?; let project: String?; let agent_id: String?
     }
     private struct PlanEditArgs: Decodable {
         let plan_id: String?; let title: String?; let new_title: String?
-        let content: String?; let append: Bool?; let agent_id: String?
+        let content: String?; let append: Bool?; let project: String?; let agent_id: String?
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             plan_id = try? c.decodeIfPresent(String.self, forKey: .plan_id)
@@ -439,22 +448,40 @@ enum MaestroTools {
             content = resolved
             let b = (try? c.decodeIfPresent(LenientBool.self, forKey: .append)) ?? nil
             append = b?.value
+            project = try? c.decodeIfPresent(String.self, forKey: .project)
             agent_id = try? c.decodeIfPresent(String.self, forKey: .agent_id)
         }
         enum CodingKeys: String, CodingKey {
-            case plan_id, title, new_title, content, text, body, step, steps, append, agent_id
+            case plan_id, title, new_title, content, text, body, step, steps, append, project, agent_id
         }
     }
-    private struct PlanReadArgs: Codable { let agent_id: String? }
+    private struct PlanReadArgs: Codable { let project: String?; let agent_id: String? }
     private struct PlanReadOneArgs: Codable {
-        let plan_id: String?; let title: String?; let agent_id: String?
+        let plan_id: String?; let title: String?; let project: String?; let agent_id: String?
+    }
+
+    /// Resolve the plan scope: a named project (shared) takes precedence; otherwise
+    /// the calling agent's personal scope.
+    private static func planScope(agentID: String?, project: String?) -> PlanScope? {
+        if let p = project?.trimmingCharacters(in: .whitespacesAndNewlines), !p.isEmpty {
+            return .project(p)
+        }
+        if let id = agentUUID(agentID) { return .agent(id) }
+        return nil
+    }
+
+    private static func scopeLabel(_ scope: PlanScope) -> String {
+        switch scope {
+        case .agent: return "personal"
+        case .project(let name): return "project '\(name)'"
+        }
     }
 
     private static func planCreate(_ call: ToolCall) async -> String {
         guard let args = decodeArgs(call, as: PlanCreateArgs.self) else {
             return errorJSON("could not parse arguments")
         }
-        guard let id = agentUUID(args.agent_id) else {
+        guard let scope = planScope(agentID: args.agent_id, project: args.project) else {
             return errorJSON("missing agent context (agent_id is injected automatically; just call the tool again)")
         }
         let title = (args.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -462,8 +489,8 @@ enum MaestroTools {
         let content = args.content ?? ""
         return await MainActor.run {
             guard let store = planStore else { return errorJSON("plan store unavailable") }
-            let plan = store.create(title: title, content: content, for: id)
-            return "Created plan \"\(plan.title)\" (id \(plan.id.uuidString))."
+            let plan = store.create(title: title, content: content, in: scope)
+            return "Created \(scopeLabel(scope)) plan \"\(plan.title)\" (id \(plan.id.uuidString))."
         }
     }
 
@@ -471,7 +498,7 @@ enum MaestroTools {
         guard let args = decodeArgs(call, as: PlanEditArgs.self) else {
             return errorJSON("could not parse arguments")
         }
-        guard let id = agentUUID(args.agent_id) else {
+        guard let scope = planScope(agentID: args.agent_id, project: args.project) else {
             return errorJSON("missing agent context (agent_id is injected automatically; just call the tool again)")
         }
         let key = (args.plan_id ?? args.title)?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -489,12 +516,12 @@ enum MaestroTools {
         let append = args.append ?? false
         return await MainActor.run {
             guard let store = planStore else { return errorJSON("plan store unavailable") }
-            guard let target = store.find(idOrTitle: key, for: id) else {
-                return errorJSON("no plan matching \"\(key)\".\n" + renderPlanList(store.plans(for: id)))
+            guard let target = store.find(idOrTitle: key, in: scope) else {
+                return errorJSON("no plan matching \"\(key)\".\n" + renderPlanList(store.plans(in: scope)))
             }
             guard let updated = store.update(
                 id: target.id, title: args.new_title, content: args.content,
-                append: append, for: id)
+                append: append, in: scope)
             else { return errorJSON("failed to update plan") }
             let action = hasContent ? (append ? "appended to" : "rewrote") : "renamed"
             return "\(action.capitalized) plan \"\(updated.title)\" (now \(updated.content.count) chars):\n\n"
@@ -503,12 +530,13 @@ enum MaestroTools {
     }
 
     private static func planReadList(_ call: ToolCall) async -> String {
-        guard let args = decodeArgs(call, as: PlanReadArgs.self), let id = agentUUID(args.agent_id) else {
+        guard let args = decodeArgs(call, as: PlanReadArgs.self),
+              let scope = planScope(agentID: args.agent_id, project: args.project) else {
             return errorJSON("missing agent context (agent_id is injected automatically; just call the tool again)")
         }
         return await MainActor.run {
             guard let store = planStore else { return errorJSON("plan store unavailable") }
-            return renderPlanList(store.plans(for: id))
+            return renderPlanList(store.plans(in: scope))
         }
     }
 
@@ -516,7 +544,7 @@ enum MaestroTools {
         guard let args = decodeArgs(call, as: PlanReadOneArgs.self) else {
             return errorJSON("could not parse arguments")
         }
-        guard let id = agentUUID(args.agent_id) else {
+        guard let scope = planScope(agentID: args.agent_id, project: args.project) else {
             return errorJSON("missing agent context (agent_id is injected automatically; just call the tool again)")
         }
         let key = (args.plan_id ?? args.title)?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -525,8 +553,8 @@ enum MaestroTools {
         }
         return await MainActor.run {
             guard let store = planStore else { return errorJSON("plan store unavailable") }
-            guard let plan = store.find(idOrTitle: key, for: id) else {
-                return errorJSON("no plan matching \"\(key)\".\n" + renderPlanList(store.plans(for: id)))
+            guard let plan = store.find(idOrTitle: key, in: scope) else {
+                return errorJSON("no plan matching \"\(key)\".\n" + renderPlanList(store.plans(in: scope)))
             }
             return renderPlan(plan)
         }

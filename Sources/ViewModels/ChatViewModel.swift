@@ -292,6 +292,8 @@ class ChatViewModel: ObservableObject {
         Describing the change in chat does NOT change the plan.
         - NEVER say a plan was created, updated, or had a step added unless you \
         actually called create_plan / edit_plan and got a result back.
+        - Plans are personal to you by default. To make/manage a plan SHARED with a \
+        specific project's agents, pass project="<ProjectName>" to the plan tools.
         """
 
     /// Routing guidance so the model uses the Xcode-aware xcodebuildmcp tools for

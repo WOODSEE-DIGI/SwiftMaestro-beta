@@ -1,15 +1,31 @@
 import SwiftUI
 
-/// Browse the plans an agent has authored (via the create_plan / edit_plan
-/// tools). Read-only viewer with delete; editing is done by the agent.
+/// Browse the plans visible to an agent. Personal plans belong to this agent;
+/// project scopes show plans shared across a project (the Navigator can browse
+/// any project's). Read-only viewer with delete; editing is done by the agent.
 struct PlansSheet: View {
     @Environment(PlanStore.self) private var planStore
     @Environment(\.dismiss) private var dismiss
     let agentId: UUID
-    @State private var selectedID: UUID?
+    /// Project names selectable as scopes (besides the personal scope).
+    let projects: [String]
+    /// When set, the initially-selected scope is this project (project agents).
+    let defaultProjectName: String?
+
+    @State private var selectedScopeKey: String = ""
+    @State private var selectedPlanID: UUID?
+
+    private var scopes: [(label: String, scope: PlanScope)] {
+        var out: [(String, PlanScope)] = [("Personal", .agent(agentId))]
+        out += projects.map { ($0, .project($0)) }
+        return out
+    }
+
+    private var selectedScope: PlanScope {
+        scopes.first { $0.scope.key == selectedScopeKey }?.scope ?? .agent(agentId)
+    }
 
     var body: some View {
-        let plans = planStore.plans[agentId] ?? []
         VStack(spacing: 0) {
             HStack(spacing: 6) {
                 Image(systemName: "doc.text")
@@ -20,14 +36,28 @@ struct PlansSheet: View {
             .padding(12)
             Divider()
 
+            if scopes.count > 1 {
+                Picker("Scope", selection: $selectedScopeKey) {
+                    ForEach(scopes, id: \.scope.key) { entry in
+                        Text(entry.label).tag(entry.scope.key)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                Divider()
+            }
+
+            let plans = planStore.plansByScope[selectedScope.key] ?? []
             if plans.isEmpty {
                 Spacer()
-                Text("No plans yet. Ask the agent to create one.")
+                Text("No plans in this scope yet. Ask the agent to create one.")
                     .foregroundStyle(.secondary)
                 Spacer()
             } else {
                 HStack(spacing: 0) {
-                    List(plans, selection: $selectedID) { plan in
+                    List(plans, selection: $selectedPlanID) { plan in
                         Text(plan.title).lineLimit(2).tag(plan.id)
                     }
                     .frame(width: 220)
@@ -36,25 +66,33 @@ struct PlansSheet: View {
                 }
             }
         }
-        .frame(width: 760, height: 540)
-        .task {
-            // Load persisted plans from disk if not already cached this session.
-            _ = planStore.plans(for: agentId)
-            if selectedID == nil { selectedID = planStore.plans[agentId]?.first?.id }
+        .frame(width: 760, height: 560)
+        .task(id: selectedScopeKey) {
+            _ = planStore.plans(in: selectedScope)
+            if selectedPlanID == nil
+                || !(planStore.plansByScope[selectedScope.key] ?? []).contains(where: { $0.id == selectedPlanID }) {
+                selectedPlanID = planStore.plansByScope[selectedScope.key]?.first?.id
+            }
+        }
+        .onAppear {
+            if selectedScopeKey.isEmpty {
+                selectedScopeKey = defaultProjectName.map { PlanScope.project($0).key }
+                    ?? PlanScope.agent(agentId).key
+            }
         }
     }
 
     @ViewBuilder
     private func detail(for plans: [Plan]) -> some View {
-        if let plan = plans.first(where: { $0.id == selectedID }) {
+        if let plan = plans.first(where: { $0.id == selectedPlanID }) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
                     Text(plan.title).font(.title3.weight(.semibold))
                     Spacer()
                     Button(role: .destructive) {
                         let next = plans.first(where: { $0.id != plan.id })?.id
-                        planStore.delete(id: plan.id, for: agentId)
-                        selectedID = next
+                        planStore.delete(id: plan.id, in: selectedScope)
+                        selectedPlanID = next
                     } label: {
                         Image(systemName: "trash")
                     }
