@@ -76,6 +76,7 @@ class ChatViewModel: ObservableObject {
         let isNavigator = agent.kind == .navigator
         let project = projectName
         let workingDir = workingDirectory
+        let agentID = agent.id.uuidString
 
         generateTask = Task {
             let requestMessages = messagesForInference()
@@ -114,7 +115,7 @@ class ChatViewModel: ObservableObject {
                 let stream = executor.run(
                     messages: requestMessages, toolSpecs: toolSpecs, mcp: engine.mcpService,
                     temperature: effectiveTemp, topP: topP, thinkingEnabled: thinking,
-                    project: project, workingDirectory: workingDir)
+                    project: project, workingDirectory: workingDir, agentID: agentID)
                 for try await output in stream {
                     guard !Task.isCancelled else { break }
                     switch output {
@@ -134,7 +135,7 @@ class ChatViewModel: ObservableObject {
                     let stream = executor.run(
                         messages: requestMessages, toolSpecs: toolSpecs, mcp: engine.mcpService,
                         temperature: effectiveTemp, topP: topP, thinkingEnabled: thinking,
-                        project: project, workingDirectory: workingDir)
+                        project: project, workingDirectory: workingDir, agentID: agentID)
                     for try await output in stream {
                         guard !Task.isCancelled else { break }
                         switch output {
@@ -266,6 +267,24 @@ class ChatViewModel: ObservableObject {
         happened unless a real tool result confirms it.
         """
 
+    /// Guidance for the live task-checklist tools. Small local models tend to
+    /// announce an action ("now I'll mark it done") and then end the turn without
+    /// actually calling the tool; this pushes them to follow through.
+    private static let taskToolGuidance = """
+        LIVE TASK CHECKLIST:
+        - You have tools for a live checklist the user sees: create_todo_list, \
+        add_todos, update_todo_status, read_todos.
+        - These tools are the ONLY way to change the checklist. Saying "I'll mark it \
+        done" does NOTHING — you MUST actually call update_todo_status to change a \
+        task's status.
+        - Finish the WHOLE request before ending your turn. If the user asks you to \
+        create a list AND mark an item done, that is TWO tool calls: first \
+        create_todo_list, then immediately update_todo_status. Do not stop after the \
+        first call to narrate the second — make the call.
+        - Identify a task by its 1-based number (the first task is 1, not 0) or by \
+        its title text. Only claim a task is done after update_todo_status confirms it.
+        """
+
     /// Routing guidance so the model uses the Xcode-aware xcodebuildmcp tools for
     /// Apple builds, instead of the generic ai-context-bridge build tools (whose
     /// names — build_project, list_projects — look tempting but don't understand
@@ -306,7 +325,8 @@ class ChatViewModel: ObservableObject {
                 store project knowledge — they are scoped to this project.
                 """
         }
-        var content = base + "\n\n" + Self.toolDiscipline + "\n\n" + Self.appleBuildGuidance
+        var content = base + "\n\n" + Self.toolDiscipline
+            + "\n\n" + Self.taskToolGuidance + "\n\n" + Self.appleBuildGuidance
 
         if let wd = workingDirectory, !wd.isEmpty {
             content += """

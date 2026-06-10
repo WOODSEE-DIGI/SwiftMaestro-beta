@@ -154,6 +154,7 @@ struct SwiftMaestroApp: App {
     @State private var catalog = ModelCatalog()
     @State private var serverManager = OMLXServerManager()
     @State private var workspace = WorkspaceStore()
+    @State private var todoStore = TodoStore()
     private let mcpService = MCPClientService()
 
     var body: some Scene {
@@ -163,6 +164,7 @@ struct SwiftMaestroApp: App {
                 .environment(catalog)
                 .environment(serverManager)
                 .environment(workspace)
+                .environment(todoStore)
                 .task {
                     SwiftMaestroDefaultsMigration.applyIfNeeded()
                     // Only auto-start the oMLX server when it's the selected
@@ -172,6 +174,8 @@ struct SwiftMaestroApp: App {
                     }
                     // Expose the workspace to native delegation/workspace tools.
                     MaestroTools.workspace = workspace
+                    // Expose the live-todo store to the native todo tools.
+                    MaestroTools.todoStore = todoStore
                     // Wire client-side MCP tools into the inference engine and
                     // spawn the user-enabled servers (permissioned by MCP flags).
                     engine.mcpService = mcpService
@@ -187,6 +191,7 @@ struct SwiftMaestroApp: App {
                 .environment(catalog)
                 .environment(serverManager)
                 .environment(workspace)
+                .environment(todoStore)
         }
         .defaultSize(width: 720, height: 760)
         #endif

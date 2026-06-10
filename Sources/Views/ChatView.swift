@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 struct ChatView: View {
     @Environment(MLXInferenceEngine.self) private var engine
     @Environment(ModelCatalog.self) private var catalog
+    @Environment(TodoStore.self) private var todoStore
     @ObservedObject var vm: ChatViewModel
 
     init(vm: ChatViewModel) {
@@ -12,17 +13,28 @@ struct ChatView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            workingDirBar
-            Divider()
-            messageList
-            Divider()
-            errorBanner
-            streamingStatus
-            attachmentStrip
-            inputBar
+        HStack(spacing: 0) {
+            VStack(spacing: 0) {
+                workingDirBar
+                Divider()
+                messageList
+                Divider()
+                errorBanner
+                streamingStatus
+                attachmentStrip
+                inputBar
+            }
+            if !(todoStore.lists[vm.agent.id] ?? []).isEmpty {
+                Divider()
+                todoSidePanel
+            }
         }
         .navigationTitle("Chat")
+        .task(id: vm.agent.id) {
+            // Prime the per-agent list from disk (cache-fill) outside of body
+            // evaluation so persisted tasks show after relaunch.
+            _ = todoStore.todos(for: vm.agent.id)
+        }
         .onDrop(of: [.image, .fileURL], isTargeted: nil) { providers in
             handleProviders(providers)
         }
@@ -61,6 +73,52 @@ struct ChatView: View {
     private var workingDirLabel: String {
         guard let wd = vm.workingDirectory else { return "Set working directory…" }
         return (wd as NSString).lastPathComponent
+    }
+
+    /// Live task checklist the agent maintains for this chat via the todo tools,
+    /// docked as a right-side panel. Shown only when the agent has tasks.
+    @ViewBuilder
+    private var todoSidePanel: some View {
+        let todos = todoStore.lists[vm.agent.id] ?? []
+        let done = todos.filter { $0.done }.count
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "checklist")
+                Text("Tasks").font(.headline)
+                Spacer()
+                Text("\(done)/\(todos.count)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button { todoStore.clear(for: vm.agent.id) } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.plain)
+                .help("Clear this task list")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(todos) { item in
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: item.done ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(item.done ? .green : .secondary)
+                            Text(item.title)
+                                .strikethrough(item.done, color: .secondary)
+                                .foregroundStyle(item.done ? .secondary : .primary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 0)
+                        }
+                        .font(.callout)
+                    }
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .frame(width: 280)
+        .background(Color.secondary.opacity(0.04))
     }
 
     private func pickWorkingDirectory() {

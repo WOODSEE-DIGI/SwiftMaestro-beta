@@ -44,7 +44,8 @@ final class OMLXAgentExecutor: Sendable {
         topP: Double,
         thinkingEnabled: Bool,
         project: String? = nil,
-        workingDirectory: String? = nil
+        workingDirectory: String? = nil,
+        agentID: String? = nil
     ) -> AsyncThrowingStream<OMLXOutput, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -58,6 +59,9 @@ final class OMLXAgentExecutor: Sendable {
                     // the agentic loop runs until the model stops requesting tools.
                     // Termination is user-driven (Stop button -> Task cancellation).
                     var round = 0
+                    var didUseTool = false   // a tool ran at least once this turn
+                    var autoNudges = 0       // bounded self-continuations
+                    let maxAutoNudges = 2
                     iterations: while !Task.isCancelled {
                         let (content, toolCalls) = try await backend.streamRound(
                             convo: convo,
@@ -72,8 +76,29 @@ final class OMLXAgentExecutor: Sendable {
                         guard !Task.isCancelled else { break iterations }
 
                         if toolCalls.isEmpty {
+                            // Small models often end a turn by NARRATING an action
+                            // ("I'll mark it done now") without actually calling the
+                            // tool. If they've already used a tool this turn and the
+                            // text reads like an unfinished intent, inject a reminder
+                            // and run one more round so the call actually happens.
+                            if !toolSpecs.isEmpty, didUseTool, autoNudges < maxAutoNudges,
+                               Self.looksUnfinishedIntent(content) {
+                                autoNudges += 1
+                                NSLog("[OMLX] auto-nudge \(autoNudges): unfinished intent, continuing")
+                                convo.append(["role": "assistant", "content": content])
+                                convo.append([
+                                    "role": "user",
+                                    "content":
+                                        "You described an action but did not actually call a tool. "
+                                        + "If completing my request still requires a tool call "
+                                        + "(for example update_todo_status to change a task's status), "
+                                        + "make that call now. If everything is already done, just confirm briefly.",
+                                ])
+                                continue iterations
+                            }
                             break iterations  // final answer already streamed
                         }
+                        didUseTool = true
 
                         // Record the assistant turn that requested the tools.
                         convo.append([
@@ -86,7 +111,8 @@ final class OMLXAgentExecutor: Sendable {
                         for tc in toolCalls {
                             continuation.yield(.toolCall(name: tc.name))
                             let result = await executeTool(
-                                tc, mcp: mcp, project: project, workingDirectory: workingDirectory)
+                                tc, mcp: mcp, project: project,
+                                workingDirectory: workingDirectory, agentID: agentID)
                             convo.append([
                                 "role": "tool",
                                 "tool_call_id": tc.id,
@@ -102,6 +128,22 @@ final class OMLXAgentExecutor: Sendable {
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    /// Heuristic: does this assistant text read like the model is ABOUT to take
+    /// an action (but hasn't actually called a tool)? Used to auto-continue the
+    /// loop so small models follow through on a promised tool call.
+    private static func looksUnfinishedIntent(_ text: String) -> Bool {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !t.isEmpty else { return false }
+        if t.hasSuffix(":") { return true }
+        let futureCues = ["i'll ", "i will ", "i am going to ", "i'm going to ",
+                          "let me ", "now i", "next, i", "next i", "i can now ", "i need to "]
+        let actionVerbs = ["mark", "update", "set ", "call ", "create", "add ",
+                           "remove", "delete", "run ", "fix", "make ", "check "]
+        let hasCue = futureCues.contains { t.contains($0) }
+        let hasVerb = actionVerbs.contains { t.contains($0) }
+        return hasCue && hasVerb
     }
 
     /// Encode a Message into an OpenAI chat message. Plain text uses string
@@ -135,7 +177,7 @@ final class OMLXAgentExecutor: Sendable {
 
     private func executeTool(
         _ tc: RoundToolCall, mcp: MCPClientService?, project: String?,
-        workingDirectory: String? = nil
+        workingDirectory: String? = nil, agentID: String? = nil
     ) async -> String {
         NSLog("[OMLX] executeTool name=\(tc.name) args=\(tc.arguments.prefix(300))")
         // Delegation is handled here (not in MaestroTools) because it needs the
@@ -150,6 +192,11 @@ final class OMLXAgentExecutor: Sendable {
         // Default execute_command's cwd to the agent's working directory.
         argsJSON = Self.injectCwd(
             into: argsJSON, toolName: tc.name, workingDirectory: workingDirectory
+        )
+        // Stamp the calling agent's id onto live-todo tools (the model can't know
+        // its own id; the live checklist is keyed by agent).
+        argsJSON = Self.injectAgentID(
+            into: argsJSON, toolName: tc.name, agentID: agentID
         )
         let call = Self.toolCall(name: tc.name, argumentsJSON: argsJSON)
         if MaestroTools.handles(tc.name) {
@@ -174,6 +221,27 @@ final class OMLXAgentExecutor: Sendable {
         )) as? [String: Any]) ?? [:]
         let existing = obj["cwd"] as? String
         if existing == nil || existing?.isEmpty == true { obj["cwd"] = wd }
+        guard let data = try? JSONSerialization.data(withJSONObject: obj),
+              let string = String(data: data, encoding: .utf8)
+        else { return argumentsJSON }
+        return string
+    }
+
+    /// Live-todo tools keyed by the calling agent. The id is always injected
+    /// (overwriting any model-supplied value) since the model can't know it.
+    private static let agentScopedTools: Set<String> = [
+        "create_todo_list", "add_todos", "update_todo_status", "read_todos",
+    ]
+
+    /// Always stamp `agent_id` onto live-todo tool calls.
+    private static func injectAgentID(
+        into argumentsJSON: String, toolName: String, agentID: String?
+    ) -> String {
+        guard let agentID, agentScopedTools.contains(toolName) else { return argumentsJSON }
+        var obj = ((try? JSONSerialization.jsonObject(
+            with: Data(argumentsJSON.utf8)
+        )) as? [String: Any]) ?? [:]
+        obj["agent_id"] = agentID
         guard let data = try? JSONSerialization.data(withJSONObject: obj),
               let string = String(data: data, encoding: .utf8)
         else { return argumentsJSON }
