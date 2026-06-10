@@ -99,20 +99,22 @@ class ChatViewModel: ObservableObject {
             // Low temperature when tools are active keeps function-calling faithful.
             let effectiveTemp = toolSpecs.isEmpty ? temperature : min(temperature, 0.3)
 
+            // Backend selection: default to the fully on-device in-process MLX
+            // backend (Apple-native, no external server). Opt into the oMLX HTTP
+            // server via the `models.backend` setting set to "omlx". The other
+            // backend serves as fallback if the primary throws.
+            let useOMLX = (defaults.string(forKey: "models.backend") ?? "inprocess") == "omlx"
+            let primaryBackend: GenerationBackend = useOMLX
+                ? OMLXBackend(endpointURL: endpoint, modelID: model.huggingFaceID)
+                : InProcessMLXBackend(engine: engine, model: model)
+
             do {
                 let executor = OMLXAgentExecutor(
-                    endpointURL: endpoint, modelID: model.huggingFaceID
-                )
+                    endpointURL: endpoint, modelID: model.huggingFaceID, backend: primaryBackend)
                 let stream = executor.run(
-                    messages: requestMessages,
-                    toolSpecs: toolSpecs,
-                    mcp: engine.mcpService,
-                    temperature: effectiveTemp,
-                    topP: topP,
-                    thinkingEnabled: thinking,
-                    project: project,
-                    workingDirectory: workingDir
-                )
+                    messages: requestMessages, toolSpecs: toolSpecs, mcp: engine.mcpService,
+                    temperature: effectiveTemp, topP: topP, thinkingEnabled: thinking,
+                    project: project, workingDirectory: workingDir)
                 for try await output in stream {
                     guard !Task.isCancelled else { break }
                     switch output {
@@ -122,17 +124,23 @@ class ChatViewModel: ObservableObject {
                     }
                 }
             } catch {
-                // Fallback: in-process native MLX engine (also tool-capable).
+                // Fall back to the alternate backend (in-process <-> oMLX).
+                let fallbackBackend: GenerationBackend = useOMLX
+                    ? InProcessMLXBackend(engine: engine, model: model)
+                    : OMLXBackend(endpointURL: endpoint, modelID: model.huggingFaceID)
                 do {
-                    let stream = try await engine.generate(
-                        messages: requestMessages, model: model
-                    )
-                    for await output in stream {
+                    let executor = OMLXAgentExecutor(
+                        endpointURL: endpoint, modelID: model.huggingFaceID, backend: fallbackBackend)
+                    let stream = executor.run(
+                        messages: requestMessages, toolSpecs: toolSpecs, mcp: engine.mcpService,
+                        temperature: effectiveTemp, topP: topP, thinkingEnabled: thinking,
+                        project: project, workingDirectory: workingDir)
+                    for try await output in stream {
                         guard !Task.isCancelled else { break }
                         switch output {
                         case .token(let token): appendToAssistant(token)
                         case .toolCall(let name): recordToolStep(name)
-                        case .info: break
+                        case .info(let tps): engine.reportExternalTokensPerSecond(tps)
                         }
                     }
                 } catch {

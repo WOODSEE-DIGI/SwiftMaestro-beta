@@ -20,6 +20,14 @@ enum OMLXOutput: Sendable {
     case info(tokensPerSecond: Double)
 }
 
+/// A backend-neutral, Sendable chat turn. Used to hand a conversation across the
+/// actor boundary into the in-process MLX engine (mlx `Chat.Message` is not
+/// Sendable, so it is rebuilt on the engine's MainActor from these).
+struct ChatTurn: Sendable {
+    let role: String   // system | user | assistant | tool
+    let content: String
+}
+
 /// One tool call accumulated during a generation round (OpenAI function-calling).
 struct RoundToolCall: Sendable {
     var id: String = ""
