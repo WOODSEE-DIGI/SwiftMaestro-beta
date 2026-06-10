@@ -165,7 +165,11 @@ struct SwiftMaestroApp: App {
                 .environment(workspace)
                 .task {
                     SwiftMaestroDefaultsMigration.applyIfNeeded()
-                    serverManager.ensureServerReadyOnLaunch()
+                    // Only auto-start the oMLX server when it's the selected
+                    // backend; the default in-process MLX backend needs no server.
+                    if (UserDefaults.standard.string(forKey: "models.backend") ?? "inprocess") == "omlx" {
+                        serverManager.ensureServerReadyOnLaunch()
+                    }
                     // Expose the workspace to native delegation/workspace tools.
                     MaestroTools.workspace = workspace
                     // Wire client-side MCP tools into the inference engine and
