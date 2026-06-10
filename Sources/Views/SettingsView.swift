@@ -300,6 +300,7 @@ struct ModelsSettingsTab: View {
     @AppStorage("models.modelID") private var modelID: String = "Qwen3.6-35B-A3B-MLX-4bit"
     @AppStorage("models.allowSub70B") private var allowSub70B: Bool = true
     @AppStorage("models.requiresAPIKey") private var requiresAPIKey: Bool = false
+    @AppStorage("models.backend") private var backend: String = "inprocess"
     @State private var connectionStatus: String = "Connection not checked yet."
     @State private var connectionOK: Bool? = nil
     @State private var allowedModels: [String] = []
@@ -309,6 +310,20 @@ struct ModelsSettingsTab: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                GroupBox("Generation Backend") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Picker("Backend", selection: $backend) {
+                            Text("In-process (Apple MLX — no server)").tag("inprocess")
+                            Text("oMLX server (HTTP)").tag("omlx")
+                        }
+                        .pickerStyle(.radioGroup)
+                        Text(backend == "omlx"
+                            ? "Generation runs through the local oMLX HTTP server (auto-started on launch)."
+                            : "Generation runs fully on-device via MLX (mlx-swift-lm) — no external server. Takes effect on the next message; relaunch to stop auto-starting oMLX.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .padding(8)
+                }
                 GroupBox("Default LLM Connection") {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Selected backend default endpoint: \(endpointURL)")

@@ -141,10 +141,7 @@ final class OMLXAgentExecutor: Sendable {
         // Delegation is handled here (not in MaestroTools) because it needs the
         // live endpoint/model/MCP to run the target agent's own loop.
         if tc.name == "ask_project_agent" {
-            return await Self.delegate(
-                argumentsJSON: tc.arguments,
-                endpoint: endpointURL, modelID: modelID, mcp: mcp
-            )
+            return await delegate(argumentsJSON: tc.arguments, mcp: mcp)
         }
 
         var argsJSON = Self.injectProject(
@@ -206,8 +203,8 @@ final class OMLXAgentExecutor: Sendable {
     /// Run a project agent's loop for a delegated task, persist the exchange to
     /// its history, and return its answer. The delegate gets project tools but
     /// not the Navigator tools, so delegation cannot recurse.
-    private static func delegate(
-        argumentsJSON: String, endpoint: String, modelID: String, mcp: MCPClientService?
+    private func delegate(
+        argumentsJSON: String, mcp: MCPClientService?
     ) async -> String {
         guard
             let data = argumentsJSON.data(using: .utf8),
@@ -244,7 +241,8 @@ final class OMLXAgentExecutor: Sendable {
         if let mcp { specs += await mcp.currentSchemas() }
         NSLog("[DELEGATE] running sub-agent '\(target.name)' with \(specs.count) tools")
 
-        let sub = OMLXAgentExecutor(endpointURL: endpoint, modelID: modelID)
+        // Sub-agent uses the SAME backend as the parent (in-process or oMLX).
+        let sub = OMLXAgentExecutor(endpointURL: endpointURL, modelID: modelID, backend: backend)
         var answer = ""
         do {
             for try await output in sub.run(
