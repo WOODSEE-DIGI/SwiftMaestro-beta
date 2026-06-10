@@ -33,6 +33,9 @@ enum MaestroTools {
     /// Shared live-todo store (per-agent task checklists). Set at app launch.
     @MainActor static weak var todoStore: TodoStore?
 
+    /// Shared plan store (per-agent markdown plan documents). Set at app launch.
+    @MainActor static weak var planStore: PlanStore?
+
     /// Returns the real local date/time. Unambiguously verifiable: the model
     /// cannot know the true current time without calling this, so a correct
     /// answer proves the tool round-trip actually fired.
@@ -61,8 +64,8 @@ enum MaestroTools {
     /// Tool schemas for an agent. Project agents get the base set; the Navigator
     /// additionally gets workspace + delegation tools.
     static func schemas(navigator: Bool) -> [ToolSpec] {
-        // Every agent gets the live todo tools; Navigator also gets workspace tools.
-        var specs = schemas + todoToolSpecs
+        // Every agent gets the live todo + plan tools; Navigator also gets workspace tools.
+        var specs = schemas + todoToolSpecs + planToolSpecs
         if navigator { specs += navigatorToolSpecs }
         return specs
     }
@@ -111,6 +114,45 @@ enum MaestroTools {
         return ["type": "function", "function": [
             "name": name, "description": description, "parameters": parameters,
         ] as [String: any Sendable]]
+    }
+
+    // MARK: - Plan tools (per-agent markdown design docs; agent_id injected by executor)
+
+    private static let planToolNames: Set<String> = [
+        "create_plan", "edit_plan", "read_plans", "read_plan",
+    ]
+
+    private static var planToolSpecs: [ToolSpec] {
+        [
+            rawSpec("create_plan",
+                "Create a new markdown PLAN / design document the user can review. "
+                + "Use for laying out a multi-step approach before implementing.",
+                properties: [
+                    "title": ["type": "string", "description": "Short plan title."],
+                    "content": ["type": "string", "description": "Plan body in markdown."],
+                ], required: ["title", "content"]),
+            rawSpec("edit_plan",
+                "Edit an existing plan, identified by 'plan_id' (preferred) or 'title'. "
+                + "You MUST put the new text in 'content' (describing the change in chat "
+                + "does NOT change the plan). Set append=true to ADD to the plan (content = "
+                + "just the new text); omit append to REPLACE it (content = full new text). "
+                + "Optionally rename via 'new_title'.",
+                properties: [
+                    "plan_id": ["type": "string", "description": "Id of the plan to edit."],
+                    "title": ["type": "string", "description": "Alternative to plan_id: match by title text."],
+                    "new_title": ["type": "string", "description": "Optional new title."],
+                    "content": ["type": "string", "description": "The new/added markdown text (required to change the body)."],
+                    "append": ["type": "boolean", "description": "true = append content; false/omit = replace."],
+                ], required: []),
+            rawSpec("read_plans", "List your plans with their ids, titles, and count.",
+                properties: [:], required: []),
+            rawSpec("read_plan",
+                "Read a plan's full markdown content, identified by 'plan_id' or 'title'.",
+                properties: [
+                    "plan_id": ["type": "string", "description": "Id of the plan to read."],
+                    "title": ["type": "string", "description": "Alternative to plan_id: match by title text."],
+                ], required: []),
+        ]
     }
 
     // MARK: - Navigator (workspace + delegation) tools
@@ -173,7 +215,8 @@ enum MaestroTools {
     /// to the native registry before MCP. `ask_project_agent` is excluded so the
     /// executor's delegation interceptor handles it.
     static func handles(_ name: String) -> Bool {
-        if workspaceToolNames.contains(name) || todoToolNames.contains(name) { return true }
+        if workspaceToolNames.contains(name) || todoToolNames.contains(name)
+            || planToolNames.contains(name) { return true }
         return schemas.contains { spec in
             (spec["function"] as? [String: any Sendable])?["name"] as? String == name
         }
@@ -203,6 +246,14 @@ enum MaestroTools {
             return await todoUpdate(call)
         case "read_todos":
             return await todoRead(call)
+        case "create_plan":
+            return await planCreate(call)
+        case "edit_plan":
+            return await planEdit(call)
+        case "read_plans":
+            return await planReadList(call)
+        case "read_plan":
+            return await planReadOne(call)
         default:
             return errorJSON("unknown tool: \(call.function.name)")
         }
@@ -363,6 +414,132 @@ enum MaestroTools {
         }
         let doneCount = items.filter { $0.done }.count
         return "Task list (\(doneCount)/\(items.count) done):\n" + lines.joined(separator: "\n")
+    }
+
+    // MARK: - Plan implementations
+
+    private struct PlanCreateArgs: Codable {
+        let title: String?; let content: String?; let agent_id: String?
+    }
+    private struct PlanEditArgs: Decodable {
+        let plan_id: String?; let title: String?; let new_title: String?
+        let content: String?; let append: Bool?; let agent_id: String?
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            plan_id = try? c.decodeIfPresent(String.self, forKey: .plan_id)
+            title = try? c.decodeIfPresent(String.self, forKey: .title)
+            new_title = try? c.decodeIfPresent(String.self, forKey: .new_title)
+            // Accept the body under common synonyms small models use.
+            var resolved: String?
+            for key in [CodingKeys.content, .text, .body, .step, .steps] {
+                if let v = (try? c.decodeIfPresent(String.self, forKey: key)) ?? nil, !v.isEmpty {
+                    resolved = v; break
+                }
+            }
+            content = resolved
+            let b = (try? c.decodeIfPresent(LenientBool.self, forKey: .append)) ?? nil
+            append = b?.value
+            agent_id = try? c.decodeIfPresent(String.self, forKey: .agent_id)
+        }
+        enum CodingKeys: String, CodingKey {
+            case plan_id, title, new_title, content, text, body, step, steps, append, agent_id
+        }
+    }
+    private struct PlanReadArgs: Codable { let agent_id: String? }
+    private struct PlanReadOneArgs: Codable {
+        let plan_id: String?; let title: String?; let agent_id: String?
+    }
+
+    private static func planCreate(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: PlanCreateArgs.self) else {
+            return errorJSON("could not parse arguments")
+        }
+        guard let id = agentUUID(args.agent_id) else {
+            return errorJSON("missing agent context (agent_id is injected automatically; just call the tool again)")
+        }
+        let title = (args.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return errorJSON("'title' is required") }
+        let content = args.content ?? ""
+        return await MainActor.run {
+            guard let store = planStore else { return errorJSON("plan store unavailable") }
+            let plan = store.create(title: title, content: content, for: id)
+            return "Created plan \"\(plan.title)\" (id \(plan.id.uuidString))."
+        }
+    }
+
+    private static func planEdit(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: PlanEditArgs.self) else {
+            return errorJSON("could not parse arguments")
+        }
+        guard let id = agentUUID(args.agent_id) else {
+            return errorJSON("missing agent context (agent_id is injected automatically; just call the tool again)")
+        }
+        let key = (args.plan_id ?? args.title)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let key, !key.isEmpty else {
+            return errorJSON("provide 'plan_id' or 'title' to identify the plan")
+        }
+        let hasContent = (args.content?.isEmpty == false)
+        let hasRename = (args.new_title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+        guard hasContent || hasRename else {
+            return errorJSON(
+                "edit_plan changed nothing: you must pass the new text in 'content'. "
+                + "To ADD to the plan set append=true with content = just the new text; "
+                + "to rewrite it, set content = the full new text.")
+        }
+        let append = args.append ?? false
+        return await MainActor.run {
+            guard let store = planStore else { return errorJSON("plan store unavailable") }
+            guard let target = store.find(idOrTitle: key, for: id) else {
+                return errorJSON("no plan matching \"\(key)\".\n" + renderPlanList(store.plans(for: id)))
+            }
+            guard let updated = store.update(
+                id: target.id, title: args.new_title, content: args.content,
+                append: append, for: id)
+            else { return errorJSON("failed to update plan") }
+            let action = hasContent ? (append ? "appended to" : "rewrote") : "renamed"
+            return "\(action.capitalized) plan \"\(updated.title)\" (now \(updated.content.count) chars):\n\n"
+                + updated.content
+        }
+    }
+
+    private static func planReadList(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: PlanReadArgs.self), let id = agentUUID(args.agent_id) else {
+            return errorJSON("missing agent context (agent_id is injected automatically; just call the tool again)")
+        }
+        return await MainActor.run {
+            guard let store = planStore else { return errorJSON("plan store unavailable") }
+            return renderPlanList(store.plans(for: id))
+        }
+    }
+
+    private static func planReadOne(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: PlanReadOneArgs.self) else {
+            return errorJSON("could not parse arguments")
+        }
+        guard let id = agentUUID(args.agent_id) else {
+            return errorJSON("missing agent context (agent_id is injected automatically; just call the tool again)")
+        }
+        let key = (args.plan_id ?? args.title)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let key, !key.isEmpty else {
+            return errorJSON("provide 'plan_id' or 'title' to identify the plan")
+        }
+        return await MainActor.run {
+            guard let store = planStore else { return errorJSON("plan store unavailable") }
+            guard let plan = store.find(idOrTitle: key, for: id) else {
+                return errorJSON("no plan matching \"\(key)\".\n" + renderPlanList(store.plans(for: id)))
+            }
+            return renderPlan(plan)
+        }
+    }
+
+    private static func renderPlanList(_ plans: [Plan]) -> String {
+        guard !plans.isEmpty else { return "No plans yet." }
+        let lines = plans.map { "- \"\($0.title)\" (id \($0.id.uuidString))" }
+        return "Plans (\(plans.count)):\n" + lines.joined(separator: "\n")
+    }
+
+    private static func renderPlan(_ plan: Plan) -> String {
+        "Plan \"\(plan.title)\" (id \(plan.id.uuidString)):\n\n\(plan.content)"
     }
 
     // MARK: - Workspace tool implementations

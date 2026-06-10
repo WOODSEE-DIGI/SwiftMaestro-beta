@@ -59,8 +59,9 @@ final class OMLXAgentExecutor: Sendable {
                     // the agentic loop runs until the model stops requesting tools.
                     // Termination is user-driven (Stop button -> Task cancellation).
                     var round = 0
-                    var didUseTool = false   // a tool ran at least once this turn
-                    var autoNudges = 0       // bounded self-continuations
+                    var didUseTool = false           // any tool ran this turn
+                    var usedAgentScopedTool = false  // a todo/plan tool ran this turn
+                    var autoNudges = 0               // bounded self-continuations
                     let maxAutoNudges = 2
                     iterations: while !Task.isCancelled {
                         let (content, toolCalls) = try await backend.streamRound(
@@ -76,29 +77,36 @@ final class OMLXAgentExecutor: Sendable {
                         guard !Task.isCancelled else { break iterations }
 
                         if toolCalls.isEmpty {
-                            // Small models often end a turn by NARRATING an action
-                            // ("I'll mark it done now") without actually calling the
-                            // tool. If they've already used a tool this turn and the
-                            // text reads like an unfinished intent, inject a reminder
-                            // and run one more round so the call actually happens.
-                            if !toolSpecs.isEmpty, didUseTool, autoNudges < maxAutoNudges,
-                               Self.looksUnfinishedIntent(content) {
+                            // Small models end a turn either (a) NARRATING a future
+                            // action ("I'll mark it done now") after using a tool, or
+                            // (b) CLAIMING in past tense that they changed a plan/
+                            // checklist while never calling the tool. Both are caught
+                            // here; a bounded nudge makes the call actually happen.
+                            let unfinished = didUseTool && Self.looksUnfinishedIntent(content)
+                            let falseClaim = !usedAgentScopedTool
+                                && Self.claimsChecklistMutation(content)
+                            if !toolSpecs.isEmpty, autoNudges < maxAutoNudges,
+                               unfinished || falseClaim {
                                 autoNudges += 1
-                                NSLog("[OMLX] auto-nudge \(autoNudges): unfinished intent, continuing")
+                                NSLog("[OMLX] auto-nudge \(autoNudges): unfinished=\(unfinished) falseClaim=\(falseClaim)")
                                 convo.append(["role": "assistant", "content": content])
                                 convo.append([
                                     "role": "user",
                                     "content":
-                                        "You described an action but did not actually call a tool. "
-                                        + "If completing my request still requires a tool call "
-                                        + "(for example update_todo_status to change a task's status), "
-                                        + "make that call now. If everything is already done, just confirm briefly.",
+                                        "You have not actually called the tool needed to complete my request. "
+                                        + "To change a task checklist call update_todo_status / create_todo_list; "
+                                        + "to change a plan call create_plan / edit_plan (put the new text in 'content', "
+                                        + "set append=true to add a step). Make that call now. NEVER say something was "
+                                        + "created, updated, marked, or added unless you actually called the tool.",
                                 ])
                                 continue iterations
                             }
                             break iterations  // final answer already streamed
                         }
                         didUseTool = true
+                        if toolCalls.contains(where: { Self.agentScopedTools.contains($0.name) }) {
+                            usedAgentScopedTool = true
+                        }
 
                         // Record the assistant turn that requested the tools.
                         convo.append([
@@ -144,6 +152,18 @@ final class OMLXAgentExecutor: Sendable {
         let hasCue = futureCues.contains { t.contains($0) }
         let hasVerb = actionVerbs.contains { t.contains($0) }
         return hasCue && hasVerb
+    }
+
+    /// Heuristic: does this text CLAIM (often in past tense) that a plan or task
+    /// checklist was changed? Used to catch the model asserting "plan updated"
+    /// without having called the corresponding tool.
+    private static func claimsChecklistMutation(_ text: String) -> Bool {
+        let t = text.lowercased()
+        guard !t.isEmpty else { return false }
+        let nouns = ["plan", "task", "todo", "to-do", "checklist"]
+        let verbs = ["updated", "created", "added", "marked", "edited", "appended",
+                     "deleted", "renamed", "removed", "completed"]
+        return nouns.contains { t.contains($0) } && verbs.contains { t.contains($0) }
     }
 
     /// Encode a Message into an OpenAI chat message. Plain text uses string
@@ -227,10 +247,12 @@ final class OMLXAgentExecutor: Sendable {
         return string
     }
 
-    /// Live-todo tools keyed by the calling agent. The id is always injected
-    /// (overwriting any model-supplied value) since the model can't know it.
+    /// Per-agent tools (live todo checklist + plan docs) keyed by the calling
+    /// agent. The id is always injected (overwriting any model-supplied value)
+    /// since the model can't know it.
     private static let agentScopedTools: Set<String> = [
         "create_todo_list", "add_todos", "update_todo_status", "read_todos",
+        "create_plan", "edit_plan", "read_plans", "read_plan",
     ]
 
     /// Always stamp `agent_id` onto live-todo tool calls.

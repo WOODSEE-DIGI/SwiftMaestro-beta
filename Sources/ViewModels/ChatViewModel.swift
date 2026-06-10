@@ -283,6 +283,15 @@ class ChatViewModel: ObservableObject {
         first call to narrate the second — make the call.
         - Identify a task by its 1-based number (the first task is 1, not 0) or by \
         its title text. Only claim a task is done after update_todo_status confirms it.
+
+        PLANS:
+        - You also have PLAN tools for longer design docs: create_plan, edit_plan, \
+        read_plans, read_plan.
+        - To change a plan you MUST call edit_plan and put the new text in its \
+        'content' argument (set append=true to ADD a step, omit it to rewrite). \
+        Describing the change in chat does NOT change the plan.
+        - NEVER say a plan was created, updated, or had a step added unless you \
+        actually called create_plan / edit_plan and got a result back.
         """
 
     /// Routing guidance so the model uses the Xcode-aware xcodebuildmcp tools for
