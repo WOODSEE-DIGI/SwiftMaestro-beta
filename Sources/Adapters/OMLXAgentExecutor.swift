@@ -420,9 +420,10 @@ final class OMLXAgentExecutor: Sendable {
                 error: "no project agent named '\(agentName)'")
         }
 
-        // Delegate tool surface: project tools only (no Navigator tools).
+        // Delegate tool surface: project tools only (no Navigator tools), plus
+        // MCP servers the user exposes to delegated sub-agents.
         var specs = MaestroTools.schemas(navigator: false)
-        if let mcp { specs += await mcp.currentSchemas() }
+        if let mcp { specs += await mcp.currentSchemas(audience: .delegate) }
         NSLog("[DELEGATE] -> '\(target.name)' (project='\(proj)') with \(specs.count) tools")
 
         // Sub-agent uses the SAME backend as the parent (in-process or oMLX).
