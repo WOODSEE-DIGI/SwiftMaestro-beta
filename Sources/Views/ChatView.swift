@@ -6,7 +6,9 @@ struct ChatView: View {
     @Environment(MLXInferenceEngine.self) private var engine
     @Environment(ModelCatalog.self) private var catalog
     @Environment(TodoStore.self) private var todoStore
+    @Environment(PlanStore.self) private var planStore
     @ObservedObject var vm: ChatViewModel
+    @State private var showingPlans = false
 
     init(vm: ChatViewModel) {
         _vm = ObservedObject(wrappedValue: vm)
@@ -31,15 +33,28 @@ struct ChatView: View {
         }
         .navigationTitle("Chat")
         .task(id: vm.agent.id) {
-            // Prime the per-agent list from disk (cache-fill) outside of body
-            // evaluation so persisted tasks show after relaunch.
+            // Prime the per-agent todo + plan lists from disk (cache-fill) outside
+            // of body evaluation so persisted items show after relaunch.
             _ = todoStore.todos(for: vm.agent.id)
+            _ = planStore.plans(for: vm.agent.id)
         }
         .onDrop(of: [.image, .fileURL], isTargeted: nil) { providers in
             handleProviders(providers)
         }
         .onPasteCommand(of: [.image, .fileURL]) { providers in
             _ = handleProviders(providers)
+        }
+        .toolbar {
+            ToolbarItem {
+                Button { showingPlans = true } label: {
+                    Image(systemName: "doc.text")
+                }
+                .help("Plans")
+            }
+        }
+        .sheet(isPresented: $showingPlans) {
+            PlansSheet(agentId: vm.agent.id)
+                .environment(planStore)
         }
     }
 
