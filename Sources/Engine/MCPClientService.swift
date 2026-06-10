@@ -139,11 +139,32 @@ actor MCPClientService {
 
     // MARK: - Tool surface (for the agentic loop)
 
-    /// MCP tool schemas in mlx `ToolSpec` (OpenAI function) format.
-    func currentSchemas() -> [ToolSpec] {
-        routing.values.uniqued().flatMap { connection in
-            connection.tools.map { Self.toolSpec(for: $0) }
-        }
+    /// Which agent surface is asking for MCP tools. Exposure is configured
+    /// per server in MCP settings (`advertise` / `advertiseToSubAgents`).
+    enum ToolAudience: Sendable {
+        case interactive   // Navigator + project-agent chats
+        case delegate      // delegated sub-agent runs (ask_project_agent/s)
+    }
+
+    /// MCP tool schemas in mlx `ToolSpec` (OpenAI function) format, filtered by
+    /// the per-server exposure settings for the given audience. Exposure is read
+    /// live so settings changes apply from the next message without reconnecting.
+    func currentSchemas(audience: ToolAudience = .interactive) -> [ToolSpec] {
+        let entries = SwiftMaestroSettingsStore.loadMCPServers()
+        let exposure = Dictionary(
+            entries.map { entry in
+                (entry.name,
+                 audience == .interactive
+                     ? entry.advertisesToAgents
+                     : entry.advertisesToDelegates)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return routing.values.uniqued()
+            .filter { exposure[$0.serverName] ?? true }
+            .flatMap { connection in
+                connection.tools.map { Self.toolSpec(for: $0) }
+            }
     }
 
     /// Whether an MCP server owns the named tool.

@@ -849,6 +849,24 @@ struct MCPServerRow: View {
                         Image(systemName: "trash").foregroundStyle(.red)
                     }.buttonStyle(.plain)
                 }
+                HStack(spacing: 14) {
+                    Text("Advertise tools to:")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Toggle("Chat agents", isOn: Binding(
+                        get: { server.advertisesToAgents },
+                        set: { server.advertise = $0 }
+                    ))
+                    Toggle("Delegated sub-agents", isOn: Binding(
+                        get: { server.advertisesToDelegates },
+                        set: { server.advertiseToSubAgents = $0 }
+                    ))
+                    Spacer()
+                }
+                .font(.caption)
+                .toggleStyle(.checkbox)
+                .help("Untick to keep the server connected but leave its tools out of "
+                    + "the prompt for that audience. Fewer advertised tools = smaller "
+                    + "prompt = faster prefill. Applies from the next message.")
                 HStack {
                     Button("Fields") { showFields = true }
                         .buttonStyle(.bordered)
@@ -935,6 +953,19 @@ struct MCPServerEntry: Identifiable, Codable {
     /// `scriptPath` can't express. When nil/empty the launcher falls back to
     /// `[scriptPath]`. Optional so older persisted configs still decode.
     var args: [String]? = nil
+    /// Whether this server's tools are advertised to interactive chats (Navigator
+    /// and project agents). Tool specs dominate the prompt — and on hybrid-cache
+    /// models every fresh round re-prefills it all — so trimming exposure here
+    /// directly cuts per-turn latency. Optional (nil = true) so older persisted
+    /// configs still decode. The server stays connected either way; this only
+    /// controls advertisement, so changes apply from the next message.
+    var advertise: Bool? = nil
+    /// Same as `advertise`, but for DELEGATED sub-agent runs (ask_project_agent/s).
+    /// Sub-agents usually need memory/plan tools, not the full tool surface.
+    var advertiseToSubAgents: Bool? = nil
+
+    var advertisesToAgents: Bool { advertise ?? true }
+    var advertisesToDelegates: Bool { advertiseToSubAgents ?? true }
 
     static let xcodeBuildMCPPath =
         "~/GitHub/AI-ML-Agents/XcodeBuildMCP"
