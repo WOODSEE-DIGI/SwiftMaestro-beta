@@ -84,7 +84,7 @@ final class OMLXAgentExecutor: Sendable {
                             // here; a bounded nudge makes the call actually happen.
                             let unfinished = didUseTool && Self.looksUnfinishedIntent(content)
                             let falseClaim = !usedAgentScopedTool
-                                && Self.claimsChecklistMutation(content)
+                                && Self.claimsToolBackedMutation(content)
                             if !toolSpecs.isEmpty, autoNudges < maxAutoNudges,
                                unfinished || falseClaim {
                                 autoNudges += 1
@@ -94,10 +94,9 @@ final class OMLXAgentExecutor: Sendable {
                                     "role": "user",
                                     "content":
                                         "You have not actually called the tool needed to complete my request. "
-                                        + "To change a task checklist call update_todo_status / create_todo_list; "
-                                        + "to change a plan call create_plan / edit_plan (put the new text in 'content', "
-                                        + "set append=true to add a step). Make that call now. NEVER say something was "
-                                        + "created, updated, marked, or added unless you actually called the tool.",
+                                        + Self.nudgeInstruction(for: content)
+                                        + " Call ONLY that tool now, with the correct arguments. Do not call "
+                                        + "unrelated tools. NEVER claim something was done unless you actually called the tool.",
                                 ])
                                 continue iterations
                             }
@@ -154,15 +153,34 @@ final class OMLXAgentExecutor: Sendable {
         return hasCue && hasVerb
     }
 
-    /// Heuristic: does this text CLAIM (often in past tense) that a plan or task
-    /// checklist was changed? Used to catch the model asserting "plan updated"
-    /// without having called the corresponding tool.
-    private static func claimsChecklistMutation(_ text: String) -> Bool {
+    /// Pick a SPECIFIC instruction naming just the one tool that matches what the
+    /// model claimed/intended, so a nudged small model doesn't grab unrelated
+    /// tools from a menu (e.g. creating a todo list when asked to send a message).
+    private static func nudgeInstruction(for content: String) -> String {
+        let t = content.lowercased()
+        let messageish = ["message", "inbox", "sent", "messaged", "notified", "deliver"]
+        let planish = ["plan"]
+        if messageish.contains(where: { t.contains($0) }) {
+            return "Call send_agent_message with to_agent, subject, and message."
+        }
+        if planish.contains(where: { t.contains($0) }) {
+            return "Call edit_plan (or create_plan) and put the new text in its 'content' argument "
+                + "(set append=true to add to an existing plan)."
+        }
+        return "Call update_todo_status (or create_todo_list) to change the task checklist."
+    }
+
+    /// Heuristic: does this text CLAIM (often in past tense) that a tool-backed
+    /// action happened — a plan/task/checklist change OR a message send? Used to
+    /// catch the model asserting e.g. "plan updated" or "message sent" without
+    /// having actually called the corresponding tool.
+    private static func claimsToolBackedMutation(_ text: String) -> Bool {
         let t = text.lowercased()
         guard !t.isEmpty else { return false }
-        let nouns = ["plan", "task", "todo", "to-do", "checklist"]
+        let nouns = ["plan", "task", "todo", "to-do", "checklist", "message", "inbox"]
         let verbs = ["updated", "created", "added", "marked", "edited", "appended",
-                     "deleted", "renamed", "removed", "completed"]
+                     "deleted", "renamed", "removed", "completed",
+                     "sent", "messaged", "notified", "delivered"]
         return nouns.contains { t.contains($0) } && verbs.contains { t.contains($0) }
     }
 
@@ -256,6 +274,8 @@ final class OMLXAgentExecutor: Sendable {
     private static let agentScopedTools: Set<String> = [
         "create_todo_list", "add_todos", "update_todo_status", "read_todos",
         "create_plan", "edit_plan", "read_plans", "read_plan",
+        // Messaging: agent_id identifies the sender / the inbox owner.
+        "send_agent_message", "read_agent_messages",
     ]
 
     /// Always stamp `agent_id` onto live-todo tool calls.

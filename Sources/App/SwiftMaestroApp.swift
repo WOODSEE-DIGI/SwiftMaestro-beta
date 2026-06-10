@@ -156,6 +156,7 @@ struct SwiftMaestroApp: App {
     @State private var workspace = WorkspaceStore()
     @State private var todoStore = TodoStore()
     @State private var planStore = PlanStore()
+    @State private var messageStore = AgentMessageStore()
     private let mcpService = MCPClientService()
 
     var body: some Scene {
@@ -167,6 +168,7 @@ struct SwiftMaestroApp: App {
                 .environment(workspace)
                 .environment(todoStore)
                 .environment(planStore)
+                .environment(messageStore)
                 .task {
                     SwiftMaestroDefaultsMigration.applyIfNeeded()
                     // Only auto-start the oMLX server when it's the selected
@@ -180,6 +182,8 @@ struct SwiftMaestroApp: App {
                     MaestroTools.todoStore = todoStore
                     // Expose the plan store to the native plan tools.
                     MaestroTools.planStore = planStore
+                    // Expose the inter-agent message store to the messaging tools.
+                    MaestroTools.messageStore = messageStore
                     // Wire client-side MCP tools into the inference engine and
                     // spawn the user-enabled servers (permissioned by MCP flags).
                     engine.mcpService = mcpService
@@ -197,6 +201,7 @@ struct SwiftMaestroApp: App {
                 .environment(workspace)
                 .environment(todoStore)
                 .environment(planStore)
+                .environment(messageStore)
         }
         .defaultSize(width: 720, height: 760)
         #endif

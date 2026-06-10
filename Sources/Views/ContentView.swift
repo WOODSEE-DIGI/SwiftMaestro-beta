@@ -4,6 +4,7 @@ struct ContentView: View {
     @Environment(MLXInferenceEngine.self) private var engine
     @Environment(ModelCatalog.self) private var catalog
     @Environment(WorkspaceStore.self) private var workspace
+    @Environment(AgentMessageStore.self) private var messageStore
     @State private var selectedAgentID: UUID?
     /// Per-agent chat view-models, kept alive so switching agents preserves the
     /// in-flight view state (history itself is persisted by ChatHistoryStore).
@@ -43,6 +44,11 @@ struct ContentView: View {
         .onAppear {
             if selectedAgentID == nil { selectedAgentID = workspace.navigator.id }
         }
+        .task {
+            // Prime every agent's inbox from disk so sidebar unread badges are
+            // accurate at launch (not just for the open agent).
+            for agent in workspace.agents { _ = messageStore.inbox(for: agent.id) }
+        }
     }
 
     // MARK: - Sidebar (Navigator + Projects → project agents)
@@ -50,14 +56,17 @@ struct ContentView: View {
     private var sidebar: some View {
         List(selection: $selectedAgentID) {
             Section("Navigator") {
-                Label(workspace.navigator.name,
-                      systemImage: "point.3.connected.trianglepath.dotted")
-                    .tag(workspace.navigator.id)
+                agentRow(
+                    title: workspace.navigator.name,
+                    systemImage: "point.3.connected.trianglepath.dotted",
+                    id: workspace.navigator.id
+                )
+                .tag(workspace.navigator.id)
             }
             ForEach(workspace.projects) { project in
                 Section(project.name) {
                     ForEach(workspace.projectAgents(in: project.id)) { agent in
-                        Text(agent.name)
+                        agentRow(title: agent.name, systemImage: nil, id: agent.id)
                             .tag(agent.id)
                             .contextMenu {
                                 Button("Clear Chat") {
@@ -85,6 +94,27 @@ struct ContentView: View {
             EngineStatusBar()
                 .padding(.horizontal, 12)
                 .padding(.bottom, 8)
+        }
+    }
+
+    /// A sidebar agent row showing its name plus a red unread-message badge.
+    @ViewBuilder
+    private func agentRow(title: String, systemImage: String?, id: UUID) -> some View {
+        HStack {
+            if let systemImage {
+                Label(title, systemImage: systemImage)
+            } else {
+                Text(title)
+            }
+            Spacer()
+            let unread = (messageStore.inboxes[id] ?? []).filter { !$0.read }.count
+            if unread > 0 {
+                Text("\(unread)")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 6).padding(.vertical, 1)
+                    .background(Capsule().fill(.red))
+            }
         }
     }
 
