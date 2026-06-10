@@ -193,6 +193,9 @@ final class OMLXAgentExecutor: Sendable {
         "memory_write", "memory_read", "memory_search", "memory_list",
         "add_decision", "add_todo", "report_error", "update_session",
         "list_active_contexts",
+        // Plan tools: a project agent's plans default to its project (shared);
+        // the Navigator (no project) keeps personal plans unless it passes one.
+        "create_plan", "edit_plan", "read_plans", "read_plan",
     ]
 
     private func executeTool(

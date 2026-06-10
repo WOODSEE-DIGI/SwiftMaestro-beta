@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 enum SwiftMaestroSettingsStore {
     private static let allowedModelsKey = "settings.models.allowedModels"
@@ -100,6 +101,8 @@ struct SettingsView: View {
                 .tabItem { Label("Context", systemImage: "folder") }
             MCPSettingsTab()
                 .tabItem { Label("MCP", systemImage: "server.rack") }
+            StorageSettingsTab()
+                .tabItem { Label("Storage", systemImage: "externaldrive") }
             SecretsSettingsTab()
                 .tabItem { Label("Secrets", systemImage: "key.fill") }
         }
@@ -112,6 +115,78 @@ struct SettingsView: View {
             )
         )
         #endif
+    }
+}
+
+// MARK: - Storage tab (Plans & Todos)
+
+/// Shows where the live Todo checklists and Plan documents are stored on disk,
+/// with quick access to reveal them in Finder.
+struct StorageSettingsTab: View {
+    @State private var todoCount = 0
+    @State private var planCount = 0
+
+    private var root: URL { WorkspaceStore.appSupportDir() }
+    private var todosDir: URL { root.appendingPathComponent("todos", isDirectory: true) }
+    private var plansDir: URL { root.appendingPathComponent("plans", isDirectory: true) }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                GroupBox("Storage Locations") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        locationRow("Data folder", root,
+                            subtitle: "All SwiftMaestro app data")
+                        Divider()
+                        locationRow("Todos", todosDir,
+                            subtitle: "\(todoCount) checklist file(s) — one JSON per agent")
+                        Divider()
+                        locationRow("Plans", plansDir,
+                            subtitle: "\(planCount) scope file(s) — per agent + per project, each plan also mirrored as .md")
+                    }
+                    .padding(8)
+                }
+                GroupBox("About") {
+                    Text("Todos are a per-agent live checklist. Plans are markdown design "
+                        + "documents scoped either to an agent (personal) or a project (shared). "
+                        + "Each plan is mirrored as a .md file for easy viewing in Finder or Obsidian.")
+                        .font(.caption).foregroundStyle(.secondary).padding(8)
+                }
+                Spacer()
+            }
+            .padding()
+        }
+        .onAppear { refresh() }
+    }
+
+    @ViewBuilder
+    private func locationRow(_ title: String, _ url: URL, subtitle: String) -> some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.body.bold())
+                Text(url.path)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .lineLimit(2).truncationMode(.middle)
+                Text(subtitle).font(.caption2).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Reveal in Finder") {
+                try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            }
+            .font(.caption)
+        }
+    }
+
+    private func refresh() {
+        todoCount = jsonCount(todosDir)
+        planCount = jsonCount(plansDir)
+    }
+
+    private func jsonCount(_ dir: URL) -> Int {
+        (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil))?
+            .filter { $0.pathExtension == "json" }.count ?? 0
     }
 }
 

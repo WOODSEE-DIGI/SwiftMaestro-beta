@@ -7,6 +7,7 @@ struct ChatView: View {
     @Environment(ModelCatalog.self) private var catalog
     @Environment(TodoStore.self) private var todoStore
     @Environment(PlanStore.self) private var planStore
+    @Environment(WorkspaceStore.self) private var workspace
     @ObservedObject var vm: ChatViewModel
     @State private var showingPlans = false
 
@@ -36,7 +37,7 @@ struct ChatView: View {
             // Prime the per-agent todo + plan lists from disk (cache-fill) outside
             // of body evaluation so persisted items show after relaunch.
             _ = todoStore.todos(for: vm.agent.id)
-            _ = planStore.plans(for: vm.agent.id)
+            _ = planStore.plans(in: .agent(vm.agent.id))
         }
         .onDrop(of: [.image, .fileURL], isTargeted: nil) { providers in
             handleProviders(providers)
@@ -53,9 +54,20 @@ struct ChatView: View {
             }
         }
         .sheet(isPresented: $showingPlans) {
-            PlansSheet(agentId: vm.agent.id)
-                .environment(planStore)
+            PlansSheet(
+                agentId: vm.agent.id,
+                projects: planScopeProjects,
+                defaultProjectName: vm.agent.kind == .navigator ? nil : vm.projectName
+            )
+            .environment(planStore)
         }
+    }
+
+    /// Project names selectable as plan scopes in the Plans sheet: the Navigator
+    /// can browse every project's shared plans; a project agent sees its own.
+    private var planScopeProjects: [String] {
+        if vm.agent.kind == .navigator { return workspace.projects.map(\.name) }
+        return vm.projectName.map { [$0] } ?? []
     }
 
     /// Always-visible base-directory control at the top-left of the chat. Opens a
