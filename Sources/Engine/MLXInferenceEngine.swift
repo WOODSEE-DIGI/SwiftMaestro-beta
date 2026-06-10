@@ -374,6 +374,108 @@ final class MLXInferenceEngine {
         }
     }
 
+    // MARK: - Single round (for the pluggable in-process backend)
+
+    /// Run ONE generation pass over a prepared chat (no tool loop). Streams
+    /// content tokens via `onToken` and decode-rate via `onInfo`, and returns the
+    /// full content plus any tool calls the model requested (parsed by
+    /// mlx-swift-lm's model-specific tool parser). The agentic loop (tool
+    /// execution, project/cwd injection, delegation) lives in AgentExecutor; this
+    /// is just the backend's generation primitive. Reuses the persistent prompt
+    /// KV cache for cross-round prefix reuse.
+    func generateRound(
+        chatTurns: [ChatTurn],
+        toolSchemas: [ToolSpec]?,
+        model: MaestroModel,
+        temperature: Double,
+        topP: Double,
+        thinkingEnabled: Bool,
+        onToken: @escaping @Sendable (String) -> Void,
+        onInfo: @escaping @Sendable (Double) -> Void
+    ) async throws -> (content: String, toolCalls: [RoundToolCall]) {
+        state = .generating
+        // Build mlx Chat.Message here (on the MainActor) from the Sendable turns.
+        let chat: [Chat.Message] = chatTurns.map { turn in
+            switch turn.role {
+            case "system": return .system(turn.content)
+            case "assistant": return .assistant(turn.content)
+            case "tool": return .tool(turn.content)
+            default: return .user(turn.content)
+            }
+        }
+        let container = try await loadModel(model)
+        let repPen = model.recRepetitionPenalty.map { Float($0) } ?? 1.05
+        let parameters = GenerateParameters(
+            temperature: Float(temperature), topP: Float(topP), repetitionPenalty: repPen)
+
+        let input = UserInput(
+            chat: chat, tools: toolSchemas,
+            additionalContext: ["enable_thinking": thinkingEnabled])
+        nonisolated(unsafe) let capturedInput = input
+        nonisolated(unsafe) let pc = self.promptCache
+        let modelID = model.id
+
+        let stream = try await container.perform { context in
+            let lmInput = try await context.processor.prepare(input: capturedInput)
+            let fullTokens = lmInput.text.tokens.asArray(Int.self)
+            let canReuse = pc.isReady
+                && pc.modelID == modelID
+                && !pc.caches.isEmpty
+                && pc.caches.allSatisfy { $0.isTrimmable }
+            var prefix = 0
+            if canReuse {
+                let minOffset = pc.caches.map { $0.offset }.min() ?? 0
+                prefix = MLXInferenceEngine.commonPrefixLength(pc.tokens, fullTokens)
+                prefix = min(prefix, minOffset, fullTokens.count - 1)
+                if prefix < 0 { prefix = 0 }
+            }
+            let inputForGen: LMInput
+            let cacheForGen: [KVCache]
+            if canReuse && prefix > 0 {
+                for c in pc.caches { c.trim(c.offset - prefix) }
+                let deltaInts = Array(fullTokens[prefix...]).map { Int32($0) }
+                let deltaArray = MLXArray(deltaInts).reshaped([1, deltaInts.count])
+                inputForGen = LMInput(text: .init(tokens: deltaArray))
+                cacheForGen = pc.caches
+                NSLog("[PERF] cache reuse: prefix=\(prefix)/\(fullTokens.count), prefill delta=\(deltaInts.count) tok")
+            } else {
+                let fresh = context.model.newCache(parameters: parameters)
+                pc.caches = fresh
+                inputForGen = lmInput
+                cacheForGen = fresh
+                NSLog("[PERF] cache fresh: prefill full=\(fullTokens.count) tok")
+            }
+            pc.tokens = fullTokens
+            pc.modelID = modelID
+            pc.isReady = true
+            return try MLXLMCommon.generate(
+                input: inputForGen, cache: cacheForGen,
+                parameters: parameters, context: context)
+        }
+
+        var content = ""
+        var toolCalls: [RoundToolCall] = []
+        for await generation in stream {
+            if Task.isCancelled { break }
+            switch generation {
+            case .chunk(let chunk):
+                content += chunk
+                onToken(chunk)
+            case .info(let info):
+                NSLog("[PERF] in-process prompt=\(info.promptTokenCount) tok (\(String(format: "%.0f", info.promptTokensPerSecond)) tok/s prefill); gen=\(info.generationTokenCount) tok (\(String(format: "%.1f", info.tokensPerSecond)) tok/s)")
+                self.tokensPerSecond = info.tokensPerSecond
+                onInfo(info.tokensPerSecond)
+            case .toolCall(let call):
+                let argsJSON = (try? JSONEncoder().encode(call.function.arguments))
+                    .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+                toolCalls.append(RoundToolCall(
+                    id: UUID().uuidString, name: call.function.name, arguments: argsJSON))
+            }
+        }
+        state = .ready(model.displayName)
+        return (content, toolCalls)
+    }
+
     // MARK: - Control
 
     func cancel() {
