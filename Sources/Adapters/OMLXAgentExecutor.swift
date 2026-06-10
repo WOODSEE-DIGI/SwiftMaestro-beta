@@ -45,7 +45,8 @@ final class OMLXAgentExecutor: Sendable {
         thinkingEnabled: Bool,
         project: String? = nil,
         workingDirectory: String? = nil,
-        agentID: String? = nil
+        agentID: String? = nil,
+        maxRounds: Int? = nil
     ) -> AsyncThrowingStream<OMLXOutput, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -59,22 +60,42 @@ final class OMLXAgentExecutor: Sendable {
                     // the agentic loop runs until the model stops requesting tools.
                     // Termination is user-driven (Stop button -> Task cancellation).
                     var round = 0
-                    var didUseTool = false           // any tool ran this turn
-                    var usedAgentScopedTool = false  // a todo/plan tool ran this turn
-                    var autoNudges = 0               // bounded self-continuations
+                    var didUseTool = false       // any tool ran this turn
+                    var usedMutator = false      // a todo/plan/message/workspace/delegation tool ran
+                    var autoNudges = 0           // bounded self-continuations
                     let maxAutoNudges = 2
+                    var finalWrapUpSent = false  // bounded-run wrap-up issued
                     iterations: while !Task.isCancelled {
+                        // Bounded runs (delegated sub-agents): once the tool budget
+                        // is spent, force ONE last tool-free round so the model must
+                        // produce a final text answer instead of ping-ponging tools
+                        // forever (which would hang the parent's delegation call).
+                        var specsThisRound = toolSpecs
+                        if let maxRounds, round >= maxRounds {
+                            if finalWrapUpSent { break iterations }
+                            finalWrapUpSent = true
+                            specsThisRound = []
+                            convo.append([
+                                "role": "user",
+                                "content":
+                                    "Tool budget exhausted — do NOT call any more tools. "
+                                    + "Using what you learned above, give your FINAL answer "
+                                    + "to the original request now, as plain text.",
+                            ])
+                        }
                         let (content, toolCalls) = try await backend.streamRound(
                             convo: convo,
-                            toolSpecs: toolSpecs,
+                            toolSpecs: specsThisRound,
                             temperature: temperature,
                             topP: topP,
                             thinkingEnabled: thinkingEnabled,
                             continuation: continuation
                         )
-                        NSLog("[OMLX] round \(round): tools=\(toolSpecs.count) content=\(content.count) chars, toolCalls=[\(toolCalls.map { $0.name }.joined(separator: ", "))]")
+                        NSLog("[OMLX] round \(round): tools=\(specsThisRound.count) content=\(content.count) chars, toolCalls=[\(toolCalls.map { $0.name }.joined(separator: ", "))]")
 
                         guard !Task.isCancelled else { break iterations }
+                        // The forced wrap-up round IS the final answer.
+                        if finalWrapUpSent { break iterations }
 
                         if toolCalls.isEmpty {
                             // Small models end a turn either (a) NARRATING a future
@@ -83,9 +104,10 @@ final class OMLXAgentExecutor: Sendable {
                             // checklist while never calling the tool. Both are caught
                             // here; a bounded nudge makes the call actually happen.
                             let unfinished = didUseTool && Self.looksUnfinishedIntent(content)
-                            let falseClaim = !usedAgentScopedTool
-                                && Self.claimsToolBackedMutation(content)
-                            if !toolSpecs.isEmpty, autoNudges < maxAutoNudges,
+                            let falseClaim = !usedMutator
+                                && (Self.claimsToolBackedMutation(content)
+                                    || Self.claimsDelegation(content))
+                            if !specsThisRound.isEmpty, autoNudges < maxAutoNudges,
                                unfinished || falseClaim {
                                 autoNudges += 1
                                 NSLog("[OMLX] auto-nudge \(autoNudges): unfinished=\(unfinished) falseClaim=\(falseClaim)")
@@ -103,8 +125,11 @@ final class OMLXAgentExecutor: Sendable {
                             break iterations  // final answer already streamed
                         }
                         didUseTool = true
-                        if toolCalls.contains(where: { Self.agentScopedTools.contains($0.name) }) {
-                            usedAgentScopedTool = true
+                        if toolCalls.contains(where: {
+                            Self.agentScopedTools.contains($0.name)
+                                || Self.nonInjectedMutators.contains($0.name)
+                        }) {
+                            usedMutator = true
                         }
 
                         // Record the assistant turn that requested the tools.
@@ -147,7 +172,8 @@ final class OMLXAgentExecutor: Sendable {
         let futureCues = ["i'll ", "i will ", "i am going to ", "i'm going to ",
                           "let me ", "now i", "next, i", "next i", "i can now ", "i need to "]
         let actionVerbs = ["mark", "update", "set ", "call ", "create", "add ",
-                           "remove", "delete", "run ", "fix", "make ", "check "]
+                           "remove", "delete", "run ", "fix", "make ", "check ",
+                           "read ", "find ", "search", "review", "look "]
         let hasCue = futureCues.contains { t.contains($0) }
         let hasVerb = actionVerbs.contains { t.contains($0) }
         return hasCue && hasVerb
@@ -161,6 +187,11 @@ final class OMLXAgentExecutor: Sendable {
         let messageish = ["message", "inbox", "sent", "messaged", "notified", "deliver"]
         if messageish.contains(where: { t.contains($0) }) {
             return "Call send_agent_message with to_agent, subject, and message."
+        }
+        if claimsDelegation(content) {
+            return "Call ask_project_agents with a 'requests' list of {project, agent, task} "
+                + "(or ask_project_agent for a single one) to ACTUALLY delegate. Do not invent "
+                + "the agents' answers — only report what the tool returns."
         }
         if t.contains("agent") {
             return "Call create_project_agent with 'project' and 'agent' (or ask_project_agent "
@@ -186,6 +217,24 @@ final class OMLXAgentExecutor: Sendable {
                      "sent", "messaged", "notified", "delivered"]
         return nouns.contains { t.contains($0) } && verbs.contains { t.contains($0) }
     }
+
+    /// Heuristic: does this text CLAIM the model delegated to / consulted project
+    /// agents (and is likely reporting fabricated answers) without calling the
+    /// delegation tool? Requires the word "agent" plus a delegation/answer cue.
+    private static func claimsDelegation(_ text: String) -> Bool {
+        let t = text.lowercased()
+        guard t.contains("agent") else { return false }
+        let cues = ["asked", "delegat", "consulted", "queried", "their response",
+                    "their suggestion", "suggested", "responses", "both agents"]
+        return cues.contains { t.contains($0) }
+    }
+
+    /// Mutating tools that are NOT agent-scoped (no agent_id injection) but still
+    /// count as "real work this turn" so a legitimate result isn't re-nudged.
+    private static let nonInjectedMutators: Set<String> = [
+        "create_project_agent", "archive_project_agent",
+        "ask_project_agent", "ask_project_agents",
+    ]
 
     /// Encode a Message into an OpenAI chat message. Plain text uses string
     /// content; when images are attached, content becomes an array of text +
@@ -368,19 +417,40 @@ final class OMLXAgentExecutor: Sendable {
         NSLog("[DELEGATE] -> '\(target.name)' (project='\(proj)') with \(specs.count) tools")
 
         // Sub-agent uses the SAME backend as the parent (in-process or oMLX).
+        // Bounded tool budget: a delegated run must terminate and answer (the
+        // wrap-up round in `run` forces a final tool-free reply when spent).
         let sub = OMLXAgentExecutor(endpointURL: endpointURL, modelID: modelID, backend: backend)
-        var answer = ""
+        var narration = ""      // every streamed token (fallback)
+        var lastRoundText = ""  // text after the most recent tool call
         do {
             for try await output in sub.run(
                 messages: messages, toolSpecs: specs, mcp: mcp,
                 temperature: 0.3, topP: 0.95, thinkingEnabled: false,
-                project: proj.isEmpty ? nil : proj, agentID: target.id.uuidString
+                project: proj.isEmpty ? nil : proj, agentID: target.id.uuidString,
+                maxRounds: 6
             ) {
-                if case .token(let token) = output { answer += token }
+                switch output {
+                case .token(let token):
+                    narration += token
+                    lastRoundText += token
+                case .toolCall:
+                    // Rounds that end in tool calls are narration, not the answer.
+                    lastRoundText = ""
+                case .info:
+                    break
+                }
             }
         } catch {
             return DelegateResult(project: proj, agent: target.name, answer: nil,
                 error: "delegate failed: \(error.localizedDescription)")
+        }
+        let trimmedLast = lastRoundText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let answer = trimmedLast.isEmpty
+            ? narration.trimmingCharacters(in: .whitespacesAndNewlines)
+            : trimmedLast
+        guard !answer.isEmpty else {
+            return DelegateResult(project: proj, agent: target.name, answer: nil,
+                error: "agent finished without a text answer")
         }
 
         // Persist the delegated exchange to the target agent's own history.
@@ -396,14 +466,15 @@ final class OMLXAgentExecutor: Sendable {
     private func delegate(argumentsJSON: String, mcp: MCPClientService?) async -> String {
         guard
             let data = argumentsJSON.data(using: .utf8),
-            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let agentName = obj["agent"] as? String,
-            let task = obj["task"] as? String
+            let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let req = Self.normalizeRequestItem(raw),
+            let agentName = req["agent"] as? String,
+            let task = req["task"] as? String
         else {
             return MaestroTools.errorJSON("ask_project_agent requires 'project', 'agent', and 'task'")
         }
         let r = await delegateOne(
-            projectName: obj["project"] as? String, agentName: agentName, task: task, mcp: mcp)
+            projectName: req["project"] as? String, agentName: agentName, task: task, mcp: mcp)
         if let err = r.error { return MaestroTools.errorJSON(err) }
         return Self.json(["project": r.project, "agent": r.agent, "answer": r.answer ?? ""])
     }
@@ -414,13 +485,12 @@ final class OMLXAgentExecutor: Sendable {
     /// one-shot multi-agent delegation + aggregation. A concurrency-safe server
     /// backend could run these in parallel.
     private func delegateMany(argumentsJSON: String, mcp: MCPClientService?) async -> String {
-        guard
-            let data = argumentsJSON.data(using: .utf8),
-            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let requests = obj["requests"] as? [[String: Any]], !requests.isEmpty
-        else {
+        guard let requests = Self.parseDelegationRequests(argumentsJSON), !requests.isEmpty else {
             return MaestroTools.errorJSON(
-                "ask_project_agents requires 'requests': a non-empty list of {project, agent, task}")
+                "ask_project_agents requires 'requests': a non-empty JSON array of "
+                + "{project, agent, task} objects. Example: {\"requests\": "
+                + "[{\"project\": \"Tests\", \"agent\": \"Agent1-test1\", "
+                + "\"task\": \"Suggest one improvement to the auth plan.\"}]}")
         }
         NSLog("[DELEGATE] fan-out to \(requests.count) agent(s)")
         var results: [[String: Any]] = []
@@ -436,6 +506,107 @@ final class OMLXAgentExecutor: Sendable {
             }
         }
         return Self.json(["results": results])
+    }
+
+    // MARK: - Lenient delegation-argument parsing
+
+    /// Normalize `ask_project_agents` arguments into a list of {project, agent,
+    /// task} dictionaries. Small local models emit the 'requests' payload in many
+    /// shapes — a proper array, a double-encoded JSON string, a single object, a
+    /// flat {agent, task} at the top level, or {agents: [names], task: "..."} —
+    /// so this accepts all of them instead of bouncing the call (mirrors the
+    /// lenient todo/plan arg decoding).
+    static func parseDelegationRequests(_ argumentsJSON: String) -> [[String: Any]]? {
+        guard let data = argumentsJSON.data(using: .utf8),
+              let top = try? JSONSerialization.jsonObject(with: data) else { return nil }
+
+        // Top-level array: treat it as the requests list itself.
+        if let arr = top as? [Any] { return normalizeRequestList(arr, sharedTask: nil) }
+        guard let obj = top as? [String: Any] else { return nil }
+
+        let sharedTask = firstString(in: obj, keys: ["task", "question", "prompt", "message"])
+
+        if let raw = obj["requests"] {
+            // Proper array (of objects or strings).
+            if let arr = raw as? [Any] { return normalizeRequestList(arr, sharedTask: sharedTask) }
+            // Single object instead of an array.
+            if let one = raw as? [String: Any] {
+                return normalizeRequestItem(one).map { [$0] }
+            }
+            // Double-encoded JSON string: decode and recurse.
+            if let s = raw as? String, let d = s.data(using: .utf8),
+               let inner = try? JSONSerialization.jsonObject(with: d) {
+                if let arr = inner as? [Any] {
+                    return normalizeRequestList(arr, sharedTask: sharedTask)
+                }
+                if let one = inner as? [String: Any] {
+                    return normalizeRequestItem(one).map { [$0] }
+                }
+            }
+            return nil
+        }
+
+        // {agents: [names], task: "..."} — fan the shared task out by name.
+        if let names = obj["agents"] as? [Any], let task = sharedTask {
+            let reqs: [[String: Any]] = names.compactMap { n in
+                guard let name = n as? String, !name.trimmingCharacters(in: .whitespaces).isEmpty
+                else { return nil }
+                var req: [String: Any] = ["agent": name, "task": task]
+                if let p = firstString(in: obj, keys: ["project", "project_name"]) {
+                    req["project"] = p
+                }
+                return req
+            }
+            return reqs.isEmpty ? nil : reqs
+        }
+
+        // Flat single request at the top level.
+        return normalizeRequestItem(obj).map { [$0] }
+    }
+
+    /// Normalize one requests-list element (object, or a bare agent-name string
+    /// when a shared task is available).
+    private static func normalizeRequestList(
+        _ arr: [Any], sharedTask: String?
+    ) -> [[String: Any]]? {
+        let reqs: [[String: Any]] = arr.compactMap { el in
+            if let obj = el as? [String: Any] {
+                var item = normalizeRequestItem(obj)
+                if item?["task"] == nil, let t = sharedTask {
+                    item?["task"] = t
+                }
+                return item
+            }
+            if let name = el as? String, let task = sharedTask,
+               !name.trimmingCharacters(in: .whitespaces).isEmpty {
+                return ["agent": name, "task": task]
+            }
+            return nil
+        }
+        return reqs.isEmpty ? nil : reqs
+    }
+
+    /// Map alternate key spellings onto {project, agent, task}. Returns nil when
+    /// no agent name (or no task) can be recovered.
+    private static func normalizeRequestItem(_ obj: [String: Any]) -> [String: Any]? {
+        guard let agent = firstString(in: obj, keys: ["agent", "agent_name", "name"]),
+              !agent.trimmingCharacters(in: .whitespaces).isEmpty
+        else { return nil }
+        guard let task = firstString(
+            in: obj, keys: ["task", "question", "prompt", "message", "request"])
+        else { return nil }
+        var req: [String: Any] = ["agent": agent, "task": task]
+        if let p = firstString(in: obj, keys: ["project", "project_name"]) {
+            req["project"] = p
+        }
+        return req
+    }
+
+    private static func firstString(in obj: [String: Any], keys: [String]) -> String? {
+        for k in keys {
+            if let s = obj[k] as? String, !s.isEmpty { return s }
+        }
+        return nil
     }
 
     private static func json(_ obj: [String: Any]) -> String {
