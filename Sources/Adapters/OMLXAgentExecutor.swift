@@ -62,7 +62,7 @@ final class OMLXAgentExecutor: Sendable {
                     var round = 0
                     var didUseTool = false       // any tool ran this turn
                     var usedMutator = false      // a todo/plan/message/workspace/delegation tool ran
-                    var autoNudges = 0           // bounded self-continuations
+                    var autoNudges = 0           // CONSECUTIVE unproductive nudges
                     let maxAutoNudges = 2
                     var finalWrapUpSent = false  // bounded-run wrap-up issued
                     iterations: while !Task.isCancelled {
@@ -125,6 +125,12 @@ final class OMLXAgentExecutor: Sendable {
                             break iterations  // final answer already streamed
                         }
                         didUseTool = true
+                        // A real tool call means the last nudge (if any) worked — reset
+                        // the budget so it caps CONSECUTIVE refusals, not total nudges.
+                        // Multi-step tasks (scrape -> blocked -> search -> retry) need
+                        // more than 2 follow-throughs per turn; refuse-loops still
+                        // terminate after 2 nudges in a row without a tool call.
+                        autoNudges = 0
                         if toolCalls.contains(where: {
                             Self.agentScopedTools.contains($0.name)
                                 || Self.nonInjectedMutators.contains($0.name)
