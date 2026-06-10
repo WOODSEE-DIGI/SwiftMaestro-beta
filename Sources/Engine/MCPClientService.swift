@@ -179,7 +179,8 @@ actor MCPClientService {
             return #"{"error": "unknown MCP tool: \#(name)"}"#
         }
         do {
-            let arguments = try Self.convertArguments(call.function.arguments)
+            let schema = connection.tools.first { $0.name == name }?.inputSchema
+            let arguments = try Self.convertArguments(call.function.arguments, schema: schema)
             NSLog("[MCP] -> \(connection.serverName)/\(name) args=\(arguments ?? [:])")
             let (content, isError) = try await connection.client.callTool(
                 name: name, arguments: arguments
@@ -280,11 +281,64 @@ actor MCPClientService {
         }
     }
 
-    /// Convert mlx tool-call arguments (`[String: JSONValue]`) into MCP `[String: Value]`.
-    private static func convertArguments(_ args: [String: JSONValue]) throws -> [String: MCP.Value]? {
+    /// Convert mlx tool-call arguments (`[String: JSONValue]`) into MCP
+    /// `[String: Value]`, coercing stringly-typed values to the tool schema's
+    /// declared types. Qwen-family models emit tool calls as XML, so non-string
+    /// parameters arrive as STRINGS (e.g. formats="[\"markdown\"]",
+    /// onlyMainContent="true"). Native tools tolerate that via lenient decoders,
+    /// but MCP servers with strict validation (e.g. Firecrawl's zod schemas)
+    /// reject it with -32602 errors.
+    private static func convertArguments(
+        _ args: [String: JSONValue], schema: MCP.Value? = nil
+    ) throws -> [String: MCP.Value]? {
         guard !args.isEmpty else { return nil }
         let data = try JSONEncoder().encode(args)
-        return try JSONDecoder().decode([String: MCP.Value].self, from: data)
+        var obj = (try JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+        if let schema,
+           let schemaObj = sendable(from: schema) as? [String: Any],
+           let properties = schemaObj["properties"] as? [String: Any] {
+            obj = coerce(obj, properties: properties)
+        }
+        let coerced = try JSONSerialization.data(withJSONObject: obj)
+        return try JSONDecoder().decode([String: MCP.Value].self, from: coerced)
+    }
+
+    /// Coerce top-level string values to the JSON types the schema declares.
+    /// JSON-parsing a stringified array/object brings its nested types along.
+    /// Values already matching their declared type are left untouched.
+    private static func coerce(
+        _ args: [String: Any], properties: [String: Any]
+    ) -> [String: Any] {
+        var out = args
+        for (key, value) in args {
+            guard let spec = properties[key] as? [String: Any],
+                  let expected = spec["type"] as? String,
+                  let s = value as? String
+            else { continue }
+            switch expected {
+            case "array", "object":
+                if let d = s.data(using: .utf8),
+                   let parsed = try? JSONSerialization.jsonObject(
+                       with: d, options: [.fragmentsAllowed]) {
+                    if expected == "array", parsed is [Any] { out[key] = parsed }
+                    if expected == "object", parsed is [String: Any] { out[key] = parsed }
+                }
+            case "boolean":
+                switch s.lowercased() {
+                case "true", "1", "yes": out[key] = true
+                case "false", "0", "no": out[key] = false
+                default: break
+                }
+            case "integer":
+                if let i = Int(s) { out[key] = i }
+            case "number":
+                if let i = Int(s) { out[key] = i }
+                else if let d = Double(s) { out[key] = d }
+            default:
+                break
+            }
+        }
+        return out
     }
 
     /// Flatten MCP tool result content into a single string for the model.
