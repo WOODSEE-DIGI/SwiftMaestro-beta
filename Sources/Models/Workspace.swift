@@ -24,11 +24,17 @@ struct AgentRecord: Identifiable, Codable, Hashable {
     var name: String
     var kind: AgentKind
     var projectId: UUID?   // nil for the navigator
-    init(id: UUID = UUID(), name: String, kind: AgentKind, projectId: UUID? = nil) {
+    /// Per-agent model override (a `MaestroModel.id`, e.g. `local-qwen3.5-122b`).
+    /// `nil` means use the global default model. Optional so existing
+    /// `workspace.json` (written before this field) still decodes.
+    var modelID: String?
+    init(id: UUID = UUID(), name: String, kind: AgentKind, projectId: UUID? = nil,
+         modelID: String? = nil) {
         self.id = id
         self.name = name
         self.kind = kind
         self.projectId = projectId
+        self.modelID = modelID
     }
 }
 
@@ -132,6 +138,14 @@ final class WorkspaceStore {
     func renameAgent(id: UUID, to name: String) {
         guard let i = agents.firstIndex(where: { $0.id == id }) else { return }
         agents[i].name = name
+        save()
+    }
+
+    /// Set (or clear with `nil`) a per-agent model override and persist.
+    func setModel(_ modelID: String?, for agentID: UUID) {
+        guard let i = agents.firstIndex(where: { $0.id == agentID }) else { return }
+        let trimmed = modelID?.trimmingCharacters(in: .whitespaces)
+        agents[i].modelID = (trimmed?.isEmpty ?? true) ? nil : trimmed
         save()
     }
 

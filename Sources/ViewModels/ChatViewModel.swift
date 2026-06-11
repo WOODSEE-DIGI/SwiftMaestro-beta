@@ -50,7 +50,23 @@ class ChatViewModel: ObservableObject {
         else { UserDefaults.standard.removeObject(forKey: key) }
     }
 
-    func send(engine: MLXInferenceEngine, model: MaestroModel?) {
+    /// MLX-first backend choice: in-process unless the model can't load
+    /// in-process (e.g. the 122B) or the user forced oMLX globally.
+    static func usesInProcess(_ model: MaestroModel) -> Bool {
+        let forceOMLX = (UserDefaults.standard.string(forKey: "models.backend") ?? "inprocess") == "omlx"
+        return model.supportsInProcess && !forceOMLX
+    }
+
+    /// Build the generation backend for a model per the MLX-first policy.
+    static func makeBackend(
+        for model: MaestroModel, engine: MLXInferenceEngine, endpoint: String, sessionKey: String
+    ) -> GenerationBackend {
+        usesInProcess(model)
+            ? InProcessMLXBackend(engine: engine, model: model, sessionKey: sessionKey)
+            : OMLXBackend(endpointURL: endpoint, modelID: model.huggingFaceID)
+    }
+
+    func send(engine: MLXInferenceEngine, catalog: ModelCatalog, model: MaestroModel?) {
         guard !isStreaming else { return }
         // Merge typed images with any local image paths found in the text
         // (e.g. a pasted screenshot path), stripping the path from the prompt.
@@ -91,7 +107,7 @@ class ChatViewModel: ObservableObject {
             // Tool surface: project agents get the normal tools; the Navigator
             // additionally gets the workspace/delegation tools.
             var toolSpecs: [ToolSpec] = []
-            if model.supportsTools {
+            if model.advertisesTools {
                 toolSpecs = MaestroTools.schemas(navigator: isNavigator)
                 if let mcp = engine.mcpService {
                     toolSpecs += await mcp.currentSchemas()
@@ -100,18 +116,35 @@ class ChatViewModel: ObservableObject {
             // Low temperature when tools are active keeps function-calling faithful.
             let effectiveTemp = toolSpecs.isEmpty ? temperature : min(temperature, 0.3)
 
-            // Backend selection: default to the fully on-device in-process MLX
-            // backend (Apple-native, no external server). Opt into the oMLX HTTP
-            // server via the `models.backend` setting set to "omlx". The other
-            // backend serves as fallback if the primary throws.
-            let useOMLX = (defaults.string(forKey: "models.backend") ?? "inprocess") == "omlx"
-            let primaryBackend: GenerationBackend = useOMLX
+            // Backend selection (MLX-first): in-process unless the model can't
+            // load in-process (e.g. the 122B) or the user forced oMLX globally.
+            // Delegated sub-agents resolve their OWN model/backend via the
+            // resolver below (per-agent models).
+            let delegateResolver: DelegateBackendResolver = { agentID in
+                await MainActor.run { () -> (backend: GenerationBackend, modelID: String)? in
+                    guard let agent = MaestroTools.workspace?.agent(id: agentID),
+                          let m = catalog.effectiveModel(for: agent) else { return nil }
+                    let backend = ChatViewModel.makeBackend(
+                        for: m, engine: engine, endpoint: endpoint, sessionKey: agentID.uuidString)
+                    return (backend, m.huggingFaceID)
+                }
+            }
+            let useInProcess = ChatViewModel.usesInProcess(model)
+            let primaryBackend = ChatViewModel.makeBackend(
+                for: model, engine: engine, endpoint: endpoint, sessionKey: agentID)
+            // Fallback only switches to in-process for models that support it;
+            // a !supportsInProcess model (e.g. 122B) never attempts in-process.
+            let fallbackBackend: GenerationBackend? =
+                useInProcess
                 ? OMLXBackend(endpointURL: endpoint, modelID: model.huggingFaceID)
-                : InProcessMLXBackend(engine: engine, model: model)
+                : (model.supportsInProcess
+                    ? InProcessMLXBackend(engine: engine, model: model, sessionKey: agentID)
+                    : nil)
 
             do {
                 let executor = OMLXAgentExecutor(
-                    endpointURL: endpoint, modelID: model.huggingFaceID, backend: primaryBackend)
+                    endpointURL: endpoint, modelID: model.huggingFaceID, backend: primaryBackend,
+                    delegateBackendResolver: delegateResolver)
                 let stream = executor.run(
                     messages: requestMessages, toolSpecs: toolSpecs, mcp: engine.mcpService,
                     temperature: effectiveTemp, topP: topP, thinkingEnabled: thinking,
@@ -125,39 +158,34 @@ class ChatViewModel: ObservableObject {
                     }
                 }
             } catch {
-                // A user cancel (Stop button or sending a new message) must NOT
-                // silently switch backends — that produced stale answers from the
-                // wrong model (e.g. an oMLX 3.6 reply while the in-process 122B was
-                // still loading). Just stop cleanly.
+                // A user cancel must NOT silently switch backends; stop cleanly
+                // (the tail below resets streaming state).
                 if Task.isCancelled || error is CancellationError {
-                    NSLog("[BACKEND] primary (\(useOMLX ? "oMLX" : "in-process")) cancelled — no fallback")
-                    isStreaming = false
-                    currentActivity = nil
-                    saveHistory()
-                    return
-                }
-                NSLog("[BACKEND] primary (\(useOMLX ? "oMLX" : "in-process")) FAILED for model \(model.huggingFaceID): \(error.localizedDescription) — falling back")
-                // Fall back to the alternate backend (in-process <-> oMLX).
-                let fallbackBackend: GenerationBackend = useOMLX
-                    ? InProcessMLXBackend(engine: engine, model: model)
-                    : OMLXBackend(endpointURL: endpoint, modelID: model.huggingFaceID)
-                do {
-                    let executor = OMLXAgentExecutor(
-                        endpointURL: endpoint, modelID: model.huggingFaceID, backend: fallbackBackend)
-                    let stream = executor.run(
-                        messages: requestMessages, toolSpecs: toolSpecs, mcp: engine.mcpService,
-                        temperature: effectiveTemp, topP: topP, thinkingEnabled: thinking,
-                        project: project, workingDirectory: workingDir, agentID: agentID)
-                    for try await output in stream {
-                        guard !Task.isCancelled else { break }
-                        switch output {
-                        case .token(let token): appendToAssistant(token)
-                        case .toolCall(let name): recordToolStep(name)
-                        case .info(let tps): engine.reportExternalTokensPerSecond(tps)
+                    NSLog("[BACKEND] primary (\(useInProcess ? "in-process" : "oMLX")) cancelled — no fallback")
+                } else if let fallbackBackend {
+                    NSLog("[BACKEND] primary (\(useInProcess ? "in-process" : "oMLX")) FAILED for \(model.huggingFaceID): \(error.localizedDescription) — falling back")
+                    do {
+                        let executor = OMLXAgentExecutor(
+                            endpointURL: endpoint, modelID: model.huggingFaceID, backend: fallbackBackend,
+                            delegateBackendResolver: delegateResolver)
+                        let stream = executor.run(
+                            messages: requestMessages, toolSpecs: toolSpecs, mcp: engine.mcpService,
+                            temperature: effectiveTemp, topP: topP, thinkingEnabled: thinking,
+                            project: project, workingDirectory: workingDir, agentID: agentID)
+                        for try await output in stream {
+                            guard !Task.isCancelled else { break }
+                            switch output {
+                            case .token(let token): appendToAssistant(token)
+                            case .toolCall(let name): recordToolStep(name)
+                            case .info(let tps): engine.reportExternalTokensPerSecond(tps)
+                            }
                         }
+                    } catch {
+                        NSLog("[BACKEND] fallback also FAILED: \(error.localizedDescription)")
+                        errorMessage = error.localizedDescription
                     }
-                } catch {
-                    NSLog("[BACKEND] fallback (\(useOMLX ? "in-process" : "oMLX")) also FAILED: \(error.localizedDescription)")
+                } else {
+                    NSLog("[BACKEND] primary (oMLX) FAILED for \(model.huggingFaceID), no in-process fallback: \(error.localizedDescription)")
                     errorMessage = error.localizedDescription
                 }
             }
