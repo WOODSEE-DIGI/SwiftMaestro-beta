@@ -153,9 +153,12 @@ final class ModelCatalog {
             isVision: false,
             localPath: "\(localModelPath)/Qwen3.5-122B-A10B-4bit",
             estimatedMemoryGB: 65,
-            // In-process MLX load of this checkpoint is broken (lm_head quant);
-            // route it to the oMLX server and never fall back to in-process.
-            supportsInProcess: false,
+            // In-process load works with the current mlx-swift-lm loader, which
+            // quantizes a module only when the checkpoint has its `.scales`
+            // (Load.swift). This checkpoint's lm_head IS quantized, so the old
+            // "lm_head not found" failure (an older loader) no longer applies.
+            // If an in-process load still can't proceed, `send` falls back to oMLX.
+            supportsInProcess: true,
             // Confirmed: this checkpoint's chat_template uses the same XML
             // <function>/<parameter> tool format as the 3.6 default
             // (qwen3_5_moe), so the xmlFunction parser applies identically.

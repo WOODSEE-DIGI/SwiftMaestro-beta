@@ -116,6 +116,8 @@ struct ChatView: View {
             Spacer()
             // Per-agent model override. "" picks the global default; any other
             // tag pins this agent (and its delegations) to that model.
+            Image(systemName: "cpu").foregroundStyle(.secondary)
+            Text("This agent").foregroundStyle(.secondary)
             Picker("", selection: agentModelBinding) {
                 Text("Default (global)").tag("")
                 ForEach(catalog.models) { m in
@@ -124,8 +126,8 @@ struct ChatView: View {
             }
             .labelsHidden()
             .pickerStyle(.menu)
-            .frame(maxWidth: 220)
-            .help("Model for this agent (overrides the global default)")
+            .frame(maxWidth: 200)
+            .help("Model used by THIS agent. “Default (global)” follows the toolbar’s Default picker.")
         }
         .font(.caption)
         .foregroundStyle(.secondary)

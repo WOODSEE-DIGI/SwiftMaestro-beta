@@ -23,12 +23,18 @@ struct ContentView: View {
         }
         .toolbar {
             ToolbarItem(placement: .automatic) {
-                Picker("Model", selection: $catalog.selectedModelID) {
-                    ForEach(catalog.models) { model in
-                        Text(model.displayName).tag(Optional(model.id))
+                HStack(spacing: 4) {
+                    Image(systemName: "square.stack.3d.up").foregroundStyle(.secondary)
+                    Text("Default").font(.caption).foregroundStyle(.secondary)
+                    Picker("Default model", selection: $catalog.selectedModelID) {
+                        ForEach(catalog.models) { model in
+                            Text(model.displayName).tag(Optional(model.id))
+                        }
                     }
+                    .labelsHidden()
+                    .frame(width: 165)
                 }
-                .frame(width: 180)
+                .help("Global default model — used by any agent whose model is set to “Default (global)”.")
             }
         }
         .frame(minWidth: 900, minHeight: 620)
