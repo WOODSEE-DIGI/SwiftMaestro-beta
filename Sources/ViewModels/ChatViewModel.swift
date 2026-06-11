@@ -95,7 +95,11 @@ class ChatViewModel: ObservableObject {
         let agentID = agent.id.uuidString
 
         generateTask = Task {
-            let requestMessages = messagesForInference()
+            // Tell the agent what it ACTUALLY runs on, so "which model are you?"
+            // is answered truthfully instead of echoing the agent's name.
+            let modelDesc = "\(model.displayName) (model id \(model.huggingFaceID)), served via "
+                + (ChatViewModel.usesInProcess(model) ? "in-process Apple MLX" : "the local oMLX server")
+            let requestMessages = messagesForInference(modelDescription: modelDesc)
             let defaults = UserDefaults.standard
             let endpoint = defaults.string(forKey: "models.endpointURL") ?? "http://localhost:8012"
             let thinking = (defaults.object(forKey: "tuning.enableThinking") as? Bool) ?? false
@@ -363,7 +367,8 @@ class ChatViewModel: ObservableObject {
         """
 
     static func systemMessage(
-        for agent: AgentRecord, projectName: String?, workingDirectory: String? = nil
+        for agent: AgentRecord, projectName: String?, workingDirectory: String? = nil,
+        modelDescription: String? = nil
     ) -> Message {
         let base: String
         if agent.kind == .navigator {
@@ -388,6 +393,18 @@ class ChatViewModel: ObservableObject {
         }
         var content = base + "\n\n" + Self.toolDiscipline
             + "\n\n" + Self.taskToolGuidance + "\n\n" + Self.appleBuildGuidance
+
+        if let modelDescription, !modelDescription.isEmpty {
+            content += """
+
+
+                MODEL IDENTITY: You are the agent "\(agent.name)". The underlying language \
+                model you actually run on is \(modelDescription). "\(agent.name)" is your \
+                role/name, NOT a model name. If the user asks which model, LLM, or \
+                checkpoint you are, answer with the underlying model above — do not claim \
+                your agent name is a model.
+                """
+        }
 
         if let wd = workingDirectory, !wd.isEmpty {
             content += """
@@ -416,12 +433,13 @@ class ChatViewModel: ObservableObject {
         return Message(role: .system, content: content)
     }
 
-    private func messagesForInference() -> [Message] {
+    private func messagesForInference(modelDescription: String? = nil) -> [Message] {
         // Always regenerate the system prompt so prompt/rule changes (and tool
         // routing guidance) apply to existing chats without needing a clear.
         // The stored leading system message is display-only and is dropped here.
         var output: [Message] = [Self.systemMessage(
-            for: agent, projectName: projectName, workingDirectory: workingDirectory)]
+            for: agent, projectName: projectName, workingDirectory: workingDirectory,
+            modelDescription: modelDescription)]
         for message in messages where message.role != .system {
             // Strip the display-only "🔧 called `name`" markers so the model can't
             // replay/imitate them and fabricate tool calls.
