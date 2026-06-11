@@ -14,15 +14,30 @@ struct MaestroModel: Identifiable, Hashable {
     let isVision: Bool
     let localPath: String?
     let estimatedMemoryGB: Int
+    /// Whether this checkpoint can load via the in-process Apple-MLX backend.
+    /// `false` routes the model to the oMLX server (e.g. the 122B, whose
+    /// in-process load is broken) and prevents any in-process fallback.
+    var supportsInProcess: Bool = true
     /// Whether this model has passed the tool-calling round-trip verification.
     /// Per the verify-per-model rule, only verified models get tools advertised;
     /// unverified models run as plain chat to avoid a broken tool path.
     var supportsTools: Bool = false
+    /// The tool-call wire format this checkpoint emits (XML function/parameter
+    /// for Qwen3-Coder/3.5/3.6, JSON/Hermes for classic Qwen3, etc.). Passed
+    /// explicitly to the in-process loader so parsing never silently depends on
+    /// mlx-swift-lm inferring it from config.json's `model_type`. `nil` = let
+    /// mlx infer (its default is the JSON/Hermes format).
+    var toolCallFormat: ToolCallFormat? = nil
     /// Per-model recommended sampling, used unless the user overrides via the
     /// Tuning tab. Avoids running every model at one global temperature.
     var recTemperature: Double? = nil
     var recTopP: Double? = nil
     var recRepetitionPenalty: Double? = nil
+
+    /// Tools are advertised only when the model is verified AND its tool-call
+    /// format is known, so any emitted calls can actually be parsed. No known
+    /// format ⇒ no tools, regardless of `supportsTools`.
+    var advertisesTools: Bool { supportsTools && toolCallFormat != nil }
 
     var modelConfiguration: ModelConfiguration {
         if let localPath {
@@ -63,6 +78,18 @@ final class ModelCatalog {
         return models.first { $0.id == id } ?? models.first
     }
 
+    /// Look up a model by its catalog id (e.g. `local-qwen3.5-122b`).
+    func model(forID id: String?) -> MaestroModel? {
+        guard let id else { return nil }
+        return models.first { $0.id == id }
+    }
+
+    /// The model an agent should run: its per-agent override if set and still
+    /// known, otherwise the global selected model.
+    func effectiveModel(for agent: AgentRecord) -> MaestroModel? {
+        model(forID: agent.modelID) ?? selectedModel
+    }
+
     init() {
         models = Self.builtInModels
         // Restore the persisted selection if it still resolves to a known model;
@@ -96,6 +123,7 @@ final class ModelCatalog {
             localPath: "\(localModelPath)/swiftmaestro-models/Qwen3.6-35B-A3B-MLX-4bit",
             estimatedMemoryGB: 20,
             supportsTools: true,  // verified: get_current_time round-trip passed
+            toolCallFormat: .xmlFunction,  // emits XML <function>/<parameter> calls
             recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05
         ),
         MaestroModel(
@@ -105,6 +133,9 @@ final class ModelCatalog {
             isVision: false,
             localPath: "\(localModelPath)/swiftmaestro-models/Qwen3-Coder-30B-A3B-Instruct-MLX-4bit",
             estimatedMemoryGB: 17,
+            // Known format (XML <function>/<parameter>), but tools stay off until
+            // a verified round-trip flips supportsTools on.
+            toolCallFormat: .xmlFunction,
             recTemperature: 0.7, recTopP: 0.8, recRepetitionPenalty: 1.05
         ),
         MaestroModel(
@@ -122,9 +153,14 @@ final class ModelCatalog {
             isVision: false,
             localPath: "\(localModelPath)/Qwen3.5-122B-A10B-4bit",
             estimatedMemoryGB: 65,
-            // Same qwen3_5_moe architecture as the 3.6 default, so the
-            // mlx-swift-lm xmlFunction tool parser applies identically.
+            // In-process MLX load of this checkpoint is broken (lm_head quant);
+            // route it to the oMLX server and never fall back to in-process.
+            supportsInProcess: false,
+            // Confirmed: this checkpoint's chat_template uses the same XML
+            // <function>/<parameter> tool format as the 3.6 default
+            // (qwen3_5_moe), so the xmlFunction parser applies identically.
             supportsTools: true,
+            toolCallFormat: .xmlFunction,
             recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05
         ),
         MaestroModel(

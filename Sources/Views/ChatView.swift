@@ -114,6 +114,18 @@ struct ChatView: View {
                 .help("Clear working directory")
             }
             Spacer()
+            // Per-agent model override. "" picks the global default; any other
+            // tag pins this agent (and its delegations) to that model.
+            Picker("", selection: agentModelBinding) {
+                Text("Default (global)").tag("")
+                ForEach(catalog.models) { m in
+                    Text(m.displayName).tag(m.id)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(maxWidth: 220)
+            .help("Model for this agent (overrides the global default)")
         }
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -124,6 +136,22 @@ struct ChatView: View {
     private var workingDirLabel: String {
         guard let wd = vm.workingDirectory else { return "Set working directory…" }
         return (wd as NSString).lastPathComponent
+    }
+
+    /// Live per-agent model override binding ("" = use the global default),
+    /// read from and written back to the workspace record.
+    private var agentModelBinding: Binding<String> {
+        Binding(
+            get: { workspace.agent(id: vm.agent.id)?.modelID ?? "" },
+            set: { workspace.setModel($0.isEmpty ? nil : $0, for: vm.agent.id) }
+        )
+    }
+
+    /// The model this agent will run, resolved from the LIVE workspace record
+    /// (not the stale snapshot captured at view-model init).
+    private var effectiveModelForAgent: MaestroModel? {
+        let live = workspace.agent(id: vm.agent.id) ?? vm.agent
+        return catalog.effectiveModel(for: live)
     }
 
     /// Live task checklist the agent maintains for this chat via the todo tools,
@@ -320,7 +348,7 @@ struct ChatView: View {
                 .textFieldStyle(.plain)
                 .lineLimit(1...5)
                 .onSubmit {
-                    vm.send(engine: engine, model: catalog.selectedModel)
+                    vm.send(engine: engine, catalog: catalog, model: effectiveModelForAgent)
                 }
 
             if vm.isStreaming {
@@ -330,7 +358,7 @@ struct ChatView: View {
                 }
             } else {
                 Button {
-                    vm.send(engine: engine, model: catalog.selectedModel)
+                    vm.send(engine: engine, catalog: catalog, model: effectiveModelForAgent)
                 } label: {
                     Image(systemName: "arrow.up.circle.fill")
                         .foregroundColor(

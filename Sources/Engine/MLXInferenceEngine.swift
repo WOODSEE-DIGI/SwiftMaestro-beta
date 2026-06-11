@@ -130,12 +130,25 @@ final class MLXInferenceEngine {
     /// the native tools.
     var mcpService: MCPClientService?
 
-    /// Persistent prompt KV cache for cross-turn prefix reuse. The big, fixed
-    /// `[system + tools]` block (~3k tokens) dominates prefill; keeping its KV
-    /// across turns and re-prefilling only the changed suffix turns a ~40s wait
-    /// into a one-time cost. Single slot: it "follows" the active conversation
-    /// via common-prefix matching (switching chats just pays one full prefill).
-    private let promptCache = PromptCache()
+    /// Per-agent prompt KV caches, keyed by `sessionKey + "::" + model.id`. The
+    /// big fixed `[system + tools]` prefix dominates prefill; keeping its KV per
+    /// agent lets concurrent agents each reuse their own prefix instead of
+    /// fighting over one shared slot. Looked up on the MainActor; each round
+    /// captures its own `PromptCache` reference for use inside the container's
+    /// isolated closure.
+    private var promptCaches: [String: PromptCache] = [:]
+
+    /// Single cache used only by the legacy `generate(messages:model:)` path
+    /// (no current callers); the live per-agent path uses `promptCaches`.
+    private let legacyPromptCache = PromptCache()
+
+    /// Fetch (or create) the prompt cache for a session key.
+    private func cache(forSession key: String) -> PromptCache {
+        if let existing = promptCaches[key] { return existing }
+        let fresh = PromptCache()
+        promptCaches[key] = fresh
+        return fresh
+    }
 
     init() {
         // Baseline GPU buffer cache. (A larger RAM-scaled cache was tried and
@@ -167,13 +180,21 @@ final class MLXInferenceEngine {
                     from: url, using: tokenizerLoader
                 )
             } else {
+                // Pass the catalog's declared tool-call format explicitly instead
+                // of relying on mlx-swift-lm inferring it from config.json's
+                // `model_type`. This keeps tool-call parsing correct even for
+                // checkpoints whose `model_type` isn't in mlx's infer table.
+                // A `.directory` configuration resolves locally (no download).
+                let configuration = ModelConfiguration(
+                    directory: url, toolCallFormat: model.toolCallFormat)
                 container = try await LLMModelFactory.shared.loadContainer(
-                    from: url, using: tokenizerLoader
+                    from: hubDownloader, using: tokenizerLoader, configuration: configuration
                 )
             }
         } else {
             // Download from Hub
-            let configuration = ModelConfiguration(id: model.huggingFaceID)
+            let configuration = ModelConfiguration(
+                id: model.huggingFaceID, toolCallFormat: model.toolCallFormat)
             let factory: any ModelFactory = model.isVision
                 ? VLMModelFactory.shared
                 : LLMModelFactory.shared
@@ -253,7 +274,7 @@ final class MLXInferenceEngine {
         // source-agnostic and routes each call to whichever source owns it.
         let mcp = mcpService
         let toolSchemas: [ToolSpec]?
-        if model.supportsTools {
+        if model.advertisesTools {
             var specs = MaestroTools.schemas
             if let mcp { specs += await mcp.currentSchemas() }
             toolSchemas = specs.isEmpty ? nil : specs
@@ -278,7 +299,7 @@ final class MLXInferenceEngine {
                             additionalContext: ["enable_thinking": thinkingEnabled]
                         )
                         nonisolated(unsafe) let capturedInput = input
-                        nonisolated(unsafe) let pc = self.promptCache
+                        nonisolated(unsafe) let pc = self.legacyPromptCache
                         let modelID = model.id
                         var pendingCalls: [ToolCall] = []
                         let stream = try await container.perform { context in
@@ -387,6 +408,7 @@ final class MLXInferenceEngine {
         chatTurns: [ChatTurn],
         toolSchemas: [ToolSpec]?,
         model: MaestroModel,
+        sessionKey: String,
         temperature: Double,
         topP: Double,
         thinkingEnabled: Bool,
@@ -412,8 +434,13 @@ final class MLXInferenceEngine {
             chat: chat, tools: toolSchemas,
             additionalContext: ["enable_thinking": thinkingEnabled])
         nonisolated(unsafe) let capturedInput = input
-        nonisolated(unsafe) let pc = self.promptCache
+        nonisolated(unsafe) let pc = cache(forSession: sessionKey + "::" + model.id)
         let modelID = model.id
+        // Per-run random state, scoped to this generation's task so concurrent
+        // agents don't race on MLX's global PRNG (an unevaluated MLXArray).
+        let rngState = MLXRandom.RandomState(
+            seed: DispatchTime.now().uptimeNanoseconds
+                &+ UInt64(bitPattern: Int64(truncatingIfNeeded: sessionKey.hashValue)))
 
         let stream = try await container.perform { context in
             let lmInput = try await context.processor.prepare(input: capturedInput)
@@ -455,9 +482,13 @@ final class MLXInferenceEngine {
             pc.tokens = fullTokens
             pc.modelID = modelID
             pc.isReady = true
-            return try MLXLMCommon.generate(
-                input: inputForGen, cache: cacheForGen,
-                parameters: parameters, context: context)
+            // Wrap generation so the loop Task it spawns inherits the per-run
+            // random state (task-local), keeping concurrent sampling safe.
+            return try withRandomState(rngState) {
+                try MLXLMCommon.generate(
+                    input: inputForGen, cache: cacheForGen,
+                    parameters: parameters, context: context)
+            }
         }
 
         var content = ""
@@ -501,7 +532,8 @@ final class MLXInferenceEngine {
 
     func unloadModel(_ modelID: String) {
         modelCache.removeObject(forKey: modelID as NSString)
-        promptCache.reset()
+        legacyPromptCache.reset()
+        promptCaches.removeAll()
         if case .ready(let name) = state, name == modelID {
             state = .idle
         }
@@ -509,7 +541,8 @@ final class MLXInferenceEngine {
 
     func unloadAll() {
         modelCache.removeAllObjects()
-        promptCache.reset()
+        legacyPromptCache.reset()
+        promptCaches.removeAll()
         state = .idle
     }
 
@@ -524,11 +557,11 @@ final class MLXInferenceEngine {
 
 // MARK: - Prompt KV cache holder
 
-/// Reference-type holder for the persistent prompt KV cache and the exact token
-/// sequence it represents. A class (not a struct) so it can be shared by
-/// reference into the model container's isolated `perform` closure; access is
-/// safe because generations are strictly serialized (see `cancel()` in
-/// `generate`).
+/// Reference-type holder for a prompt KV cache and the exact token sequence it
+/// represents. A class (not a struct) so it can be shared by reference into the
+/// model container's isolated `perform` closure. One instance is kept per agent
+/// session (`MLXInferenceEngine.promptCaches`), so concurrent agents never share
+/// a `PromptCache` and each round mutates only its own.
 private final class PromptCache {
     var caches: [KVCache] = []
     /// The full prompt token sequence most recently fed (prefix of what the

@@ -14,20 +14,26 @@ final class OMLXAgentExecutor: Sendable {
     private let endpointURL: String
     private let modelID: String
     private let backend: GenerationBackend
+    /// When set, delegated sub-agents resolve their OWN backend/model via this
+    /// (per-agent models). When nil, sub-agents reuse the parent's backend.
+    private let delegateBackendResolver: DelegateBackendResolver?
 
     /// Convenience init using the oMLX HTTP backend.
     init(endpointURL: String, modelID: String) {
         self.endpointURL = endpointURL
         self.modelID = modelID
         self.backend = OMLXBackend(endpointURL: endpointURL, modelID: modelID)
+        self.delegateBackendResolver = nil
     }
 
     /// Designated init with an explicit backend. `endpointURL`/`modelID` are kept
     /// for delegation (sub-agents spin up their own oMLX executor).
-    init(endpointURL: String, modelID: String, backend: GenerationBackend) {
+    init(endpointURL: String, modelID: String, backend: GenerationBackend,
+         delegateBackendResolver: DelegateBackendResolver? = nil) {
         self.endpointURL = endpointURL
         self.modelID = modelID
         self.backend = backend
+        self.delegateBackendResolver = delegateBackendResolver
     }
 
     // MARK: - Entry point
@@ -432,10 +438,19 @@ final class OMLXAgentExecutor: Sendable {
         if let mcp { specs += await mcp.currentSchemas(audience: .delegate) }
         NSLog("[DELEGATE] -> '\(target.name)' (project='\(proj)') with \(specs.count) tools")
 
-        // Sub-agent uses the SAME backend as the parent (in-process or oMLX).
-        // Bounded tool budget: a delegated run must terminate and answer (the
-        // wrap-up round in `run` forces a final tool-free reply when spent).
-        let sub = OMLXAgentExecutor(endpointURL: endpointURL, modelID: modelID, backend: backend)
+        // Per-agent model: when a resolver is wired, the sub-agent runs on ITS
+        // own assigned model/backend (in-process or oMLX); otherwise it reuses
+        // the parent's. Bounded tool budget: a delegated run must terminate and
+        // answer (the wrap-up round in `run` forces a final tool-free reply).
+        var subModelID = modelID
+        var subBackend = backend
+        if let delegateBackendResolver, let resolved = await delegateBackendResolver(target.id) {
+            subModelID = resolved.modelID
+            subBackend = resolved.backend
+        }
+        let sub = OMLXAgentExecutor(
+            endpointURL: endpointURL, modelID: subModelID, backend: subBackend,
+            delegateBackendResolver: delegateBackendResolver)
         var narration = ""      // every streamed token (fallback)
         var lastRoundText = ""  // text after the most recent tool call
         do {
@@ -496,10 +511,10 @@ final class OMLXAgentExecutor: Sendable {
     }
 
     /// `ask_project_agents` — delegate to several agents and aggregate the answers.
-    /// Runs sequentially: the on-device model is shared (a single KV-prefix cache),
-    /// so generations must be serialized for correctness; the value here is
-    /// one-shot multi-agent delegation + aggregation. A concurrency-safe server
-    /// backend could run these in parallel.
+    /// Runs the sub-agents CONCURRENTLY: each `delegateOne` builds its own
+    /// backend (per-agent model), uses its own per-agent KV cache, and wraps
+    /// generation in task-local random state, so interleaved on-device runs are
+    /// safe. Output order matches the request order.
     private func delegateMany(argumentsJSON: String, mcp: MCPClientService?) async -> String {
         guard let requests = Self.parseDelegationRequests(argumentsJSON), !requests.isEmpty else {
             return MaestroTools.errorJSON(
@@ -508,18 +523,29 @@ final class OMLXAgentExecutor: Sendable {
                 + "[{\"project\": \"Tests\", \"agent\": \"Agent1-test1\", "
                 + "\"task\": \"Suggest one improvement to the auth plan.\"}]}")
         }
-        NSLog("[DELEGATE] fan-out to \(requests.count) agent(s)")
-        var results: [[String: Any]] = []
-        for req in requests {
-            let r = await delegateOne(
-                projectName: req["project"] as? String,
-                agentName: (req["agent"] as? String) ?? "",
-                task: (req["task"] as? String) ?? "", mcp: mcp)
-            if let err = r.error {
-                results.append(["project": r.project, "agent": r.agent, "error": err])
-            } else {
-                results.append(["project": r.project, "agent": r.agent, "answer": r.answer ?? ""])
+        NSLog("[DELEGATE] fan-out to \(requests.count) agent(s) — concurrent")
+        // Extract Sendable primitives before the task group (a [String: Any]
+        // dictionary is not Sendable and can't cross the task boundary).
+        let parsed: [(project: String?, agent: String, task: String)] = requests.map {
+            ($0["project"] as? String, ($0["agent"] as? String) ?? "", ($0["task"] as? String) ?? "")
+        }
+        let collected = await withTaskGroup(
+            of: (Int, String, String, String?, String?).self
+        ) { group in
+            for (i, p) in parsed.enumerated() {
+                group.addTask { [self] in
+                    let r = await delegateOne(
+                        projectName: p.project, agentName: p.agent, task: p.task, mcp: mcp)
+                    return (i, r.project, r.agent, r.answer, r.error)
+                }
             }
+            var acc: [(Int, String, String, String?, String?)] = []
+            for await t in group { acc.append(t) }
+            return acc
+        }
+        let results: [[String: Any]] = collected.sorted { $0.0 < $1.0 }.map { t in
+            if let err = t.4 { return ["project": t.1, "agent": t.2, "error": err] }
+            return ["project": t.1, "agent": t.2, "answer": t.3 ?? ""]
         }
         return Self.json(["results": results])
     }

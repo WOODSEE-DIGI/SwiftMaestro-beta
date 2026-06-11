@@ -54,3 +54,9 @@ protocol GenerationBackend: Sendable {
         continuation: AsyncThrowingStream<OMLXOutput, Error>.Continuation
     ) async throws -> (content: String, toolCalls: [RoundToolCall])
 }
+
+/// Resolves a delegated target agent's own backend + wire model id, so each
+/// sub-agent can run its assigned model. Built on the MainActor (needs the
+/// engine + catalog). Returns `nil` when the agent/model can't be resolved.
+typealias DelegateBackendResolver =
+    @Sendable (_ agentID: UUID) async -> (backend: GenerationBackend, modelID: String)?

@@ -14,10 +14,13 @@ final class InProcessMLXBackend: GenerationBackend {
 
     let engine: MLXInferenceEngine
     let model: MaestroModel
+    /// Identifies the owning agent so the engine keeps a per-agent KV cache.
+    let sessionKey: String
 
-    init(engine: MLXInferenceEngine, model: MaestroModel) {
+    init(engine: MLXInferenceEngine, model: MaestroModel, sessionKey: String = "default") {
         self.engine = engine
         self.model = model
+        self.sessionKey = sessionKey
     }
 
     func streamRound(
@@ -34,6 +37,7 @@ final class InProcessMLXBackend: GenerationBackend {
             chatTurns: turns,
             toolSchemas: tools,
             model: model,
+            sessionKey: sessionKey,
             temperature: temperature,
             topP: topP,
             thinkingEnabled: thinkingEnabled,
