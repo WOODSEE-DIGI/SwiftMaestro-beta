@@ -125,6 +125,18 @@ class ChatViewModel: ObservableObject {
                     }
                 }
             } catch {
+                // A user cancel (Stop button or sending a new message) must NOT
+                // silently switch backends — that produced stale answers from the
+                // wrong model (e.g. an oMLX 3.6 reply while the in-process 122B was
+                // still loading). Just stop cleanly.
+                if Task.isCancelled || error is CancellationError {
+                    NSLog("[BACKEND] primary (\(useOMLX ? "oMLX" : "in-process")) cancelled — no fallback")
+                    isStreaming = false
+                    currentActivity = nil
+                    saveHistory()
+                    return
+                }
+                NSLog("[BACKEND] primary (\(useOMLX ? "oMLX" : "in-process")) FAILED for model \(model.huggingFaceID): \(error.localizedDescription) — falling back")
                 // Fall back to the alternate backend (in-process <-> oMLX).
                 let fallbackBackend: GenerationBackend = useOMLX
                     ? InProcessMLXBackend(engine: engine, model: model)
@@ -145,6 +157,7 @@ class ChatViewModel: ObservableObject {
                         }
                     }
                 } catch {
+                    NSLog("[BACKEND] fallback (\(useOMLX ? "in-process" : "oMLX")) also FAILED: \(error.localizedDescription)")
                     errorMessage = error.localizedDescription
                 }
             }

@@ -45,7 +45,18 @@ struct MaestroModel: Identifiable, Hashable {
 final class ModelCatalog {
 
     private(set) var models: [MaestroModel] = []
-    var selectedModelID: String?
+    /// Persisted across launches (UserDefaults) so the user's model choice
+    /// sticks instead of resetting to the first catalog entry every launch.
+    var selectedModelID: String? {
+        didSet {
+            guard selectedModelID != oldValue else { return }
+            UserDefaults.standard.set(selectedModelID, forKey: Self.selectedModelKey)
+        }
+    }
+
+    private static let selectedModelKey = "models.selectedModelID"
+    /// Launch default when no selection has been persisted yet.
+    static let defaultModelID = "local-qwen3.5-122b"
 
     var selectedModel: MaestroModel? {
         guard let id = selectedModelID else { return models.first }
@@ -54,7 +65,16 @@ final class ModelCatalog {
 
     init() {
         models = Self.builtInModels
-        selectedModelID = models.first?.id
+        // Restore the persisted selection if it still resolves to a known model;
+        // otherwise fall back to the configured default (then first entry).
+        let saved = UserDefaults.standard.string(forKey: Self.selectedModelKey)
+        if let saved, models.contains(where: { $0.id == saved }) {
+            selectedModelID = saved
+        } else if models.contains(where: { $0.id == Self.defaultModelID }) {
+            selectedModelID = Self.defaultModelID
+        } else {
+            selectedModelID = models.first?.id
+        }
     }
 
     // MARK: - Local models (on ~/Ai-models)
@@ -101,7 +121,11 @@ final class ModelCatalog {
             huggingFaceID: "Qwen3.5-122B-A10B-4bit",
             isVision: false,
             localPath: "\(localModelPath)/Qwen3.5-122B-A10B-4bit",
-            estimatedMemoryGB: 65
+            estimatedMemoryGB: 65,
+            // Same qwen3_5_moe architecture as the 3.6 default, so the
+            // mlx-swift-lm xmlFunction tool parser applies identically.
+            supportsTools: true,
+            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05
         ),
         MaestroModel(
             id: "local-hermes-70b",
