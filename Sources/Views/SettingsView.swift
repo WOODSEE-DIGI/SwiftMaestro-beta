@@ -24,7 +24,7 @@ enum SwiftMaestroSettingsStore {
         else {
             return [
                 AuthorizedFolder(path: "~/.ai-context", enabled: true),
-                AuthorizedFolder(path: "~/GitHub", enabled: true),
+                AuthorizedFolder(path: NSHomeDirectory() + "/GitHub", enabled: true),
             ]
         }
         return folders
@@ -968,7 +968,7 @@ struct MCPServerEntry: Identifiable, Codable {
     var advertisesToDelegates: Bool { advertiseToSubAgents ?? true }
 
     static let xcodeBuildMCPPath =
-        "~/GitHub/AI-ML-Agents/XcodeBuildMCP"
+        NSHomeDirectory() + "/GitHub/AI-ML-Agents/XcodeBuildMCP"
 
     static let defaults: [MCPServerEntry] = [
         MCPServerEntry(name: "ai-context-bridge", command: "/opt/homebrew/bin/node", scriptPath: "~/.ai-context/mcp-server/server.js", env: "", workingDir: "~/Library/Mobile Documents/com~apple~CloudDocs/.ai-context", timeout: 8, enabled: true),
