@@ -29,7 +29,7 @@ final class OMLXServerManager {
     var startupScriptPath: String {
         get {
             UserDefaults.standard.string(forKey: "server.startScriptPath")
-                ?? "~/GitHub/AI-ML-Agents/SwiftMaestro/scripts/start-omlx.sh"
+                ?? (NSHomeDirectory() + "/GitHub/AI-ML-Agents/SwiftMaestro/scripts/start-omlx.sh")
         }
         set { UserDefaults.standard.set(newValue, forKey: "server.startScriptPath") }
     }
