@@ -457,7 +457,7 @@ final class MLXInferenceEngine {
             }
         }
         let container = try await loadModel(model)
-        let repPen = model.recRepetitionPenalty.map { Float($0) } ?? 1.05
+        let repPen = Float(model.tunedRepetitionPenalty)
         let parameters = GenerateParameters(
             temperature: Float(temperature), topP: Float(topP), repetitionPenalty: repPen,
             // Larger prefill chunk (vs 512 default) speeds the big system+tools

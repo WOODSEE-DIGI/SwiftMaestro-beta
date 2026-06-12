@@ -429,48 +429,133 @@ struct ModelsSettingsTab: View {
     }
 }
 
+/// Per-model sampling. A model picker scopes every slider to one model, so it's
+/// always clear WHICH model is being tuned. Values default to that model's
+/// recommended sampling and are saved per `model.id`; "Reset to recommended"
+/// clears the override. The generation path reads the same values via
+/// `MaestroModel.tuned*`, so chat honours exactly what's shown here.
 struct TuningSettingsTab: View {
-    @AppStorage("tuning.temperature") private var temperature: Double = 0.7
-    @AppStorage("tuning.maxTokens") private var maxTokens: Int = 4096
-    @AppStorage("tuning.topP") private var topP: Double = 0.9
-    @AppStorage("tuning.repetitionPenalty") private var repetitionPenalty: Double = 1.05
-    @AppStorage("tuning.contextBudget") private var contextBudget: Int = 18000
-    @AppStorage("tuning.factBudget") private var factBudget: Int = 8000
-    @State private var saveMessage: String?
+    @Environment(ModelCatalog.self) private var catalog
+    /// Thinking/reasoning isn't a per-model recommended value, so it stays a
+    /// global toggle (clearly labelled "all models" below).
+    @AppStorage("tuning.enableThinking") private var enableThinking: Bool = false
+
+    @State private var selectedModelID: String = ""
+    @State private var temperature: Double = 1.0
+    @State private var topP: Double = 0.95
+    @State private var repetitionPenalty: Double = 1.05
+
+    private var model: MaestroModel? {
+        catalog.models.first { $0.id == selectedModelID } ?? catalog.selectedModel
+    }
+    private var recTemp: Double { model?.recTemperature ?? 1.0 }
+    private var recTopP: Double { model?.recTopP ?? 0.95 }
+    private var recRepPen: Double { model?.recRepetitionPenalty ?? 1.05 }
+    private var hasOverride: Bool {
+        isCustom(temperature, recTemp) || isCustom(topP, recTopP)
+            || isCustom(repetitionPenalty, recRepPen)
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                GroupBox("Sampling Parameters") {
-                    VStack(spacing: 12) {
-                        HStack {
-                            Text("Temperature").frame(width: 140, alignment: .leading)
-                            Slider(value: $temperature, in: 0...2, step: 0.05)
-                            Text(String(format: "%.2f", temperature)).monospacedDigit().frame(width: 44)
+                GroupBox("Model") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Picker("Tuning for", selection: $selectedModelID) {
+                            ForEach(catalog.models) { m in Text(m.displayName).tag(m.id) }
                         }
+                        Text("Sampling below is saved for this model and applies wherever it runs — for every agent that uses it. Each model keeps its own values.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .padding(8)
+                }
+
+                GroupBox("Sampling — \(model?.displayName ?? "model")") {
+                    VStack(spacing: 14) {
+                        sliderRow("Temperature", $temperature, range: 0...2, step: 0.05,
+                                  recommended: recTemp, param: "temperature")
+                        sliderRow("Top-P", $topP, range: 0...1, step: 0.05,
+                                  recommended: recTopP, param: "topP")
+                        sliderRow("Repetition Penalty", $repetitionPenalty, range: 1...1.5, step: 0.01,
+                                  recommended: recRepPen, param: "repetitionPenalty")
                         HStack {
-                            Text("Top-P").frame(width: 140, alignment: .leading)
-                            Slider(value: $topP, in: 0...1, step: 0.05)
-                            Text(String(format: "%.2f", topP)).monospacedDigit().frame(width: 44)
+                            Spacer()
+                            Button("Reset to recommended") { resetToRecommended() }
+                                .disabled(!hasOverride)
                         }
                     }
                     .padding(8)
                 }
-                Spacer()
-                HStack {
-                    if let saveMessage {
-                        Text(saveMessage).font(.caption).foregroundStyle(.secondary)
+
+                GroupBox("Generation (all models)") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Toggle("Enable thinking / reasoning", isOn: $enableThinking)
+                        Text("Lets models that support it reason step-by-step before answering. Applies to every model.")
+                            .font(.caption2).foregroundStyle(.secondary)
                     }
-                    Spacer()
-                    Button("Save Settings") {
-                        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "settings.tuning.lastSavedAt")
-                        saveMessage = "Saved"
-                    }
+                    .padding(8)
                 }
+                Spacer()
             }
             .padding()
         }
+        .onAppear {
+            if selectedModelID.isEmpty {
+                selectedModelID = catalog.selectedModel?.id ?? catalog.models.first?.id ?? ""
+            }
+            loadValues()
+        }
+        .onChange(of: selectedModelID) { _, _ in loadValues() }
     }
+
+    @ViewBuilder
+    private func sliderRow(
+        _ label: String, _ value: Binding<Double>,
+        range: ClosedRange<Double>, step: Double, recommended: Double, param: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text(label).frame(width: 150, alignment: .leading)
+                Slider(value: value, in: range, step: step, onEditingChanged: { editing in
+                    if !editing {
+                        UserDefaults.standard.set(
+                            value.wrappedValue,
+                            forKey: MaestroModel.tuningKey(selectedModelID, param))
+                    }
+                })
+                Text(fmt(value.wrappedValue)).monospacedDigit().frame(width: 46)
+            }
+            Text(isCustom(value.wrappedValue, recommended)
+                 ? "Custom · recommended \(fmt(recommended))"
+                 : "Using model recommended (\(fmt(recommended)))")
+                .font(.caption2).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func loadValues() {
+        guard let model else { return }
+        let d = UserDefaults.standard
+        temperature = (d.object(forKey: MaestroModel.tuningKey(model.id, "temperature")) as? Double)
+            ?? (model.recTemperature ?? 1.0)
+        topP = (d.object(forKey: MaestroModel.tuningKey(model.id, "topP")) as? Double)
+            ?? (model.recTopP ?? 0.95)
+        repetitionPenalty = (d.object(forKey: MaestroModel.tuningKey(model.id, "repetitionPenalty")) as? Double)
+            ?? (model.recRepetitionPenalty ?? 1.05)
+    }
+
+    private func resetToRecommended() {
+        let d = UserDefaults.standard
+        for p in ["temperature", "topP", "repetitionPenalty"] {
+            d.removeObject(forKey: MaestroModel.tuningKey(selectedModelID, p))
+        }
+        loadValues()
+    }
+
+    private func isCustom(_ value: Double, _ recommended: Double) -> Bool {
+        abs(value - recommended) > 0.0001
+    }
+    private func fmt(_ v: Double) -> String { String(format: "%.2f", v) }
 }
 
 struct RulesSettingsTab: View {

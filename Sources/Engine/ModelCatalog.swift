@@ -52,6 +52,35 @@ struct MaestroModel: Identifiable, Hashable {
     static func == (lhs: MaestroModel, rhs: MaestroModel) -> Bool { lhs.id == rhs.id }
 }
 
+// MARK: - Per-model tuning
+
+extension MaestroModel {
+    /// UserDefaults key for a per-model sampling override. Absence of the key
+    /// means "use this model's recommended value". Shared by the Tuning tab
+    /// (which writes overrides) and the generation path (which reads them) so
+    /// the key format can never drift between writer and reader.
+    static func tuningKey(_ modelID: String, _ param: String) -> String {
+        "tuning.model.\(modelID).\(param)"
+    }
+
+    /// Effective sampling for THIS model: the user's per-model override if set,
+    /// otherwise the model's recommended value, otherwise a safe default. This
+    /// replaces the old single global `tuning.*` value, which silently clamped
+    /// every model to one temperature/top-P regardless of its recommendation.
+    var tunedTemperature: Double {
+        (UserDefaults.standard.object(forKey: Self.tuningKey(id, "temperature")) as? Double)
+            ?? recTemperature ?? 1.0
+    }
+    var tunedTopP: Double {
+        (UserDefaults.standard.object(forKey: Self.tuningKey(id, "topP")) as? Double)
+            ?? recTopP ?? 0.95
+    }
+    var tunedRepetitionPenalty: Double {
+        (UserDefaults.standard.object(forKey: Self.tuningKey(id, "repetitionPenalty")) as? Double)
+            ?? recRepetitionPenalty ?? 1.05
+    }
+}
+
 // MARK: - ModelCatalog
 
 /// Manages the list of available models — built-in, local, and user-added.
