@@ -99,10 +99,10 @@ class ChatViewModel: ObservableObject {
             let defaults = UserDefaults.standard
             let endpoint = defaults.string(forKey: "models.endpointURL") ?? "http://localhost:8012"
             let thinking = (defaults.object(forKey: "tuning.enableThinking") as? Bool) ?? false
-            let temperature = (defaults.object(forKey: "tuning.temperature") as? Double)
-                ?? model.recTemperature ?? 1.0
-            let topP = (defaults.object(forKey: "tuning.topP") as? Double)
-                ?? model.recTopP ?? 0.95
+            // Per-model sampling: this model's own override (Settings → Tuning)
+            // or its recommended values — never one global value across models.
+            let temperature = model.tunedTemperature
+            let topP = model.tunedTopP
 
             // Tool surface: project agents get the normal tools; the Navigator
             // additionally gets the workspace/delegation tools.
