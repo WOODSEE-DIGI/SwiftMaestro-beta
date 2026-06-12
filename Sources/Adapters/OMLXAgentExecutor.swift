@@ -18,14 +18,6 @@ final class OMLXAgentExecutor: Sendable {
     /// (per-agent models). When nil, sub-agents reuse the parent's backend.
     private let delegateBackendResolver: DelegateBackendResolver?
 
-    /// Convenience init using the oMLX HTTP backend.
-    init(endpointURL: String, modelID: String) {
-        self.endpointURL = endpointURL
-        self.modelID = modelID
-        self.backend = OMLXBackend(endpointURL: endpointURL, modelID: modelID)
-        self.delegateBackendResolver = nil
-    }
-
     /// Designated init with an explicit backend. `endpointURL`/`modelID` are kept
     /// for delegation (sub-agents spin up their own oMLX executor).
     init(endpointURL: String, modelID: String, backend: GenerationBackend,
