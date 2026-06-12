@@ -85,7 +85,12 @@ struct HFHubDownloader: MLXLMCommon.Downloader {
     let hubApi: HubApi
 
     init(token: String? = nil) {
-        self.hubApi = HubApi(hfToken: token)
+        // Land Hub downloads in the app's customer-writable models folder
+        // (internal) instead of the default ~/Documents/huggingface, so every
+        // model lives in one place.
+        self.hubApi = HubApi(
+            downloadBase: URL(fileURLWithPath: ModelCatalog.modelsRoot),
+            hfToken: token)
     }
 
     func download(
@@ -262,7 +267,11 @@ final class MLXInferenceEngine {
         let parameters = GenerateParameters(
             temperature: resolvedTemp,
             topP: resolvedTopP,
-            repetitionPenalty: resolvedRepPenalty
+            repetitionPenalty: resolvedRepPenalty,
+            // Process the (large) system+tools prefix in bigger chunks than the
+            // 512 default to speed first-turn / cache-miss prefill. Per-agent
+            // prefix KV reuse still trims this to the changed suffix on warm turns.
+            prefillStepSize: 1024
         )
 
         // Verify-per-model: only advertise tools to models whose tool round-trip
@@ -428,7 +437,10 @@ final class MLXInferenceEngine {
         let container = try await loadModel(model)
         let repPen = model.recRepetitionPenalty.map { Float($0) } ?? 1.05
         let parameters = GenerateParameters(
-            temperature: Float(temperature), topP: Float(topP), repetitionPenalty: repPen)
+            temperature: Float(temperature), topP: Float(topP), repetitionPenalty: repPen,
+            // Larger prefill chunk (vs 512 default) speeds the big system+tools
+            // prefix on cold turns; warm turns still reuse the per-agent prefix KV.
+            prefillStepSize: 1024)
 
         let input = UserInput(
             chat: chat, tools: toolSchemas,

@@ -370,95 +370,28 @@ private struct AddSecretSheet: View {
 struct ModelsSettingsTab: View {
     @Environment(ModelCatalog.self) private var catalog
     @Environment(MLXInferenceEngine.self) private var engine
-    @Environment(OMLXServerManager.self) private var serverManager
-    @AppStorage("models.endpointURL") private var endpointURL: String = "http://localhost:8012"
-    @AppStorage("models.modelID") private var modelID: String = "Qwen3.6-35B-A3B-MLX-4bit"
-    @AppStorage("models.allowSub70B") private var allowSub70B: Bool = true
-    @AppStorage("models.requiresAPIKey") private var requiresAPIKey: Bool = false
-    @AppStorage("models.backend") private var backend: String = "inprocess"
-    @State private var connectionStatus: String = "Connection not checked yet."
-    @State private var connectionOK: Bool? = nil
-    @State private var allowedModels: [String] = []
+    @AppStorage("models.localRoot") private var modelsRoot: String = ""
     @State private var hubModelID: String = ""
-    @State private var saveMessage: String?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                GroupBox("Generation Backend") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Picker("Backend", selection: $backend) {
-                            Text("In-process (Apple MLX — no server)").tag("inprocess")
-                            Text("oMLX server (HTTP)").tag("omlx")
-                        }
-                        .pickerStyle(.radioGroup)
-                        Text(backend == "omlx"
-                            ? "Generation runs through the local oMLX HTTP server (auto-started on launch)."
-                            : "Generation runs fully on-device via MLX (mlx-swift-lm) — no external server. Takes effect on the next message; relaunch to stop auto-starting oMLX.")
+                GroupBox("Inference") {
+                    Text("All generation runs fully on-device via Apple MLX (mlx-swift-lm). No server, no external runtime.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                }
+                GroupBox("Models folder") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Where MLX models are stored and downloaded. Defaults to this app's Application Support folder (portable to any Mac). Set a custom path to use an existing collection. Relaunch to apply.")
                             .font(.caption).foregroundStyle(.secondary)
+                        TextField(ModelCatalog.modelsRoot, text: $modelsRoot)
+                            .textFieldStyle(.roundedBorder)
                     }
                     .padding(8)
                 }
-                GroupBox("Default LLM Connection") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Selected backend default endpoint: \(endpointURL)")
-                            .font(.caption).foregroundStyle(.secondary)
-                        LabeledContent("Endpoint URL") {
-                            TextField("http://localhost:8012", text: $endpointURL)
-                                .textFieldStyle(.roundedBorder)
-                        }
-                        LabeledContent("Model ID") {
-                            TextField("e.g. mlx-community/Qwen3-8B-4bit", text: $modelID)
-                                .textFieldStyle(.roundedBorder)
-                        }
-                        if let tier = ModelTierPolicy.extractTierB(from: modelID) {
-                            Text("Detected model tier: \(tier, specifier: "%.1f")B")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        if ModelTierPolicy.isBelowPreferredTier(modelID), !allowSub70B {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Sub-70B model detected. Current policy prefers 70B+ for reliability.")
-                                    .font(.caption)
-                                    .foregroundStyle(.red)
-                                Button("Use recommended 122B model") {
-                                    modelID = ModelTierPolicy.recommendedModelID
-                                }
-                                .buttonStyle(.bordered)
-                            }
-                        }
-                        HStack {
-                            Button("Add Current Model to Allow List") {
-                                if !modelID.isEmpty && !allowedModels.contains(modelID) {
-                                    allowedModels.append(modelID)
-                                }
-                            }
-                            Button("Clear Allow List") { allowedModels.removeAll() }
-                        }
-                        if !allowedModels.isEmpty {
-                            Text("Allowed Models").font(.caption.bold())
-                            ForEach(allowedModels, id: \.self) { m in
-                                Text(m).font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
-                        Button("Discover Models") {}
-                        Divider()
-                        HStack {
-                            Circle()
-                                .fill(connectionOK == true ? .green : connectionOK == false ? .red : .gray)
-                                .frame(width: 8, height: 8)
-                            Text(connectionStatus).font(.caption).foregroundStyle(.secondary)
-                        }
-                        HStack {
-                            Toggle("Requires API Key", isOn: $requiresAPIKey)
-                            Spacer()
-                            Button("Test Connection") { testConnection() }
-                        }
-                        Toggle("Allow models below 70B", isOn: $allowSub70B)
-                    }
-                    .padding(8)
-                }
-                GroupBox("Built-in MLX Models (download on first use)") {
+                GroupBox("MLX Models (download from Hugging Face on first use)") {
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(catalog.models) { model in
                             HStack {
@@ -489,87 +422,9 @@ struct ModelsSettingsTab: View {
                     }
                     .padding(8)
                 }
-                GroupBox("oMLX Startup") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Toggle(
-                            "Auto-start oMLX on launch",
-                            isOn: Binding(
-                                get: { serverManager.autoStartEnabled },
-                                set: { serverManager.autoStartEnabled = $0 }
-                            )
-                        )
-                        TextField(
-                            "Startup script path",
-                            text: Binding(
-                                get: { serverManager.startupScriptPath },
-                                set: { serverManager.startupScriptPath = $0 }
-                            )
-                        )
-                        .textFieldStyle(.roundedBorder)
-                        HStack {
-                            Button("Check Health") {
-                                Task { _ = await serverManager.checkHealth() }
-                            }
-                            Button("Start Now") {
-                                serverManager.ensureServerReadyOnLaunch()
-                            }
-                            Text(serverStatusText)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding(8)
-                }
                 Spacer()
-                HStack {
-                    if let saveMessage {
-                        Text(saveMessage).font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("Save Settings") {
-                        SwiftMaestroSettingsStore.saveAllowedModels(allowedModels)
-                        saveMessage = "Saved"
-                    }
-                }
             }
             .padding()
-        }
-        .onAppear {
-            allowedModels = SwiftMaestroSettingsStore.loadAllowedModels()
-        }
-    }
-
-    private var serverStatusText: String {
-        switch serverManager.state {
-        case .idle: return "idle"
-        case .checking: return "checking..."
-        case .launching: return "launching..."
-        case .ready: return "ready"
-        case .failed(let message): return "failed: \(message)"
-        }
-    }
-    private func testConnection() {
-        connectionStatus = "Testing..."
-        connectionOK = nil
-        guard let url = URL(string: endpointURL + "/v1/models") else {
-            connectionStatus = "Invalid URL"
-            connectionOK = false
-            return
-        }
-        Task {
-            do {
-                let (_, response) = try await URLSession.shared.data(from: url)
-                if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
-                    connectionStatus = "Connected ✓"
-                    connectionOK = true
-                } else {
-                    connectionStatus = "HTTP error"
-                    connectionOK = false
-                }
-            } catch {
-                connectionStatus = error.localizedDescription
-                connectionOK = false
-            }
         }
     }
 }

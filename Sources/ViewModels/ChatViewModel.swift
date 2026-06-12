@@ -50,20 +50,16 @@ class ChatViewModel: ObservableObject {
         else { UserDefaults.standard.removeObject(forKey: key) }
     }
 
-    /// MLX-first backend choice: in-process unless the model can't load
-    /// in-process (e.g. the 122B) or the user forced oMLX globally.
-    static func usesInProcess(_ model: MaestroModel) -> Bool {
-        let forceOMLX = (UserDefaults.standard.string(forKey: "models.backend") ?? "inprocess") == "omlx"
-        return model.supportsInProcess && !forceOMLX
-    }
+    /// MLX-only: every model runs fully in-process via mlx-swift-lm. oMLX has
+    /// been removed (the 122B loads in-process too).
+    static func usesInProcess(_ model: MaestroModel) -> Bool { true }
 
-    /// Build the generation backend for a model per the MLX-first policy.
+    /// Build the generation backend for a model — always the in-process Apple-MLX
+    /// backend now that oMLX is gone.
     static func makeBackend(
         for model: MaestroModel, engine: MLXInferenceEngine, endpoint: String, sessionKey: String
     ) -> GenerationBackend {
-        usesInProcess(model)
-            ? InProcessMLXBackend(engine: engine, model: model, sessionKey: sessionKey)
-            : OMLXBackend(endpointURL: endpoint, modelID: model.huggingFaceID)
+        InProcessMLXBackend(engine: engine, model: model, sessionKey: sessionKey)
     }
 
     func send(engine: MLXInferenceEngine, catalog: ModelCatalog, model: MaestroModel?) {
@@ -136,14 +132,8 @@ class ChatViewModel: ObservableObject {
             let useInProcess = ChatViewModel.usesInProcess(model)
             let primaryBackend = ChatViewModel.makeBackend(
                 for: model, engine: engine, endpoint: endpoint, sessionKey: agentID)
-            // Fallback only switches to in-process for models that support it;
-            // a !supportsInProcess model (e.g. 122B) never attempts in-process.
-            let fallbackBackend: GenerationBackend? =
-                useInProcess
-                ? OMLXBackend(endpointURL: endpoint, modelID: model.huggingFaceID)
-                : (model.supportsInProcess
-                    ? InProcessMLXBackend(engine: engine, model: model, sessionKey: agentID)
-                    : nil)
+            // MLX-only: no oMLX fallback backend.
+            let fallbackBackend: GenerationBackend? = nil
 
             do {
                 let executor = OMLXAgentExecutor(

@@ -205,7 +205,6 @@ struct ContentView: View {
 
 struct EngineStatusBar: View {
     @Environment(MLXInferenceEngine.self) private var engine
-    @Environment(OMLXServerManager.self) private var serverManager
 
     var body: some View {
         HStack(spacing: 6) {
@@ -223,23 +222,9 @@ struct EngineStatusBar: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .task {
-            if case .idle = serverManager.state {
-                _ = await serverManager.checkHealth()
-            }
-        }
     }
 
     private var statusColor: Color {
-        if case .idle = engine.state {
-            switch serverManager.state {
-            case .idle: return .gray
-            case .checking, .launching: return .orange
-            case .ready: return .green
-            case .failed: return .red
-            }
-        }
-
         switch engine.state {
         case .idle: return .gray
         case .loading: return .orange
@@ -251,34 +236,12 @@ struct EngineStatusBar: View {
 
     private var statusText: String {
         switch engine.state {
-        case .idle:
-            switch serverManager.state {
-            case .idle:
-                return "Endpoint not checked"
-            case .checking:
-                return "Checking oMLX endpoint…"
-            case .launching:
-                return "Starting oMLX…"
-            case .ready:
-                if serverManager.configuredModelIsAvailable {
-                    return "Endpoint ready · \(shortModelName(serverManager.configuredModelID))"
-                }
-                if !serverManager.availableModelIDs.isEmpty {
-                    return "Endpoint ready · \(serverManager.availableModelIDs.count) models"
-                }
-                return "Endpoint ready"
-            case .failed(let msg):
-                return "Endpoint error: \(msg)"
-            }
+        case .idle: return "Ready"
         case .loading(let name): return "Loading \(name)…"
         case .ready(let name): return name
         case .generating: return "Generating…"
         case .error(let msg): return msg
         }
-    }
-
-    private func shortModelName(_ id: String) -> String {
-        id.count > 32 ? "\(id.prefix(29))…" : id
     }
 }
 

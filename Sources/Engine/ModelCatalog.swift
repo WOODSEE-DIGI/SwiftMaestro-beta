@@ -104,9 +104,27 @@ final class ModelCatalog {
         }
     }
 
-    // MARK: - Local models (on ~/Ai-models)
+    // MARK: - Local models
 
-    static let localModelPath = "~/Ai-models"
+    /// Customer-writable root where MLX models are stored / downloaded. Defaults
+    /// to the app-support "models" dir (portable to ANY macOS user); override via
+    /// the `models.localRoot` UserDefault (Settings → Models) to point at an
+    /// existing collection (e.g. an external drive on a dev machine).
+    nonisolated static var modelsRoot: String {
+        let override = UserDefaults.standard.string(forKey: "models.localRoot")
+        if let override, !override.isEmpty { return override }
+        return WorkspaceStore.appSupportDir()
+            .appendingPathComponent("models", isDirectory: true).path
+    }
+
+    /// Resolve a model's local directory under `modelsRoot` ONLY if it exists on
+    /// disk; otherwise return nil so the model is pulled from Hugging Face Hub by
+    /// its `huggingFaceID` on first use. This is what makes a fresh install work
+    /// with no preinstalled models.
+    nonisolated static func localIfPresent(_ subdir: String) -> String? {
+        let path = (modelsRoot as NSString).appendingPathComponent(subdir)
+        return FileManager.default.fileExists(atPath: path) ? path : nil
+    }
 
     static let builtInModels: [MaestroModel] = [
         // === Local models (already downloaded) ===
@@ -114,13 +132,13 @@ final class ModelCatalog {
         MaestroModel(
             id: "local-qwen3.6-35b-a3b",
             displayName: "Qwen 3.6 35B-A3B (default)",
-            huggingFaceID: "Qwen3.6-35B-A3B-MLX-4bit",
+            huggingFaceID: "lmstudio-community/Qwen3.6-35B-A3B-MLX-4bit",
             // Although this checkpoint is multimodal, we load it through the
             // text MoE path (LLMModelFactory recognizes model_type `qwen3_5_moe`).
             // The VLM pipeline ran ~3x slower (12 vs ~40 tok/s on oMLX); chat is
             // text-only, so the vision tower is pure overhead.
             isVision: false,
-            localPath: "\(localModelPath)/swiftmaestro-models/Qwen3.6-35B-A3B-MLX-4bit",
+            localPath: localIfPresent("swiftmaestro-models/Qwen3.6-35B-A3B-MLX-4bit"),
             estimatedMemoryGB: 20,
             supportsTools: true,  // verified: get_current_time round-trip passed
             toolCallFormat: .xmlFunction,  // emits XML <function>/<parameter> calls
@@ -129,9 +147,9 @@ final class ModelCatalog {
         MaestroModel(
             id: "local-qwen3-coder-30b-a3b",
             displayName: "Qwen 3 Coder 30B-A3B (Instruct)",
-            huggingFaceID: "Qwen3-Coder-30B-A3B-Instruct-MLX-4bit",
+            huggingFaceID: "lmstudio-community/Qwen3-Coder-30B-A3B-Instruct-MLX-4bit",
             isVision: false,
-            localPath: "\(localModelPath)/swiftmaestro-models/Qwen3-Coder-30B-A3B-Instruct-MLX-4bit",
+            localPath: localIfPresent("swiftmaestro-models/Qwen3-Coder-30B-A3B-Instruct-MLX-4bit"),
             estimatedMemoryGB: 17,
             // Known format (XML <function>/<parameter>), but tools stay off until
             // a verified round-trip flips supportsTools on.
@@ -141,17 +159,17 @@ final class ModelCatalog {
         MaestroModel(
             id: "local-qwen3.5-27b",
             displayName: "Qwen 3.5 27B (Opus Distilled)",
-            huggingFaceID: "Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit",
+            huggingFaceID: "mlx-community/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit",
             isVision: false,
-            localPath: "\(localModelPath)/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit",
+            localPath: localIfPresent("Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit"),
             estimatedMemoryGB: 14
         ),
         MaestroModel(
             id: "local-qwen3.5-122b",
             displayName: "Qwen 3.5 122B (A10B)",
-            huggingFaceID: "Qwen3.5-122B-A10B-4bit",
+            huggingFaceID: "mlx-community/Qwen3.5-122B-A10B-4bit",
             isVision: false,
-            localPath: "\(localModelPath)/Qwen3.5-122B-A10B-4bit",
+            localPath: localIfPresent("Qwen3.5-122B-A10B-4bit"),
             estimatedMemoryGB: 65,
             // In-process load works with the current mlx-swift-lm loader, which
             // quantizes a module only when the checkpoint has its `.scales`
@@ -168,50 +186,50 @@ final class ModelCatalog {
         ),
         MaestroModel(
             id: "local-hermes-70b",
-            displayName: "Hermes 4 70B",
-            huggingFaceID: "Hermes-4-70B-MLX-4bit",
+            displayName: "Hermes 4 70B (6-bit)",
+            huggingFaceID: "lmstudio-community/Hermes-4-70B-MLX-6bit",
             isVision: false,
-            localPath: "\(localModelPath)/Hermes-4-70B-MLX-4bit",
-            estimatedMemoryGB: 37
+            localPath: localIfPresent("Hermes-4-70B-MLX-6bit"),
+            estimatedMemoryGB: 56
         ),
         MaestroModel(
             id: "local-magistral-small",
             displayName: "Magistral Small 2509",
-            huggingFaceID: "Magistral-Small-2509-MLX-4bit",
+            huggingFaceID: "lmstudio-community/Magistral-Small-2509-MLX-4bit",
             isVision: false,
-            localPath: "\(localModelPath)/Magistral-Small-2509-MLX-4bit",
+            localPath: localIfPresent("Magistral-Small-2509-MLX-4bit"),
             estimatedMemoryGB: 13
         ),
         MaestroModel(
             id: "local-deepseek-r1-8b",
             displayName: "DeepSeek R1 0528 (Qwen3 8B)",
-            huggingFaceID: "DeepSeek-R1-0528-Qwen3-8B-MLX-4bit",
+            huggingFaceID: "lmstudio-community/DeepSeek-R1-0528-Qwen3-8B-MLX-4bit",
             isVision: false,
-            localPath: "\(localModelPath)/DeepSeek-R1-0528-Qwen3-8B-MLX-4bit",
+            localPath: localIfPresent("DeepSeek-R1-0528-Qwen3-8B-MLX-4bit"),
             estimatedMemoryGB: 4
         ),
         MaestroModel(
             id: "local-gpt-oss-20b",
             displayName: "GPT-OSS 20B",
-            huggingFaceID: "gpt-oss-20b-MXFP4-Q8",
+            huggingFaceID: "mlx-community/gpt-oss-20b-MXFP4-Q8",
             isVision: false,
-            localPath: "\(localModelPath)/gpt-oss-20b-MXFP4-Q8",
+            localPath: localIfPresent("gpt-oss-20b-MXFP4-Q8"),
             estimatedMemoryGB: 11
         ),
         MaestroModel(
             id: "local-deepseek-vl2-small",
             displayName: "DeepSeek VL2 Small (Vision)",
-            huggingFaceID: "deepseek-vl2-small-4bit",
+            huggingFaceID: "mlx-community/deepseek-vl2-small-4bit",
             isVision: true,
-            localPath: "\(localModelPath)/deepseek-vl2-small-4bit",
+            localPath: localIfPresent("deepseek-vl2-small-4bit"),
             estimatedMemoryGB: 9
         ),
         MaestroModel(
             id: "local-nemotron-30b",
             displayName: "Nemotron Cascade 30B (A3B)",
-            huggingFaceID: "Nemotron-Cascade-2-30B-A3B-JANG_4M",
+            huggingFaceID: "JANGQ-AI/Nemotron-Cascade-2-30B-A3B-JANG_4M",
             isVision: false,
-            localPath: "\(localModelPath)/Nemotron-Cascade-2-30B-A3B-JANG_4M",
+            localPath: localIfPresent("Nemotron-Cascade-2-30B-A3B-JANG_4M"),
             estimatedMemoryGB: 1
         ),
 

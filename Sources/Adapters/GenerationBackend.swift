@@ -9,8 +9,7 @@ import MLXLMCommon
 // given the conversation (OpenAI wire format) and advertised tools, it streams
 // content tokens and returns the round's content + any requested tool calls.
 //
-// Two implementations exist:
-//   - OMLXBackend: the local oMLX OpenAI-compatible HTTP endpoint.
+// One implementation exists:
 //   - InProcessMLXBackend: fully in-process via mlx-swift-lm (no external server).
 
 /// Streamed output from a generation round / the agentic loop.
