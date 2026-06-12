@@ -126,6 +126,11 @@ final class MLXInferenceEngine {
     // MARK: - Private
 
     private let modelCache = NSCache<NSString, ModelContainer>()
+    /// The single large model currently held resident. SwiftMaestro keeps ONE
+    /// model in memory at a time: loading a different model first evicts this one
+    /// and returns its buffers to the OS, so a ~65GB model can't be paged out by a
+    /// second resident model (which collapsed 122B decode to ~0.6 tok/s).
+    private var residentModelID: String?
     private let tokenizerLoader = MaestroTokenizerLoader()
     private let hubDownloader = HFHubDownloader()
     private var generateTask: Task<Void, any Error>?
@@ -156,10 +161,15 @@ final class MLXInferenceEngine {
     }
 
     init() {
-        // Baseline GPU buffer cache. (A larger RAM-scaled cache was tried and
-        // regressed throughput on this machine, so we keep the conservative
-        // value while we diagnose the real bottleneck.)
-        MLX.GPU.set(cacheLimit: 20 * 1024 * 1024)
+        // Scale the GPU buffer cache to the machine instead of a fixed 20MB.
+        // The old 20MB cap forced the 122B's large MoE expert buffers to be
+        // freed + reallocated every token, collapsing decode to ~0.5 tok/s;
+        // a machine-scaled cache lets them recycle, matching the ~40 tok/s the
+        // same model reaches under mlx_lm's default memory settings. Uses the
+        // device's recommended working-set size so it scales on any Mac.
+        if let workingSet = MLX.GPU.maxRecommendedWorkingSetBytes() {
+            MLX.Memory.cacheLimit = workingSet
+        }
     }
 
     // MARK: - Model Loading
@@ -172,6 +182,17 @@ final class MLXInferenceEngine {
         if let cached = modelCache.object(forKey: cacheKey) {
             state = .ready(model.displayName)
             return cached
+        }
+
+        // One large model at a time: evict any OTHER resident model and return
+        // its buffers to the OS BEFORE loading the new one, so the new model
+        // stays fully resident instead of being paged against a second model
+        // (two large models exceed the wired working set → decode collapses).
+        if let current = residentModelID, current != model.id {
+            modelCache.removeObject(forKey: current as NSString)
+            promptCaches = promptCaches.filter { !$0.key.hasSuffix("::" + current) }
+            MLX.Memory.clearCache()
+            NSLog("[ENGINE] evicted resident model \(current) before loading \(model.id)")
         }
 
         state = .loading(model.displayName)
@@ -215,6 +236,7 @@ final class MLXInferenceEngine {
         }
 
         modelCache.setObject(container, forKey: cacheKey)
+        residentModelID = model.id
         state = .ready(model.displayName)
         downloadProgress = nil
         return container
@@ -544,8 +566,10 @@ final class MLXInferenceEngine {
 
     func unloadModel(_ modelID: String) {
         modelCache.removeObject(forKey: modelID as NSString)
+        if residentModelID == modelID { residentModelID = nil }
         legacyPromptCache.reset()
         promptCaches.removeAll()
+        MLX.Memory.clearCache()
         if case .ready(let name) = state, name == modelID {
             state = .idle
         }
@@ -553,8 +577,10 @@ final class MLXInferenceEngine {
 
     func unloadAll() {
         modelCache.removeAllObjects()
+        residentModelID = nil
         legacyPromptCache.reset()
         promptCaches.removeAll()
+        MLX.Memory.clearCache()
         state = .idle
     }
 
