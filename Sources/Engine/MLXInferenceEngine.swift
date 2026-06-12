@@ -518,10 +518,20 @@ final class MLXInferenceEngine {
             pc.isReady = true
             // Wrap generation so the loop Task it spawns inherits the per-run
             // random state (task-local), keeping concurrent sampling safe.
-            return try withRandomState(rngState) {
-                try MLXLMCommon.generate(
-                    input: inputForGen, cache: cacheForGen,
-                    parameters: parameters, context: context)
+            // `withError` additionally scopes an MLX error handler: a runtime
+            // MLX error (e.g. an unsupported checkpoint's shape mismatch) is
+            // surfaced as a thrown Swift `MLXError` instead of mlx-swift's
+            // default handler calling `fatalError` and crashing the whole app.
+            // The decode Task mlx-swift spawns inside `generate` inherits this
+            // task-local handler, so it can't fatal-error mid-stream either; the
+            // thrown error propagates out through `container.perform` and is
+            // shown by ChatViewModel as an error message.
+            return try withError {
+                try withRandomState(rngState) {
+                    try MLXLMCommon.generate(
+                        input: inputForGen, cache: cacheForGen,
+                        parameters: parameters, context: context)
+                }
             }
         }
 
