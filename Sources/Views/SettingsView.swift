@@ -382,6 +382,27 @@ struct ModelsSettingsTab: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(8)
                 }
+                GroupBox("Resident Models (loaded in memory)") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("~\(engine.residentUsedBytes / 1_073_741_824) GB of ~\(engine.residentBudgetBytes / 1_073_741_824) GB budget used (reserves 10% of system RAM for the OS). Models stay loaded for instant switching; the least-recently-used is evicted only when a new model won't fit.")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        let list = engine.residentModelsReadout
+                        if list.isEmpty {
+                            Text("No models loaded yet.").font(.caption).foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        } else {
+                            ForEach(list) { item in
+                                HStack {
+                                    Text(item.name).font(.caption)
+                                    Spacer()
+                                    Text("~\(item.gb) GB").font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                    .padding(8)
+                }
                 GroupBox("Models folder") {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Where MLX models are stored and downloaded. Defaults to this app's Application Support folder (portable to any Mac). Set a custom path to use an existing collection. Relaunch to apply.")
