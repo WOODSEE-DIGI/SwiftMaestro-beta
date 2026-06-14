@@ -125,12 +125,33 @@ final class MLXInferenceEngine {
 
     // MARK: - Private
 
-    private let modelCache = NSCache<NSString, ModelContainer>()
-    /// The single large model currently held resident. SwiftMaestro keeps ONE
-    /// model in memory at a time: loading a different model first evicts this one
-    /// and returns its buffers to the OS, so a ~65GB model can't be paged out by a
-    /// second resident model (which collapsed 122B decode to ~0.6 tok/s).
-    private var residentModelID: String?
+    /// Loaded model containers keyed by `model.id`. A plain dictionary (not
+    /// NSCache) so residency is DETERMINISTIC: NSCache evicts at the system's
+    /// discretion under memory pressure, which silently dropped a resident model
+    /// and forced a slow reload-from-disk on the next switch. Eviction here is
+    /// driven solely by `evictResidentToFit` against the memory budget.
+    private var modelCache: [String: ModelContainer] = [:]
+
+    /// Book-keeping for one resident (loaded) model.
+    private struct ResidentModel {
+        let displayName: String
+        let estimatedBytes: Int
+        var lastUsed: UInt64
+    }
+    /// Models currently held resident, keyed by `model.id`. SwiftMaestro keeps as
+    /// MANY models resident as fit within `residentBudgetBytes` (90% of system RAM
+    /// by default), evicting the least-recently-used only when a new load would
+    /// exceed the budget. Medium models (35B, Coder, 27B) coexist for instant
+    /// agent switching, while the total stays within what can be wired — exceeding
+    /// it paged the 122B to ~0.5 tok/s.
+    private var resident: [String: ResidentModel] = [:]
+    /// Monotonic counter for LRU ordering of `resident`.
+    private var lruClock: UInt64 = 0
+    /// The model id of the most recent generation. Used to detect a model switch
+    /// so we can drop the incoming model's prompt KV cache before reusing it —
+    /// reusing a cache built before another model generated crashes (the
+    /// intervening model's MLX evaluation invalidates the cached arrays).
+    private var lastGenerationModelID: String?
     private let tokenizerLoader = MaestroTokenizerLoader()
     private let hubDownloader = HFHubDownloader()
     private var generateTask: Task<Void, any Error>?
@@ -170,6 +191,22 @@ final class MLXInferenceEngine {
         if let workingSet = MLX.GPU.maxRecommendedWorkingSetBytes() {
             MLX.Memory.cacheLimit = workingSet
         }
+
+        // Disable MLX graph compilation globally. mlx-swift-lm's MoE path uses
+        // PROCESS-GLOBAL `compile(shapeless:)` singletons (SwitchLayers.swift:
+        // `compiledSiluProduct`, `weightedExpertSum`) shared by every model. When
+        // we switch models and `MLX.Memory.clearCache()`, a cached compiled graph
+        // can be left referencing freed state; on the next run it errors, and
+        // mlx-swift's compile wrapper returns a SCALAR placeholder (MLXArray(0))
+        // on the error path. That scalar propagates and makes a downstream
+        // `[.ellipsis, ..<k]` index compute an invalid range -> a Swift
+        // "Range requires lowerBound <= upperBound" trap, which crashes the app
+        // and (being a Swift trap, not an MLX error) is NOT catchable by
+        // `withError`. Running eagerly removes the shared compiled-graph state
+        // entirely, so model switching is stable. The only cost is losing kernel
+        // fusion on a couple of elementwise MoE ops (minor vs the win of not
+        // crashing); revisit with a targeted compile-cache clear if needed.
+        compile(enable: false)
     }
 
     // MARK: - Model Loading
@@ -177,23 +214,18 @@ final class MLXInferenceEngine {
     /// Load a model from a ``MaestroModel`` descriptor.
     /// Returns the cached container if already loaded.
     func loadModel(_ model: MaestroModel) async throws -> ModelContainer {
-        let cacheKey = model.id as NSString
-
-        if let cached = modelCache.object(forKey: cacheKey) {
+        if let cached = modelCache[model.id] {
+            touchResident(model.id)
             state = .ready(model.displayName)
             return cached
         }
 
-        // One large model at a time: evict any OTHER resident model and return
-        // its buffers to the OS BEFORE loading the new one, so the new model
-        // stays fully resident instead of being paged against a second model
-        // (two large models exceed the wired working set → decode collapses).
-        if let current = residentModelID, current != model.id {
-            modelCache.removeObject(forKey: current as NSString)
-            promptCaches = promptCaches.filter { !$0.key.hasSuffix("::" + current) }
-            MLX.Memory.clearCache()
-            NSLog("[ENGINE] evicted resident model \(current) before loading \(model.id)")
-        }
+        // Budget-aware residency: evict the least-recently-used model(s) only if
+        // loading this one would push the resident set past the memory budget
+        // (90% of system RAM). Models that fit stay resident together, so
+        // switching between them is instant and they can serve agents concurrently.
+        let newBytes = Self.bytes(gb: model.estimatedMemoryGB)
+        evictResidentToFit(additionalBytes: newBytes, excluding: model.id)
 
         state = .loading(model.displayName)
 
@@ -235,11 +267,69 @@ final class MLXInferenceEngine {
             }
         }
 
-        modelCache.setObject(container, forKey: cacheKey)
-        residentModelID = model.id
+        modelCache[model.id] = container
+        lruClock &+= 1
+        resident[model.id] = ResidentModel(
+            displayName: model.displayName, estimatedBytes: newBytes, lastUsed: lruClock)
         state = .ready(model.displayName)
         downloadProgress = nil
         return container
+    }
+
+    // MARK: - Residency (budget-aware multi-model)
+
+    /// Bytes for a GB value.
+    private static func bytes(gb: Int) -> Int { gb * 1_073_741_824 }
+
+    /// Resident memory budget: total system RAM minus a safety reserve for the OS
+    /// and other apps (default 10%, configurable via
+    /// `models.systemMemoryReserveFraction`). Caps the sum of resident model
+    /// weights so the set stays within what can be wired without paging.
+    var residentBudgetBytes: Int {
+        let raw = UserDefaults.standard.object(forKey: "models.systemMemoryReserveFraction") as? Double
+        let reserve = min(max(raw ?? 0.10, 0.0), 0.5)
+        return Int(Double(ProcessInfo.processInfo.physicalMemory) * (1.0 - reserve))
+    }
+
+    /// Sum of estimated weight bytes across resident models.
+    var residentUsedBytes: Int { resident.values.reduce(0) { $0 + $1.estimatedBytes } }
+
+    /// Mark a resident model as most-recently-used.
+    private func touchResident(_ id: String) {
+        guard resident[id] != nil else { return }
+        lruClock &+= 1
+        resident[id]?.lastUsed = lruClock
+    }
+
+    /// Evict least-recently-used resident models until `additionalBytes` fits
+    /// within `residentBudgetBytes` (never evicting `excluding`). Clears the MLX
+    /// buffer cache once if anything was evicted.
+    private func evictResidentToFit(additionalBytes: Int, excluding: String) {
+        let budget = residentBudgetBytes
+        var evictedAny = false
+        while residentUsedBytes + additionalBytes > budget {
+            let candidate = resident
+                .filter { $0.key != excluding }
+                .min { $0.value.lastUsed < $1.value.lastUsed }
+            guard let (id, info) = candidate else { break }
+            modelCache.removeValue(forKey: id)
+            promptCaches = promptCaches.filter { !$0.key.hasSuffix("::" + id) }
+            resident.removeValue(forKey: id)
+            evictedAny = true
+            NSLog("[ENGINE] evicted LRU model \(id) (~\(info.estimatedBytes / 1_073_741_824)GB) to fit \(excluding); budget \(budget / 1_073_741_824)GB")
+        }
+        if evictedAny { MLX.Memory.clearCache() }
+    }
+
+    /// Snapshot of resident models for the Settings readout, most-recently-used first.
+    var residentModelsReadout: [ResidentModelReadout] {
+        resident
+            .sorted { $0.value.lastUsed > $1.value.lastUsed }
+            .map {
+                ResidentModelReadout(
+                    id: $0.key, name: $0.value.displayName,
+                    gb: $0.value.estimatedBytes / 1_073_741_824)
+            }
     }
 
     // MARK: - Generation
@@ -469,12 +559,34 @@ final class MLXInferenceEngine {
             additionalContext: ["enable_thinking": thinkingEnabled])
         nonisolated(unsafe) let capturedInput = input
         nonisolated(unsafe) let pc = cache(forSession: sessionKey + "::" + model.id)
+        // Cross-model KV-cache safety: reusing THIS model's prompt cache after a
+        // DIFFERENT model generated crashes — the intervening model's evaluation
+        // invalidates the cached arrays, so the reused cache produces a malformed
+        // tensor that traps in the MoE block on the next turn (e.g. Coder's 2nd
+        // message after switching away and back). If the active model changed
+        // since the last generation, drop this model's prompt cache so it does a
+        // clean fresh prefill; consecutive same-model turns still reuse normally.
+        if let last = lastGenerationModelID, last != model.id {
+            pc.reset()
+            NSLog("[ENGINE] model switch \(last) -> \(model.id): reset prompt cache (fresh prefill)")
+        }
+        lastGenerationModelID = model.id
         let modelID = model.id
         // Per-run random state, scoped to this generation's task so concurrent
         // agents don't race on MLX's global PRNG (an unevaluated MLXArray).
         let rngState = MLXRandom.RandomState(
             seed: DispatchTime.now().uptimeNanoseconds
                 &+ UInt64(bitPattern: Int64(truncatingIfNeeded: sessionKey.hashValue)))
+
+        // Wire the resident set during generation so the active model (incl. a
+        // ~65GB 122B) stays resident/non-paged regardless of load order. Sized to
+        // the current resident total and capped at the budget. The custom policy
+        // does not gate admission, so concurrent agent generations aren't
+        // serialized; the cap still bounds total wiring.
+        let wiredTicket = WiredMemoryTicket(
+            size: residentUsedBytes,
+            policy: ResidencyWiredPolicy(capBytes: residentBudgetBytes),
+            kind: .active)
 
         let stream = try await container.perform { context in
             let lmInput = try await context.processor.prepare(input: capturedInput)
@@ -530,7 +642,8 @@ final class MLXInferenceEngine {
                 try withRandomState(rngState) {
                     try MLXLMCommon.generate(
                         input: inputForGen, cache: cacheForGen,
-                        parameters: parameters, context: context)
+                        parameters: parameters, context: context,
+                        wiredMemoryTicket: wiredTicket)
                 }
             }
         }
@@ -575,8 +688,8 @@ final class MLXInferenceEngine {
     }
 
     func unloadModel(_ modelID: String) {
-        modelCache.removeObject(forKey: modelID as NSString)
-        if residentModelID == modelID { residentModelID = nil }
+        modelCache.removeValue(forKey: modelID)
+        resident.removeValue(forKey: modelID)
         legacyPromptCache.reset()
         promptCaches.removeAll()
         MLX.Memory.clearCache()
@@ -586,8 +699,8 @@ final class MLXInferenceEngine {
     }
 
     func unloadAll() {
-        modelCache.removeAllObjects()
-        residentModelID = nil
+        modelCache.removeAll()
+        resident.removeAll()
         legacyPromptCache.reset()
         promptCaches.removeAll()
         MLX.Memory.clearCache()
@@ -600,6 +713,28 @@ final class MLXInferenceEngine {
         var i = 0
         while i < n && a[i] == b[i] { i += 1 }
         return i
+    }
+}
+
+// MARK: - Residency readout / wired policy
+
+/// One resident model for the Settings readout.
+struct ResidentModelReadout: Identifiable, Hashable {
+    let id: String
+    let name: String
+    let gb: Int
+}
+
+/// Wired-memory policy that raises the process wired limit to cover the active
+/// resident set during generation (so a large model like the 122B stays wired and
+/// fast even with other models resident), capped at the resident budget. Unlike
+/// `WiredSumPolicy` it does not implement `canAdmit`, so it never blocks admission
+/// — concurrent agent generations aren't serialized; the cap still bounds total
+/// wiring.
+private struct ResidencyWiredPolicy: WiredMemoryPolicy, Hashable, Sendable {
+    let capBytes: Int
+    func limit(baseline: Int, activeSizes: [Int]) -> Int {
+        min(baseline + activeSizes.reduce(0, +), capBytes)
     }
 }
 
