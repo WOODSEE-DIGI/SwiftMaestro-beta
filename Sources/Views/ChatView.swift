@@ -209,7 +209,7 @@ struct ChatView: View {
                         } label: {
                             Text(entry.plan.title)
                                 .font(.callout.weight(.medium))
-                                .foregroundStyle(.white)
+                                .foregroundStyle(theme.plansCardText)
                                 .multilineTextAlignment(.leading)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.horizontal, 12)
@@ -287,7 +287,7 @@ struct ChatView: View {
                                 .foregroundStyle(item.done ? .green : .secondary)
                             Text(item.title)
                                 .strikethrough(item.done, color: .secondary)
-                                .foregroundStyle(item.done ? .secondary : .primary)
+                                .foregroundStyle(item.done ? Color.secondary : theme.tasksText)
                                 .fixedSize(horizontal: false, vertical: true)
                             Spacer(minLength: 0)
                         }
