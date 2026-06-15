@@ -9,6 +9,7 @@ struct ChatView: View {
     @Environment(PlanStore.self) private var planStore
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(AgentMessageStore.self) private var messageStore
+    @Environment(ThemeStore.self) private var theme
     @Environment(\.openWindow) private var openWindow
     @ObservedObject var vm: ChatViewModel
     @State private var showingPlans = false
@@ -38,6 +39,7 @@ struct ChatView: View {
                 attachmentStrip
                 inputBar
             }
+            .background(theme.chatBackground)
             if !(todoStore.lists[vm.agent.id] ?? []).isEmpty {
                 Divider()
                 todoSidePanel
@@ -213,7 +215,7 @@ struct ChatView: View {
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 10)
                                 .background(
-                                    Color.accentColor,
+                                    theme.accent,
                                     in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                         }
                         .buttonStyle(.plain)
@@ -233,7 +235,7 @@ struct ChatView: View {
             }
         }
         .frame(width: 280)
-        .background(Color.secondary.opacity(0.04))
+        .background(theme.plansPanel)
         .fileExporter(
             isPresented: $exporting,
             document: exportDocument,
@@ -297,7 +299,7 @@ struct ChatView: View {
             }
         }
         .frame(width: 280)
-        .background(Color.secondary.opacity(0.04))
+        .background(theme.tasksPanel)
     }
 
     private func pickWorkingDirectory() {

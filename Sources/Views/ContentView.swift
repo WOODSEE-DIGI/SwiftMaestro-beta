@@ -5,6 +5,7 @@ struct ContentView: View {
     @Environment(ModelCatalog.self) private var catalog
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(AgentMessageStore.self) private var messageStore
+    @Environment(ThemeStore.self) private var theme
     @State private var selectedAgentID: UUID?
     /// Per-agent chat view-models, kept alive so switching agents preserves the
     /// in-flight view state (history itself is persisted by ChatHistoryStore).
@@ -38,6 +39,8 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 900, minHeight: 620)
+        .tint(theme.accent)
+        .preferredColorScheme(theme.appearance.colorScheme)
         #if os(macOS)
         .background(
             WindowSizeConfigurator(
@@ -88,6 +91,10 @@ struct ContentView: View {
             }
         }
         .navigationTitle("SwiftMaestro")
+        // Only replace the list's default material when the user set a custom
+        // sidebar color; otherwise leave the system appearance untouched.
+        .scrollContentBackground(theme.sidebarOverridden ? .hidden : .automatic)
+        .background(theme.sidebarOverridden ? theme.sidebarBackground : Color.clear)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button { showingNewAgent = true } label: {
@@ -106,12 +113,19 @@ struct ContentView: View {
     /// A sidebar agent row showing its name plus a red unread-message badge.
     @ViewBuilder
     private func agentRow(title: String, systemImage: String?, id: UUID) -> some View {
+        let isSelected = selectedAgentID == id
         HStack {
-            if let systemImage {
-                Label(title, systemImage: systemImage)
-            } else {
-                Text(title)
+            Group {
+                if let systemImage {
+                    Label(title, systemImage: systemImage)
+                } else {
+                    Text(title)
+                }
             }
+            // Selected rows keep the system's white-on-accent highlight; others
+            // use the themed sidebar text (default `.primary`, full brightness)
+            // instead of the muted vibrant sidebar label.
+            .foregroundStyle(isSelected ? Color.white : theme.sidebarText)
             Spacer()
             let unread = (messageStore.inboxes[id] ?? []).filter { !$0.read }.count
             if unread > 0 {
