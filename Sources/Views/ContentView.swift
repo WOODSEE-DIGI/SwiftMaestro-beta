@@ -56,6 +56,7 @@ struct ContentView: View {
         .sheet(isPresented: $showOnboarding) {
             OnboardingView(onDone: { onboardingSeen = true; showOnboarding = false })
                 .environment(catalog)
+                .environment(engine)
         }
         .onAppear {
             if selectedAgentID == nil { selectedAgentID = workspace.navigator.id }
