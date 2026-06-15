@@ -24,6 +24,10 @@ struct WindowSizeConfigurator: NSViewRepresentable {
 
     private func configure(window: NSWindow?) {
         guard let window else { return }
+        // SwiftUI's Settings scene builds a preferences-style window whose
+        // styleMask omits `.resizable`, so `.windowResizability` alone never adds
+        // resize handles. Insert it explicitly so the user can drag-resize.
+        window.styleMask.insert(.resizable)
         window.minSize = NSSize(width: minSize.width, height: minSize.height)
 
         let current = window.frame.size
