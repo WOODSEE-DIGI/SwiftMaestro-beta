@@ -88,6 +88,7 @@ enum SwiftMaestroSettingsStore {
 struct SettingsView: View {
     @Environment(ModelCatalog.self) private var catalog
     @Environment(MLXInferenceEngine.self) private var engine
+    @Environment(ThemeStore.self) private var theme
 
     var body: some View {
         TabView {
@@ -95,6 +96,8 @@ struct SettingsView: View {
                 .tabItem { Label("Models", systemImage: "cpu") }
             TuningSettingsTab()
                 .tabItem { Label("Tuning", systemImage: "slider.horizontal.3") }
+            AppearanceSettingsTab()
+                .tabItem { Label("Appearance", systemImage: "paintpalette") }
             RulesSettingsTab()
                 .tabItem { Label("Rules", systemImage: "list.bullet.rectangle") }
             ContextSettingsTab()
@@ -107,6 +110,8 @@ struct SettingsView: View {
                 .tabItem { Label("Secrets", systemImage: "key.fill") }
         }
         .frame(minWidth: 620, idealWidth: 720, minHeight: 680, idealHeight: 760)
+        .tint(theme.accent)
+        .preferredColorScheme(theme.appearance.colorScheme)
         #if os(macOS)
         .background(
             WindowSizeConfigurator(
@@ -115,6 +120,120 @@ struct SettingsView: View {
             )
         )
         #endif
+    }
+}
+
+// MARK: - Appearance tab (theme colors + light/dark)
+
+/// Lets the user tailor UI colors (accent + chat bubble) and force light/dark.
+/// Changes apply live app-wide via `ThemeStore` and persist across launches.
+struct AppearanceSettingsTab: View {
+    @Environment(ThemeStore.self) private var theme
+
+    var body: some View {
+        @Bindable var theme = theme
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                GroupBox("Appearance") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Picker("Theme", selection: $theme.appearance) {
+                            ForEach(ThemeStore.Appearance.allCases) { mode in
+                                Text(mode.label).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        Text("Force light or dark, or follow the system setting.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .padding(8)
+                }
+                GroupBox("Colors") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ColorPicker("Accent color", selection: theme.accentBinding, supportsOpacity: false)
+                        ColorPicker("Your message bubble", selection: theme.userBubbleBinding, supportsOpacity: false)
+                        ColorPicker("Your message text", selection: theme.userBubbleTextBinding, supportsOpacity: false)
+                        Text("Accent tints buttons, selections, and plan cards. The bubble colors "
+                            + "style the messages you send.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        HStack {
+                            Spacer()
+                            Button("Reset to defaults") { theme.resetColors() }
+                                .disabled(!theme.hasColorOverrides)
+                        }
+                    }
+                    .padding(8)
+                }
+                GroupBox("Backgrounds & panels") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ColorPicker("Chat background", selection: theme.chatBackgroundBinding, supportsOpacity: false)
+                        ColorPicker("Sidebar", selection: theme.sidebarBinding, supportsOpacity: false)
+                        ColorPicker("Sidebar text", selection: theme.sidebarTextBinding, supportsOpacity: false)
+                        ColorPicker("Plans panel", selection: theme.plansPanelBinding, supportsOpacity: false)
+                        ColorPicker("Tasks panel", selection: theme.tasksPanelBinding, supportsOpacity: false)
+                        Text("Give each area its own color to visually separate the panels. "
+                            + "Leave the chat background and sidebar unset to follow the system.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .padding(8)
+                }
+                GroupBox("Preview") {
+                    preview.padding(8)
+                }
+                Spacer()
+            }
+            .padding()
+        }
+        .onAppear {
+            // The shared color panel otherwise opens on the grayscale slider for
+            // white/clear/gray starting colors (so it looks "black" until you
+            // click a colored swatch). Force the color wheel and hide the alpha
+            // slider to match our opaque pickers.
+            NSColorPanel.shared.mode = .wheel
+            NSColorPanel.shared.showsAlpha = false
+        }
+    }
+
+    private var preview: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Spacer(minLength: 40)
+                    Text("How do I tune sampling?")
+                        .foregroundStyle(theme.userBubbleText)
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(
+                            theme.userBubble,
+                            in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+                Text("An assistant reply looks like this.")
+                Button("Accent button") {}
+                    .buttonStyle(.borderedProminent)
+                    .tint(theme.accent)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(theme.chatBackground, in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.secondary.opacity(0.2)))
+
+            HStack(spacing: 10) {
+                swatch("Sidebar", theme.sidebarBackground)
+                swatch("Plans", theme.plansPanel)
+                swatch("Tasks", theme.tasksPanel)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func swatch(_ label: String, _ color: Color) -> some View {
+        VStack(spacing: 4) {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(color)
+                .frame(height: 28)
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.secondary.opacity(0.25)))
+            Text(label).font(.caption2).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
     }
 }
 

@@ -29,6 +29,7 @@ struct SwiftMaestroApp: App {
     @State private var todoStore = TodoStore()
     @State private var planStore = PlanStore()
     @State private var messageStore = AgentMessageStore()
+    @State private var theme = ThemeStore()
     private let mcpService = MCPClientService()
 
     var body: some Scene {
@@ -40,6 +41,7 @@ struct SwiftMaestroApp: App {
                 .environment(todoStore)
                 .environment(planStore)
                 .environment(messageStore)
+                .environment(theme)
                 .task {
                     SwiftMaestroDefaultsMigration.applyIfNeeded()
                     // Expose the workspace to native delegation/workspace tools.
@@ -65,6 +67,7 @@ struct SwiftMaestroApp: App {
         WindowGroup("Plan", id: "plan-window", for: PlanWindowID.self) { $target in
             PlanWindowView(target: target)
                 .environment(planStore)
+                .environment(theme)
         }
         .windowResizability(.contentSize)
 
@@ -77,6 +80,7 @@ struct SwiftMaestroApp: App {
                 .environment(todoStore)
                 .environment(planStore)
                 .environment(messageStore)
+                .environment(theme)
         }
         .defaultSize(width: 720, height: 760)
         #endif

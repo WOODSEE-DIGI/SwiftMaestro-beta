@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 
 struct MessageBubble: View {
+    @Environment(ThemeStore.self) private var theme
     let message: Message
     /// True when this is the assistant message currently being streamed. Drives
     /// the live "Thinking…" label and the auto-expand-while-reasoning behavior.
@@ -79,7 +80,7 @@ struct MessageBubble: View {
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
                         .background(bubbleColor, in: bubbleShape)
-                        .foregroundStyle(isUser ? Color.white : Color.primary)
+                        .foregroundStyle(isUser ? theme.userBubbleText : Color.primary)
                 }
             }
             
@@ -175,7 +176,7 @@ struct MessageBubble: View {
     
     private var bubbleColor: Color {
         switch message.role {
-        case .user: return .accentColor
+        case .user: return theme.userBubble
         case .assistant: return Color(.windowBackgroundColor).opacity(0)
         case .system: return .secondary.opacity(0.15)
         }
