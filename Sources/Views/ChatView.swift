@@ -9,9 +9,14 @@ struct ChatView: View {
     @Environment(PlanStore.self) private var planStore
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(AgentMessageStore.self) private var messageStore
+    @Environment(\.openWindow) private var openWindow
     @ObservedObject var vm: ChatViewModel
     @State private var showingPlans = false
     @State private var showingMessages = false
+    // Markdown export driven from the Plans panel's context menu.
+    @State private var exporting = false
+    @State private var exportDocument: MarkdownDocument?
+    @State private var exportName = "Plan"
 
     init(vm: ChatViewModel) {
         _vm = ObservedObject(wrappedValue: vm)
@@ -19,6 +24,10 @@ struct ChatView: View {
 
     var body: some View {
         HStack(spacing: 0) {
+            if !visiblePlans.isEmpty {
+                plansSidePanel
+                Divider()
+            }
             VStack(spacing: 0) {
                 workingDirBar
                 Divider()
@@ -37,9 +46,11 @@ struct ChatView: View {
         .navigationTitle("Chat")
         .task(id: vm.agent.id) {
             // Prime the per-agent todo + plan lists from disk (cache-fill) outside
-            // of body evaluation so persisted items show after relaunch.
+            // of body evaluation so persisted items show after relaunch. Project
+            // plan scopes are primed too so the top-bar Plans count is accurate.
             _ = todoStore.todos(for: vm.agent.id)
             _ = planStore.plans(in: .agent(vm.agent.id))
+            for project in planScopeProjects { _ = planStore.plans(in: .project(project)) }
             _ = messageStore.inbox(for: vm.agent.id)
         }
         .onDrop(of: [.image, .fileURL], isTargeted: nil) { providers in
@@ -66,12 +77,6 @@ struct ChatView: View {
                 }
                 .help("Inbox")
             }
-            ToolbarItem {
-                Button { showingPlans = true } label: {
-                    Image(systemName: "doc.text")
-                }
-                .help("Plans")
-            }
         }
         .sheet(isPresented: $showingPlans) {
             PlansSheet(
@@ -92,6 +97,20 @@ struct ChatView: View {
     private var planScopeProjects: [String] {
         if vm.agent.kind == .navigator { return workspace.projects.map(\.name) }
         return vm.projectName.map { [$0] } ?? []
+    }
+
+    /// Plans visible to this agent (personal + its project scopes), paired with
+    /// their scope so each card can be opened/exported/deleted. Read from the
+    /// primed cache so it doesn't mutate store state during body evaluation.
+    private var visiblePlans: [(scope: PlanScope, plan: Plan)] {
+        var out: [(PlanScope, Plan)] = []
+        let personal = PlanScope.agent(vm.agent.id)
+        out += (planStore.plansByScope[personal.key] ?? []).map { (personal, $0) }
+        for project in planScopeProjects {
+            let scope = PlanScope.project(project)
+            out += (planStore.plansByScope[scope.key] ?? []).map { (scope, $0) }
+        }
+        return out
     }
 
     /// Always-visible base-directory control at the top-left of the chat. Opens a
@@ -154,6 +173,85 @@ struct ChatView: View {
     private var effectiveModelForAgent: MaestroModel? {
         let live = workspace.agent(id: vm.agent.id) ?? vm.agent
         return catalog.effectiveModel(for: live)
+    }
+
+    /// This agent's plans, docked as a left-side panel that mirrors the Tasks
+    /// panel. Each plan is an accent card; tapping (or "Open in Window") opens it
+    /// in a standalone resizable window, and the context menu adds export and
+    /// delete. Shown only when plans exist.
+    @ViewBuilder
+    private var plansSidePanel: some View {
+        let items = visiblePlans
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "doc.text")
+                Text("Plans").font(.headline)
+                Spacer()
+                Text("\(items.count)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button { showingPlans = true } label: {
+                    Image(systemName: "rectangle.expand.vertical")
+                }
+                .buttonStyle(.plain)
+                .help("Open the full plans browser (scopes, delete)")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(items, id: \.plan.id) { entry in
+                        Button {
+                            openPlanWindow(entry)
+                        } label: {
+                            Text(entry.plan.title)
+                                .font(.callout.weight(.medium))
+                                .foregroundStyle(.white)
+                                .multilineTextAlignment(.leading)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 10)
+                                .background(
+                                    Color.accentColor,
+                                    in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Open “\(entry.plan.title)” in a window")
+                        .contextMenu {
+                            Button("Open in Window") { openPlanWindow(entry) }
+                            Button("Export as Markdown…") { startExport(entry.plan) }
+                            Divider()
+                            Button("Delete", role: .destructive) {
+                                planStore.delete(id: entry.plan.id, in: entry.scope)
+                            }
+                        }
+                    }
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .frame(width: 280)
+        .background(Color.secondary.opacity(0.04))
+        .fileExporter(
+            isPresented: $exporting,
+            document: exportDocument,
+            contentType: MarkdownDocument.markdown,
+            defaultFilename: exportName
+        ) { _ in }
+    }
+
+    private func openPlanWindow(_ entry: (scope: PlanScope, plan: Plan)) {
+        openWindow(
+            id: "plan-window",
+            value: PlanWindowID(scopeKey: entry.scope.key, planID: entry.plan.id))
+    }
+
+    private func startExport(_ plan: Plan) {
+        exportDocument = MarkdownDocument(text: "# \(plan.title)\n\n\(plan.content)\n")
+        exportName = plan.title
+        exporting = true
     }
 
     /// Live task checklist the agent maintains for this chat via the todo tools,

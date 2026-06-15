@@ -6,6 +6,7 @@ import SwiftUI
 struct PlansSheet: View {
     @Environment(PlanStore.self) private var planStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openWindow) private var openWindow
     let agentId: UUID
     /// Project names selectable as scopes (besides the personal scope).
     let projects: [String]
@@ -14,6 +15,7 @@ struct PlansSheet: View {
 
     @State private var selectedScopeKey: String = ""
     @State private var selectedPlanID: UUID?
+    @State private var exporting = false
 
     private var scopes: [(label: String, scope: PlanScope)] {
         var out: [(String, PlanScope)] = [("Personal", .agent(agentId))]
@@ -23,6 +25,11 @@ struct PlansSheet: View {
 
     private var selectedScope: PlanScope {
         scopes.first { $0.scope.key == selectedScopeKey }?.scope ?? .agent(agentId)
+    }
+
+    /// The plan currently selected in the list (for export).
+    private var selectedPlan: Plan? {
+        (planStore.plansByScope[selectedScope.key] ?? []).first { $0.id == selectedPlanID }
     }
 
     var body: some View {
@@ -67,6 +74,12 @@ struct PlansSheet: View {
             }
         }
         .frame(width: 760, height: 560)
+        .fileExporter(
+            isPresented: $exporting,
+            document: selectedPlan.map { MarkdownDocument(text: "# \($0.title)\n\n\($0.content)\n") },
+            contentType: MarkdownDocument.markdown,
+            defaultFilename: selectedPlan?.title
+        ) { _ in }
         .task(id: selectedScopeKey) {
             _ = planStore.plans(in: selectedScope)
             if selectedPlanID == nil
@@ -86,9 +99,25 @@ struct PlansSheet: View {
     private func detail(for plans: [Plan]) -> some View {
         if let plan = plans.first(where: { $0.id == selectedPlanID }) {
             VStack(alignment: .leading, spacing: 0) {
-                HStack {
+                HStack(spacing: 12) {
                     Text(plan.title).font(.title3.weight(.semibold))
                     Spacer()
+                    Button {
+                        openWindow(
+                            id: "plan-window",
+                            value: PlanWindowID(scopeKey: selectedScope.key, planID: plan.id))
+                    } label: {
+                        Image(systemName: "macwindow")
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open in a resizable window")
+                    Button {
+                        exporting = true
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .buttonStyle(.plain)
+                    .help("Export as Markdown")
                     Button(role: .destructive) {
                         let next = plans.first(where: { $0.id != plan.id })?.id
                         planStore.delete(id: plan.id, in: selectedScope)
