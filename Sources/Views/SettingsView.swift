@@ -109,14 +109,20 @@ struct SettingsView: View {
             SecretsSettingsTab()
                 .tabItem { Label("Secrets", systemImage: "key.fill") }
         }
-        .frame(minWidth: 620, idealWidth: 720, minHeight: 680, idealHeight: 760)
+        // Grow to fill whatever size the user resizes the window to (maxWidth/
+        // maxHeight: .infinity), while keeping a sensible minimum so controls stay
+        // usable. The window itself is resizable via `.windowResizability` on the
+        // Settings scene.
+        .frame(
+            minWidth: 620, idealWidth: 760, maxWidth: .infinity,
+            minHeight: 680, idealHeight: 820, maxHeight: .infinity)
         .tint(theme.accent)
         .preferredColorScheme(theme.appearance.colorScheme)
         #if os(macOS)
         .background(
             WindowSizeConfigurator(
                 minSize: CGSize(width: 620, height: 680),
-                defaultSize: CGSize(width: 720, height: 760)
+                defaultSize: CGSize(width: 760, height: 820)
             )
         )
         #endif
@@ -134,8 +140,10 @@ struct AppearanceSettingsTab: View {
         @Bindable var theme = theme
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                // Global appearance: window light/dark plus the accent that tints
+                // buttons, selections, and plan cards across the whole app.
                 GroupBox("Appearance") {
-                    VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 10) {
                         Picker("Theme", selection: $theme.appearance) {
                             ForEach(ThemeStore.Appearance.allCases) { mode in
                                 Text(mode.label).tag(mode)
@@ -145,40 +153,58 @@ struct AppearanceSettingsTab: View {
                         .labelsHidden()
                         Text("Force light or dark, or follow the system setting.")
                             .font(.caption).foregroundStyle(.secondary)
+                        Divider()
+                        ColorPicker("Accent color", selection: theme.accentBinding, supportsOpacity: false)
+                        Text("Tints buttons, selections, links, and plan cards app-wide.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                     .padding(8)
                 }
-                GroupBox("Colors") {
+
+                // Panel-by-panel colors, ordered to match the window left-to-right:
+                // sidebar, then the Plans panel, the chat in the middle, then Tasks.
+                // Each panel groups its background with its text color.
+                GroupBox("Sidebar") {
                     VStack(alignment: .leading, spacing: 12) {
-                        ColorPicker("Accent color", selection: theme.accentBinding, supportsOpacity: false)
+                        ColorPicker("Background", selection: theme.sidebarBinding, supportsOpacity: false)
+                        ColorPicker("Text", selection: theme.sidebarTextBinding, supportsOpacity: false)
+                        Text("Agent list on the left. Leave the background unset to follow the system.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .padding(8)
+                }
+                GroupBox("Plans panel") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ColorPicker("Background", selection: theme.plansPanelBinding, supportsOpacity: false)
+                        ColorPicker("Card text", selection: theme.plansTextBinding, supportsOpacity: false)
+                    }
+                    .padding(8)
+                }
+                GroupBox("Chat") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ColorPicker("Background", selection: theme.chatBackgroundBinding, supportsOpacity: false)
                         ColorPicker("Your message bubble", selection: theme.userBubbleBinding, supportsOpacity: false)
                         ColorPicker("Your message text", selection: theme.userBubbleTextBinding, supportsOpacity: false)
-                        Text("Accent tints buttons, selections, and plan cards. The bubble colors "
-                            + "style the messages you send.")
+                        Text("Leave the background unset to follow the system.")
                             .font(.caption).foregroundStyle(.secondary)
-                        HStack {
-                            Spacer()
-                            Button("Reset to defaults") { theme.resetColors() }
-                                .disabled(!theme.hasColorOverrides)
-                        }
                     }
                     .padding(8)
                 }
-                GroupBox("Backgrounds & panels") {
+                GroupBox("Tasks panel") {
                     VStack(alignment: .leading, spacing: 12) {
-                        ColorPicker("Chat background", selection: theme.chatBackgroundBinding, supportsOpacity: false)
-                        ColorPicker("Sidebar", selection: theme.sidebarBinding, supportsOpacity: false)
-                        ColorPicker("Sidebar text", selection: theme.sidebarTextBinding, supportsOpacity: false)
-                        ColorPicker("Plans panel", selection: theme.plansPanelBinding, supportsOpacity: false)
-                        ColorPicker("Tasks panel", selection: theme.tasksPanelBinding, supportsOpacity: false)
-                        Text("Give each area its own color to visually separate the panels. "
-                            + "Leave the chat background and sidebar unset to follow the system.")
-                            .font(.caption).foregroundStyle(.secondary)
+                        ColorPicker("Background", selection: theme.tasksPanelBinding, supportsOpacity: false)
+                        ColorPicker("Text", selection: theme.tasksTextBinding, supportsOpacity: false)
                     }
                     .padding(8)
                 }
+
                 GroupBox("Preview") {
                     preview.padding(8)
+                }
+                HStack {
+                    Spacer()
+                    Button("Reset to defaults") { theme.resetColors() }
+                        .disabled(!theme.hasColorOverrides)
                 }
                 Spacer()
             }

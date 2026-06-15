@@ -39,7 +39,9 @@ final class ThemeStore {
     private static let sidebarKey = "theme.sidebarHex"
     private static let sidebarTextKey = "theme.sidebarTextHex"
     private static let plansPanelKey = "theme.plansPanelHex"
+    private static let plansTextKey = "theme.plansTextHex"
     private static let tasksPanelKey = "theme.tasksPanelHex"
+    private static let tasksTextKey = "theme.tasksTextHex"
 
     /// Subtle neutral tint used by the side panels unless the user overrides them.
     static let defaultPanelTint = Color.secondary.opacity(0.04)
@@ -61,7 +63,9 @@ final class ThemeStore {
     private var sidebarOverride: Color?
     private var sidebarTextOverride: Color?
     private var plansPanelOverride: Color?
+    private var plansTextOverride: Color?
     private var tasksPanelOverride: Color?
+    private var tasksTextOverride: Color?
 
     init() {
         let defaults = UserDefaults.standard
@@ -74,7 +78,9 @@ final class ThemeStore {
         sidebarOverride = defaults.string(forKey: Self.sidebarKey).flatMap(Color.init(hex:))
         sidebarTextOverride = defaults.string(forKey: Self.sidebarTextKey).flatMap(Color.init(hex:))
         plansPanelOverride = defaults.string(forKey: Self.plansPanelKey).flatMap(Color.init(hex:))
+        plansTextOverride = defaults.string(forKey: Self.plansTextKey).flatMap(Color.init(hex:))
         tasksPanelOverride = defaults.string(forKey: Self.tasksPanelKey).flatMap(Color.init(hex:))
+        tasksTextOverride = defaults.string(forKey: Self.tasksTextKey).flatMap(Color.init(hex:))
     }
 
     // MARK: - Effective colors (override, else the app default)
@@ -100,14 +106,20 @@ final class ThemeStore {
     var sidebarText: Color { sidebarTextOverride ?? .primary }
     /// Plans side panel background. Defaults to the subtle neutral tint.
     var plansPanel: Color { plansPanelOverride ?? Self.defaultPanelTint }
+    /// Plan card title text. Cards are accent-colored pills, so this defaults to
+    /// white for contrast.
+    var plansCardText: Color { plansTextOverride ?? .white }
     /// Tasks side panel background. Defaults to the subtle neutral tint.
     var tasksPanel: Color { tasksPanelOverride ?? Self.defaultPanelTint }
+    /// Task (todo) title text for open items. Defaults to `.primary`.
+    var tasksText: Color { tasksTextOverride ?? .primary }
 
     /// True when any color has been customized (drives the Reset button).
     var hasColorOverrides: Bool {
         accentOverride != nil || userBubbleOverride != nil || userBubbleTextOverride != nil
             || chatBackgroundOverride != nil || sidebarOverride != nil || sidebarTextOverride != nil
-            || plansPanelOverride != nil || tasksPanelOverride != nil
+            || plansPanelOverride != nil || plansTextOverride != nil
+            || tasksPanelOverride != nil || tasksTextOverride != nil
     }
 
     // MARK: - ColorPicker bindings
@@ -133,8 +145,14 @@ final class ThemeStore {
     var plansPanelBinding: Binding<Color> {
         Binding(get: { self.plansPanel }, set: { self.setPlansPanel($0) })
     }
+    var plansTextBinding: Binding<Color> {
+        Binding(get: { self.plansCardText }, set: { self.setPlansText($0) })
+    }
     var tasksPanelBinding: Binding<Color> {
         Binding(get: { self.tasksPanel }, set: { self.setTasksPanel($0) })
+    }
+    var tasksTextBinding: Binding<Color> {
+        Binding(get: { self.tasksText }, set: { self.setTasksText($0) })
     }
 
     func setAccent(_ color: Color) { accentOverride = color; persist(Self.accentKey, color) }
@@ -144,7 +162,9 @@ final class ThemeStore {
     func setSidebar(_ color: Color) { sidebarOverride = color; persist(Self.sidebarKey, color) }
     func setSidebarText(_ color: Color) { sidebarTextOverride = color; persist(Self.sidebarTextKey, color) }
     func setPlansPanel(_ color: Color) { plansPanelOverride = color; persist(Self.plansPanelKey, color) }
+    func setPlansText(_ color: Color) { plansTextOverride = color; persist(Self.plansTextKey, color) }
     func setTasksPanel(_ color: Color) { tasksPanelOverride = color; persist(Self.tasksPanelKey, color) }
+    func setTasksText(_ color: Color) { tasksTextOverride = color; persist(Self.tasksTextKey, color) }
 
     /// Clear all color overrides (back to the system accent / white text).
     func resetColors() {
@@ -155,11 +175,13 @@ final class ThemeStore {
         sidebarOverride = nil
         sidebarTextOverride = nil
         plansPanelOverride = nil
+        plansTextOverride = nil
         tasksPanelOverride = nil
+        tasksTextOverride = nil
         for key in [
             Self.accentKey, Self.userBubbleKey, Self.userBubbleTextKey,
             Self.chatBackgroundKey, Self.sidebarKey, Self.sidebarTextKey,
-            Self.plansPanelKey, Self.tasksPanelKey,
+            Self.plansPanelKey, Self.plansTextKey, Self.tasksPanelKey, Self.tasksTextKey,
         ] {
             UserDefaults.standard.removeObject(forKey: key)
         }
