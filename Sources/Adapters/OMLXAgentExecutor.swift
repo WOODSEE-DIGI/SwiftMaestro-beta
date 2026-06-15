@@ -101,22 +101,41 @@ final class OMLXAgentExecutor: Sendable {
                             // (b) CLAIMING in past tense that they changed a plan/
                             // checklist while never calling the tool. Both are caught
                             // here; a bounded nudge makes the call actually happen.
-                            let unfinished = didUseTool && Self.looksUnfinishedIntent(content)
+                            // Only nudge on a FALSE CLAIM: the model asserts (past
+                            // tense) that it changed a plan/checklist/etc. or
+                            // delegated, yet NO such tool ran this turn. We no longer
+                            // nudge on "unfinished intent" narration: capable
+                            // reasoning models (e.g. 122B) interleave <think> and
+                            // narration across many tool rounds, and nudging that
+                            // made them redundantly RE-RUN already-completed tools
+                            // (re-create the same todo list, re-list the directory)
+                            // and misread the automated nudge as a message from the
+                            // user. If the model pauses with narration, just end the
+                            // turn rather than fabricating a correction message.
                             let falseClaim = !usedMutator
                                 && (Self.claimsToolBackedMutation(content)
                                     || Self.claimsDelegation(content))
-                            if !specsThisRound.isEmpty, autoNudges < maxAutoNudges,
-                               unfinished || falseClaim {
+                            if !specsThisRound.isEmpty, autoNudges < maxAutoNudges, falseClaim {
                                 autoNudges += 1
-                                NSLog("[OMLX] auto-nudge \(autoNudges): unfinished=\(unfinished) falseClaim=\(falseClaim)")
+                                NSLog("[OMLX] auto-nudge \(autoNudges): falseClaim")
                                 convo.append(["role": "assistant", "content": content])
+                                // The correction is a USER-role message: a mid-conversation
+                                // SYSTEM message breaks the Qwen Jinja chat template
+                                // (Jinja.TemplateException — it only accepts a system message
+                                // at position 0). To stop the model mistaking this for the
+                                // human ("the user is pointing out that I claimed..."), the
+                                // content explicitly labels itself as an automated check that
+                                // is NOT from the user.
                                 convo.append([
                                     "role": "user",
                                     "content":
-                                        "You have not actually called the tool needed to complete my request. "
+                                        "[automated check — NOT a message from the user] Your previous "
+                                        + "message described an action but did not include the tool call "
+                                        + "that performs it. "
                                         + Self.nudgeInstruction(for: content)
-                                        + " Call ONLY that tool now, with the correct arguments. Do not call "
-                                        + "unrelated tools. NEVER claim something was done unless you actually called the tool.",
+                                        + " Emit ONLY that tool call now, with correct arguments and no "
+                                        + "unrelated tools. If the action was already completed in an "
+                                        + "earlier step, or no tool is needed, just give your final answer.",
                                 ])
                                 continue iterations
                             }
@@ -164,24 +183,6 @@ final class OMLXAgentExecutor: Sendable {
             }
             continuation.onTermination = { _ in task.cancel() }
         }
-    }
-
-    /// Heuristic: does this assistant text read like the model is ABOUT to take
-    /// an action (but hasn't actually called a tool)? Used to auto-continue the
-    /// loop so small models follow through on a promised tool call.
-    private static func looksUnfinishedIntent(_ text: String) -> Bool {
-        let t = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !t.isEmpty else { return false }
-        if t.hasSuffix(":") { return true }
-        let futureCues = ["i'll ", "i will ", "i am going to ", "i'm going to ",
-                          "let me ", "now i", "next, i", "next i", "i can now ", "i need to "]
-        let actionVerbs = ["mark", "update", "set ", "call ", "create", "add ",
-                           "remove", "delete", "run ", "fix", "make ", "check ",
-                           "read ", "find ", "search", "review", "look ",
-                           "try ", "use ", "scrape", "fetch", "get "]
-        let hasCue = futureCues.contains { t.contains($0) }
-        let hasVerb = actionVerbs.contains { t.contains($0) }
-        return hasCue && hasVerb
     }
 
     /// Pick a SPECIFIC instruction naming just the one tool that matches what the
