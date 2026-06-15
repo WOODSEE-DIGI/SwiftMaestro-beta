@@ -1,47 +1,76 @@
 #!/bin/bash
-# Build script for SwiftMaestro
-# Creates release build ready for .dmg packaging
+# Build script for SwiftMaestro.
+#
+# Default: a Developer ID-signed, hardened-runtime Release build ready for
+# notarization + .dmg packaging (see package.sh). Signing settings come from the
+# Xcode project (project.yml) and can be overridden via the env vars below. No
+# developer name is hard-coded here — the identity is matched by kind.
+#
+#   CONFIG=Release|Debug      (default Release)
+#   TEAM_ID=<team>            (default 3BMZ2ULZ54)
+#   SIGN_IDENTITY=<name>      (default "Developer ID Application")
+#   UNSIGNED=1                (ad-hoc, skip Developer ID — local testing only)
+set -euo pipefail
 
-set -e
+SCHEME="SwiftMaestro"
+PROJECT="SwiftMaestro.xcodeproj"
+CONFIG="${CONFIG:-Release}"
+TEAM_ID="${TEAM_ID:-3BMZ2ULZ54}"
+SIGN_IDENTITY="${SIGN_IDENTITY:-Developer ID Application}"
+BUILD_ROOT="$PWD/build"
 
-echo "=========================================="
-echo "SwiftMaestro Build Script"
-echo "=========================================="
-echo ""
+echo "=== SwiftMaestro build ($CONFIG) ==="
 
-# Check for xcodegen
-if ! command -v xcodegen &> /dev/null; then
-    echo "❌ xcodegen not found. Installing..."
+if ! command -v xcodegen >/dev/null 2>&1; then
+    echo "xcodegen not found — installing via Homebrew…"
     brew install xcodegen
 fi
-
-# Generate Xcode project
-echo "📝 Generating Xcode project..."
 xcodegen generate
 
-# Check build configuration
-BUILD_TYPE="${1:-Release}"
-echo "🔨 Building in $BUILD_TYPE mode..."
+# Start from a clean output dir. We manage this ourselves because `xcodebuild
+# clean` refuses to delete a SYMROOT it did not create (a pre-existing ./build).
+rm -rf "$BUILD_ROOT"
 
-# Build the app
-xcodebuild -scheme SwiftMaestro \
-           -configuration $BUILD_TYPE \
-           -destination 'platform=macOS,arch=arm64' \
-           clean build \
-           CODE_SIGN_IDENTITY="-" \
-           CODE_SIGNING_REQUIRED=NO \
-           CODE_SIGNING_ALLOWED=NO
+if [ "${UNSIGNED:-0}" = "1" ]; then
+    echo "Building ad-hoc signed (local testing only — not for distribution)."
+    xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration "$CONFIG" \
+        -destination 'platform=macOS,arch=arm64' \
+        -derivedDataPath "$BUILD_ROOT/DerivedData" \
+        SYMROOT="$BUILD_ROOT" \
+        CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="-" \
+        build
+else
+    echo "Building Developer ID signed (team $TEAM_ID)…"
+    xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration "$CONFIG" \
+        -destination 'platform=macOS,arch=arm64' \
+        -derivedDataPath "$BUILD_ROOT/DerivedData" \
+        SYMROOT="$BUILD_ROOT" \
+        CODE_SIGN_STYLE=Manual \
+        DEVELOPMENT_TEAM="$TEAM_ID" \
+        CODE_SIGN_IDENTITY="$SIGN_IDENTITY" \
+        build
+fi
 
-# Find the built app
-APP_PATH="build/$BUILD_TYPE/SwiftMaestro.app"
-
+APP_PATH="$BUILD_ROOT/$CONFIG/$SCHEME.app"
 if [ ! -d "$APP_PATH" ]; then
-    echo "❌ Build failed. App not found at $APP_PATH"
+    echo "Build failed: app not found at $APP_PATH"
     exit 1
 fi
 
 echo ""
-echo "✅ Build successful!"
-echo "📦 App location: $APP_PATH"
+echo "Verifying code signature…"
+# --deep is deprecated for verification; --strict is the modern check. Debug
+# 'debug dylib' builds trip a known codesign --verify quirk, so only the
+# distribution (non-Debug) build treats a verify failure as fatal.
+if codesign --verify --strict --verbose=2 "$APP_PATH"; then
+    echo "Signature verified."
+elif [ "$CONFIG" = "Debug" ]; then
+    echo "(Debug 'debug dylib' build — codesign --verify quirk; safe to ignore.)"
+else
+    echo "Signature verification FAILED."; exit 1
+fi
+codesign -dvv "$APP_PATH" 2>&1 | grep -E "Authority|TeamIdentifier|Identifier" || true
+
 echo ""
-echo "Next step: Run ./scripts/package.sh to create .dmg"
+echo "Build OK: $APP_PATH"
+echo "Next: ./scripts/package.sh   (creates + notarizes the .dmg)"

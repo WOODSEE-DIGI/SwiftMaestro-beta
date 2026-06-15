@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Not sandboxed: SwiftMaestro needs full system access (local model files,
+	     authorized folders, MCP subprocesses). Distributed via Developer ID +
+	     notarization, not the App Store. -->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+	<!-- Hugging Face Hub model downloads, optional MCP/web tools. -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<!-- User-chosen files/folders via open panels. -->
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+	<!-- Apple Events automation (e.g. Notes) for the native macOS integration. -->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+</dict>
+</plist>

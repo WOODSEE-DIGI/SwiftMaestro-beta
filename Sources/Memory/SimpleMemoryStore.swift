@@ -23,7 +23,20 @@ final class SimpleMemoryStore {
             self.baseDir = home.appendingPathComponent(".ai-context/memory")
         }
     }
-    
+
+    /// Create the shared `~/.ai-context/memory` subtree up front so a fresh,
+    /// self-contained install has its data directory before the first write.
+    /// Idempotent: existing directories are left untouched.
+    static func ensureScaffold() {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let memory = home.appendingPathComponent(".ai-context/memory", isDirectory: true)
+        for sub in ["conversations/swiftmaestro", "knowledge", "context", "skills"] {
+            try? FileManager.default.createDirectory(
+                at: memory.appendingPathComponent(sub, isDirectory: true),
+                withIntermediateDirectories: true)
+        }
+    }
+
     // MARK: - Storage
     
     func save(_ content: String, at uri: MaestroURI) throws {
@@ -97,7 +110,56 @@ final class SimpleMemoryStore {
         }
         return messages.isEmpty ? nil : messages
     }
-    
+
+    // MARK: - Listing & search (native memory tools)
+
+    /// Directory backing a kind (e.g. .knowledge -> <base>/knowledge).
+    func directory(for kind: MaestroURI.Kind) -> URL {
+        let kindDir = Self.kindDirectoryMap[kind] ?? kind.rawValue
+        return baseDir.appendingPathComponent(kindDir, isDirectory: true)
+    }
+
+    /// Relative slash paths of every entry stored under a kind (recursive).
+    func entries(kind: MaestroURI.Kind) -> [String] {
+        let dir = directory(for: kind)
+        guard let walker = FileManager.default.enumerator(
+            at: dir, includingPropertiesForKeys: [.isRegularFileKey]) else { return [] }
+        var out: [String] = []
+        for case let url as URL in walker {
+            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true
+            else { continue }
+            out.append(url.path.replacingOccurrences(of: dir.path + "/", with: ""))
+        }
+        return out.sorted()
+    }
+
+    /// Full-text search across the whole store. Returns (relative path, snippet).
+    func search(_ query: String, limit: Int = 20) -> [(path: String, snippet: String)] {
+        guard let walker = FileManager.default.enumerator(
+            at: baseDir, includingPropertiesForKeys: [.isRegularFileKey]) else { return [] }
+        let needle = query.lowercased()
+        var hits: [(path: String, snippet: String)] = []
+        for case let url as URL in walker {
+            if hits.count >= limit { break }
+            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true,
+                  let content = try? String(contentsOf: url, encoding: .utf8),
+                  content.lowercased().contains(needle) else { continue }
+            let rel = url.path.replacingOccurrences(of: baseDir.path + "/", with: "")
+            hits.append((rel, Self.snippet(content, around: needle)))
+        }
+        return hits
+    }
+
+    private static func snippet(_ content: String, around needle: String, width: Int = 160) -> String {
+        let collapsed = content.replacingOccurrences(of: "\n", with: " ")
+        let lower = collapsed.lowercased()
+        guard let r = lower.range(of: needle) else { return String(collapsed.prefix(width)) }
+        let startOffset = max(0, lower.distance(from: lower.startIndex, to: r.lowerBound) - 40)
+        let s = collapsed.index(collapsed.startIndex, offsetBy: startOffset)
+        let e = collapsed.index(s, offsetBy: min(width, collapsed.distance(from: s, to: collapsed.endIndex)))
+        return String(collapsed[s..<e]).trimmingCharacters(in: .whitespaces)
+    }
+
     // MARK: - Private
     
     private func url(for uri: MaestroURI) -> URL {

@@ -513,10 +513,9 @@ class ChatViewModel: ObservableObject {
 
 
                 WORKING DIRECTORY: \(wd)
-                This is your base directory. Build ABSOLUTE paths from it when calling file \
-                and search tools (read_file, write_file, edit_file, list_dir, grep_code, \
-                glob_files) instead of guessing or searching for the project, and it is the \
-                default working directory for execute_command. If a relative path is given, \
+                This is your base directory. Build ABSOLUTE paths from it when calling the \
+                file tools (read_file, write_file, list_dir). File access is limited to the \
+                user's authorized folders (Settings → Context). If a relative path is given, \
                 resolve it against this directory.
                 """
         }

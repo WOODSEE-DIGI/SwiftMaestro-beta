@@ -22,9 +22,10 @@ enum SwiftMaestroSettingsStore {
             let data = UserDefaults.standard.data(forKey: authorizedFoldersKey),
             let folders = try? JSONDecoder().decode([AuthorizedFolder].self, from: data)
         else {
+            let home = NSHomeDirectory()
             return [
-                AuthorizedFolder(path: "~/.ai-context", enabled: true),
-                AuthorizedFolder(path: NSHomeDirectory() + "/GitHub", enabled: true),
+                AuthorizedFolder(path: home + "/.ai-context", enabled: true),
+                AuthorizedFolder(path: home + "/Documents", enabled: true),
             ]
         }
         return folders
@@ -1073,14 +1074,9 @@ struct MCPServerEntry: Identifiable, Codable {
     var advertisesToAgents: Bool { advertise ?? true }
     var advertisesToDelegates: Bool { advertiseToSubAgents ?? true }
 
-    static let xcodeBuildMCPPath =
-        NSHomeDirectory() + "/GitHub/AI-ML-Agents/XcodeBuildMCP"
-
-    static let defaults: [MCPServerEntry] = [
-        MCPServerEntry(name: "ai-context-bridge", command: "/opt/homebrew/bin/node", scriptPath: "~/.ai-context/mcp-server/server.js", env: "", workingDir: "~/Library/Mobile Documents/com~apple~CloudDocs/.ai-context", timeout: 8, enabled: true),
-        MCPServerEntry(name: "crawlkit-mcp", command: "/opt/homebrew/bin/node", scriptPath: "~/.ai-context/mcp-crawlkit/server.js", env: "", workingDir: "", timeout: 8, enabled: true),
-        MCPServerEntry(name: "xcodebuildmcp", command: "/opt/homebrew/bin/node", scriptPath: "\(xcodeBuildMCPPath)/build/cli.js", env: "XCODEBUILDMCP_ENABLED_WORKFLOWS=session-management,project-discovery,macos,simulator,utilities", workingDir: xcodeBuildMCPPath, timeout: 15, enabled: true, args: ["\(xcodeBuildMCPPath)/build/cli.js", "mcp"]),
-        MCPServerEntry(name: "firecrawl-mcp", command: "/opt/homebrew/bin/node", scriptPath: "", env: "", workingDir: "", timeout: 8, enabled: false),
-        MCPServerEntry(name: "playwright", command: "/opt/homebrew/bin/node", scriptPath: "", env: "", workingDir: "", timeout: 8, enabled: false),
-    ]
+    /// No MCP servers are bundled by default: a fresh, self-contained install
+    /// ships nothing tied to a specific machine. The in-process tools (plans,
+    /// todos, messaging, workspace, time) work without any server. Testers add
+    /// their own servers in Settings → MCP, which persist to UserDefaults.
+    static let defaults: [MCPServerEntry] = []
 }
