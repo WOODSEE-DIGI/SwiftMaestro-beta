@@ -358,22 +358,26 @@ struct ChatView: View {
             .buttonStyle(.plain)
             .help("Attach image")
 
-            TextField("Message...", text: $vm.inputText, axis: .vertical)
+            TextField(streamingPlaceholder, text: $vm.inputText, axis: .vertical)
                 .textFieldStyle(.plain)
                 .lineLimit(1...5)
-                .onSubmit {
-                    vm.send(engine: engine, catalog: catalog, model: effectiveModelForAgent)
-                }
+                .onSubmit { submitInput() }
 
             if vm.isStreaming {
+                // Steer the running agent without cancelling it.
+                Button { vm.steer(text: vm.inputText) } label: {
+                    Image(systemName: "arrow.up.circle")
+                        .foregroundColor(vm.inputText.isEmpty ? .secondary : .blue)
+                }
+                .disabled(vm.inputText.isEmpty)
+                .help("Steer the running agent (sends without stopping)")
                 Button { vm.cancel(engine: engine) } label: {
                     Image(systemName: "stop.circle.fill")
                         .foregroundStyle(.red)
                 }
+                .help("Stop generating")
             } else {
-                Button {
-                    vm.send(engine: engine, catalog: catalog, model: effectiveModelForAgent)
-                } label: {
+                Button { submitInput() } label: {
                     Image(systemName: "arrow.up.circle.fill")
                         .foregroundColor(
                             vm.inputText.isEmpty && vm.pendingImages.isEmpty ? .secondary : .blue)
@@ -384,6 +388,21 @@ struct ChatView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .background(.background)
+    }
+
+    /// Placeholder hint: while streaming, the field steers the running agent.
+    private var streamingPlaceholder: String {
+        vm.isStreaming ? "Steer the agent\u{2026}" : "Message..."
+    }
+
+    /// Route the field's submit/send action: steer while streaming (don't cancel),
+    /// otherwise start a normal send.
+    private func submitInput() {
+        if vm.isStreaming {
+            vm.steer(text: vm.inputText)
+        } else {
+            vm.send(engine: engine, catalog: catalog, model: effectiveModelForAgent)
+        }
     }
 
     // MARK: - Image attachment intake

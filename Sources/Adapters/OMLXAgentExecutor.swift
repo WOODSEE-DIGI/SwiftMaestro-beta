@@ -1,6 +1,34 @@
 import Foundation
 import MLXLMCommon
 
+// MARK: - Steer inbox
+//
+// Thread-safe queue of mid-generation "steer" messages the user sends while a
+// run is streaming. The executor drains it at each round boundary and injects
+// the steers as user turns, so the next generation incorporates them WITHOUT
+// cancelling the run. An actor keeps producer (UI) and consumer (executor task)
+// race-free.
+
+actor SteerInbox {
+    private var pending: [String] = []
+
+    /// Queue a steer (no-ops on blank input).
+    func append(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        pending.append(trimmed)
+    }
+
+    /// Atomically return and clear all queued steers.
+    func drainAll() -> [String] {
+        let out = pending
+        pending.removeAll()
+        return out
+    }
+
+    var hasPending: Bool { !pending.isEmpty }
+}
+
 // MARK: - Agentic executor
 //
 // Owns the backend-agnostic agentic loop: it manages the conversation, executes
@@ -44,7 +72,8 @@ final class OMLXAgentExecutor: Sendable {
         project: String? = nil,
         workingDirectory: String? = nil,
         agentID: String? = nil,
-        maxRounds: Int? = nil
+        maxRounds: Int? = nil,
+        steerInbox: SteerInbox? = nil
     ) -> AsyncThrowingStream<OMLXOutput, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -64,6 +93,22 @@ final class OMLXAgentExecutor: Sendable {
                     let maxAutoNudges = 2
                     var finalWrapUpSent = false  // bounded-run wrap-up issued
                     iterations: while !Task.isCancelled {
+                        // Mid-generation steering: pull any user messages queued
+                        // while the previous round was streaming or executing
+                        // tools, and inject them as user turns so THIS round
+                        // incorporates them (no cancel; KV-cache prefix reuse keeps
+                        // the continuation fast).
+                        if let steerInbox {
+                            let steers = await steerInbox.drainAll()
+                            if !steers.isEmpty {
+                                for steer in steers {
+                                    convo.append(["role": "user", "content": steer])
+                                }
+                                // Open a fresh assistant bubble for the steered
+                                // continuation and re-arm the UI's reasoning split.
+                                continuation.yield(.turnBreak)
+                            }
+                        }
                         // Bounded runs (delegated sub-agents): once the tool budget
                         // is spent, force ONE last tool-free round so the model must
                         // produce a final text answer instead of ping-ponging tools
@@ -137,6 +182,15 @@ final class OMLXAgentExecutor: Sendable {
                                         + "unrelated tools. If the action was already completed in an "
                                         + "earlier step, or no tool is needed, just give your final answer.",
                                 ])
+                                continue iterations
+                            }
+                            // If the user steered during this (otherwise final)
+                            // round, don't end: record the answer and loop so the
+                            // top-of-loop drain injects the steer and the model
+                            // responds to it (instead of dropping it).
+                            if let steerInbox, await steerInbox.hasPending {
+                                convo.append(["role": "assistant", "content": content])
+                                round += 1
                                 continue iterations
                             }
                             break iterations  // final answer already streamed
@@ -460,7 +514,9 @@ final class OMLXAgentExecutor: Sendable {
                 case .toolCall:
                     // Rounds that end in tool calls are narration, not the answer.
                     lastRoundText = ""
-                case .info:
+                case .info, .turnBreak:
+                    // Sub-agents have no steer inbox, so .turnBreak never fires;
+                    // handled for switch exhaustiveness.
                     break
                 }
             }

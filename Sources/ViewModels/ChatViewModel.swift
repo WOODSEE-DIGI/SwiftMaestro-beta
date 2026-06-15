@@ -32,6 +32,10 @@ class ChatViewModel: ObservableObject {
     private var reasoningStart: Date?
     private var streamBuffer = ""
     private var sawReasoningClose = false
+    /// Mid-generation steering queue for the in-flight run; held only while
+    /// streaming so `steer(text:)` can hand the executor new user input without
+    /// cancelling the run.
+    private var steerInbox: SteerInbox?
 
     init(agent: AgentRecord, projectName: String?) {
         self.agent = agent
@@ -98,6 +102,9 @@ class ChatViewModel: ObservableObject {
         reasoningStart = Date()
         streamBuffer = ""
         sawReasoningClose = false
+        // Fresh steer queue for this run; the executor drains it each round.
+        let inbox = SteerInbox()
+        steerInbox = inbox
 
         let isNavigator = agent.kind == .navigator
         let project = projectName
@@ -156,13 +163,15 @@ class ChatViewModel: ObservableObject {
                 let stream = executor.run(
                     messages: requestMessages, toolSpecs: toolSpecs, mcp: engine.mcpService,
                     temperature: effectiveTemp, topP: topP, thinkingEnabled: thinking,
-                    project: project, workingDirectory: workingDir, agentID: agentID)
+                    project: project, workingDirectory: workingDir, agentID: agentID,
+                    steerInbox: inbox)
                 for try await output in stream {
                     guard !Task.isCancelled else { break }
                     switch output {
                     case .token(let token): consumeStreamChunk(token)
                     case .toolCall(let name): recordToolStep(name)
                     case .info(let tps): engine.reportExternalTokensPerSecond(tps)
+                    case .turnBreak: beginSteeredTurn()
                     }
                 }
             } catch {
@@ -179,13 +188,15 @@ class ChatViewModel: ObservableObject {
                         let stream = executor.run(
                             messages: requestMessages, toolSpecs: toolSpecs, mcp: engine.mcpService,
                             temperature: effectiveTemp, topP: topP, thinkingEnabled: thinking,
-                            project: project, workingDirectory: workingDir, agentID: agentID)
+                            project: project, workingDirectory: workingDir, agentID: agentID,
+                            steerInbox: inbox)
                         for try await output in stream {
                             guard !Task.isCancelled else { break }
                             switch output {
                             case .token(let token): consumeStreamChunk(token)
                             case .toolCall(let name): recordToolStep(name)
                             case .info(let tps): engine.reportExternalTokensPerSecond(tps)
+                            case .turnBreak: beginSteeredTurn()
                             }
                         }
                     } catch {
@@ -200,8 +211,33 @@ class ChatViewModel: ObservableObject {
             finishStreamParsing()
             isStreaming = false
             currentActivity = nil
+            steerInbox = nil
             saveHistory()
         }
+    }
+
+    /// Mid-generation steering: while a run is streaming, show `text` as a normal
+    /// user message AND queue it for the executor to fold into the NEXT round,
+    /// instead of cancelling. No-ops when not streaming (use `send` then).
+    func steer(text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isStreaming, !trimmed.isEmpty, let inbox = steerInbox else { return }
+        inputText = ""
+        messages.append(Message(role: .user, content: trimmed))
+        Task { await inbox.append(trimmed) }
+    }
+
+    /// The executor injected a steer at a round boundary (`.turnBreak`): finalize
+    /// the current assistant bubble and open a fresh one for the steered
+    /// continuation, re-arming the reasoning split so the next round's `<think>`
+    /// block is captured instead of leaking into the answer.
+    private func beginSteeredTurn() {
+        finishStreamParsing()
+        messages.append(Message(role: .assistant, content: ""))
+        inReasoning = true
+        reasoningStart = Date()
+        streamBuffer = ""
+        sawReasoningClose = false
     }
 
     // MARK: - Image attachment helpers
@@ -378,6 +414,7 @@ class ChatViewModel: ObservableObject {
         engine.cancel()
         isStreaming = false
         currentActivity = nil
+        steerInbox = nil
         saveHistory()
     }
 
