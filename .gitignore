@@ -9,6 +9,3 @@ SwiftMaestro.xcodeproj/
 # macOS
 .DS_Store
 build/
-
-# Distribution artifacts (publish to GitHub Releases, not the repo)
-*.dmg
