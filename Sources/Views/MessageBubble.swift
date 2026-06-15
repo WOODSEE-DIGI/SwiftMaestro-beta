@@ -3,6 +3,12 @@ import AppKit
 
 struct MessageBubble: View {
     let message: Message
+    /// True when this is the assistant message currently being streamed. Drives
+    /// the live "Thinking…" label and the auto-expand-while-reasoning behavior.
+    var isActive: Bool = false
+    /// User's manual override of the reasoning disclosure; `nil` defers to the
+    /// automatic expand-while-live / collapse-when-done behavior.
+    @State private var userExpanded: Bool?
     private var isUser: Bool { message.role == .user }
     
     var body: some View {
@@ -30,8 +36,8 @@ struct MessageBubble: View {
                     .padding(.horizontal, 12)
                 }
 
-                if let reasoning = parsed.reasoning, !isUser {
-                    DisclosureGroup {
+                if let reasoning = displayReasoning, !isUser {
+                    DisclosureGroup(isExpanded: reasoningExpanded) {
                         Text(reasoning)
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -39,7 +45,7 @@ struct MessageBubble: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.top, 2)
                     } label: {
-                        Label("Reasoning", systemImage: "brain")
+                        Label(reasoningLabel, systemImage: "brain")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -66,8 +72,8 @@ struct MessageBubble: View {
                     .padding(.horizontal, 12)
                 }
 
-                if !parsed.answer.isEmpty {
-                    Text(parsed.answer)
+                if !displayAnswer.isEmpty {
+                    Text(displayAnswer)
                         .font(.body)
                         .textSelection(.enabled)
                         .padding(.horizontal, 12)
@@ -83,6 +89,41 @@ struct MessageBubble: View {
         .padding(.vertical, 4)
     }
     
+    /// Reasoning to show: the stream-split `reasoning` field for new messages, or
+    /// the legacy in-`content` `<think>` parse for older persisted chats (whose
+    /// `reasoning` is nil because they predate stream-time splitting).
+    private var displayReasoning: String? {
+        if let r = message.reasoning { return r.isEmpty ? nil : r }
+        return parsed.reasoning
+    }
+
+    /// Answer to show: the already-clean `content` for new messages (think split
+    /// out at stream time), or the post-`</think>` slice for legacy messages.
+    private var displayAnswer: String {
+        if message.reasoning != nil { return message.content }
+        return parsed.answer
+    }
+
+    /// "Thinking…" while this message is live and still reasoning (no answer yet),
+    /// otherwise "Thought for Ns" when a duration was recorded, else "Reasoning".
+    private var reasoningLabel: String {
+        if isActive && message.content.isEmpty { return "Thinking…" }
+        if let s = message.reasoningSeconds, s >= 1 {
+            return "Thought for \(Int(s.rounded()))s"
+        }
+        return "Reasoning"
+    }
+
+    /// Auto-expand while this message is the live, still-reasoning one (no answer
+    /// yet); auto-collapse once the answer starts or streaming ends. A manual
+    /// toggle (`userExpanded`) overrides the automatic behavior.
+    private var reasoningExpanded: Binding<Bool> {
+        Binding(
+            get: { userExpanded ?? (isActive && message.content.isEmpty) },
+            set: { userExpanded = $0 }
+        )
+    }
+
     /// Splits assistant content into optional chain-of-thought reasoning and the
     /// final answer, based on the model's `<think>…</think>` markers. Handles the
     /// common case where only the closing `</think>` is present (the opening tag

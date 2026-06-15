@@ -26,6 +26,13 @@ class ChatViewModel: ObservableObject {
     let projectName: String?
     private var generateTask: Task<Void, Never>?
 
+    // Stream-time reasoning split state (reset per send). See the
+    // "Stream-time reasoning split" MARK for how these drive `reasoning`/`content`.
+    private var inReasoning = true
+    private var reasoningStart: Date?
+    private var streamBuffer = ""
+    private var sawReasoningClose = false
+
     init(agent: AgentRecord, projectName: String?) {
         self.agent = agent
         self.projectName = projectName
@@ -84,6 +91,13 @@ class ChatViewModel: ObservableObject {
             role: .user, content: userText, imageData: images.isEmpty ? nil : images))
         messages.append(Message(role: .assistant, content: ""))
         isStreaming = true
+        // Reset the stream-time reasoning split for this turn. Reasoning starts
+        // open because Qwen emits a `</think>` (even an empty block) before the
+        // answer regardless of the thinking toggle.
+        inReasoning = true
+        reasoningStart = Date()
+        streamBuffer = ""
+        sawReasoningClose = false
 
         let isNavigator = agent.kind == .navigator
         let project = projectName
@@ -146,7 +160,7 @@ class ChatViewModel: ObservableObject {
                 for try await output in stream {
                     guard !Task.isCancelled else { break }
                     switch output {
-                    case .token(let token): appendToAssistant(token)
+                    case .token(let token): consumeStreamChunk(token)
                     case .toolCall(let name): recordToolStep(name)
                     case .info(let tps): engine.reportExternalTokensPerSecond(tps)
                     }
@@ -169,7 +183,7 @@ class ChatViewModel: ObservableObject {
                         for try await output in stream {
                             guard !Task.isCancelled else { break }
                             switch output {
-                            case .token(let token): appendToAssistant(token)
+                            case .token(let token): consumeStreamChunk(token)
                             case .toolCall(let name): recordToolStep(name)
                             case .info(let tps): engine.reportExternalTokensPerSecond(tps)
                             }
@@ -183,6 +197,7 @@ class ChatViewModel: ObservableObject {
                     errorMessage = error.localizedDescription
                 }
             }
+            finishStreamParsing()
             isStreaming = false
             currentActivity = nil
             saveHistory()
@@ -243,16 +258,109 @@ class ChatViewModel: ObservableObject {
         return data
     }
 
-    private func appendToAssistant(_ text: String) {
-        if let idx = messages.lastIndex(where: { $0.role == .assistant }) {
-            messages[idx].content += text
+    // MARK: - Stream-time reasoning split
+    //
+    // Qwen emits `<think>…</think>` before each round's answer/narration (the
+    // opening tag lives in the prompt, so the stream begins mid-reasoning), even
+    // an empty block when thinking is off. We route streamed tokens by the
+    // `</think>` boundary into the assistant message's `reasoning` vs `content`,
+    // so the answer area stays clean and multi-round reasoning never leaks tags.
+    // `streamBuffer` holds a short tail so a `</think>` split across token chunks
+    // is still detected.
+
+    private static let closeTag = "</think>"
+
+    /// Route one streamed chunk into reasoning (while `inReasoning`) or the answer
+    /// (after the close tag), buffering a small tail to catch a split tag.
+    private func consumeStreamChunk(_ token: String) {
+        streamBuffer += token
+        guard inReasoning else {
+            // Answer mode: emit directly; no tag search until the next round.
+            appendAnswer(streamBuffer)
+            streamBuffer = ""
+            return
         }
+        if let r = streamBuffer.range(of: Self.closeTag) {
+            appendReasoning(String(streamBuffer[..<r.lowerBound]))
+            markReasoningClosed()
+            let after = String(streamBuffer[r.upperBound...])
+            streamBuffer = ""
+            inReasoning = false
+            if !after.isEmpty { appendAnswer(after) }
+            return
+        }
+        // No close tag yet: flush all but a tail that might hold a partial tag.
+        let keep = Self.closeTag.count - 1
+        if streamBuffer.count > keep {
+            let split = streamBuffer.index(streamBuffer.endIndex, offsetBy: -keep)
+            appendReasoning(String(streamBuffer[..<split]))
+            streamBuffer = String(streamBuffer[split...])
+        }
+    }
+
+    private func appendReasoning(_ text: String) {
+        guard !text.isEmpty, let idx = messages.lastIndex(where: { $0.role == .assistant })
+        else { return }
+        messages[idx].reasoning = (messages[idx].reasoning ?? "") + text
+    }
+
+    private func appendAnswer(_ text: String) {
+        guard !text.isEmpty, let idx = messages.lastIndex(where: { $0.role == .assistant })
+        else { return }
+        messages[idx].content += text
+    }
+
+    /// Stamp cumulative reasoning duration (send → this close); last close wins.
+    private func markReasoningClosed() {
+        sawReasoningClose = true
+        guard let start = reasoningStart,
+              let idx = messages.lastIndex(where: { $0.role == .assistant }) else { return }
+        messages[idx].reasoningSeconds = Date().timeIntervalSince(start)
+    }
+
+    /// At a tool-call boundary, fold this round's interim narration (text after
+    /// its `</think>`) into `reasoning` and clear the answer buffer, so only the
+    /// FINAL round's post-`</think>` text remains as the answer. Re-arms reasoning
+    /// for the next round.
+    private func foldNarrationIntoReasoning() {
+        if !streamBuffer.isEmpty {
+            if inReasoning { appendReasoning(streamBuffer) } else { appendAnswer(streamBuffer) }
+            streamBuffer = ""
+        }
+        if let idx = messages.lastIndex(where: { $0.role == .assistant }) {
+            let narration = messages[idx].content
+            if !narration.isEmpty {
+                let sep = (messages[idx].reasoning?.isEmpty == false) ? "\n" : ""
+                messages[idx].reasoning = (messages[idx].reasoning ?? "") + sep + narration
+                messages[idx].content = ""
+            }
+        }
+        inReasoning = true
+    }
+
+    /// Flush the tail at end of stream. If no `</think>` ever arrived (a model that
+    /// doesn't emit think tags), treat the accumulated reasoning as the answer.
+    private func finishStreamParsing() {
+        if !streamBuffer.isEmpty {
+            if inReasoning { appendReasoning(streamBuffer) } else { appendAnswer(streamBuffer) }
+            streamBuffer = ""
+        }
+        guard !sawReasoningClose,
+              let idx = messages.lastIndex(where: { $0.role == .assistant }),
+              messages[idx].content.isEmpty,
+              let reasoning = messages[idx].reasoning, !reasoning.isEmpty else { return }
+        messages[idx].content = reasoning
+        messages[idx].reasoning = nil
+        messages[idx].reasoningSeconds = nil
     }
 
     /// Record a tool invocation as compact activity on the in-flight assistant
     /// message (rendered as a collapsed disclosure) and update the live status
-    /// line — instead of dumping a marker into the chat transcript.
+    /// line — instead of dumping a marker into the chat transcript. A tool call
+    /// also marks a round boundary, so fold this round's post-`</think>`
+    /// narration into `reasoning` first.
     private func recordToolStep(_ name: String) {
+        foldNarrationIntoReasoning()
         if let idx = messages.lastIndex(where: { $0.role == .assistant }) {
             var steps = messages[idx].toolSteps ?? []
             steps.append(name)
