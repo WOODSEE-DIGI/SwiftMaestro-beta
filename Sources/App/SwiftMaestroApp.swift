@@ -82,7 +82,12 @@ struct SwiftMaestroApp: App {
                 .environment(messageStore)
                 .environment(theme)
         }
-        .defaultSize(width: 720, height: 760)
+        .defaultSize(width: 760, height: 820)
+        // Settings scenes default to `.contentSize`, which pins the window to the
+        // content's size (so it can't be resized). `.contentMinSize` enforces only
+        // the content's MINIMUM, letting the user resize the window larger to use
+        // available screen space (e.g. see the Appearance preview without scrolling).
+        .windowResizability(.contentMinSize)
         #endif
     }
 }
