@@ -23,6 +23,19 @@ enum PlanScope: Hashable {
         }
     }
 
+    /// Rebuild a scope from its `key` (used to resolve a plan window's target).
+    init?(key: String) {
+        if key.hasPrefix("project:") {
+            let name = String(key.dropFirst("project:".count))
+            guard !name.isEmpty else { return nil }
+            self = .project(name)
+        } else if let id = UUID(uuidString: key) {
+            self = .agent(id)
+        } else {
+            return nil
+        }
+    }
+
     /// Filesystem-safe base name. Agent scopes keep their bare UUID filename for
     /// backward compatibility with plans created before scoping existed.
     var fileBase: String {

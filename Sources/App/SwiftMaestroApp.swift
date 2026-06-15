@@ -58,6 +58,16 @@ struct SwiftMaestroApp: App {
         }
         .defaultSize(width: 1100, height: 760)
 
+        // Standalone, resizable reading window for a single plan. Data-driven so
+        // `openWindow(id:value:)` from the Plans browser opens (or fronts) the
+        // window for a specific plan. `.contentSize` resizability lets the plan's
+        // own ideal size drive the opening dimensions (clamped to the screen).
+        WindowGroup("Plan", id: "plan-window", for: PlanWindowID.self) { $target in
+            PlanWindowView(target: target)
+                .environment(planStore)
+        }
+        .windowResizability(.contentSize)
+
         #if os(macOS)
         Settings {
             SettingsView()
