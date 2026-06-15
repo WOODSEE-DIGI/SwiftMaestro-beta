@@ -3,17 +3,21 @@ import SwiftUI
 enum SwiftMaestroDefaultsMigration {
     static func applyIfNeeded() {
         let defaults = UserDefaults.standard
-        let modelKey = "models.modelID"
-        let modelMigrationKey = "migration.defaultModel.v2"
-        let targetModel = ModelTierPolicy.defaultModelID
+        // The catalog reads this exact key. The previous migration wrote a
+        // DIFFERENT, unread key (`models.modelID`) using a Hub name instead of a
+        // catalog id, so it never actually took effect.
+        let modelKey = "models.selectedModelID"
+        let modelMigrationKey = "migration.defaultModel.v3"
+        let targetModel = ModelCatalog.defaultModelID
+        let legacyDefault = "local-qwen3.5-122b"
 
         let currentModel = defaults.string(forKey: modelKey)
         if currentModel == nil || currentModel?.isEmpty == true {
             defaults.set(targetModel, forKey: modelKey)
-        } else if currentModel == ModelTierPolicy.legacyDefaultModelID,
+        } else if currentModel == legacyDefault,
                   !defaults.bool(forKey: modelMigrationKey) {
-            // One-time: move installs off the old auto-set 122B default (which
-            // preloaded a 65GB model every launch) to the fast MoE default.
+            // One-time: move installs off the old 65GB 122B default (which
+            // preloaded a huge model every launch) to the fast MoE default.
             // Gated by a flag so a later deliberate 122B choice is never clobbered.
             defaults.set(targetModel, forKey: modelKey)
         }
@@ -44,6 +48,9 @@ struct SwiftMaestroApp: App {
                 .environment(theme)
                 .task {
                     SwiftMaestroDefaultsMigration.applyIfNeeded()
+                    // Create the shared ~/.ai-context scaffold up front so a fresh,
+                    // self-contained install has its data directory before first use.
+                    SimpleMemoryStore.ensureScaffold()
                     // Expose the workspace to native delegation/workspace tools.
                     MaestroTools.workspace = workspace
                     // Expose the live-todo store to the native todo tools.

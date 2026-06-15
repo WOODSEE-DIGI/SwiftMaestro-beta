@@ -70,6 +70,7 @@ enum MaestroTools {
         // Every agent gets the live todo + plan + messaging tools; Navigator also
         // gets workspace/delegation tools.
         var specs = schemas + todoToolSpecs + planToolSpecs + messagingToolSpecs
+            + memoryToolSpecs + fileToolSpecs + systemToolSpecs
         if navigator { specs += navigatorToolSpecs }
         return specs
     }
@@ -131,7 +132,7 @@ enum MaestroTools {
 
     /// Build a function ToolSpec from already-formed JSON-schema property values
     /// (supports nested schemas like arrays, unlike `functionSpec`).
-    private static func rawSpec(
+    static func rawSpec(
         _ name: String, _ description: String,
         properties: [String: any Sendable], required: [String]
     ) -> ToolSpec {
@@ -271,7 +272,9 @@ enum MaestroTools {
     /// executor's delegation interceptor handles it.
     static func handles(_ name: String) -> Bool {
         if workspaceToolNames.contains(name) || todoToolNames.contains(name)
-            || planToolNames.contains(name) || messagingToolNames.contains(name) { return true }
+            || planToolNames.contains(name) || messagingToolNames.contains(name)
+            || memoryToolNames.contains(name) || fileToolNames.contains(name)
+            || systemToolNames.contains(name) { return true }
         return schemas.contains { spec in
             (spec["function"] as? [String: any Sendable])?["name"] as? String == name
         }
@@ -313,6 +316,30 @@ enum MaestroTools {
             return await sendAgentMessage(call)
         case "read_agent_messages":
             return await readAgentMessages(call)
+        case "memory_write":
+            return await memoryWrite(call)
+        case "memory_read":
+            return await memoryRead(call)
+        case "memory_search":
+            return await memorySearch(call)
+        case "memory_list":
+            return await memoryList(call)
+        case "read_file":
+            return await readFile(call)
+        case "write_file":
+            return await writeFile(call)
+        case "list_dir":
+            return await listDir(call)
+        case "create_reminder":
+            return await createReminder(call)
+        case "list_reminders":
+            return await listRemindersTool(call)
+        case "create_calendar_event":
+            return await createCalendarEvent(call)
+        case "create_note":
+            return await createNoteTool(call)
+        case "open_url":
+            return await openURLTool(call)
         default:
             return errorJSON("unknown tool: \(call.function.name)")
         }
@@ -806,7 +833,7 @@ enum MaestroTools {
         jsonString(["error": message])
     }
 
-    private static func jsonString(_ object: [String: Any]) -> String {
+    static func jsonString(_ object: [String: Any]) -> String {
         guard let data = try? JSONSerialization.data(withJSONObject: object),
               let string = String(data: data, encoding: .utf8)
         else { return #"{"error": "failed to encode result"}"# }

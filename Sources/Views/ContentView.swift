@@ -13,6 +13,9 @@ struct ContentView: View {
     @State private var showingNewAgent = false
     @State private var newProjectName = ""
     @State private var newAgentName = ""
+    /// First-run welcome: shown once, only when no models are present on disk.
+    @AppStorage("onboarding.seenV1") private var onboardingSeen = false
+    @State private var showOnboarding = false
 
     var body: some View {
         @Bindable var catalog = catalog
@@ -50,8 +53,16 @@ struct ContentView: View {
         )
         #endif
         .sheet(isPresented: $showingNewAgent) { newAgentSheet }
+        .sheet(isPresented: $showOnboarding) {
+            OnboardingView(onDone: { onboardingSeen = true; showOnboarding = false })
+                .environment(catalog)
+        }
         .onAppear {
             if selectedAgentID == nil { selectedAgentID = workspace.navigator.id }
+            // Welcome a fresh install (no model files on disk yet), once.
+            if !onboardingSeen && !catalog.models.contains(where: { $0.localPath != nil }) {
+                showOnboarding = true
+            }
         }
         .task {
             // Prime every agent's inbox from disk so sidebar unread badges are

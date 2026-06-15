@@ -95,8 +95,10 @@ final class ModelCatalog {
     }
 
     private static let selectedModelKey = "models.selectedModelID"
-    /// Launch default when no selection has been persisted yet.
-    static let defaultModelID = "local-qwen3.5-122b"
+    /// Launch default when no selection has been persisted yet. The fast MoE
+    /// (not the 65 GB 122B) so a fresh, self-contained install never preloads or
+    /// auto-downloads a huge model on first use.
+    nonisolated static let defaultModelID = "local-qwen3.6-35b-a3b"
 
     var selectedModel: MaestroModel? {
         guard let id = selectedModelID else { return models.first }

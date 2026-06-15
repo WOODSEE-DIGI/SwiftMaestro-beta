@@ -1,207 +1,94 @@
 # SwiftMaestro
 
-**Bringing Apple Intelligence to reality on macOS using open-source Qwen models, MLX framework, and native macOS integration — all offline-first with privacy at the core.**
+A native macOS AI assistant that runs large language models **fully on-device** on Apple Silicon via Apple [MLX](https://github.com/ml-explore/mlx) (`mlx-swift-lm`). No server, no account, no cloud — your conversations and files never leave your Mac.
 
-Native macOS chat application for Qwen models, built with SwiftUI and powered by oMLX.
+## Highlights
+- **100% local inference** — models run in-process on the GPU through MLX. There is no external runtime or server to start or manage.
+- **Self-contained** — on first launch it creates its own data directory (`~/.ai-context`) and downloads the model you pick from Hugging Face on first use. Nothing is hard-wired to a specific machine.
+- **Built-in tools, no setup** — the assistant can use durable memory, read/write files in folders you authorize, manage Reminders/Calendar/Notes, and open URLs — all in-process. MCP servers are an optional power-user extension.
+- **Private by design** — no telemetry, no analytics. Secrets live in the macOS Keychain and are never written to chat history or the memory store.
+- **Distributed as a notarized `.dmg`** — Developer ID signed and Apple-notarized, so it opens cleanly on any Apple Silicon Mac.
 
-## 🎯 Vision
+## Requirements
+- Apple Silicon Mac (M1 or later). Intel is not supported — MLX is Apple-Silicon-only.
+- macOS 14 (Sonoma) or later.
+- Disk space and RAM scale with the model you choose (see [Models](#models)).
 
-SwiftMaestro is a **personal AI assistant** that:
+## Install (beta)
+1. Download the latest `SwiftMaestro-<version>.dmg` from the [Releases page](https://github.com/WOODSEE-DIGI/SwiftMaestro/releases).
+2. Open the `.dmg` and drag **SwiftMaestro** to **Applications**.
+3. Launch it. Because it's notarized, it opens without Gatekeeper warnings.
 
-✅ **Runs entirely offline** - All model inference happens locally on Apple Silicon  
-✅ **Respects your privacy** - No PII leaves your device unless you explicitly ask for research  
-✅ **Integrates with macOS** - Reminders, Calendar, Contacts, Notes, and more (coming soon)  
-✅ **Learns from you** - Contextual memory across all conversations  
-✅ **Open and extensible** - GitHub repo with MCP tool ecosystem  
+On first launch a short welcome explains how models work. No model is bundled — your first message downloads the model you've selected.
 
-**This is Apple Intelligence, built open, owned by the user.**
+## Models
+Models download on first use from Hugging Face and are cached locally. Pick one in **Settings → Models**.
 
-## Quick Start
+| Model | Approx. size / RAM | Best for |
+| --- | --- | --- |
+| Qwen 3.6 35B-A3B (default) | ~20 GB | Fast, general use |
+| Qwen 3.5 122B (A10B) | ~65 GB | Deepest reasoning (needs a high-memory Mac) |
+| Smaller Hub models (e.g. Qwen 3 4B) | ~3–6 GB | Low disk/RAM, quick first run |
 
-### 1. Start oMLX Server
+By default models are stored under `~/Library/Application Support/SwiftMaestro/models`. To reuse an existing collection (for example on an external drive), set a custom path in **Settings → Models**.
 
-```bash
-cd "~/GitHub/AI-ML-Agents/SwiftMaestro"
-./scripts/start-omlx.sh
-```
+## What it can do out of the box
+The assistant has native, in-process tools — no configuration required:
+- **Memory** — durable notes/knowledge in the shared `~/.ai-context/memory` store.
+- **Files** — read/write/list within folders you authorize in **Settings → Context**.
+- **macOS** — create Reminders, Calendar events, and Notes; open URLs (prompts for permission on first use).
+- **Plans, live task checklists, multi-agent messaging, and current time.**
 
-This starts oMLX with the Qwen 35B model on port 8000.
+Additional tools (web, shell, etc.) can be added by configuring MCP servers in **Settings → MCP**.
 
-### 2. Test the Endpoint
-
-```bash
-./scripts/test-omlx.sh
-```
-
-### 3. Build and Run
-
-```bash
-# Generate Xcode project
-xcodegen generate
-
-# Open in Xcode
-open SwiftMaestro.xcodeproj
-
-# Build and run (Cmd+R)
-```
-
-## Models Available
-
-- **Qwen 35B** (`Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit`) - Fast, general use
-- **Qwen 122B** (`Qwen3.5-122B-A10B-4bit`) - Deep reasoning, complex tasks
-
-To use the 122B model, modify `scripts/start-omlx.sh`:
+## Build from source
+Requires Xcode 16+ and [`xcodegen`](https://github.com/yonaskolb/XcodeGen).
 
 ```bash
-omlx serve "~/Ai-models/Qwen3.5-122B-A10B-4bit" --port 8000
+brew install xcodegen
+git clone https://github.com/WOODSEE-DIGI/SwiftMaestro.git
+cd SwiftMaestro
+
+# Local (ad-hoc) build for development:
+UNSIGNED=1 CONFIG=Debug ./scripts/build.sh
+
+# …or open in Xcode:
+xcodegen generate && open SwiftMaestro.xcodeproj   # then ⌘R
 ```
 
-## Architecture
+### Release: signed + notarized `.dmg`
+The release build is Developer ID signed and notarized. One-time, store your notarization credentials:
 
-### Core Components
+```bash
+xcrun notarytool store-credentials "SwiftMaestroNotary" \
+  --apple-id <your-apple-id> --team-id <your-team-id> \
+  --password <app-specific-password>
+```
 
+Then:
+
+```bash
+./scripts/build.sh       # Developer ID signed, hardened-runtime, arm64 Release
+./scripts/package.sh     # build DMG → notarize → staple → verify
+./scripts/smoke-test.sh  # verify signature, arch, hardening, Gatekeeper
+```
+
+## Architecture (overview)
 | Component | Path | Purpose |
-|-----------|------|---------|
-| **ChatView** | `Sources/Views/ChatView.swift` | Main chat UI with fixed auto-scroll |
-| **MessageBubble** | `Sources/Views/MessageBubble.swift` | Markdown/code block rendering |
-| **ChatViewModel** | `Sources/ViewModels/ChatViewModel.swift` | Chat logic (streaming, file attachments) |
-| **LocalLLMExecutor** | `Sources/Adapters/LocalLLMExecutor.swift` | HTTP client for oMLX |
-| **LocalLLMAgentAdapter** | `Sources/Adapters/LocalLLMAgentAdapter.swift` | Protocol adapter |
-| **ProviderFactoryService** | `Sources/Services/ProviderFactoryService.swift` | Factory for adapters |
-| **SimpleMemoryStore** | `Sources/Memory/SimpleMemoryStore.swift` | File-based conversation storage |
-| **MaestroURI** | `Sources/MaestroURI.swift` | Memory URI scheme |
+| --- | --- | --- |
+| ChatView / MessageBubble | `Sources/Views/` | Chat UI + markdown rendering |
+| ChatViewModel | `Sources/ViewModels/ChatViewModel.swift` | Chat, streaming, system prompt |
+| MLXInferenceEngine | `Sources/Engine/MLXInferenceEngine.swift` | In-process MLX inference (the only backend) |
+| MaestroTools (+ extensions) | `Sources/Engine/MaestroTools*.swift` | Native in-process tools |
+| ModelCatalog | `Sources/Engine/ModelCatalog.swift` | Model list, default, local/Hub resolution |
+| SimpleMemoryStore | `Sources/Memory/SimpleMemoryStore.swift` | Shared `~/.ai-context/memory` store |
+| SettingsView | `Sources/Views/SettingsView.swift` | Models, Tuning, Appearance, Rules, Context, MCP, Storage, Secrets |
+| KeychainService / SecretsStore | `Sources/Services/` | Keychain-backed secrets, `secret://` resolution |
 
-### Key Features
-
-- ✅ **Fixed auto-scroll** - Debounced to prevent haphazard jumping during streaming
-- ✅ **Streamlined ViewModel** - 300 lines (vs 2600 in SwiftMaestro)
-- ✅ **Stream relay buffer** - Smooth UI updates with 120ms/72-char flushing
-- ✅ **File drop support** - Drag files into chat for context
-- ✅ **Markdown rendering** - Code blocks with copy/run buttons
-- ✅ **Simple memory** - File-based storage with MaestroURI organization
-
-## Project Structure
-
-```
-SwiftMaestro/
-├── Sources/
-│   ├── App/
-│   │   └── SwiftMaestroApp.swift
-│   ├── Views/
-│   │   ├── ChatView.swift
-│   │   ├── MessageBubble.swift
-│   │   └── ContentView.swift
-│   ├── ViewModels/
-│   │   └── ChatViewModel.swift
-│   ├── Adapters/
-│   │   ├── LocalLLMExecutor.swift
-│   │   └── LocalLLMAgentAdapter.swift
-│   ├── Services/
-│   │   └── ProviderFactoryService.swift
-│   ├── Models/
-│   │   └── SwiftMaestroModels.swift
-│   ├── Memory/
-│   │   ├── ConversationStore.swift
-│   │   └── SimpleMemoryStore.swift
-│   └── MaestroURI.swift
-├── scripts/
-│   ├── start-omlx.sh
-│   └── test-omlx.sh
-├── docs/
-│   ├── EXTRACTION-SUMMARY.md
-│   ├── comparison-plan-35b-vs-122b.md
-│   └── architecture-plan.md
-└── project.yml
-```
-
-## Development Notes
-
-### Fixed Issues from SwiftMaestro
-
-1. **Auto-scroll haphazardness** - Now uses 150ms debounce + pending scroll queue
-2. **ViewModel bloat** - Removed Finder tag fast-path, background monitoring (~2300 lines removed)
-3. **Executor complexity** - Stripped MCP tool loops, terminal execution (~1800 lines removed)
-
-### Memory System
-
-Current implementation uses simple file-based storage:
-
-```
-~/Library/Application Support/SwiftMaestro/memory/
-├── memory/
-│   └── conversations/
-│       └── <agent-id>/
-│           └── history.json
-├── knowledge/
-├── context/
-└── skill/
-```
-
-Future enhancement could integrate MaestroMemory's SQLite + FTS5 for full-text search.
-
-## Dependencies
-
-- **SwiftUI** - macOS 14.0+
-- **oMLX** - Multi-model server (already installed)
-- **MLX** - Apple's ML framework (via oMLX)
-
-No additional Swift package dependencies.
-
-## 📦 Distribution: GitHub + .dmg (Not App Store)
-
-**Why not App Store?** The App Store sandbox restrictions prevent:
-- Full system integration (Reminders, Calendar, Contacts, etc.)
-- Direct MLX model access
-- AppleScript automation
-- Obsidian vault access
-
-**Solution:** GitHub repo + .dmg installer
-- ✅ No sandbox restrictions
-- ✅ Full macOS integration
-- ✅ User-controlled permissions
-- ✅ Easy updates via GitHub Releases
-
-**Privacy:** No telemetry, no analytics, no data collection
-
-## Troubleshooting
-
-### oMLX not starting
-
-Check if models exist:
-
-```bash
-ls -la "~/Ai-models/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit/"
-```
-
-### No models in endpoint
-
-oMLX needs to be started with a model:
-
-```bash
-omlx serve "~/Ai-models/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit" --port 8000
-```
-
-### Build errors in Xcode
-
-Regenerate project:
-
-```bash
-xcodegen generate --clean
-```
-
-## Comparison: 35B Plan vs Actual
-
-| 35B Plan | Actual |
-|----------|--------|
-| Build HTTP client from scratch (Week 1) | ✅ Reuse SwiftMaestro's LocalLLMExecutor |
-| Implement JSON memory store (Week 2) | ✅ Simple file-based store (200 lines) |
-| Build chat UI from scratch (Week 1-2) | ✅ Reuse SwiftMaestro's ChatView (fixed bugs) |
-| **Total: 3-4 weeks** | **Actual: 1 week to MVP** |
+## Privacy & distribution
+- No telemetry, analytics, or data collection. All inference is local.
+- Not sandboxed (distributed outside the App Store) so it can integrate with the system; it ships with hardened runtime and is notarized.
+- Secrets are stored only in the macOS Keychain.
 
 ## License
-
-MIT License - See LICENSE file
-
----
-
-**Built with ❤️ using SwiftMaestro components and oMLX**
+MIT License — see [LICENSE](LICENSE).
