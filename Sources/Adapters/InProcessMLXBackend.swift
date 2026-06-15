@@ -29,7 +29,7 @@ final class InProcessMLXBackend: GenerationBackend {
         temperature: Double,
         topP: Double,
         thinkingEnabled: Bool,
-        continuation: AsyncThrowingStream<OMLXOutput, Error>.Continuation
+        continuation: AsyncThrowingStream<AgentOutput, Error>.Continuation
     ) async throws -> (content: String, toolCalls: [RoundToolCall]) {
         let turns = Self.toChatTurns(convo)
         let tools: [ToolSpec]? = toolSpecs.isEmpty ? nil : toolSpecs

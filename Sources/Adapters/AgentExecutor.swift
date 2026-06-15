@@ -33,24 +33,22 @@ actor SteerInbox {
 //
 // Owns the backend-agnostic agentic loop: it manages the conversation, executes
 // tools (with project/working-dir injection + delegation), and streams activity.
-// Per-round generation is delegated to a pluggable `GenerationBackend` (oMLX HTTP
-// or in-process MLX). Tool execution reuses the same native (MaestroTools) and
-// MCP sources regardless of backend.
+// Per-round generation is delegated to a pluggable `GenerationBackend` (the
+// in-process MLX backend). Tool execution reuses the same native (MaestroTools)
+// and MCP sources.
 
-final class OMLXAgentExecutor: Sendable {
+final class AgentExecutor: Sendable {
 
-    private let endpointURL: String
     private let modelID: String
     private let backend: GenerationBackend
     /// When set, delegated sub-agents resolve their OWN backend/model via this
     /// (per-agent models). When nil, sub-agents reuse the parent's backend.
     private let delegateBackendResolver: DelegateBackendResolver?
 
-    /// Designated init with an explicit backend. `endpointURL`/`modelID` are kept
-    /// for delegation (sub-agents spin up their own oMLX executor).
-    init(endpointURL: String, modelID: String, backend: GenerationBackend,
+    /// Designated init with an explicit backend. `modelID` identifies the model
+    /// for delegation (sub-agents spin up their own executor).
+    init(modelID: String, backend: GenerationBackend,
          delegateBackendResolver: DelegateBackendResolver? = nil) {
-        self.endpointURL = endpointURL
         self.modelID = modelID
         self.backend = backend
         self.delegateBackendResolver = delegateBackendResolver
@@ -74,7 +72,7 @@ final class OMLXAgentExecutor: Sendable {
         agentID: String? = nil,
         maxRounds: Int? = nil,
         steerInbox: SteerInbox? = nil
-    ) -> AsyncThrowingStream<OMLXOutput, Error> {
+    ) -> AsyncThrowingStream<AgentOutput, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -134,7 +132,7 @@ final class OMLXAgentExecutor: Sendable {
                             thinkingEnabled: thinkingEnabled,
                             continuation: continuation
                         )
-                        NSLog("[OMLX] round \(round): tools=\(specsThisRound.count) content=\(content.count) chars, toolCalls=[\(toolCalls.map { $0.name }.joined(separator: ", "))]")
+                        NSLog("[AGENT] round \(round): tools=\(specsThisRound.count) content=\(content.count) chars, toolCalls=[\(toolCalls.map { $0.name }.joined(separator: ", "))]")
 
                         guard !Task.isCancelled else { break iterations }
                         // The forced wrap-up round IS the final answer.
@@ -162,7 +160,7 @@ final class OMLXAgentExecutor: Sendable {
                                     || Self.claimsDelegation(content))
                             if !specsThisRound.isEmpty, autoNudges < maxAutoNudges, falseClaim {
                                 autoNudges += 1
-                                NSLog("[OMLX] auto-nudge \(autoNudges): falseClaim")
+                                NSLog("[AGENT] auto-nudge \(autoNudges): falseClaim")
                                 convo.append(["role": "assistant", "content": content])
                                 // The correction is a USER-role message: a mid-conversation
                                 // SYSTEM message breaks the Qwen Jinja chat template
@@ -306,7 +304,7 @@ final class OMLXAgentExecutor: Sendable {
 
     /// Encode a Message into an OpenAI chat message. Plain text uses string
     /// content; when images are attached, content becomes an array of text +
-    /// image_url (base64 data URI) parts, which oMLX accepts for vision models.
+    /// image_url (base64 data URI) parts, which vision-capable models accept.
     private static func wireMessage(_ message: Message) -> [String: Any] {
         guard let images = message.imageData, !images.isEmpty else {
             return ["role": message.role.rawValue, "content": message.content]
@@ -340,7 +338,7 @@ final class OMLXAgentExecutor: Sendable {
         _ tc: RoundToolCall, mcp: MCPClientService?, project: String?,
         workingDirectory: String? = nil, agentID: String? = nil
     ) async -> String {
-        NSLog("[OMLX] executeTool name=\(tc.name) args=\(tc.arguments.prefix(300))")
+        NSLog("[AGENT] executeTool name=\(tc.name) args=\(tc.arguments.prefix(300))")
         // Delegation is handled here (not in MaestroTools) because it needs the
         // live endpoint/model/MCP to run the target agent's own loop.
         if tc.name == "ask_project_agent" {
@@ -486,8 +484,8 @@ final class OMLXAgentExecutor: Sendable {
         NSLog("[DELEGATE] -> '\(target.name)' (project='\(proj)') with \(specs.count) tools")
 
         // Per-agent model: when a resolver is wired, the sub-agent runs on ITS
-        // own assigned model/backend (in-process or oMLX); otherwise it reuses
-        // the parent's. Bounded tool budget: a delegated run must terminate and
+        // own assigned in-process model/backend; otherwise it reuses the
+        // parent's. Bounded tool budget: a delegated run must terminate and
         // answer (the wrap-up round in `run` forces a final tool-free reply).
         var subModelID = modelID
         var subBackend = backend
@@ -495,8 +493,8 @@ final class OMLXAgentExecutor: Sendable {
             subModelID = resolved.modelID
             subBackend = resolved.backend
         }
-        let sub = OMLXAgentExecutor(
-            endpointURL: endpointURL, modelID: subModelID, backend: subBackend,
+        let sub = AgentExecutor(
+            modelID: subModelID, backend: subBackend,
             delegateBackendResolver: delegateBackendResolver)
         var narration = ""      // every streamed token (fallback)
         var lastRoundText = ""  // text after the most recent tool call

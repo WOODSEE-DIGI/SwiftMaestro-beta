@@ -6,8 +6,7 @@ enum ModelTierPolicy {
     /// (e.g. the "Use recommended model" button, Turbo Mode).
     static let recommendedModelID = "Qwen3.5-122B-A10B-4bit"
     /// Model loaded by default on launch: a fast MoE that balances speed and
-    /// quality. Used for the startup default and the oMLX configured-model
-    /// fallback so the app does not preload the 65GB 122B every launch.
+    /// quality, so the app does not preload the 65GB 122B every launch.
     static let defaultModelID = "Qwen3.6-35B-A3B-MLX-4bit"
     /// The previous auto-set default, migrated away from on first launch.
     static let legacyDefaultModelID = "Qwen3.5-122B-A10B-4bit"
@@ -132,73 +131,14 @@ struct Agent: Identifiable {
 
 enum ProviderType: String, Codable {
     case localLLM = "local_llm"
-    case omLX = "omlx"
     case mlx = "mlx"
     case claudeCode = "claude_code"
     
     var displayName: String {
         switch self {
         case .localLLM: return "Local LLM"
-        case .omLX: return "oMLX"
         case .mlx: return "MLX"
         case .claudeCode: return "Claude Code"
-        }
-    }
-}
-
-// MARK: - LLM Config
-
-struct LocalLLMConfig: Identifiable, Codable {
-    var id: UUID
-    var name: String
-    var endpointURL: String
-    var modelIdentifier: String
-    var requiresAPIKey: Bool
-    var runtimeBackend: LocalModelRuntimeBackend
-    var requestTimeoutSeconds: TimeInterval
-    
-    init(
-        id: UUID = UUID(),
-        name: String = "Default",
-        endpointURL: String = "http://localhost:8012",
-        modelIdentifier: String = "Qwen3.5-122B-A10B-4bit",
-        requiresAPIKey: Bool = false,
-        runtimeBackend: LocalModelRuntimeBackend = .omLX,
-        requestTimeoutSeconds: TimeInterval = 300
-    ) {
-        self.id = id
-        self.name = name
-        self.endpointURL = endpointURL
-        self.modelIdentifier = modelIdentifier
-        self.requiresAPIKey = requiresAPIKey
-        self.runtimeBackend = runtimeBackend
-        self.requestTimeoutSeconds = requestTimeoutSeconds
-    }
-    
-    var chatCompletionURL: URL? {
-        let base = endpointURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        return URL(string: base + "/v1/chat/completions")
-    }
-}
-
-enum LocalModelRuntimeBackend: String, Codable {
-    case omLX = "omlx"
-    case mlx = "mlx"
-    case liteLLM = "litellm"
-    
-    var displayName: String {
-        switch self {
-        case .omLX: return "oMLX"
-        case .mlx: return "MLX (Apple Silicon)"
-        case .liteLLM: return "LiteLLM Proxy"
-        }
-    }
-    
-    var defaultEndpointURL: String {
-        switch self {
-        case .omLX: return "http://localhost:8012"
-        case .mlx: return "http://localhost:8080"
-        case .liteLLM: return "http://localhost:4000"
         }
     }
 }
