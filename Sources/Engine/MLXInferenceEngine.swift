@@ -357,7 +357,7 @@ final class MLXInferenceEngine {
         }
 
         // Thinking mode + sampling come from SwiftMaestro's own settings
-        // (self-hosted — independent of any oMLX/server-side config).
+        // (self-hosted — independent of any server-side config).
         // Thinking defaults OFF for a clean, fast chat experience; reasoning can
         // be re-enabled via the `tuning.enableThinking` setting. `enable_thinking`
         // is passed to the model's chat template via additionalContext.
@@ -681,8 +681,8 @@ final class MLXInferenceEngine {
         }
     }
 
-    /// Report generation throughput from an external backend (e.g. the oMLX
-    /// path) so the status bar reflects it.
+    /// Report generation throughput from the agentic backend (the in-process
+    /// generation round) so the status bar reflects it.
     func reportExternalTokensPerSecond(_ tps: Double) {
         tokensPerSecond = tps
     }

@@ -14,10 +14,6 @@ struct MaestroModel: Identifiable, Hashable {
     let isVision: Bool
     let localPath: String?
     let estimatedMemoryGB: Int
-    /// Whether this checkpoint can load via the in-process Apple-MLX backend.
-    /// `false` routes the model to the oMLX server (e.g. the 122B, whose
-    /// in-process load is broken) and prevents any in-process fallback.
-    var supportsInProcess: Bool = true
     /// Whether this model has passed the tool-calling round-trip verification.
     /// Per the verify-per-model rule, only verified models get tools advertised;
     /// unverified models run as plain chat to avoid a broken tool path.
@@ -157,14 +153,14 @@ final class ModelCatalog {
 
     static let builtInModels: [MaestroModel] = [
         // === Local models (already downloaded) ===
-        // Served by oMLX from the swiftmaestro-models scan dir.
+        // Loaded in-process from the swiftmaestro-models scan dir.
         MaestroModel(
             id: "local-qwen3.6-35b-a3b",
             displayName: "Qwen 3.6 35B-A3B (default)",
             huggingFaceID: "lmstudio-community/Qwen3.6-35B-A3B-MLX-4bit",
             // Although this checkpoint is multimodal, we load it through the
             // text MoE path (LLMModelFactory recognizes model_type `qwen3_5_moe`).
-            // The VLM pipeline ran ~3x slower (12 vs ~40 tok/s on oMLX); chat is
+            // The VLM pipeline ran ~3x slower (12 vs ~40 tok/s); chat is
             // text-only, so the vision tower is pure overhead.
             isVision: false,
             localPath: localIfPresent("swiftmaestro-models/Qwen3.6-35B-A3B-MLX-4bit"),
@@ -204,8 +200,6 @@ final class ModelCatalog {
             // quantizes a module only when the checkpoint has its `.scales`
             // (Load.swift). This checkpoint's lm_head IS quantized, so the old
             // "lm_head not found" failure (an older loader) no longer applies.
-            // If an in-process load still can't proceed, `send` falls back to oMLX.
-            supportsInProcess: true,
             // Confirmed: this checkpoint's chat_template uses the same XML
             // <function>/<parameter> tool format as the 3.6 default
             // (qwen3_5_moe), so the xmlFunction parser applies identically.

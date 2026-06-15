@@ -6,11 +6,11 @@ import MLXLMCommon
 // First-class tool source: these run directly in-app (no IPC, no subprocess),
 // ideal for SwiftMaestro-owned / privileged / latency-sensitive capabilities.
 // MCP-sourced tools join the *same* agentic loop in MLXInferenceEngine /
-// OMLXAgentExecutor.
+// AgentExecutor.
 //
 // The Navigator (conductor) additionally gets workspace + delegation tools so it
 // can spin up long-lived project agents and hand work to them. `ask_project_agent`
-// is advertised here but executed by OMLXAgentExecutor (it needs the live
+// is advertised here but executed by AgentExecutor (it needs the live
 // endpoint/model/MCP to run the target agent's loop).
 
 /// Input for tools that take no arguments.
@@ -194,7 +194,7 @@ enum MaestroTools {
     // MARK: - Navigator (workspace + delegation) tools
 
     /// Names of the Navigator-only workspace tools executed natively here.
-    /// `ask_project_agent` is intentionally excluded — OMLXAgentExecutor runs it.
+    /// `ask_project_agent` is intentionally excluded — AgentExecutor runs it.
     private static let workspaceToolNames: Set<String> = [
         "create_project_agent", "list_workspace", "archive_project_agent",
     ]

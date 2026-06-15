@@ -13,7 +13,7 @@ import MLXLMCommon
 //   - InProcessMLXBackend: fully in-process via mlx-swift-lm (no external server).
 
 /// Streamed output from a generation round / the agentic loop.
-enum OMLXOutput: Sendable {
+enum AgentOutput: Sendable {
     case token(String)
     case toolCall(name: String)
     case info(tokensPerSecond: Double)
@@ -54,7 +54,7 @@ protocol GenerationBackend: Sendable {
         temperature: Double,
         topP: Double,
         thinkingEnabled: Bool,
-        continuation: AsyncThrowingStream<OMLXOutput, Error>.Continuation
+        continuation: AsyncThrowingStream<AgentOutput, Error>.Continuation
     ) async throws -> (content: String, toolCalls: [RoundToolCall])
 }
 
