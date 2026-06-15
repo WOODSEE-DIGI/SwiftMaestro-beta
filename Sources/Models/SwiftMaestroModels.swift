@@ -65,19 +65,32 @@ struct Message: Identifiable, Codable {
     /// Names of tools this assistant turn invoked, shown as a compact collapsed
     /// "activity" disclosure (kept out of `content` so it doesn't bloat the chat).
     var toolSteps: [String]?
+    /// The assistant's chain-of-thought, split out of `content` at stream time
+    /// (everything inside `<think>…</think>`, plus any between-tool narration).
+    /// Kept separate so the answer area stays clean and the reasoning can be
+    /// shown in an auto-collapsing disclosure. Optional → older persisted chats
+    /// (without the field) still decode and fall back to in-place tag parsing.
+    var reasoning: String?
+    /// Wall-clock seconds spent reasoning (send → final `</think>`), used for the
+    /// "Thought for Ns" label. Optional/back-compatible.
+    var reasoningSeconds: Double?
 
     init(
         id: UUID = UUID(),
         role: MessageRole,
         content: String,
         imageData: [Data]? = nil,
-        toolSteps: [String]? = nil
+        toolSteps: [String]? = nil,
+        reasoning: String? = nil,
+        reasoningSeconds: Double? = nil
     ) {
         self.id = id
         self.role = role
         self.content = content
         self.imageData = imageData
         self.toolSteps = toolSteps
+        self.reasoning = reasoning
+        self.reasoningSeconds = reasoningSeconds
     }
 }
 

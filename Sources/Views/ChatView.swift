@@ -218,8 +218,11 @@ struct ChatView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
                     ForEach(vm.messages.filter { $0.role != .system }) { message in
-                        MessageBubble(message: message)
-                            .id(message.id)
+                        MessageBubble(
+                            message: message,
+                            isActive: vm.isStreaming && message.id == vm.messages.last?.id
+                        )
+                        .id(message.id)
                     }
                     loadingIndicator
                         .id("loading-indicator")
@@ -227,6 +230,15 @@ struct ChatView: View {
                 .padding(.vertical, 12)
             }
             .onChange(of: vm.messages.last?.content) {
+                if let lastID = vm.messages.last?.id {
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        proxy.scrollTo(lastID, anchor: .bottom)
+                    }
+                }
+            }
+            // Reasoning streams before any answer text, so follow it too —
+            // otherwise the view wouldn't scroll while the model is thinking.
+            .onChange(of: vm.messages.last?.reasoning) {
                 if let lastID = vm.messages.last?.id {
                     withAnimation(.easeOut(duration: 0.15)) {
                         proxy.scrollTo(lastID, anchor: .bottom)
