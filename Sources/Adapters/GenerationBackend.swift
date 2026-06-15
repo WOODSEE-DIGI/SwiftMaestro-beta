@@ -17,6 +17,10 @@ enum OMLXOutput: Sendable {
     case token(String)
     case toolCall(name: String)
     case info(tokensPerSecond: Double)
+    /// A mid-run user steer was injected at a round boundary: the UI should
+    /// finalize the current assistant bubble and open a fresh one for the steered
+    /// continuation (so reasoning is re-armed and bubbles stay readable).
+    case turnBreak
 }
 
 /// A backend-neutral, Sendable chat turn. Used to hand a conversation across the
