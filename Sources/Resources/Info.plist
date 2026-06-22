@@ -34,5 +34,7 @@
 	<string>SwiftMaestro creates calendar events when you ask it to.</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>SwiftMaestro uses automation to create notes in the Notes app when you ask it to.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>SwiftMaestro uses the microphone for speech-to-text transcription.</string>
 </dict>
 </plist>

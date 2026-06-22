@@ -10,12 +10,21 @@ struct ContentView: View {
     /// Per-agent chat view-models, kept alive so switching agents preserves the
     /// in-flight view state (history itself is persisted by ChatHistoryStore).
     @State private var chatCache = ChatViewModelCache()
-    @State private var showingNewAgent = false
     @State private var newProjectName = ""
     @State private var newAgentName = ""
     /// First-run welcome: shown once, only when no models are present on disk.
     @AppStorage("onboarding.seenV1") private var onboardingSeen = false
-    @State private var showOnboarding = false
+    /// The single active modal sheet. SwiftUI only honours ONE `.sheet`
+    /// modifier per view; stacking two (new-agent + onboarding) silently drops
+    /// one, which previously suppressed the first-run model picker. Driving a
+    /// single `.sheet(item:)` from this enum guarantees both can present.
+    @State private var activeSheet: ActiveSheet?
+
+    private enum ActiveSheet: Identifiable {
+        case newAgent
+        case onboarding
+        var id: Int { hashValue }
+    }
 
     var body: some View {
         @Bindable var catalog = catalog
@@ -52,17 +61,21 @@ struct ContentView: View {
             )
         )
         #endif
-        .sheet(isPresented: $showingNewAgent) { newAgentSheet }
-        .sheet(isPresented: $showOnboarding) {
-            OnboardingView(onDone: { onboardingSeen = true; showOnboarding = false })
-                .environment(catalog)
-                .environment(engine)
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .newAgent:
+                newAgentSheet
+            case .onboarding:
+                OnboardingView(onDone: { onboardingSeen = true; activeSheet = nil })
+                    .environment(catalog)
+                    .environment(engine)
+            }
         }
         .onAppear {
             if selectedAgentID == nil { selectedAgentID = workspace.navigator.id }
             // Welcome a fresh install (no model files on disk yet), once.
             if !onboardingSeen && !catalog.models.contains(where: { $0.localPath != nil }) {
-                showOnboarding = true
+                activeSheet = .onboarding
             }
         }
         .task {
@@ -109,7 +122,7 @@ struct ContentView: View {
         .background(theme.sidebarOverridden ? theme.sidebarBackground : Color.clear)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button { showingNewAgent = true } label: {
+                Button { activeSheet = .newAgent } label: {
                     Image(systemName: "plus")
                 }
                 .help("New project agent")
@@ -216,7 +229,7 @@ struct ContentView: View {
     private func resetNewAgent() {
         newProjectName = ""
         newAgentName = ""
-        showingNewAgent = false
+        activeSheet = nil
     }
 
     private func removeAgent(_ agent: AgentRecord) {

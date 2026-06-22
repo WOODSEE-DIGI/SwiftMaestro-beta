@@ -10,6 +10,7 @@ struct ChatView: View {
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(AgentMessageStore.self) private var messageStore
     @Environment(ThemeStore.self) private var theme
+    @Environment(WhisperKitService.self) private var whisper
     @Environment(\.openWindow) private var openWindow
     @ObservedObject var vm: ChatViewModel
     @State private var showingPlans = false
@@ -60,6 +61,11 @@ struct ChatView: View {
         }
         .onPasteCommand(of: [.image, .fileURL]) { providers in
             _ = handleProviders(providers)
+        }
+        .onChange(of: whisper.pendingTranscription) { _, newValue in
+            if let text = newValue, !text.isEmpty {
+                vm.inputText = text
+            }
         }
         .toolbar {
             ToolbarItem {
@@ -458,7 +464,24 @@ struct ChatView: View {
             .buttonStyle(.plain)
             .help("Attach image")
 
-            TextField(streamingPlaceholder, text: $vm.inputText, axis: .vertical)
+            // Microphone button — tap to record, tap again to stop.
+            Button { whisper.toggleRecording() } label: {
+                if whisper.isRecording {
+                    Image(systemName: "stop.circle.fill")
+                        .foregroundStyle(.red)
+                        .symbolEffect(.pulse, isActive: whisper.isRecording)
+                } else if whisper.modelState == .loading || whisper.modelState == .downloading {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: "mic.circle.fill")
+                        .foregroundColor(whisper.modelState == .loaded ? .orange : .secondary)
+                }
+            }
+            .buttonStyle(.plain)
+            .help(whisper.isRecording ? "Stop recording" : "Record from microphone")
+
+            TextField(streamingPlaceholder, text: inputTextBinding, axis: .vertical)
                 .textFieldStyle(.plain)
                 .lineLimit(1...5)
                 .onSubmit { submitInput() }
@@ -493,6 +516,27 @@ struct ChatView: View {
     /// Placeholder hint: while streaming, the field steers the running agent.
     private var streamingPlaceholder: String {
         vm.isStreaming ? "Steer the agent\u{2026}" : "Message..."
+    }
+
+    /// While recording, show live transcription; otherwise normal input text.
+    private var inputTextBinding: Binding<String> {
+        Binding(
+            get: {
+                if whisper.isRecording {
+                    // Prefer the longest text source to avoid duplication
+                    let candidates = [whisper.confirmedText, whisper.unconfirmedText, whisper.liveTranscription]
+                        .filter { !$0.isEmpty && $0 != "Waiting for speech..." }
+                    let live = candidates.max(by: { $0.count < $1.count }) ?? ""
+                    return live.isEmpty ? "Listening\u{2026}" : live
+                }
+                return vm.inputText
+            },
+            set: { newValue in
+                if !whisper.isRecording {
+                    vm.inputText = newValue
+                }
+            }
+        )
     }
 
     /// Route the field's submit/send action: steer while streaming (don't cancel),
