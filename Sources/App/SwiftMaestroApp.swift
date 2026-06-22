@@ -34,6 +34,7 @@ struct SwiftMaestroApp: App {
     @State private var planStore = PlanStore()
     @State private var messageStore = AgentMessageStore()
     @State private var theme = ThemeStore()
+    @State private var whisperService = WhisperKitService()
     private let mcpService = MCPClientService()
 
     var body: some Scene {
@@ -46,6 +47,7 @@ struct SwiftMaestroApp: App {
                 .environment(planStore)
                 .environment(messageStore)
                 .environment(theme)
+                .environment(whisperService)
                 .task {
                     SwiftMaestroDefaultsMigration.applyIfNeeded()
                     // Create the shared ~/.ai-context scaffold up front so a fresh,
@@ -63,6 +65,15 @@ struct SwiftMaestroApp: App {
                     // spawn the user-enabled servers (permissioned by MCP flags).
                     engine.mcpService = mcpService
                     await mcpService.startEnabledServers()
+                    // Eagerly load the default model at startup so the first
+                    // message doesn't block on model init/download.
+                    if let model = catalog.selectedModel {
+                        Task.detached(priority: .userInitiated) {
+                            _ = try? await engine.loadModel(model)
+                        }
+                    }
+                    // Eagerly load WhisperKit so the mic button is ready.
+                    whisperService.ensureModelLoaded()
                 }
         }
         .defaultSize(width: 1100, height: 760)
@@ -88,6 +99,7 @@ struct SwiftMaestroApp: App {
                 .environment(planStore)
                 .environment(messageStore)
                 .environment(theme)
+                .environment(whisperService)
         }
         .defaultSize(width: 760, height: 820)
         // Settings scenes default to `.contentSize`, which pins the window to the
