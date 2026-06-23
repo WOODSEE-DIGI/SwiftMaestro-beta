@@ -6,6 +6,7 @@ struct ContentView: View {
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(AgentMessageStore.self) private var messageStore
     @Environment(ThemeStore.self) private var theme
+    @Environment(WhisperKitService.self) private var whisper
     @State private var selectedAgentID: UUID?
     /// Per-agent chat view-models, kept alive so switching agents preserves the
     /// in-flight view state (history itself is persisted by ChatHistoryStore).
@@ -14,6 +15,8 @@ struct ContentView: View {
     @State private var newAgentName = ""
     /// First-run welcome: shown once, only when no models are present on disk.
     @AppStorage("onboarding.seenV1") private var onboardingSeen = false
+    /// WhisperKit first-run: shown once when the speech model needs downloading.
+    @AppStorage("whisperkit.seenV1") private var whisperKitSeen = false
     /// The single active modal sheet. SwiftUI only honours ONE `.sheet`
     /// modifier per view; stacking two (new-agent + onboarding) silently drops
     /// one, which previously suppressed the first-run model picker. Driving a
@@ -23,6 +26,7 @@ struct ContentView: View {
     private enum ActiveSheet: Identifiable {
         case newAgent
         case onboarding
+        case whisperSetup
         var id: Int { hashValue }
     }
 
@@ -69,6 +73,9 @@ struct ContentView: View {
                 OnboardingView(onDone: { onboardingSeen = true; activeSheet = nil })
                     .environment(catalog)
                     .environment(engine)
+            case .whisperSetup:
+                WhisperKitSetupSheet(onDone: { whisperKitSeen = true; activeSheet = nil })
+                    .environment(whisper)
             }
         }
         .onAppear {
@@ -82,6 +89,23 @@ struct ContentView: View {
             // Prime every agent's inbox from disk so sidebar unread badges are
             // accurate at launch (not just for the open agent).
             for agent in workspace.agents { _ = messageStore.inbox(for: agent.id) }
+            // Show WhisperKit setup dialog once when the model needs downloading.
+            // Deferred until after onboarding so the sheets don't stack.
+            if !whisperKitSeen && activeSheet == nil {
+                if whisper.modelState == .loaded || whisper.isModelDownloaded {
+                    // Already ready — mark seen so we never show the dialog again
+                    whisperKitSeen = true
+                } else if whisper.modelState == .unloaded {
+                    // Not yet started — kick off the download, then present the sheet
+                    whisper.ensureModelLoaded()
+                    try? await Task.sleep(for: .milliseconds(500))
+                    if activeSheet == nil { activeSheet = .whisperSetup }
+                } else {
+                    // Download/load already in progress (started by SwiftMaestroApp) —
+                    // just show the sheet so the user can see progress.
+                    if activeSheet == nil { activeSheet = .whisperSetup }
+                }
+            }
         }
     }
 
