@@ -20,6 +20,8 @@ final class WhisperKitService: @unchecked Sendable {
     var liveTranscription: String = ""
     var bufferEnergy: [Float] = []
     var errorMessage: String?
+    /// Tracks download progress (nil when not downloading, 0.0–1.0 during download).
+    var downloadProgress: Double?
 
     /// The transcribed text ready to be consumed by the chat input field.
     /// Set after recording stops; the consumer clears it after use.
@@ -79,13 +81,21 @@ final class WhisperKitService: @unchecked Sendable {
     // MARK: - Model Loading
 
     /// Lazily load the WhisperKit model on first use. Subsequent calls are no-ops.
+    /// On first run (model not on disk), downloads with progress tracking so the
+    /// UI can show a setup dialog. On subsequent runs, loads silently.
     func ensureModelLoaded() {
         guard modelState == .unloaded else { return }
         guard loadTask == nil || loadTask?.isCancelled == true else { return }
 
         loadTask = Task {
             do {
-                modelState = .loading
+                let needsDownload = !isModelDownloaded
+                if needsDownload {
+                    modelState = .downloading
+                    downloadProgress = 0
+                } else {
+                    modelState = .loading
+                }
 
                 let computeOptions = ModelComputeOptions(
                     melCompute: .cpuAndGPU,
@@ -94,21 +104,54 @@ final class WhisperKitService: @unchecked Sendable {
                     prefillCompute: .cpuOnly
                 )
 
-                let config = WhisperKitConfig(
-                    model: selectedModel,
-                    computeOptions: computeOptions,
-                    verbose: false,
-                    logLevel: .error,
-                    prewarm: false,
-                    load: true,
-                    download: true
-                )
+                if needsDownload {
+                    // Manual download with progress callback
+                    let folder = try await WhisperKit.download(
+                        variant: selectedModel,
+                        progressCallback: { @Sendable [weak self] progress in
+                            Task { @MainActor [weak self] in
+                                self?.downloadProgress = progress.fractionCompleted
+                            }
+                        }
+                    )
+                    self.downloadProgress = nil
 
-                let kit = try await WhisperKit(config)
-                self.whisperKit = kit
+                    let config = WhisperKitConfig(
+                        model: selectedModel,
+                        modelFolder: folder.path,
+                        computeOptions: computeOptions,
+                        verbose: false,
+                        logLevel: .error,
+                        prewarm: false,
+                        load: true,
+                        download: false
+                    )
+                    let kit = try await WhisperKit(config)
+                    self.whisperKit = kit
+                } else {
+                    // Already on disk — resolve the local folder path
+                    let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
+                        .appendingPathComponent("huggingface/models/argmaxinc/whisperkit-coreml")
+                    let modelPath = base?.appendingPathComponent(selectedModel).path
+
+                    let config = WhisperKitConfig(
+                        model: selectedModel,
+                        modelFolder: modelPath,
+                        computeOptions: computeOptions,
+                        verbose: false,
+                        logLevel: .error,
+                        prewarm: false,
+                        load: true,
+                        download: false
+                    )
+                    let kit = try await WhisperKit(config)
+                    self.whisperKit = kit
+                }
+
                 self.modelState = .loaded
             } catch {
                 self.modelState = .unloaded
+                self.downloadProgress = nil
                 let msg = "Failed to load WhisperKit model '\(selectedModel)': \(error.localizedDescription)"
                 self.errorMessage = msg
                 NSLog("[WhisperKit] \(msg)")
