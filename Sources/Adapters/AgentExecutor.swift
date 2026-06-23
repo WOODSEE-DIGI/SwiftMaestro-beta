@@ -158,7 +158,14 @@ final class AgentExecutor: Sendable {
                             let falseClaim = !usedMutator
                                 && (Self.claimsToolBackedMutation(content)
                                     || Self.claimsDelegation(content))
-                            if !specsThisRound.isEmpty, autoNudges < maxAutoNudges, falseClaim {
+                            // Future-tense narration ("I'll delegate", "Now I'll mark it")
+                            // should ALWAYS trigger a nudge — the model is announcing
+                            // intent it never followed through on, regardless of whether
+                            // an earlier round already ran a mutating tool.
+                            let futureNarration = !specsThisRound.isEmpty
+                                && Self.claimsFutureAction(content)
+                            if !specsThisRound.isEmpty, autoNudges < maxAutoNudges,
+                                falseClaim || futureNarration {
                                 autoNudges += 1
                                 NSLog("[AGENT] auto-nudge \(autoNudges): falseClaim")
                                 convo.append(["role": "assistant", "content": content])
@@ -295,6 +302,21 @@ final class AgentExecutor: Sendable {
         return cues.contains { t.contains($0) }
     }
 
+    /// Heuristic: does this text NARRATE a future action the model intends to
+    /// take ("I'll delegate now", "Now I'll mark it done") but the turn ends
+    /// without the tool call actually firing? Catches the 35B model's pattern
+    /// of announcing intent and then stopping.
+    private static func claimsFutureAction(_ text: String) -> Bool {
+        let t = text.lowercased()
+        guard !t.isEmpty else { return false }
+        let intents = ["i'll delegate", "i'll create", "i'll mark", "i'll send",
+                       "i'll add", "i'll update", "i'll set", "i'll remove",
+                       "now i'll", "let me delegate", "let me create",
+                       "let me mark", "let me send", "let me add",
+                       "next, i'll", "next i'll"]
+        return intents.contains { t.contains($0) }
+    }
+
     /// Mutating tools that are NOT agent-scoped (no agent_id injection) but still
     /// count as "real work this turn" so a legitimate result isn't re-nudged.
     private static let nonInjectedMutators: Set<String> = [
@@ -342,10 +364,10 @@ final class AgentExecutor: Sendable {
         // Delegation is handled here (not in MaestroTools) because it needs the
         // live endpoint/model/MCP to run the target agent's own loop.
         if tc.name == "ask_project_agent" {
-            return await delegate(argumentsJSON: tc.arguments, mcp: mcp)
+            return await delegate(argumentsJSON: tc.arguments, mcp: mcp, workingDirectory: workingDirectory)
         }
         if tc.name == "ask_project_agents" {
-            return await delegateMany(argumentsJSON: tc.arguments, mcp: mcp)
+            return await delegateMany(argumentsJSON: tc.arguments, mcp: mcp, workingDirectory: workingDirectory)
         }
 
         var argsJSON = Self.injectProject(
@@ -446,7 +468,8 @@ final class AgentExecutor: Sendable {
     /// the result. The sub-agent gets its own agentID so its todo/plan/messaging
     /// tools work.
     private func delegateOne(
-        projectName: String?, agentName: String, task: String, mcp: MCPClientService?
+        projectName: String?, agentName: String, task: String, mcp: MCPClientService?,
+        workingDirectory: String? = nil
     ) async -> DelegateResult {
         let trimmedTask = task.trimmingCharacters(in: .whitespaces)
         guard !agentName.trimmingCharacters(in: .whitespaces).isEmpty, !trimmedTask.isEmpty else {
@@ -454,7 +477,7 @@ final class AgentExecutor: Sendable {
                 error: "each request needs a non-empty 'agent' and 'task'")
         }
         // Resolve target + assemble its prompt on the MainActor.
-        let prep: (AgentRecord, String, [Message])? = await MainActor.run {
+        let prep: (AgentRecord, String, [Message], String?)? = await MainActor.run {
             guard let ws = MaestroTools.workspace else { return nil }
             let target: AgentRecord?
             if let p = projectName, !p.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -466,13 +489,17 @@ final class AgentExecutor: Sendable {
             }
             guard let target else { return nil }
             let proj = ws.projectName(for: target) ?? (projectName ?? "")
+            // Look up the target agent's own working directory from UserDefaults.
+            let targetWD = workingDirectory
+                ?? UserDefaults.standard.string(forKey: "workingDir.\(target.id.uuidString)")
             var msgs = ChatHistoryStore.load(agentId: target.id)
                 ?? [ChatViewModel.systemMessage(
-                    for: target, projectName: proj.isEmpty ? nil : proj)]
+                    for: target, projectName: proj.isEmpty ? nil : proj,
+                    workingDirectory: targetWD)]
             msgs.append(Message(role: .user, content: trimmedTask))
-            return (target, proj, msgs)
+            return (target, proj, msgs, targetWD)
         }
-        guard let (target, proj, messages) = prep else {
+        guard let (target, proj, messages, effectiveWD) = prep else {
             return DelegateResult(project: projectName ?? "", agent: agentName, answer: nil,
                 error: "no project agent named '\(agentName)'")
         }
@@ -502,7 +529,9 @@ final class AgentExecutor: Sendable {
             for try await output in sub.run(
                 messages: messages, toolSpecs: specs, mcp: mcp,
                 temperature: 0.3, topP: 0.95, thinkingEnabled: false,
-                project: proj.isEmpty ? nil : proj, agentID: target.id.uuidString,
+                project: proj.isEmpty ? nil : proj,
+                workingDirectory: effectiveWD,
+                agentID: target.id.uuidString,
                 maxRounds: 6
             ) {
                 switch output {
@@ -540,8 +569,68 @@ final class AgentExecutor: Sendable {
         return DelegateResult(project: proj, agent: target.name, answer: answer, error: nil)
     }
 
+    /// Like `delegateOne` but takes pre-resolved targets to avoid MainActor.run
+    /// inside concurrent task groups (prevents deadlock when UI is busy).
+    private func delegateOneResolved(
+        target: AgentRecord, proj: String, messages: [Message], task: String,
+        mcp: MCPClientService?, workingDirectory: String?
+    ) async -> DelegateResult {
+        var specs = MaestroTools.schemas(navigator: false)
+        if let mcp { specs += await mcp.currentSchemas(audience: .delegate) }
+        NSLog("[DELEGATE] -> '\(target.name)' (project='\(proj)') with \(specs.count) tools [resolved]")
+
+        var subModelID = modelID
+        var subBackend = backend
+        if let delegateBackendResolver, let resolved = await delegateBackendResolver(target.id) {
+            subModelID = resolved.modelID
+            subBackend = resolved.backend
+        }
+        let sub = AgentExecutor(
+            modelID: subModelID, backend: subBackend,
+            delegateBackendResolver: delegateBackendResolver)
+        var narration = ""
+        var lastRoundText = ""
+        do {
+            for try await output in sub.run(
+                messages: messages, toolSpecs: specs, mcp: mcp,
+                temperature: 0.3, topP: 0.95, thinkingEnabled: false,
+                project: proj.isEmpty ? nil : proj,
+                workingDirectory: workingDirectory,
+                agentID: target.id.uuidString,
+                maxRounds: 6
+            ) {
+                switch output {
+                case .token(let token):
+                    narration += token
+                    lastRoundText += token
+                case .toolCall:
+                    lastRoundText = ""
+                case .info, .turnBreak:
+                    break
+                }
+            }
+        } catch {
+            return DelegateResult(project: proj, agent: target.name, answer: nil,
+                error: "delegate failed: \(error.localizedDescription)")
+        }
+        let trimmedLast = lastRoundText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let answer = trimmedLast.isEmpty
+            ? narration.trimmingCharacters(in: .whitespacesAndNewlines)
+            : trimmedLast
+        guard !answer.isEmpty else {
+            return DelegateResult(project: proj, agent: target.name, answer: nil,
+                error: "agent finished without a text answer")
+        }
+        await MainActor.run {
+            var msgs = messages
+            msgs.append(Message(role: .assistant, content: answer))
+            ChatHistoryStore.save(msgs, agentId: target.id)
+        }
+        return DelegateResult(project: proj, agent: target.name, answer: answer, error: nil)
+    }
+
     /// `ask_project_agent` — delegate a single task and return its answer.
-    private func delegate(argumentsJSON: String, mcp: MCPClientService?) async -> String {
+    private func delegate(argumentsJSON: String, mcp: MCPClientService?, workingDirectory: String? = nil) async -> String {
         guard
             let data = argumentsJSON.data(using: .utf8),
             let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -552,17 +641,17 @@ final class AgentExecutor: Sendable {
             return MaestroTools.errorJSON("ask_project_agent requires 'project', 'agent', and 'task'")
         }
         let r = await delegateOne(
-            projectName: req["project"] as? String, agentName: agentName, task: task, mcp: mcp)
+            projectName: req["project"] as? String, agentName: agentName, task: task, mcp: mcp,
+            workingDirectory: workingDirectory)
         if let err = r.error { return MaestroTools.errorJSON(err) }
         return Self.json(["project": r.project, "agent": r.agent, "answer": r.answer ?? ""])
     }
 
     /// `ask_project_agents` — delegate to several agents and aggregate the answers.
-    /// Runs the sub-agents CONCURRENTLY: each `delegateOne` builds its own
-    /// backend (per-agent model), uses its own per-agent KV cache, and wraps
-    /// generation in task-local random state, so interleaved on-device runs are
-    /// safe. Output order matches the request order.
-    private func delegateMany(argumentsJSON: String, mcp: MCPClientService?) async -> String {
+    /// Runs the sub-agents SEQUENTIALLY: in-process MLX can only run one
+    /// generation at a time, so concurrent task groups deadlock when two
+    /// sub-agents fight for the same model.
+    private func delegateMany(argumentsJSON: String, mcp: MCPClientService?, workingDirectory: String? = nil) async -> String {
         guard let requests = Self.parseDelegationRequests(argumentsJSON), !requests.isEmpty else {
             return MaestroTools.errorJSON(
                 "ask_project_agents requires 'requests': a non-empty JSON array of "
@@ -570,29 +659,61 @@ final class AgentExecutor: Sendable {
                 + "[{\"project\": \"Tests\", \"agent\": \"Agent1-test1\", "
                 + "\"task\": \"Suggest one improvement to the auth plan.\"}]}")
         }
-        NSLog("[DELEGATE] fan-out to \(requests.count) agent(s) — concurrent")
-        // Extract Sendable primitives before the task group (a [String: Any]
-        // dictionary is not Sendable and can't cross the task boundary).
+        NSLog("[DELEGATE] fan-out to \(requests.count) agent(s) — sequential")
         let parsed: [(project: String?, agent: String, task: String)] = requests.map {
             ($0["project"] as? String, ($0["agent"] as? String) ?? "", ($0["task"] as? String) ?? "")
         }
-        let collected = await withTaskGroup(
-            of: (Int, String, String, String?, String?).self
-        ) { group in
-            for (i, p) in parsed.enumerated() {
-                group.addTask { [self] in
-                    let r = await delegateOne(
-                        projectName: p.project, agentName: p.agent, task: p.task, mcp: mcp)
-                    return (i, r.project, r.agent, r.answer, r.error)
-                }
-            }
-            var acc: [(Int, String, String, String?, String?)] = []
-            for await t in group { acc.append(t) }
-            return acc
+        // Pre-resolve ALL targets on MainActor before running any sub-agents.
+        struct ResolvedTarget: Sendable {
+            let project: String
+            let target: AgentRecord
+            let messages: [Message]
+            let workingDirectory: String?
         }
-        let results: [[String: Any]] = collected.sorted { $0.0 < $1.0 }.map { t in
-            if let err = t.4 { return ["project": t.1, "agent": t.2, "error": err] }
-            return ["project": t.1, "agent": t.2, "answer": t.3 ?? ""]
+        let resolved: [ResolvedTarget?] = await MainActor.run {
+            guard let ws = MaestroTools.workspace else { return parsed.map { _ in nil } }
+            return parsed.map { p in
+                let target: AgentRecord?
+                if let proj = p.project, !proj.trimmingCharacters(in: .whitespaces).isEmpty {
+                    target = ws.findAgent(projectName: proj, agentName: p.agent)
+                } else {
+                    target = ws.agents.first {
+                        $0.kind == .project && $0.name.caseInsensitiveCompare(p.agent) == .orderedSame
+                    }
+                }
+                guard let target else { return nil }
+                let proj = ws.projectName(for: target) ?? (p.project ?? "")
+                let targetWD = workingDirectory
+                    ?? UserDefaults.standard.string(forKey: "workingDir.\(target.id.uuidString)")
+                var msgs = ChatHistoryStore.load(agentId: target.id)
+                    ?? [ChatViewModel.systemMessage(
+                        for: target, projectName: proj.isEmpty ? nil : proj,
+                        workingDirectory: targetWD)]
+                msgs.append(Message(role: .user, content: p.task))
+                return ResolvedTarget(
+                    project: proj, target: target, messages: msgs,
+                    workingDirectory: targetWD)
+            }
+        }
+        // Run sequentially — MLX can only handle one generation at a time.
+        var results: [[String: Any]] = []
+        for (i, (p, res)) in zip(parsed, resolved).enumerated() {
+            let r: DelegateResult
+            if let resolved = res {
+                r = await delegateOneResolved(
+                    target: resolved.target, proj: resolved.project,
+                    messages: resolved.messages, task: p.task, mcp: mcp,
+                    workingDirectory: resolved.workingDirectory)
+            } else {
+                r = DelegateResult(project: p.project ?? "", agent: p.agent, answer: nil,
+                    error: "no project agent named '\(p.agent)'")
+            }
+            if let err = r.error {
+                results.append(["project": r.project, "agent": r.agent, "error": err])
+            } else {
+                results.append(["project": r.project, "agent": r.agent, "answer": r.answer ?? ""])
+            }
+            NSLog("[DELEGATE] \(i+1)/\(parsed.count) done: '\(r.agent)'")
         }
         return Self.json(["results": results])
     }

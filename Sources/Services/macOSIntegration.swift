@@ -144,7 +144,31 @@ enum MacOSIntegration {
         if let d = plain.date(from: s) { return d }
         plain.dateFormat = "yyyy-MM-dd"
         if let d = plain.date(from: s) { return d }
-        throw IntegrationError.badDate(s)
+        // Natural language: "tomorrow at 3pm", "next Monday at 10:30am", etc.
+        let lower = s.lowercased().trimmingCharacters(in: .whitespaces)
+        let cal = Calendar.current
+        let now = Date()
+        var date = now
+        if lower.contains("tomorrow") {
+            date = cal.date(byAdding: .day, value: 1, to: now) ?? now
+        } else if lower.contains("today") {
+            date = now
+        } else if lower.contains("next week") {
+            date = cal.date(byAdding: .weekOfYear, value: 1, to: now) ?? now
+        }
+        // Try to extract time: "at 3pm", "at 15:00", "at 3:30pm"
+        let timePattern = /at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/
+        if let match = lower.firstMatch(of: timePattern) {
+            var hour = Int(match.1) ?? 12
+            let minute = Int(match.2 ?? "0") ?? 0
+            if let meridian = match.3 {
+                if meridian == "pm" && hour < 12 { hour += 12 }
+                if meridian == "am" && hour == 12 { hour = 0 }
+            }
+            date = cal.date(bySettingHour: hour, minute: minute, second: 0, of: date) ?? date
+        }
+        guard date != now else { throw IntegrationError.badDate(s) }
+        return date
     }
 
     private static func appleScriptEscape(_ s: String) -> String {

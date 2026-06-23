@@ -1,4 +1,5 @@
 import XCTest
+@testable import SwiftMaestro
 
 /// Pure-logic tests for the secrets layer. These intentionally avoid writing to
 /// the real Keychain so they run deterministically and never trigger auth prompts.

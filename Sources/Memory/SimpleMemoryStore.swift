@@ -74,9 +74,9 @@ final class SimpleMemoryStore {
                                                                     includingPropertiesForKeys: nil)
         return contents.compactMap { itemURL -> MaestroURI? in
             let component = itemURL.lastPathComponent
-            // Check if it's a directory or JSON file
-            let isDir = FileManager.default.fileExists(atPath: itemURL.path, isDirectory: nil)
-            if isDir {
+            var isDir: ObjCBool = false
+            FileManager.default.fileExists(atPath: itemURL.path, isDirectory: &isDir)
+            if isDir.boolValue {
                 return uri.appending(component)
             } else if component.hasSuffix(".json") {
                 return uri.appending(String(component.dropLast(5)))

@@ -549,6 +549,7 @@ final class MLXInferenceEngine {
         let container = try await loadModel(model)
         let repPen = Float(model.tunedRepetitionPenalty)
         let parameters = GenerateParameters(
+            maxTokens: 32768,
             temperature: Float(temperature), topP: Float(topP), repetitionPenalty: repPen,
             // Larger prefill chunk (vs 512 default) speeds the big system+tools
             // prefix on cold turns; warm turns still reuse the per-agent prefix KV.
