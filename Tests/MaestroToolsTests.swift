@@ -17,6 +17,7 @@ final class MaestroToolsTests: XCTestCase {
             "read_file", "write_file", "list_dir",
             "create_reminder", "list_reminders", "create_calendar_event",
             "create_note", "open_url",
+            "list_rules", "set_rule",
         ]
 
         for tool in expectedTools {
@@ -151,5 +152,39 @@ final class MaestroToolsTests: XCTestCase {
         let result = MaestroTools.jsonString(["key": "value"])
         XCTAssertTrue(result.contains("key"))
         XCTAssertTrue(result.contains("value"))
+    }
+
+    // MARK: - Rules tools
+
+    func testListRulesReturnsValidJSON() async {
+        let args: [String: JSONValue] = [:]
+        let call = ToolCall(function: .init(name: "list_rules", arguments: args))
+
+        let result = await MaestroTools.execute(call)
+
+        XCTAssertTrue(result.contains("rules"))
+        XCTAssertTrue(result.contains("count"))
+        XCTAssertNotNil(result.data(using: .utf8))
+    }
+
+    func testSetRuleRequiresText() async {
+        let args: [String: JSONValue] = [:]
+        let call = ToolCall(function: .init(name: "set_rule", arguments: args))
+
+        let result = await MaestroTools.execute(call)
+
+        XCTAssertTrue(result.contains("error"))
+        XCTAssertTrue(result.contains("text"))
+    }
+
+    func testSetRuleCreatesNewRule() async {
+        let args: [String: JSONValue] = ["text": .string("Test rule")]
+        let call = ToolCall(function: .init(name: "set_rule", arguments: args))
+
+        let result = await MaestroTools.execute(call)
+
+        XCTAssertTrue(result.contains("status"))
+        XCTAssertTrue(result.contains("ok"))
+        XCTAssertTrue(result.contains("Test rule"))
     }
 }

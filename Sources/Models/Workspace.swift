@@ -98,6 +98,7 @@ final class WorkspaceStore {
         if let existing = project(named: name) { return existing }
         let p = Project(name: name)
         projects.append(p)
+        NSLog("[WORKSPACE] created project '\(name)' (\(p.id))")
         save()
         return p
     }
@@ -154,8 +155,26 @@ final class WorkspaceStore {
     private func load() {
         if let data = try? Data(contentsOf: fileURL),
            let ws = try? JSONDecoder().decode(WorkspaceData.self, from: data) {
-            projects = ws.projects
-            agents = ws.agents
+            // Deduplicate projects by name (case-insensitive) — keep first occurrence
+            var seen = Set<String>()
+            var uniqueProjects: [Project] = []
+            for p in ws.projects {
+                let key = p.name.lowercased()
+                if seen.contains(key) {
+                    NSLog("[WORKSPACE] dropping duplicate project '\(p.name)' (\(p.id))")
+                    // Remove orphaned agents for this duplicate project
+                    agents.removeAll { $0.projectId == p.id }
+                } else {
+                    seen.insert(key)
+                    uniqueProjects.append(p)
+                }
+            }
+            projects = uniqueProjects
+            agents = ws.agents.filter { a in
+                // Keep navigator and agents whose project still exists
+                a.kind == .navigator || projects.contains { $0.id == a.projectId }
+            }
+            if uniqueProjects.count != ws.projects.count { save() }
         }
         // Start clean: guarantee exactly one Navigator, no preset projects/agents.
         if !agents.contains(where: { $0.kind == .navigator }) {

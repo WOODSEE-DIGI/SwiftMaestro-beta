@@ -448,6 +448,14 @@ class ChatViewModel: ObservableObject {
         read_agent_messages. Use these to hand off context or coordinate work.
         - To send a message you MUST call send_agent_message. NEVER say a message \
         was sent unless you actually called the tool and got a result back.
+
+        CALENDAR:
+        - Before creating a calendar event, ALWAYS call get_current_time first to \
+        get the current date and timezone. This ensures you can correctly resolve \
+        relative dates like "tomorrow", "next Tuesday", or "in 2 hours" to absolute \
+        ISO-8601 timestamps.
+        - Pass the ISO-8601 start time (e.g. 2026-06-15T14:00:00Z) to \
+        create_calendar_event. Do NOT pass natural language dates.
         """
 
     /// Routing guidance so the model uses the Xcode-aware xcodebuildmcp tools for
@@ -483,7 +491,9 @@ class ChatViewModel: ObservableObject {
                 their result for the user. To delegate to SEVERAL agents at once, use \
                 ask_project_agents with a 'requests' list of {project, agent, task}. \
                 Create a project agent when the user wants ongoing work focused on a \
-                specific project.
+                specific project. When creating agents, use descriptive names that \
+                reflect their role (e.g. "Inspector", "Builder", "Scribe") — never \
+                use placeholder names like "NewName" or "Agent1".
                 """
         } else {
             let proj = projectName ?? "this project"

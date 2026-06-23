@@ -11,6 +11,7 @@ extension MaestroTools {
     static let systemToolNames: Set<String> = [
         "create_reminder", "list_reminders", "create_calendar_event",
         "create_note", "open_url",
+        "list_rules", "set_rule",
     ]
 
     static var systemToolSpecs: [ToolSpec] {
