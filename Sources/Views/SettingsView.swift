@@ -605,14 +605,12 @@ struct ModelsSettingsTab: View {
 /// `MaestroModel.tuned*`, so chat honours exactly what's shown here.
 struct TuningSettingsTab: View {
     @Environment(ModelCatalog.self) private var catalog
-    /// Thinking/reasoning isn't a per-model recommended value, so it stays a
-    /// global toggle (clearly labelled "all models" below).
-    @AppStorage("tuning.enableThinking") private var enableThinking: Bool = false
 
     @State private var selectedModelID: String = ""
     @State private var temperature: Double = 1.0
     @State private var topP: Double = 0.95
     @State private var repetitionPenalty: Double = 1.05
+    @State private var thinkingEnabled: Bool = false
 
     private var model: MaestroModel? {
         catalog.models.first { $0.id == selectedModelID } ?? catalog.selectedModel
@@ -622,7 +620,7 @@ struct TuningSettingsTab: View {
     private var recRepPen: Double { model?.recRepetitionPenalty ?? 1.05 }
     private var hasOverride: Bool {
         isCustom(temperature, recTemp) || isCustom(topP, recTopP)
-            || isCustom(repetitionPenalty, recRepPen)
+            || isCustom(repetitionPenalty, recRepPen) || thinkingEnabled
     }
 
     var body: some View {
@@ -647,20 +645,14 @@ struct TuningSettingsTab: View {
                                   recommended: recTopP, param: "topP")
                         sliderRow("Repetition Penalty", $repetitionPenalty, range: 1...1.5, step: 0.01,
                                   recommended: recRepPen, param: "repetitionPenalty")
+                        Toggle("Enable thinking / reasoning", isOn: $thinkingEnabled)
+                        Text("Lets models that support it reason step-by-step before answering. Per-model setting.")
+                            .font(.caption2).foregroundStyle(.secondary)
                         HStack {
                             Spacer()
                             Button("Reset to recommended") { resetToRecommended() }
                                 .disabled(!hasOverride)
                         }
-                    }
-                    .padding(8)
-                }
-
-                GroupBox("Generation (all models)") {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Toggle("Enable thinking / reasoning", isOn: $enableThinking)
-                        Text("Lets models that support it reason step-by-step before answering. Applies to every model.")
-                            .font(.caption2).foregroundStyle(.secondary)
                     }
                     .padding(8)
                 }
@@ -675,6 +667,9 @@ struct TuningSettingsTab: View {
             loadValues()
         }
         .onChange(of: selectedModelID) { _, _ in loadValues() }
+        .onChange(of: thinkingEnabled) { _, _ in
+            UserDefaults.standard.set(thinkingEnabled, forKey: MaestroModel.tuningKey(selectedModelID, "thinking"))
+        }
     }
 
     @ViewBuilder
@@ -711,11 +706,13 @@ struct TuningSettingsTab: View {
             ?? (model.recTopP ?? 0.95)
         repetitionPenalty = (d.object(forKey: MaestroModel.tuningKey(model.id, "repetitionPenalty")) as? Double)
             ?? (model.recRepetitionPenalty ?? 1.05)
+        thinkingEnabled = (d.object(forKey: MaestroModel.tuningKey(model.id, "thinking")) as? Bool)
+            ?? false
     }
 
     private func resetToRecommended() {
         let d = UserDefaults.standard
-        for p in ["temperature", "topP", "repetitionPenalty"] {
+        for p in ["temperature", "topP", "repetitionPenalty", "thinking"] {
             d.removeObject(forKey: MaestroModel.tuningKey(selectedModelID, p))
         }
         loadValues()

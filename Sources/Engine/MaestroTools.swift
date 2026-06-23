@@ -340,6 +340,10 @@ enum MaestroTools {
             return await createNoteTool(call)
         case "open_url":
             return await openURLTool(call)
+        case "list_rules":
+            return listRulesTool()
+        case "set_rule":
+            return setRuleTool(call)
         default:
             return errorJSON("unknown tool: \(call.function.name)")
         }
@@ -768,19 +772,18 @@ enum MaestroTools {
     }
 
     private static func listWorkspace() async -> String {
-        await MainActor.run {
-            guard let ws = workspace else { return errorJSON("workspace unavailable") }
-            let projects: [[String: Any]] = ws.projects.map { project in
-                [
-                    "project": project.name,
-                    "agents": ws.projectAgents(in: project.id).map { $0.name },
-                ]
+        // Snapshot workspace state on MainActor, then format outside to avoid
+        // deadlocking when the agentic loop's background task holds a reference.
+        let snapshot: (navigator: String, projects: [(name: String, agents: [String])])? = await MainActor.run {
+            guard let ws = workspace else { return nil }
+            let projects = ws.projects.map { project in
+                (name: project.name, agents: ws.projectAgents(in: project.id).map { $0.name })
             }
-            return jsonString([
-                "navigator": ws.navigator.name,
-                "projects": projects,
-            ])
+            return (ws.navigator.name, projects)
         }
+        guard let snap = snapshot else { return errorJSON("workspace unavailable") }
+        let projects: [[String: Any]] = snap.projects.map { ["project": $0.name, "agents": $0.agents] }
+        return jsonString(["navigator": snap.navigator, "projects": projects])
     }
 
     private static func archiveProjectAgent(_ call: ToolCall) async -> String {
@@ -827,6 +830,44 @@ enum MaestroTools {
             "parameters": parameters,
         ]
         return ["type": "function", "function": function]
+    }
+
+    // MARK: - Rules tools
+
+    private static func listRulesTool() -> String {
+        let rules = SwiftMaestroSettingsStore.loadRules()
+        let list: [[String: Any]] = rules.map { rule in
+            var item: [String: Any] = [
+                "id": rule.id.uuidString,
+                "text": rule.text,
+                "enabled": rule.enabled,
+                "scope": rule.scope,
+            ]
+            return item
+        }
+        return jsonString(["rules": list, "count": list.count])
+    }
+
+    private static func setRuleTool(_ call: ToolCall) -> String {
+        struct SetRuleArgs: Decodable {
+            let text: String
+            let enabled: Bool?
+            let scope: String?
+        }
+        guard let args = decodeArgs(call, as: SetRuleArgs.self), !args.text.isEmpty else {
+            return errorJSON("set_rule requires 'text'")
+        }
+        let enabled = args.enabled ?? true
+        let scope = args.scope ?? "All"
+        var rules = SwiftMaestroSettingsStore.loadRules()
+        if let idx = rules.firstIndex(where: { $0.text == args.text }) {
+            rules[idx].enabled = enabled
+            rules[idx].scope = scope
+        } else {
+            rules.append(AgentRule(text: args.text, enabled: enabled, scope: scope))
+        }
+        SwiftMaestroSettingsStore.saveRules(rules)
+        return jsonString(["status": "ok", "text": args.text, "enabled": enabled, "scope": scope])
     }
 
     static func errorJSON(_ message: String) -> String {

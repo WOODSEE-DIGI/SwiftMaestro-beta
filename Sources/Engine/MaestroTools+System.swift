@@ -15,6 +15,16 @@ extension MaestroTools {
 
     static var systemToolSpecs: [ToolSpec] {
         [
+            rawSpec("list_rules",
+                "List all behavioral rules currently configured. Shows rule text, enabled status, and scope (All or agent name).",
+                properties: [:], required: []),
+            rawSpec("set_rule",
+                "Add or update a behavioral rule. Rules are injected into the system prompt and guide the model's behavior.",
+                properties: [
+                    "text": ["type": "string", "description": "The rule text."],
+                    "enabled": ["type": "boolean", "description": "Whether the rule is active (default true)."],
+                    "scope": ["type": "string", "description": "Scope: 'All' for every agent, or a specific agent name."],
+                ], required: ["text"]),
             rawSpec("create_reminder",
                 "Create a reminder in the macOS Reminders app. Prompts for access on first use.",
                 properties: [

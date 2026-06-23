@@ -75,6 +75,11 @@ extension MaestroModel {
         (UserDefaults.standard.object(forKey: Self.tuningKey(id, "repetitionPenalty")) as? Double)
             ?? recRepetitionPenalty ?? 1.05
     }
+
+    var tunedThinkingEnabled: Bool {
+        (UserDefaults.standard.object(forKey: Self.tuningKey(id, "thinking")) as? Bool)
+            ?? false
+    }
 }
 
 // MARK: - ModelCatalog

@@ -97,8 +97,8 @@ targets:
     platform: macOS
     sources:
       - path: Tests
-      - path: Sources/Services/SecretsStore.swift
-      - path: Sources/Services/KeychainService.swift
+    dependencies:
+      - target: SwiftMaestro
     settings:
       SWIFT_VERSION: 6.3
       MACOSX_DEPLOYMENT_TARGET: 14.0

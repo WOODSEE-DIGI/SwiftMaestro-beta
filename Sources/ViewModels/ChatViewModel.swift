@@ -115,7 +115,7 @@ class ChatViewModel: ObservableObject {
                 + "served via in-process Apple MLX"
             let requestMessages = messagesForInference(modelDescription: modelDesc)
             let defaults = UserDefaults.standard
-            let thinking = (defaults.object(forKey: "tuning.enableThinking") as? Bool) ?? false
+            let thinking = model.tunedThinkingEnabled
             // Per-model sampling: this model's own override (Settings → Tuning)
             // or its recommended values — never one global value across models.
             let temperature = model.tunedTemperature
@@ -549,12 +549,13 @@ class ChatViewModel: ObservableObject {
                 continue
             }
             let cleaned = Self.stripToolMarkers(message.content)
-            if cleaned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let final = Self.stripOldToolResults(cleaned)
+            if final.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 if message.content.isEmpty { output.append(message) }
                 continue
             }
             var copy = message
-            copy.content = cleaned
+            copy.content = final
             output.append(copy)
         }
         if let last = output.last, last.role == .assistant, last.content.isEmpty {
@@ -569,5 +570,24 @@ class ChatViewModel: ObservableObject {
             .filter { !$0.contains("🔧 called") }
             .joined(separator: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Strip old tool-result content from assistant messages to prevent the model
+    /// from seeing past tool outputs and fabricating them as new. Keeps only the
+    /// final user-facing answer if it looks like a tool-result dump.
+    private static func stripOldToolResults(_ content: String) -> String {
+        let lines = content.split(separator: "\n", omittingEmptySubsequences: false)
+        var result: [Substring] = []
+        for line in lines {
+            let lower = line.lowercased().trimmingCharacters(in: .whitespaces)
+            // Skip lines that look like tool-result summaries
+            if lower.hasPrefix("done!") || lower.hasPrefix("here are the results")
+                || lower.contains("completed:") || lower.contains("all three tasks")
+                || lower.contains("all four") || lower.contains("both operations") {
+                continue
+            }
+            result.append(line)
+        }
+        return result.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
