@@ -18,21 +18,21 @@ extension MaestroTools {
     static var fileToolSpecs: [ToolSpec] {
         [
             rawSpec("read_file",
-                "Read a UTF-8 text file. Only paths inside the user's authorized "
-                + "folders (Settings → Context) are permitted. Use an absolute path.",
+                "Read a UTF-8 text file. Use an absolute path. "
+                + "Your working directory is automatically authorized for reading.",
                 properties: [
                     "path": ["type": "string", "description": "Absolute path to the file."],
                 ], required: ["path"]),
             rawSpec("write_file",
-                "Create or overwrite a UTF-8 text file. Only paths inside the user's "
-                + "authorized folders (Settings → Context) are permitted. Use an absolute path.",
+                "Create or overwrite a UTF-8 text file. Use an absolute path. "
+                + "Your working directory is automatically authorized for writing.",
                 properties: [
                     "path": ["type": "string", "description": "Absolute path to the file."],
                     "content": ["type": "string", "description": "The full text to write."],
                 ], required: ["path", "content"]),
             rawSpec("list_dir",
-                "List the entries of a directory. Only paths inside the user's "
-                + "authorized folders (Settings → Context) are permitted. Use an absolute path.",
+                "List the entries of a directory. Use an absolute path. "
+                + "Your working directory is automatically authorized for listing.",
                 properties: [
                     "path": ["type": "string", "description": "Absolute path to the directory."],
                 ], required: ["path"]),
