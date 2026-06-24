@@ -37,6 +37,7 @@ jobs:
           xcodebuild -project SwiftMaestro.xcodeproj \
             -scheme SwiftMaestro \
             -configuration Release \
+            -derivedDataPath build \
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGN_STYLE=Manual \
             DEVELOPMENT_TEAM="" \
@@ -48,7 +49,7 @@ jobs:
       - name: Create DMG
         run: |
           mkdir -p dmg-staging
-          cp -R SwiftMaestro/build/Release/SwiftMaestro.app dmg-staging/
+          cp -R SwiftMaestro/build/Build/Products/Release/SwiftMaestro.app dmg-staging/
           ln -s /Applications dmg-staging/Applications
           hdiutil create -volname "SwiftMaestro" -srcfolder dmg-staging -ov -format UDZO SwiftMaestro.dmg
           rm -rf dmg-staging
