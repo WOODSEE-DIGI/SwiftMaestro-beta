@@ -69,6 +69,7 @@ The assistant has native, in-process tools — no configuration required:
 - **Memory** — durable notes/knowledge in the shared `~/.ai-context/memory` store.
 - **Files** — read/write/list within folders you authorize in **Settings → Context**.
 - **macOS** — create Reminders, Calendar events, and Notes; open URLs (prompts for permission on first use).
+- **Apple Shortcuts** — list, run, and *create* shortcuts. Describe what you want and the agent builds a `.shortcut` file you can import with a double-click.
 - **Plans, live task checklists, multi-agent messaging, and current time.**
 - **Behavioral rules** — `list_rules` and `set_rule` tools let the agent manage its own behavior rules.
 - **Speech-to-text** — tap the microphone button to dictate; WhisperKit transcribes locally with no cloud API.
