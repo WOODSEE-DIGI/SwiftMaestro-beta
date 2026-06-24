@@ -640,11 +640,14 @@ struct TuningSettingsTab: View {
                 GroupBox("Sampling — \(model?.displayName ?? "model")") {
                     VStack(spacing: 14) {
                         sliderRow("Temperature", $temperature, range: 0...2, step: 0.05,
-                                  recommended: recTemp, param: "temperature")
+                                  recommended: recTemp, param: "temperature",
+                                  description: "Controls randomness. Lower (0.2–0.6) = focused, predictable. Higher (0.8–1.2) = creative, varied. Too high causes hallucination.")
                         sliderRow("Top-P", $topP, range: 0...1, step: 0.05,
-                                  recommended: recTopP, param: "topP")
+                                  recommended: recTopP, param: "topP",
+                                  description: "Nucleus sampling. Limits token choices to the top P% probability mass. Lower = safer, more repetitive. Higher = more diverse.")
                         sliderRow("Repetition Penalty", $repetitionPenalty, range: 1...1.5, step: 0.01,
-                                  recommended: recRepPen, param: "repetitionPenalty")
+                                  recommended: recRepPen, param: "repetitionPenalty",
+                                  description: "Penalises tokens already used. 1.0 = no penalty. 1.1–1.2 = mild reduction. 1.2+ = strong reduction. Too high can make output sound unnatural.")
                         Toggle("Enable thinking / reasoning", isOn: $thinkingEnabled)
                         Text("Lets models that support it reason step-by-step before answering. Per-model setting.")
                             .font(.caption2).foregroundStyle(.secondary)
@@ -675,7 +678,8 @@ struct TuningSettingsTab: View {
     @ViewBuilder
     private func sliderRow(
         _ label: String, _ value: Binding<Double>,
-        range: ClosedRange<Double>, step: Double, recommended: Double, param: String
+        range: ClosedRange<Double>, step: Double, recommended: Double, param: String,
+        description: String = ""
     ) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack {
@@ -689,8 +693,13 @@ struct TuningSettingsTab: View {
                 })
                 Text(fmt(value.wrappedValue)).monospacedDigit().frame(width: 46)
             }
+            if !description.isEmpty {
+                Text(description)
+                    .font(.caption2).foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             Text(isCustom(value.wrappedValue, recommended)
-                 ? "Custom · recommended \(fmt(recommended))"
+                 ? "Custom · recommended \(fmt(recommended)) for this model"
                  : "Using model recommended (\(fmt(recommended)))")
                 .font(.caption2).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
