@@ -421,6 +421,9 @@ class ChatViewModel: ObservableObject {
         or any other tool does NOT write files — only write_file writes files.
         - NEVER claim you read a file unless you actually called read_file and got \
         its content back.
+        - STOP GATHERING after 2 tool rounds. You have enough context. Start writing \
+        your answer or output NOW. Do NOT do read → list → read → list → read loops. \
+        Work with what you have. The user is waiting.
         """
 
     /// Guidance for the live task-checklist tools. Small local models tend to
