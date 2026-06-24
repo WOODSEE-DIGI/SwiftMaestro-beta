@@ -31,9 +31,20 @@ struct MaestroModel: Identifiable, Hashable {
     var recRepetitionPenalty: Double? = nil
 
     /// Tools are advertised only when the model is verified AND its tool-call
-    /// format is known, so any emitted calls can actually be parsed. No known
-    /// format ⇒ no tools, regardless of `supportsTools`.
-    var advertisesTools: Bool { supportsTools && toolCallFormat != nil }
+    /// format is known or can be inferred. No known format ⇒ no tools.
+    var advertisesTools: Bool {
+        supportsTools && (toolCallFormat != nil || mayInferToolFormat)
+    }
+
+    /// Whether the mlx-swift-lm loader can infer the tool call format from the
+    /// model's config.json model_type. Qwen3.5/3.6, Nemotron, Llama 3, Gemma,
+    /// GLM4, LFM2, Mistral3, and others are supported.
+    private var mayInferToolFormat: Bool {
+        let inferrable = ["qwen3", "qwen3_5", "qwen3_next", "nemotron",
+                          "llama", "gemma", "glm4", "lfm2", "mistral3"]
+        let type = huggingFaceID.lowercased()
+        return inferrable.contains { type.contains($0) }
+    }
 
     var modelConfiguration: ModelConfiguration {
         if let localPath {
@@ -183,8 +194,9 @@ final class ModelCatalog {
             isVision: false,
             localPath: localIfPresent("swiftmaestro-models/Qwen3-Coder-30B-A3B-Instruct-MLX-4bit"),
             estimatedMemoryGB: 17,
-            // Known format (XML <function>/<parameter>), but tools stay off until
-            // a verified round-trip flips supportsTools on.
+            // Same XML <function>/<parameter> format as Qwen 3.6/3.5 family.
+            // Tools enabled — the coder model is a strong choice for sub-agents.
+            supportsTools: true,
             toolCallFormat: .xmlFunction,
             recTemperature: 0.7, recTopP: 0.8, recRepetitionPenalty: 1.05
         ),
@@ -193,8 +205,10 @@ final class ModelCatalog {
             displayName: "Qwen 3.5 27B (Opus Distilled)",
             huggingFaceID: "mlx-community/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit",
             isVision: false,
-            localPath: localIfPresent("Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit"),
-            estimatedMemoryGB: 14
+            localPath: localIfPresent("swiftmaestro-models/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit"),
+            estimatedMemoryGB: 14,
+            supportsTools: true,  // Qwen 3.5 family uses xmlFunction
+            recTemperature: 0.7, recTopP: 0.9, recRepetitionPenalty: 1.05
         ),
         MaestroModel(
             id: "local-qwen3.5-122b",
@@ -235,8 +249,10 @@ final class ModelCatalog {
             displayName: "DeepSeek R1 0528 (Qwen3 8B)",
             huggingFaceID: "lmstudio-community/DeepSeek-R1-0528-Qwen3-8B-MLX-4bit",
             isVision: false,
-            localPath: localIfPresent("DeepSeek-R1-0528-Qwen3-8B-MLX-4bit"),
-            estimatedMemoryGB: 4
+            localPath: localIfPresent("swiftmaestro-models/DeepSeek-R1-0528-Qwen3-8B-MLX-4bit"),
+            estimatedMemoryGB: 4,
+            supportsTools: true,  // Qwen3-based, format inferred from model_type
+            recTemperature: 0.6, recTopP: 0.95, recRepetitionPenalty: 1.1
         ),
         MaestroModel(
             id: "local-gpt-oss-20b",
@@ -286,7 +302,9 @@ final class ModelCatalog {
             huggingFaceID: "mlx-community/gemma-3n-E4B-it-lm-4bit",
             isVision: false,
             localPath: nil,
-            estimatedMemoryGB: 3
+            estimatedMemoryGB: 3,
+            supportsTools: true,  // Gemma family, format inferred from model_type
+            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05
         ),
         MaestroModel(
             id: "hub-llama3.2-1b",
