@@ -185,7 +185,7 @@ final class ModelCatalog {
             estimatedMemoryGB: 20,
             supportsTools: true,  // verified: get_current_time round-trip passed
             toolCallFormat: .xmlFunction,  // emits XML <function>/<parameter> calls
-            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05
+            recTemperature: 0.8, recTopP: 0.9, recRepetitionPenalty: 1.15
         ),
         MaestroModel(
             id: "local-qwen3-coder-30b-a3b",
