@@ -7,11 +7,13 @@ A native macOS AI assistant that runs large language models **fully on-device** 
 - **Self-contained** — on first launch a guided onboarding walks you through picking, downloading, and loading a model. Nothing is hard-wired to a specific machine.
 - **Speech-to-text** — built-in WhisperKit integration lets you dictate messages via the microphone button. The speech model downloads on first use with a progress dialog.
 - **Built-in tools, no setup** — the assistant can use durable memory, read/write files in folders you authorize, manage Reminders/Calendar/Notes, and open URLs — all in-process. MCP servers are an optional power-user extension.
+- **Multi-model agents** — assign different models to the Navigator and each sub-agent. Use a fast model for chat and a coding-focused model for project work. Six models ship with tool support enabled.
 - **Mid-generation steering** — send a follow-up message while the agent is still generating to redirect it without cancelling the current run.
 - **Thinking display** — stream-split reasoning chain (collapsible) so you can see the model's thought process without cluttering the answer.
 - **Multi-model residency** — keep multiple models loaded in memory for instant switching between agents.
 - **Appearance settings** — themeable accent colors, light/dark mode, and per-panel background colors.
 - **Plans & task checklists** — docked panels, resizable plan windows, and Markdown export.
+- **Behavioral rules** — add custom rules that guide the agent's behavior, scoped globally or per-agent.
 - **Private by design** — no telemetry, no analytics. Secrets live in the macOS Keychain and are never written to chat history or the memory store.
 - **Distributed as a notarized `.dmg`** — Developer ID signed and Apple-notarized, so it opens cleanly on any Apple Silicon Mac.
 
@@ -30,11 +32,35 @@ On first launch a guided onboarding walks you through picking and downloading a 
 ## Models
 Models download on first use from Hugging Face and are cached locally. Pick one in **Settings → Models**.
 
+### Tool-enabled models
+These models support SwiftMaestro's native tools (memory, files, reminders, etc.):
+
+| Model | Approx. size / RAM | Best for | Tools |
+| --- | --- | --- | --- |
+| Qwen 3.6 35B-A3B (default) | ~20 GB | Fast, general use | ✅ verified |
+| Qwen 3 Coder 30B-A3B | ~17 GB | Coding tasks, sub-agents | ✅ |
+| Qwen 3.5 122B (A10B) | ~65 GB | Deepest reasoning | ✅ verified |
+| Qwen 3.5 27B (Opus Distilled) | ~14 GB | Balanced performance | ✅ |
+| DeepSeek R1 8B (Qwen3) | ~4 GB | Lightweight reasoning | ✅ |
+| Gemma 3n E4B | ~3 GB | Low memory, quick first run | ✅ |
+
+### Additional models
+These models work for chat but tools are not yet enabled:
+
 | Model | Approx. size / RAM | Best for |
 | --- | --- | --- |
-| Qwen 3.6 35B-A3B (default) | ~20 GB | Fast, general use |
-| Qwen 3.5 122B (A10B) | ~65 GB | Deepest reasoning (needs a high-memory Mac) |
-| Smaller Hub models (e.g. Qwen 3 4B) | ~3–6 GB | Low disk/RAM, quick first run |
+| Hermes 4 70B | ~56 GB | General purpose |
+| Magistral Small | ~13 GB | Fast inference |
+| Nemotron Cascade 30B | ~1 GB | Ultra-low memory |
+| Hub models (Qwen 3 8B/4B, Llama 3.2 1B) | ~1–6 GB | Quick experiments |
+
+### Per-agent model overrides
+Assign different models to different agents via the **"This agent"** picker in the chat toolbar. For example:
+- **Navigator** → Qwen 3.6 35B (fast chat)
+- **Coder sub-agent** → Qwen 3 Coder 30B (coding focus)
+- **Reasoning sub-agent** → DeepSeek R1 8B (chain-of-thought)
+
+Each agent runs its own model independently — no conflicts, no shared state.
 
 By default models are stored under `~/Library/Application Support/SwiftMaestro/models`. To reuse an existing collection (for example on an external drive), set a custom path in **Settings → Models**.
 
@@ -44,9 +70,11 @@ The assistant has native, in-process tools — no configuration required:
 - **Files** — read/write/list within folders you authorize in **Settings → Context**.
 - **macOS** — create Reminders, Calendar events, and Notes; open URLs (prompts for permission on first use).
 - **Plans, live task checklists, multi-agent messaging, and current time.**
+- **Behavioral rules** — `list_rules` and `set_rule` tools let the agent manage its own behavior rules.
 - **Speech-to-text** — tap the microphone button to dictate; WhisperKit transcribes locally with no cloud API.
 - **Mid-generation steering** — send a message while the agent is generating to redirect it on the fly.
 - **Image input** — attach images to your messages for multimodal conversations.
+- **Multi-agent delegation** — the Navigator can create project agents and delegate tasks to them, each running their own model.
 
 Additional tools (web, shell, etc.) can be added by configuring MCP servers in **Settings → MCP**.
 
