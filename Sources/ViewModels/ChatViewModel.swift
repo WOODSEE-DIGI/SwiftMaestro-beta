@@ -456,6 +456,20 @@ class ChatViewModel: ObservableObject {
         ISO-8601 timestamps.
         - Pass the ISO-8601 start time (e.g. 2026-06-15T14:00:00Z) to \
         create_calendar_event. Do NOT pass natural language dates.
+
+        SHORTCUTS:
+        - You can list, run, and CREATE Apple Shortcuts.
+        - list_shortcuts: lists all shortcuts on this Mac.
+        - run_shortcut: runs an existing shortcut by name.
+        - create_shortcut: generates a .shortcut file with the actions you specify. \
+        It is saved to the Desktop. The user double-clicks to import it into the \
+        Shortcuts app. When the user asks you to "build a shortcut" or "create a \
+        shortcut", use this tool — do NOT just write instructions in a note.
+        - Supported action types: open_url, create_reminder, create_note, \
+        send_message, get_current_date, text, show_result, wait, set_volume, \
+        play_sound, run_shortcut, get_contents_of_url.
+        - For multi-step shortcuts, pass an ordered array of actions. They run \
+        sequentially when the shortcut is executed.
         """
 
     /// Routing guidance so the model uses the Xcode-aware xcodebuildmcp tools for
