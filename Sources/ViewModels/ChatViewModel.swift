@@ -424,6 +424,13 @@ class ChatViewModel: ObservableObject {
         - STOP GATHERING after 2 tool rounds. You have enough context. Start writing \
         your answer or output NOW. Do NOT do read → list → read → list → read loops. \
         Work with what you have. The user is waiting.
+        - NEVER narrate future tool calls. Do NOT say "Let me read...", "Now I'll \
+        list...", "I'll check..." — just CALL the tool. Narration without action \
+        wastes a full round and frustrates the user. If you need a file, call \
+        read_file NOW. If you need a directory, call list_dir NOW. No preamble.
+        - If you have already read files and listed directories, you have enough. \
+        STOP calling tools and WRITE YOUR RESPONSE. One more tool call is NOT \
+        the answer — outputting text IS.
         """
 
     /// Guidance for the live task-checklist tools. Small local models tend to

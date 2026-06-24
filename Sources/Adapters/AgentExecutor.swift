@@ -88,7 +88,7 @@ final class AgentExecutor: Sendable {
                     var didUseTool = false       // any tool ran this turn
                     var usedMutator = false      // a todo/plan/message/workspace/delegation tool ran
                     var autoNudges = 0           // CONSECUTIVE unproductive nudges
-                    let maxAutoNudges = 2
+                    let maxAutoNudges = 4
                     var finalWrapUpSent = false  // bounded-run wrap-up issued
                     iterations: while !Task.isCancelled {
                         // Mid-generation steering: pull any user messages queued
@@ -311,9 +311,14 @@ final class AgentExecutor: Sendable {
         guard !t.isEmpty else { return false }
         let intents = ["i'll delegate", "i'll create", "i'll mark", "i'll send",
                        "i'll add", "i'll update", "i'll set", "i'll remove",
+                       "i'll read", "i'll list", "i'll check", "i'll look",
+                       "i'll explore", "i'll gather", "i'll collect",
                        "now i'll", "let me delegate", "let me create",
                        "let me mark", "let me send", "let me add",
-                       "next, i'll", "next i'll"]
+                       "let me read", "let me list", "let me check",
+                       "let me explore", "let me gather", "let me collect",
+                       "next, i'll", "next i'll",
+                       "now let me", "good, i'll", "i have the"]
         return intents.contains { t.contains($0) }
     }
 
