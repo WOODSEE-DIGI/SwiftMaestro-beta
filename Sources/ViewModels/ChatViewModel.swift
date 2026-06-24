@@ -406,8 +406,12 @@ class ChatViewModel: ObservableObject {
         declining or telling the user to do it themselves.
         - NEVER invent, guess, paraphrase, or pre-write tool results. Only state what \
         a tool ACTUALLY returned to you after you called it.
-        - Make ONE tool call at a time, then wait for its real result before deciding \
-        the next step. Do not narrate a sequence of imaginary calls.
+        - When you need to read multiple files, BATCH them: call read_file on all \
+        needed files in a single turn. The results come back together so you can \
+        work faster. Do NOT read files one at a time in sequence.
+        - Make ONE tool call at a time for UNRELATED tasks, but batch related reads \
+        (e.g. reading several source files to understand a project). Do not narrate \
+        a sequence of imaginary calls.
         - If a tool returns empty or no output, say exactly that — do not fabricate a \
         plausible-looking result (e.g. fake file listings, paths, or timestamps).
         - If you cannot or did not call a tool, say so plainly. Never claim an action \
