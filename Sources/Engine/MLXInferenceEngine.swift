@@ -192,21 +192,14 @@ final class MLXInferenceEngine {
             MLX.Memory.cacheLimit = workingSet
         }
 
-        // Disable MLX graph compilation globally. mlx-swift-lm's MoE path uses
-        // PROCESS-GLOBAL `compile(shapeless:)` singletons (SwitchLayers.swift:
-        // `compiledSiluProduct`, `weightedExpertSum`) shared by every model. When
-        // we switch models and `MLX.Memory.clearCache()`, a cached compiled graph
-        // can be left referencing freed state; on the next run it errors, and
-        // mlx-swift's compile wrapper returns a SCALAR placeholder (MLXArray(0))
-        // on the error path. That scalar propagates and makes a downstream
-        // `[.ellipsis, ..<k]` index compute an invalid range -> a Swift
-        // "Range requires lowerBound <= upperBound" trap, which crashes the app
-        // and (being a Swift trap, not an MLX error) is NOT catchable by
-        // `withError`. Running eagerly removes the shared compiled-graph state
-        // entirely, so model switching is stable. The only cost is losing kernel
-        // fusion on a couple of elementwise MoE ops (minor vs the win of not
-        // crashing); revisit with a targeted compile-cache clear if needed.
-        compile(enable: false)
+        // Graph compilation is kept ENABLED for kernel fusion on MoE ops
+        // (compiledSiluProduct, weightedExpertSum in SwitchLayers.swift). The
+        // previous crash on model switch happened because
+        // MLX.Memory.clearCache() freed GPU buffers but left stale compiled
+        // graphs referencing them; the fix is to ALSO clear the compiled graph
+        // cache (via mlx_detail_compile_clear_cache) at every point where we
+        // clear the buffer cache. See clearMLXCaches().
+        compile(enable: true)
     }
 
     // MARK: - Model Loading
@@ -278,6 +271,33 @@ final class MLXInferenceEngine {
 
     // MARK: - Residency (budget-aware multi-model)
 
+    // MARK: - MLX cache management
+
+    /// Clear BOTH the GPU buffer cache AND the compiled graph cache.
+    ///
+    /// `MLX.Memory.clearCache()` only frees recycled GPU buffer allocations.
+    /// The process-global compiled-function singletons (`compiledSiluProduct`,
+    /// `weightedExpertSum` in SwitchLayers.swift, and similar in activation
+    /// modules) hold stale references to those freed buffers after a clear.
+    /// On the next generation the stale graph errors internally, mlx-swift's
+    /// compile wrapper returns a scalar `MLXArray(0)`, and a downstream
+    /// `[.ellipsis, ..<k]` index computes an invalid range -> Swift trap.
+    ///
+    /// Calling `mlx_detail_compile_clear_cache()` (C API, no Swift wrapper in
+    /// mlx-swift) purges the compiled graph cache so the singletons re-trace
+    /// and re-compile with fresh tensors on next use. The one-time
+    /// recompilation cost is negligible vs the 3× decode speedup from keeping
+    /// kernel fusion enabled.
+    private func clearMLXCaches() {
+        MLX.Memory.clearCache()
+        mlxDetailCompileClearCache()
+    }
+
+    /// C declaration for the MLX compile-cache clear function (mlx/c/compile.h).
+    /// The symbol is linked through the MLX → Cmlx dependency chain.
+    @_silgen_name("mlx_detail_compile_clear_cache")
+    private func mlxDetailCompileClearCache() -> Int32
+
     /// Bytes for a GB value.
     private static func bytes(gb: Int) -> Int { gb * 1_073_741_824 }
 
@@ -318,7 +338,7 @@ final class MLXInferenceEngine {
             evictedAny = true
             NSLog("[ENGINE] evicted LRU model \(id) (~\(info.estimatedBytes / 1_073_741_824)GB) to fit \(excluding); budget \(budget / 1_073_741_824)GB")
         }
-        if evictedAny { MLX.Memory.clearCache() }
+        if evictedAny { clearMLXCaches() }
     }
 
     /// Snapshot of resident models for the Settings readout, most-recently-used first.
@@ -693,7 +713,7 @@ final class MLXInferenceEngine {
         resident.removeValue(forKey: modelID)
         legacyPromptCache.reset()
         promptCaches.removeAll()
-        MLX.Memory.clearCache()
+        clearMLXCaches()
         if case .ready(let name) = state, name == modelID {
             state = .idle
         }
@@ -704,7 +724,7 @@ final class MLXInferenceEngine {
         resident.removeAll()
         legacyPromptCache.reset()
         promptCaches.removeAll()
-        MLX.Memory.clearCache()
+        clearMLXCaches()
         state = .idle
     }
 
