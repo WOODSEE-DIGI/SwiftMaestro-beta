@@ -22,8 +22,8 @@ jobs:
       - name: Clone dependencies
         run: |
           git clone --depth 1 https://github.com/ml-explore/mlx-swift-lm.git mlx-swift-lm
-          git clone --depth 1 https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/WOODSEE-DIGI/mcp-swift-sdk.git mcp-swift-sdk
-          git clone --depth 1 https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/WOODSEE-DIGI/WhisperKit.git WhisperKit
+          git clone --depth 1 https://x-access-token:${{ secrets.REPO_TOKEN }}@github.com/WOODSEE-DIGI/mcp-swift-sdk.git mcp-swift-sdk
+          git clone --depth 1 https://x-access-token:${{ secrets.REPO_TOKEN }}@github.com/WOODSEE-DIGI/WhisperKit.git WhisperKit
       
       - name: Install xcodegen
         run: brew install xcodegen
