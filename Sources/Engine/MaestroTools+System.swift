@@ -12,6 +12,7 @@ extension MaestroTools {
         "create_reminder", "list_reminders", "create_calendar_event",
         "create_note", "open_url",
         "list_rules", "set_rule",
+        "list_shortcuts", "run_shortcut", "create_shortcut",
     ]
 
     static var systemToolSpecs: [ToolSpec] {
@@ -57,6 +58,21 @@ extension MaestroTools {
                 properties: [
                     "url": ["type": "string", "description": "The URL to open (https://…)."],
                 ], required: ["url"]),
+            rawSpec("list_shortcuts",
+                "List all Apple Shortcuts on this Mac. Returns shortcut names.",
+                properties: [:], required: []),
+            rawSpec("run_shortcut",
+                "Run an Apple Shortcut by name. The shortcut must already exist in the Shortcuts app.",
+                properties: [
+                    "name": ["type": "string", "description": "The name of the shortcut to run."],
+                    "input": ["type": "string", "description": "Optional input text to pass to the shortcut."],
+                ], required: ["name"]),
+            rawSpec("create_shortcut",
+                "Create a new Apple Shortcut from a list of actions. The shortcut is saved as a .shortcut file on the Desktop — the user double-clicks to import it into the Shortcuts app.",
+                properties: [
+                    "name": ["type": "string", "description": "Name for the new shortcut."],
+                    "actions": ["type": "array", "description": "Array of action objects, each with 'type' and parameters. Supported types: 'open_url' (url), 'create_reminder' (title, notes), 'create_note' (title, body), 'send_message' (to, body), 'get_current_date', 'run_shortcut' (name), 'set_volume' (value 0-100), 'play_sound', 'wait' (seconds), 'if' (condition, then_actions, else_actions), 'repeat' (count, actions), 'text' (value), 'get_contents_of_url' (url), 'show_result' (text)."],
+                ], required: ["name", "actions"]),
         ]
     }
 

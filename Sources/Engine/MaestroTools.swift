@@ -344,6 +344,12 @@ enum MaestroTools {
             return listRulesTool()
         case "set_rule":
             return setRuleTool(call)
+        case "list_shortcuts":
+            return await listShortcutsTool()
+        case "run_shortcut":
+            return await runShortcutTool(call)
+        case "create_shortcut":
+            return await createShortcutTool(call)
         default:
             return errorJSON("unknown tool: \(call.function.name)")
         }
@@ -868,6 +874,183 @@ enum MaestroTools {
         }
         SwiftMaestroSettingsStore.saveRules(rules)
         return jsonString(["status": "ok", "text": args.text, "enabled": enabled, "scope": scope])
+    }
+
+    // MARK: - Shortcuts tools
+
+    private static func listShortcutsTool() async -> String {
+        let script = #"tell application "Shortcuts" to get name of every shortcut"#
+        guard let appleScript = NSAppleScript(source: script) else {
+            return errorJSON("could not compile AppleScript")
+        }
+        var error: NSDictionary?
+        let result = appleScript.executeAndReturnError(&error)
+        if let error {
+            return errorJSON(error[NSAppleScript.errorMessage] as? String ?? "\(error)")
+        }
+        var names: [String] = []
+        for i in 1...result.numberOfItems {
+            if let name = result.atIndex(i)?.stringValue {
+                names.append(name)
+            }
+        }
+        return jsonString(["shortcuts": names, "count": names.count])
+    }
+
+    private static func runShortcutTool(_ call: ToolCall) async -> String {
+        struct RunShortcutArgs: Decodable {
+            let name: String
+            let input: String?
+        }
+        guard let args = decodeArgs(call, as: RunShortcutArgs.self), !args.name.isEmpty else {
+            return errorJSON("run_shortcut requires 'name'")
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/shortcuts")
+        var processArgs = ["run", args.name]
+        if let input = args.input, !input.isEmpty {
+            // Write input to a temp file for the shortcut
+            let tmpDir = FileManager.default.temporaryDirectory
+            let tmpFile = tmpDir.appendingPathComponent("shortcut-input-\(UUID().uuidString).txt")
+            try? input.write(to: tmpFile, atomically: true, encoding: .utf8)
+            processArgs += ["--input-path", tmpFile.path]
+        }
+        process.arguments = processArgs
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        do {
+            try process.run()
+            process.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if process.terminationStatus == 0 {
+                return jsonString(["status": "ran", "shortcut": args.name, "output": output.isEmpty ? "(no output)" : output])
+            } else {
+                return errorJSON("shortcut '\(args.name)' failed: \(output)")
+            }
+        } catch {
+            return errorJSON("could not run shortcut: \(error.localizedDescription)")
+        }
+    }
+
+    private static func createShortcutTool(_ call: ToolCall) async -> String {
+        struct CreateShortcutArgs: Decodable {
+            let name: String
+            let actions: [ShortcutAction]
+        }
+        struct ShortcutAction: Decodable {
+            let type: String
+            let url: String?
+            let title: String?
+            let notes: String?
+            let body: String?
+            let to: String?
+            let value: String?
+            let text: String?
+            let seconds: Int?
+            let name: String?
+        }
+        guard let args = decodeArgs(call, as: CreateShortcutArgs.self),
+              !args.name.isEmpty, !args.actions.isEmpty else {
+            return errorJSON("create_shortcut requires 'name' and non-empty 'actions'")
+        }
+        // Build the shortcut plist
+        let actions = args.actions.map { action -> [String: Any] in
+            var actionDict: [String: Any] = [:]
+            switch action.type {
+            case "open_url":
+                actionDict["WFWorkflowActionIdentifier"] = "is.workflow.actions.openurl"
+                actionDict["WFWorkflowActionParameters"] = ["WFInput": action.url ?? ""]
+            case "create_reminder":
+                actionDict["WFWorkflowActionIdentifier"] = "is.workflow.actions.addnewreminder"
+                var params: [String: Any] = ["WFReminderTitle": action.title ?? ""]
+                if let notes = action.notes { params["WFReminderNotes"] = notes }
+                actionDict["WFWorkflowActionParameters"] = params
+            case "create_note":
+                actionDict["WFWorkflowActionIdentifier"] = "is.workflow.actions.createnote"
+                actionDict["WFWorkflowActionParameters"] = [
+                    "WFNoteTitle": action.title ?? "",
+                    "WFNoteBody": action.body ?? ""
+                ]
+            case "send_message":
+                actionDict["WFWorkflowActionIdentifier"] = "is.workflow.actions.sendmessage"
+                actionDict["WFWorkflowActionParameters"] = [
+                    "WFSendMessageActionRecipients": [action.to ?? ""],
+                    "WFSendMessageContent": action.body ?? ""
+                ]
+            case "get_current_date":
+                actionDict["WFWorkflowActionIdentifier"] = "is.workflow.actions.date"
+                actionDict["WFWorkflowActionParameters"] = ["WFDateActionMode": "Current Date"]
+            case "text":
+                actionDict["WFWorkflowActionIdentifier"] = "is.workflow.actions.gettext"
+                actionDict["WFWorkflowActionParameters"] = ["WFTextActionText": action.value ?? ""]
+            case "show_result":
+                actionDict["WFWorkflowActionIdentifier"] = "is.workflow.actions.alert"
+                actionDict["WFWorkflowActionParameters"] = [
+                    "WFAlertActionTitle": action.title ?? "Result",
+                    "WFAlertActionMessage": action.text ?? ""
+                ]
+            case "wait":
+                actionDict["WFWorkflowActionIdentifier"] = "is.workflow.actions.delay"
+                actionDict["WFWorkflowActionParameters"] = ["WFDelayTime": action.seconds ?? 1]
+            case "set_volume":
+                actionDict["WFWorkflowActionIdentifier"] = "is.workflow.actions.setvolume"
+                actionDict["WFWorkflowActionParameters"] = ["WFVolume": (Double(action.value ?? "50") ?? 50) / 100]
+            case "play_sound":
+                actionDict["WFWorkflowActionIdentifier"] = "is.workflow.actions.playsound"
+                actionDict["WFWorkflowActionParameters"] = [:]
+            case "run_shortcut":
+                actionDict["WFWorkflowActionIdentifier"] = "is.workflow.actions.runworkflow"
+                actionDict["WFWorkflowActionParameters"] = ["WFWorkflowName": action.name ?? ""]
+            case "get_contents_of_url":
+                actionDict["WFWorkflowActionIdentifier"] = "is.workflow.actions.downloadurl"
+                actionDict["WFWorkflowActionParameters"] = [
+                    "WFHTTPMethod": "GET",
+                    "WFURL": action.url ?? ""
+                ]
+            default:
+                actionDict["WFWorkflowActionIdentifier"] = "is.workflow.actions.nothing"
+                actionDict["WFWorkflowActionParameters"] = [:]
+            }
+            return actionDict
+        }
+        let shortcut: [String: Any] = [
+            "WFWorkflowMinimumClientVersion": 900,
+            "WFWorkflowMinimumClientVersionString": "900",
+            "WFWorkflowIcon": [
+                "WFWorkflowIconStartColor": 4282601983,
+                "WFWorkflowIconGlyphNumber": 59746
+            ],
+            "WFWorkflowImportQuestions": [],
+            "WFWorkflowTypes": ["NCWidget", "WatchKit"],
+            "WFWorkflowHasOutputFallback": false,
+            "WFWorkflowHasShortcutInputVariables": false,
+            "WFWorkflowOutputContentItemClasses": [],
+            "WFWorkflowActions": actions
+        ]
+        // Write to Desktop
+        let desktop = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first!
+        let safeName = args.name.replacingOccurrences(of: "/", with: "-")
+        let fileURL = desktop.appendingPathComponent("\(safeName).shortcut")
+        do {
+            let data = try PropertyListSerialization.data(fromPropertyList: shortcut, format: .xml, options: 0)
+            try data.write(to: fileURL)
+            // Sign the shortcut so it can be imported
+            let signProcess = Process()
+            signProcess.executableURL = URL(fileURLWithPath: "/usr/bin/shortcuts")
+            signProcess.arguments = ["sign", "--mode", "anyone", "--input", fileURL.path, "--output", fileURL.path]
+            try signProcess.run()
+            signProcess.waitUntilExit()
+            return jsonString([
+                "status": "created",
+                "name": args.name,
+                "path": fileURL.path,
+                "message": "Shortcut saved to Desktop. Double-click \(safeName).shortcut to import it into the Shortcuts app."
+            ])
+        } catch {
+            return errorJSON("could not create shortcut: \(error.localizedDescription)")
+        }
     }
 
     static func errorJSON(_ message: String) -> String {
