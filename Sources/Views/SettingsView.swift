@@ -26,6 +26,7 @@ enum SwiftMaestroSettingsStore {
             return [
                 AuthorizedFolder(path: home + "/.ai-context", enabled: true),
                 AuthorizedFolder(path: home + "/Documents", enabled: true),
+                AuthorizedFolder(path: home + "/Obsidian", enabled: true),
             ]
         }
         return folders

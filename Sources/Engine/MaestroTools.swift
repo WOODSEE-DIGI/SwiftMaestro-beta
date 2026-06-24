@@ -25,6 +25,12 @@ struct CurrentTimeResult: Codable {
 /// Registry of native, in-process Swift tools available to the agent.
 enum MaestroTools {
 
+    /// Working directory set by the caller before each agent loop. File tools
+    /// treat this as an implicit authorized root so the agent can freely create
+    /// and edit files under its working directory without requiring the user to
+    /// manually add every sub-folder in Settings → Context.
+    nonisolated(unsafe) static var workingDirectory: String?
+
     /// Shared workspace store, set once at app launch. Weak so the store's
     /// lifetime stays owned by the app. Workspace tools hop to the MainActor to
     /// touch it.

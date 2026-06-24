@@ -45,12 +45,20 @@ extension MaestroTools {
 
     /// Enabled authorized roots from Settings → Context, standardized to absolute
     /// paths. A target path is permitted only if it equals one of these roots or
-    /// is nested inside one.
+    /// is nested inside one. The agent's working directory is always an implicit
+    /// root so the agent can create/edit files under it without manual setup.
     private static func authorizedRoots() -> [String] {
-        SwiftMaestroSettingsStore.loadAuthorizedFolders()
+        var roots = SwiftMaestroSettingsStore.loadAuthorizedFolders()
             .filter { $0.enabled }
             .map { URL(fileURLWithPath: ($0.path as NSString).expandingTildeInPath).standardizedFileURL.path }
             .filter { !$0.isEmpty }
+        if let wd = workingDirectory, !wd.isEmpty {
+            let standardized = URL(fileURLWithPath: wd).standardizedFileURL.path
+            if !roots.contains(standardized) {
+                roots.append(standardized)
+            }
+        }
+        return roots
     }
 
     /// Resolve to an absolute, standardized path, or nil if it is not absolute.
@@ -83,7 +91,12 @@ extension MaestroTools {
         guard let resolved = resolveAbsolute(raw) else {
             return errorJSON("read_file requires an absolute path (got '\(raw)')")
         }
-        guard isAllowed(resolved, roots: authorizedRoots()) else { return denied(raw) }
+        let roots = authorizedRoots()
+        NSLog("[READ_FILE] path='\(raw)' resolved='\(resolved)' roots=\(roots)")
+        guard isAllowed(resolved, roots: roots) else {
+            NSLog("[READ_FILE] DENIED: '\(resolved)' not in roots \(roots)")
+            return denied(raw)
+        }
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: resolved, isDirectory: &isDir), !isDir.boolValue else {
             return errorJSON("no file at '\(resolved)'")
@@ -129,7 +142,12 @@ extension MaestroTools {
         guard let resolved = resolveAbsolute(raw) else {
             return errorJSON("list_dir requires an absolute path (got '\(raw)')")
         }
-        guard isAllowed(resolved, roots: authorizedRoots()) else { return denied(raw) }
+        let roots = authorizedRoots()
+        NSLog("[LIST_DIR] path='\(raw)' resolved='\(resolved)' roots=\(roots)")
+        guard isAllowed(resolved, roots: roots) else {
+            NSLog("[LIST_DIR] DENIED: '\(resolved)' not in roots \(roots)")
+            return denied(raw)
+        }
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: resolved, isDirectory: &isDir), isDir.boolValue else {
             return errorJSON("no directory at '\(resolved)'")

@@ -383,6 +383,10 @@ final class AgentExecutor: Sendable {
             into: argsJSON, toolName: tc.name, agentID: agentID
         )
         let call = Self.toolCall(name: tc.name, argumentsJSON: argsJSON)
+        // Expose the working directory to file tools so they treat it as an
+        // implicit authorized root (agents can create/edit under their cwd
+        // without requiring manual Settings → Context entries).
+        MaestroTools.workingDirectory = workingDirectory
         if MaestroTools.handles(tc.name) {
             return await MaestroTools.execute(call)
         }
