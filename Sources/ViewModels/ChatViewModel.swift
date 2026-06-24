@@ -412,6 +412,11 @@ class ChatViewModel: ObservableObject {
         plausible-looking result (e.g. fake file listings, paths, or timestamps).
         - If you cannot or did not call a tool, say so plainly. Never claim an action \
         happened unless a real tool result confirms it.
+        - NEVER claim you saved, wrote, or created a file unless you actually called \
+        write_file and got a success response. Running create_todo_list, create_plan, \
+        or any other tool does NOT write files — only write_file writes files.
+        - NEVER claim you read a file unless you actually called read_file and got \
+        its content back.
         """
 
     /// Guidance for the live task-checklist tools. Small local models tend to
