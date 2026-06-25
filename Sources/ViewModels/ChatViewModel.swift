@@ -610,11 +610,22 @@ class ChatViewModel: ObservableObject {
     }
 
     private static func stripToolMarkers(_ content: String) -> String {
-        content
+        // Strip both "🔧 called" display markers AND raw XML tool call text
+        // that the model emits when the parser didn't consume it (e.g. the
+        // model puts tool_call XML in the content instead of as a separate
+        // tool-call event). This keeps the chat clean while the actual tool
+        // still gets executed by the parser.
+        var result = content
+        // Remove <tool_call>...</tool_call> blocks (may span multiple lines)
+        let xmlPattern = "(?s)<tool_call>.*?</tool_call>"
+        result = result.replacingOccurrences(of: xmlPattern, with: "",
+            options: .regularExpression)
+        // Remove single-line "🔧 called" markers
+        result = result
             .split(separator: "\n", omittingEmptySubsequences: false)
             .filter { !$0.contains("🔧 called") }
             .joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Strip old tool-result content from assistant messages to prevent the model
