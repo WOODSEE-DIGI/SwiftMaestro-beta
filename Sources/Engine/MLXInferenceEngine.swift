@@ -186,10 +186,11 @@ final class MLXInferenceEngine {
         // The old 20MB cap forced the 122B's large MoE expert buffers to be
         // freed + reallocated every token, collapsing decode to ~0.5 tok/s;
         // a machine-scaled cache lets them recycle, matching the ~40 tok/s the
-        // same model reaches under mlx_lm's default memory settings. Uses the
-        // device's recommended working-set size so it scales on any Mac.
+        // same model reaches under mlx_lm's default memory settings. Capped at
+        // 50% of recommended to leave headroom for KV cache + activations and
+        // avoid hitting OS memory pressure (spinning beach ball).
         if let workingSet = MLX.GPU.maxRecommendedWorkingSetBytes() {
-            MLX.Memory.cacheLimit = workingSet
+            MLX.Memory.cacheLimit = workingSet / 2
         }
 
         // Graph compilation is kept ENABLED for kernel fusion on MoE ops
@@ -302,12 +303,15 @@ final class MLXInferenceEngine {
     private static func bytes(gb: Int) -> Int { gb * 1_073_741_824 }
 
     /// Resident memory budget: total system RAM minus a safety reserve for the OS
-    /// and other apps (default 10%, configurable via
+    /// and other apps (default 20%, configurable via
     /// `models.systemMemoryReserveFraction`). Caps the sum of resident model
     /// weights so the set stays within what can be wired without paging.
+    /// On 64GB machines the old 10% reserve caused beach balls at ~47GB because
+    /// KV cache + GPU buffers + activations push actual usage well above the
+    /// model's estimated weight size.
     var residentBudgetBytes: Int {
         let raw = UserDefaults.standard.object(forKey: "models.systemMemoryReserveFraction") as? Double
-        let reserve = min(max(raw ?? 0.10, 0.0), 0.5)
+        let reserve = min(max(raw ?? 0.20, 0.0), 0.5)
         return Int(Double(ProcessInfo.processInfo.physicalMemory) * (1.0 - reserve))
     }
 
