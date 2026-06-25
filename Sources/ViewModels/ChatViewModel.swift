@@ -122,10 +122,12 @@ class ChatViewModel: ObservableObject {
             let topP = model.tunedTopP
 
             // Tool surface: project agents get the normal tools; the Navigator
-            // additionally gets the workspace/delegation tools.
+            // additionally gets the workspace/delegation tools. Lite mode
+            // (small MoE models with <10B active params) gets a reduced set.
             var toolSpecs: [ToolSpec] = []
             if model.advertisesTools {
-                toolSpecs = MaestroTools.schemas(navigator: isNavigator)
+                toolSpecs = MaestroTools.schemas(
+                    navigator: isNavigator, liteMode: model.isLiteModel)
                 if let mcp = engine.mcpService {
                     toolSpecs += await mcp.currentSchemas()
                 }

@@ -29,6 +29,12 @@ struct MaestroModel: Identifiable, Hashable {
     var recTemperature: Double? = nil
     var recTopP: Double? = nil
     var recRepetitionPenalty: Double? = nil
+    /// Active (non-expert) parameter count in billions. MoE models like
+    /// 35B-A3B have only 3B active per token; dense models match their total.
+    /// Used to decide lite-mode tool sets (models with <10B active params
+    /// get a reduced tool set to avoid overwhelming the smaller model).
+    var activeParamsB: Int? = nil
+    var isLiteModel: Bool { (activeParamsB ?? 999) < 10 }
 
     /// Tools are advertised only when the model is verified AND its tool-call
     /// format is known or can be inferred. No known format ⇒ no tools.
@@ -185,7 +191,8 @@ final class ModelCatalog {
             estimatedMemoryGB: 20,
             supportsTools: true,  // verified: get_current_time round-trip passed
             toolCallFormat: .xmlFunction,  // emits XML <function>/<parameter> calls
-            recTemperature: 0.8, recTopP: 0.9, recRepetitionPenalty: 1.15
+            recTemperature: 0.8, recTopP: 0.9, recRepetitionPenalty: 1.15,
+            activeParamsB: 3
         ),
         MaestroModel(
             id: "local-qwen3-coder-30b-a3b",
@@ -198,7 +205,8 @@ final class ModelCatalog {
             // Tools enabled — the coder model is a strong choice for sub-agents.
             supportsTools: true,
             toolCallFormat: .xmlFunction,
-            recTemperature: 0.7, recTopP: 0.8, recRepetitionPenalty: 1.05
+            recTemperature: 0.7, recTopP: 0.8, recRepetitionPenalty: 1.05,
+            activeParamsB: 3
         ),
         MaestroModel(
             id: "local-qwen3.5-27b",
@@ -208,7 +216,8 @@ final class ModelCatalog {
             localPath: localIfPresent("swiftmaestro-models/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit"),
             estimatedMemoryGB: 14,
             supportsTools: true,  // Qwen 3.5 family uses xmlFunction
-            recTemperature: 0.7, recTopP: 0.9, recRepetitionPenalty: 1.05
+            recTemperature: 0.7, recTopP: 0.9, recRepetitionPenalty: 1.05,
+            activeParamsB: 27
         ),
         MaestroModel(
             id: "local-qwen3.5-122b",
@@ -226,7 +235,8 @@ final class ModelCatalog {
             // (qwen3_5_moe), so the xmlFunction parser applies identically.
             supportsTools: true,
             toolCallFormat: .xmlFunction,
-            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05
+            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05,
+            activeParamsB: 10
         ),
         MaestroModel(
             id: "local-hermes-70b",
