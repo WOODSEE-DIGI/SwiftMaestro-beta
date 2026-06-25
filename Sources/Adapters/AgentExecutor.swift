@@ -84,7 +84,10 @@ final class AgentExecutor: Sendable {
                     // No iteration budget: local inference has no token cost, so
                     // the agentic loop runs until the model stops requesting tools.
                     // Termination is user-driven (Stop button -> Task cancellation).
+                    // HARD CAP: even the main agent gets max 8 rounds to prevent
+                    // infinite narration/gather loops on small models.
                     var round = 0
+                    let hardMaxRounds = 8
                     var didUseTool = false       // any tool ran this turn
                     var usedMutator = false      // a todo/plan/message/workspace/delegation tool ran
                     var autoNudges = 0           // CONSECUTIVE unproductive nudges
@@ -111,8 +114,11 @@ final class AgentExecutor: Sendable {
                         // is spent, force ONE last tool-free round so the model must
                         // produce a final text answer instead of ping-ponging tools
                         // forever (which would hang the parent's delegation call).
+                        // Also enforces a hard cap on the main agent to prevent
+                        // infinite gather loops on small models.
                         var specsThisRound = toolSpecs
-                        if let maxRounds, round >= maxRounds {
+                        let effectiveMax = maxRounds ?? hardMaxRounds
+                        if round >= effectiveMax {
                             if finalWrapUpSent { break iterations }
                             finalWrapUpSent = true
                             specsThisRound = []
