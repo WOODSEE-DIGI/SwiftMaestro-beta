@@ -71,8 +71,18 @@ enum MaestroTools {
     static var schemas: [ToolSpec] { all.map { $0.schema } }
 
     /// Tool schemas for an agent. Project agents get the base set; the Navigator
-    /// additionally gets workspace + delegation tools.
-    static func schemas(navigator: Bool) -> [ToolSpec] {
+    /// additionally gets workspace + delegation tools. When `liteMode` is true
+    /// (for small MoE models with <10B active params), only the essential tools
+    /// are returned to avoid overwhelming the model.
+    static func schemas(navigator: Bool, liteMode: Bool = false) -> [ToolSpec] {
+        if liteMode {
+            // Lite mode: essential tools only (15 total). The model still
+            // performs well with file ops, todos, plans, memory, and time.
+            // System tools (reminders, calendar, shortcuts, notes, rules)
+            // and inter-agent messaging are cut to reduce choice paralysis.
+            return schemas + todoToolSpecs + planToolSpecs
+                + memoryToolSpecs + fileToolSpecs
+        }
         // Every agent gets the live todo + plan + messaging tools; Navigator also
         // gets workspace/delegation tools.
         var specs = schemas + todoToolSpecs + planToolSpecs + messagingToolSpecs
