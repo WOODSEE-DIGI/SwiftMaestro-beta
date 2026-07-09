@@ -6,7 +6,7 @@ A native macOS AI assistant that runs large language models **fully on-device** 
 - **100% local inference** — models run in-process on the GPU through MLX. There is no external runtime or server to start or manage.
 - **Self-contained** — on first launch a guided onboarding walks you through picking, downloading, and loading a model. Nothing is hard-wired to a specific machine.
 - **Speech-to-text** — built-in WhisperKit integration lets you dictate messages via the microphone button. The speech model downloads on first use with a progress dialog.
-- **Built-in tools, no setup** — the assistant can use durable memory, read/write files in folders you authorize, manage Reminders/Calendar/Notes, and open URLs — all in-process. MCP servers are an optional power-user extension.
+- **Built-in tools, no setup** — the assistant can use durable memory, read/write almost any file type, index large documents for retrieval, manage Reminders/Calendar/Notes, and open URLs — all in-process. MCP servers are an optional power-user extension.
 - **Multi-model agents** — assign different models to the Navigator and each sub-agent. Use a fast model for chat and a coding-focused model for project work. Six models ship with tool support enabled.
 - **Mid-generation steering** — send a follow-up message while the agent is still generating to redirect it without cancelling the current run.
 - **Thinking display** — stream-split reasoning chain (collapsible) so you can see the model's thought process without cluttering the answer.
@@ -67,7 +67,12 @@ By default models are stored under `~/Library/Application Support/SwiftMaestro/m
 ## What it can do out of the box
 The assistant has native, in-process tools — no configuration required:
 - **Memory** — durable notes/knowledge in the shared `~/.ai-context/memory` store.
-- **Files** — read/write/list within folders you authorize in **Settings → Context**.
+- **Files** — read and write almost any file type within folders you authorize in **Settings → Context**:
+  - Plain text, Markdown, CSV, JSON, code, etc.
+  - Documents: `.docx`, `.pdf`, `.rtf`, `.odt`, `.pages`, `.html`
+  - Images: description + raw/base64 payload for multimodal models
+  - Arbitrary binary: base64-encoded read/write
+- **Document indexing & retrieval** — index large files into searchable chunks and pull back the exact original text with `index_document`, `search_chunks`, and `read_chunk`. No summarization; the model sees verbatim source snippets.
 - **macOS** — create Reminders, Calendar events, and Notes; open URLs (prompts for permission on first use).
 - **Apple Shortcuts** — list, run, and *create* shortcuts. Describe what you want and the agent builds a `.shortcut` file you can import with a double-click.
 - **Plans, live task checklists, multi-agent messaging, and current time.**
@@ -118,7 +123,9 @@ Then:
 | ChatViewModel | `Sources/ViewModels/ChatViewModel.swift` | Chat, streaming, system prompt |
 | MLXInferenceEngine | `Sources/Engine/MLXInferenceEngine.swift` | In-process MLX inference (the only backend) |
 | MaestroTools (+ extensions) | `Sources/Engine/MaestroTools*.swift` | Native in-process tools |
-| ModelCatalog | `Sources/Engine/ModelCatalog.swift` | Model list, default, local/Hub resolution |
+| MaestroTools+Indexing | `Sources/Engine/MaestroTools+Indexing.swift` | Chunk-based document RAG (index/search/read) |
+| FileContentExtractor | `Sources/Utilities/FileContentExtractor.swift` | Text extraction for documents, images, and binary |
+| ModelCatalog | `Sources/Engine/ModelCatalog.swift` | Model list, default, local/Hub/remote resolution |
 | WhisperKitService | `Sources/Services/WhisperKitService.swift` | Speech-to-text: model lifecycle, recording, streaming transcription |
 | SimpleMemoryStore | `Sources/Memory/SimpleMemoryStore.swift` | Shared `~/.ai-context/memory` store |
 | SettingsView | `Sources/Views/SettingsView.swift` | Models, Tuning, Appearance, Rules, Context, MCP, Storage, Secrets, Whisper |
