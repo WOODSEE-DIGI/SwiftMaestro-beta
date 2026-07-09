@@ -31,17 +31,17 @@ final class ThemeStore {
         }
     }
 
-    private static let appearanceKey = "theme.appearance"
-    private static let accentKey = "theme.accentHex"
-    private static let userBubbleKey = "theme.userBubbleHex"
-    private static let userBubbleTextKey = "theme.userBubbleTextHex"
-    private static let chatBackgroundKey = "theme.chatBackgroundHex"
-    private static let sidebarKey = "theme.sidebarHex"
-    private static let sidebarTextKey = "theme.sidebarTextHex"
-    private static let plansPanelKey = "theme.plansPanelHex"
-    private static let plansTextKey = "theme.plansTextHex"
-    private static let tasksPanelKey = "theme.tasksPanelHex"
-    private static let tasksTextKey = "theme.tasksTextHex"
+    static let appearanceKey = "theme.appearance"
+    static let accentKey = "theme.accentHex"
+    static let userBubbleKey = "theme.userBubbleHex"
+    static let userBubbleTextKey = "theme.userBubbleTextHex"
+    static let chatBackgroundKey = "theme.chatBackgroundHex"
+    static let sidebarKey = "theme.sidebarHex"
+    static let sidebarTextKey = "theme.sidebarTextHex"
+    static let plansPanelKey = "theme.plansPanelHex"
+    static let plansTextKey = "theme.plansTextHex"
+    static let tasksPanelKey = "theme.tasksPanelHex"
+    static let tasksTextKey = "theme.tasksTextHex"
 
     /// Subtle neutral tint used by the side panels unless the user overrides them.
     static let defaultPanelTint = Color.secondary.opacity(0.04)
@@ -68,6 +68,24 @@ final class ThemeStore {
     private var tasksTextOverride: Color?
 
     init() {
+        let defaults = UserDefaults.standard
+        appearance = Appearance(rawValue: defaults.string(forKey: Self.appearanceKey) ?? "")
+            ?? .system
+        accentOverride = defaults.string(forKey: Self.accentKey).flatMap(Color.init(hex:))
+        userBubbleOverride = defaults.string(forKey: Self.userBubbleKey).flatMap(Color.init(hex:))
+        userBubbleTextOverride = defaults.string(forKey: Self.userBubbleTextKey).flatMap(Color.init(hex:))
+        chatBackgroundOverride = defaults.string(forKey: Self.chatBackgroundKey).flatMap(Color.init(hex:))
+        sidebarOverride = defaults.string(forKey: Self.sidebarKey).flatMap(Color.init(hex:))
+        sidebarTextOverride = defaults.string(forKey: Self.sidebarTextKey).flatMap(Color.init(hex:))
+        plansPanelOverride = defaults.string(forKey: Self.plansPanelKey).flatMap(Color.init(hex:))
+        plansTextOverride = defaults.string(forKey: Self.plansTextKey).flatMap(Color.init(hex:))
+        tasksPanelOverride = defaults.string(forKey: Self.tasksPanelKey).flatMap(Color.init(hex:))
+        tasksTextOverride = defaults.string(forKey: Self.tasksTextKey).flatMap(Color.init(hex:))
+    }
+
+    /// Re-read all persisted theme values. Used after a settings restore so the
+    /// live store reflects the recovered UserDefaults without restarting the app.
+    func reloadFromDefaults() {
         let defaults = UserDefaults.standard
         appearance = Appearance(rawValue: defaults.string(forKey: Self.appearanceKey) ?? "")
             ?? .system

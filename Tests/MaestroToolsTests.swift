@@ -1,5 +1,6 @@
 import XCTest
 import MLXLMCommon
+import PDFKit
 @testable import SwiftMaestro
 
 final class MaestroToolsTests: XCTestCase {
@@ -59,25 +60,30 @@ final class MaestroToolsTests: XCTestCase {
         // Plan
         XCTAssertTrue(names.contains("create_plan"))
         XCTAssertTrue(names.contains("read_plans"))
-        // Messaging
-        XCTAssertTrue(names.contains("send_agent_message"))
-        XCTAssertTrue(names.contains("read_agent_messages"))
-        // Memory
+        // Memory (Navigator keeps these for coordination context)
         XCTAssertTrue(names.contains("memory_write"))
         XCTAssertTrue(names.contains("memory_read"))
-        // Files
+        // Files (Navigator gets basic file discovery)
         XCTAssertTrue(names.contains("read_file"))
         XCTAssertTrue(names.contains("write_file"))
-        // System
-        XCTAssertTrue(names.contains("create_reminder"))
-        XCTAssertTrue(names.contains("open_url"))
-        // Workspace (Navigator-only)
+        // Indexing
+        XCTAssertTrue(names.contains("index_directory"))
+        XCTAssertTrue(names.contains("save_index"))
+        XCTAssertTrue(names.contains("spotlight_search"))
+        // OCR (Navigator-only)
+        XCTAssertTrue(names.contains("ocr_image"))
+        // Workspace / Delegation (Navigator-only)
         XCTAssertTrue(names.contains("create_project_agent"))
         XCTAssertTrue(names.contains("list_workspace"))
         XCTAssertTrue(names.contains("archive_project_agent"))
-        // Delegation (Navigator-only spec)
         XCTAssertTrue(names.contains("ask_project_agent"))
         XCTAssertTrue(names.contains("ask_project_agents"))
+
+        // Navigator does NOT get messaging or system tools — it must delegate that work.
+        XCTAssertFalse(names.contains("send_agent_message"))
+        XCTAssertFalse(names.contains("read_agent_messages"))
+        XCTAssertFalse(names.contains("create_reminder"))
+        XCTAssertFalse(names.contains("open_url"))
     }
 
     func testProjectAgentSchemasExcludesWorkspaceTools() {
@@ -186,5 +192,224 @@ final class MaestroToolsTests: XCTestCase {
         XCTAssertTrue(result.contains("status"))
         XCTAssertTrue(result.contains("ok"))
         XCTAssertTrue(result.contains("Test rule"))
+    }
+
+    // MARK: - Polymorphic file read/write
+
+    private func tempTestDirectory() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("SwiftMaestroFileTests-\(UUID().uuidString)")
+    }
+
+    private func makeCall(name: String, args: [String: JSONValue]) -> ToolCall {
+        ToolCall(function: .init(name: name, arguments: args))
+    }
+
+    func testReadWriteTextFile() async throws {
+        let dir = tempTestDirectory()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        MaestroTools.workingDirectory = dir.path
+        defer { MaestroTools.workingDirectory = nil }
+
+        let path = dir.appendingPathComponent("test.txt").path
+        let write = makeCall(name: "write_file", args: [
+            "path": .string(path),
+            "content": .string("Hello, SwiftMaestro file tools!")
+        ])
+        let writeResult = await MaestroTools.execute(write)
+        XCTAssertTrue(writeResult.contains("status"))
+        XCTAssertTrue(writeResult.contains("written"))
+
+        let read = makeCall(name: "read_file", args: ["path": .string(path)])
+        let readResult = await MaestroTools.execute(read)
+        XCTAssertTrue(readResult.contains("Hello, SwiftMaestro file tools!"))
+    }
+
+    func testWriteAndReadBinaryFile() async throws {
+        let dir = tempTestDirectory()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        MaestroTools.workingDirectory = dir.path
+        defer { MaestroTools.workingDirectory = nil }
+
+        let original = Data([0x00, 0x01, 0x02, 0xFF, 0xFE, 0xFD])
+        let base64 = original.base64EncodedString()
+        let path = dir.appendingPathComponent("test.bin").path
+
+        let write = makeCall(name: "write_file", args: [
+            "path": .string(path),
+            "content": .string(base64),
+            "encoding": .string("base64")
+        ])
+        let writeResult = await MaestroTools.execute(write)
+        XCTAssertTrue(writeResult.contains("written"))
+
+        let read = makeCall(name: "read_file", args: ["path": .string(path)])
+        let readResult = await MaestroTools.execute(read)
+        let readJSON = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(readResult.utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(readJSON["type"] as? String, "binary")
+        XCTAssertEqual(readJSON["base64"] as? String, base64)
+        XCTAssertEqual(readJSON["size_bytes"] as? Int, original.count)
+
+        let roundTrip = try Data(contentsOf: URL(fileURLWithPath: path))
+        XCTAssertEqual(roundTrip, original)
+    }
+
+    func testReadPDFExtractsText() async throws {
+        let dir = tempTestDirectory()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        MaestroTools.workingDirectory = dir.path
+        defer { MaestroTools.workingDirectory = nil }
+
+        let path = dir.appendingPathComponent("test.pdf").path
+        let url = URL(fileURLWithPath: path)
+
+        // Create a minimal PDF with real text content using CoreGraphics.
+        let text = "Hello from PDF"
+        var mediaBox = CGRect(x: 0, y: 0, width: 612, height: 792)
+        guard let context = CGContext(url as CFURL, mediaBox: &mediaBox, nil) else {
+            XCTFail("Could not create PDF context")
+            return
+        }
+        context.beginPDFPage(nil)
+        let font = CTFontCreateWithName("Helvetica" as CFString, 24, nil)
+        let attrString = NSAttributedString(
+            string: text,
+            attributes: [
+                .font: font,
+                .foregroundColor: CGColor.black as Any
+            ]
+        )
+        let line = CTLineCreateWithAttributedString(attrString)
+        context.textPosition = CGPoint(x: 100, y: 700)
+        CTLineDraw(line, context)
+        context.endPDFPage()
+        context.closePDF()
+
+        let read = makeCall(name: "read_file", args: ["path": .string(path)])
+        let readResult = await MaestroTools.execute(read)
+        XCTAssertTrue(readResult.contains("Hello from PDF"))
+    }
+
+    func testReadRTFExtractsText() async throws {
+        let dir = tempTestDirectory()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        MaestroTools.workingDirectory = dir.path
+        defer { MaestroTools.workingDirectory = nil }
+
+        let rtf = "{\\rtf1\\ansi Hello from RTF}"
+        let path = dir.appendingPathComponent("test.rtf").path
+        try rtf.write(toFile: path, atomically: true, encoding: .ascii)
+
+        let read = makeCall(name: "read_file", args: ["path": .string(path)])
+        let readResult = await MaestroTools.execute(read)
+        XCTAssertTrue(readResult.contains("Hello from RTF"))
+    }
+
+    func testReadBinaryReturnsBase64Metadata() async throws {
+        let dir = tempTestDirectory()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        MaestroTools.workingDirectory = dir.path
+        defer { MaestroTools.workingDirectory = nil }
+
+        let data = Data("not really a png".utf8)
+        let path = dir.appendingPathComponent("test.png").path
+        try data.write(to: URL(fileURLWithPath: path))
+
+        let read = makeCall(name: "read_file", args: ["path": .string(path)])
+        let readResult = await MaestroTools.execute(read)
+        let readJSON = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(readResult.utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(readJSON["type"] as? String, "binary")
+        XCTAssertEqual(readJSON["mime_type"] as? String, "image/png")
+        XCTAssertEqual(readJSON["size_bytes"] as? Int, data.count)
+    }
+
+    // MARK: - Document chunk indexing (RAG)
+
+    func testIndexDocumentAndSearchChunks() async throws {
+        let dir = tempTestDirectory()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        MaestroTools.workingDirectory = dir.path
+        defer { MaestroTools.workingDirectory = nil }
+
+        // Write a long document with known repeated phrases.
+        let paragraphs = (0..<20).map { i in
+            "Paragraph \(i). The quick brown fox jumps over the lazy dog. "
+            + (i == 7 ? "SWIFTMAESTRO_UNIQUE_TARGET_PHRASE appears exactly here in paragraph seven. " : "")
+            + "More filler text to ensure the document is long enough to chunk properly."
+        }
+        let docPath = dir.appendingPathComponent("long_doc.txt").path
+        try paragraphs.joined(separator: "\n\n").write(toFile: docPath, atomically: true, encoding: .utf8)
+
+        let indexName = "test-rag-" + UUID().uuidString
+        let index = makeCall(name: "index_document", args: [
+            "paths": .array([.string(docPath)]),
+            "index_name": .string(indexName),
+            "chunk_words": .int(50),
+            "overlap_words": .int(10),
+        ])
+        let indexResult = await MaestroTools.execute(index)
+        let indexJSON = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(indexResult.utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(indexJSON["status"] as? String, "indexed")
+        XCTAssertGreaterThan((indexJSON["total_chunks"] as? Int) ?? 0, 0)
+
+        // Loose fuzzy search should find the unique phrase.
+        let search = makeCall(name: "search_chunks", args: [
+            "index_name": .string(indexName),
+            "query": .string("SWIFTMAESTRO UNIQUE TARGET"),
+            "top_k": .int(5),
+        ])
+        let searchResult = await MaestroTools.execute(search)
+        let searchJSON = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(searchResult.utf8)) as? [String: Any]
+        )
+        let results = try XCTUnwrap(searchJSON["results"] as? [[String: Any]])
+        XCTAssertFalse(results.isEmpty)
+        XCTAssertTrue(results.contains { result in
+            ((result["preview"] as? String) ?? "").contains("SWIFTMAESTRO_UNIQUE_TARGET_PHRASE")
+        })
+
+        // read_chunk should return the exact full text.
+        guard let firstChunkId = results.first?["chunk_id"] as? String else {
+            XCTFail("No chunk id returned")
+            return
+        }
+        let readChunk = makeCall(name: "read_chunk", args: [
+            "index_name": .string(indexName),
+            "chunk_id": .string(firstChunkId),
+        ])
+        let chunkResult = await MaestroTools.execute(readChunk)
+        let chunkJSON = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(chunkResult.utf8)) as? [String: Any]
+        )
+        let chunkText = try XCTUnwrap(chunkJSON["text"] as? String)
+        XCTAssertFalse(chunkText.isEmpty)
+
+        // Cleanup: the index lives under ~/.ai-context/memory/knowledge/indices/
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let indexDir = home
+            .appendingPathComponent(".ai-context")
+            .appendingPathComponent("memory")
+            .appendingPathComponent("knowledge")
+            .appendingPathComponent("indices")
+            .appendingPathComponent(sanitizeForTest(indexName))
+        try? FileManager.default.removeItem(at: indexDir)
+    }
+
+    private func sanitizeForTest(_ name: String) -> String {
+        name.replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: " ", with: "_")
+            .lowercased()
     }
 }

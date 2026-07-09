@@ -14,6 +14,7 @@ These are mandatory working agreements for this repo. Follow them every session.
 5. **Before any public push.** Deep-scrub for PII that could be used maliciously. The name `woodsee` may remain.
 6. **Git discipline.** Commit only when explicitly asked. Every commit message must include `Co-Authored-By: Oz <oz-agent@warp.dev>`.
 7. **Conventions.** Use 24-hour time `HH:mm:ss` with an AM/PM indicator. Name plans for Warp rules and AI-context rules as `YY.MM.DD-Plan name`.
+8. **Backup before destructive operations.** Never delete, overwrite, or reset user data, preferences, keychain items, model files, or project configuration without first making a recoverable backup (e.g., copy the file/directory, export the plist, snapshot the keychain item) and confirming the backup succeeded. This applies to `~/Library/Preferences/`, `~/Library/Application Support/SwiftMaestro/`, `~/.ai-context/`, and any user-created files.
 
 ---
 

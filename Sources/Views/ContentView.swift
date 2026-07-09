@@ -7,6 +7,7 @@ struct ContentView: View {
     @Environment(AgentMessageStore.self) private var messageStore
     @Environment(ThemeStore.self) private var theme
     @Environment(WhisperKitService.self) private var whisper
+    @Environment(\.openWindow) private var openWindow
     @State private var selectedAgentID: UUID?
     /// Per-agent chat view-models, kept alive so switching agents preserves the
     /// in-flight view state (history itself is persisted by ChatHistoryStore).
@@ -80,6 +81,13 @@ struct ContentView: View {
         }
         .onAppear {
             if selectedAgentID == nil { selectedAgentID = workspace.navigator.id }
+            // Set shared instance for delegate streaming.
+            ChatViewModelCache.shared = chatCache
+            // When a delegation starts, open/front a floating chat window for the
+            // sub-agent so the user can watch Navigator and Scribe side-by-side.
+            chatCache.onOpenAgentWindow = { [openWindow] agentID in
+                openWindow(id: "agent-chat-window", value: AgentChatWindowID(agentID: agentID))
+            }
             // Welcome a fresh install (no model files on disk yet), once.
             if !onboardingSeen && !catalog.models.contains(where: { $0.localPath != nil }) {
                 activeSheet = .onboarding
@@ -270,19 +278,40 @@ struct EngineStatusBar: View {
     @Environment(MLXInferenceEngine.self) private var engine
 
     var body: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(statusColor)
-                .frame(width: 8, height: 8)
-            Text(statusText)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            Spacer()
-            if engine.tokensPerSecond > 0 {
-                Text(String(format: "%.1f tok/s", engine.tokensPerSecond))
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 8, height: 8)
+                Text(statusText)
                     .font(.caption2)
-                    .monospacedDigit()
                     .foregroundStyle(.secondary)
+                Spacer()
+                if engine.tokensPerSecond > 0 {
+                    Text(String(format: "%.1f tok/s", engine.tokensPerSecond))
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if !engine.residentModelsReadout.isEmpty {
+                ForEach(engine.residentModelsReadout) { model in
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 6, height: 6)
+                        Text(model.name)
+                            .font(.caption2)
+                            .lineLimit(1)
+                            .help(model.name)
+                        Spacer(minLength: 4)
+                        Text("~\(model.gb) GB")
+                            .font(.caption2)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
         }
     }
@@ -301,7 +330,7 @@ struct EngineStatusBar: View {
         switch engine.state {
         case .idle: return "Ready"
         case .loading(let name): return "Loading \(name)…"
-        case .ready(let name): return name
+        case .ready: return "Ready"
         case .generating: return "Generating…"
         case .error(let msg): return msg
         }
@@ -317,6 +346,12 @@ struct EngineStatusBar: View {
 final class ChatViewModelCache {
     private var byID: [UUID: ChatViewModel] = [:]
 
+    /// Shared instance accessible from static methods for delegate streaming.
+    nonisolated(unsafe) static var shared: ChatViewModelCache?
+    /// Called on the main actor when a delegation to `agentID` begins, so the UI
+    /// can open or front a floating chat window for that sub-agent.
+    var onOpenAgentWindow: ((UUID) -> Void)?
+
     func viewModel(for agent: AgentRecord, projectName: String?) -> ChatViewModel {
         if let existing = byID[agent.id] { return existing }
         let vm = ChatViewModel(agent: agent, projectName: projectName)
@@ -326,4 +361,61 @@ final class ChatViewModelCache {
 
     /// Drop a cached view-model (e.g. after archiving its agent).
     func drop(_ id: UUID) { byID[id] = nil }
+
+    /// Append a token to an agent's current assistant message (for delegate streaming).
+    /// Strips XML thinking/channel tags so the chat shows clean content.
+    func appendToken(_ token: String, toAgentID agentID: UUID) {
+        guard let vm = byID[agentID] else { return }
+        vm.objectWillChange.send()
+        if vm.messages.last?.role == .assistant {
+            // Re-strip the entire accumulated content each token so tags that span
+            // token boundaries or appear in different forms still get removed.
+            let accumulated = vm.messages[vm.messages.count - 1].content + token
+            let cleaned = Self.stripThinkingTags(accumulated)
+            vm.messages[vm.messages.count - 1].content = cleaned
+        }
+    }
+
+    /// Strip XML thinking/channel tags from a string.
+    /// Delegates to the shared stripper so all layers use the same patterns.
+    private static func stripThinkingTags(_ text: String) -> String {
+        ThinkingTagStripper.strip(text)
+    }
+
+    /// Notify an agent that delegation started (append empty assistant message).
+    func beginDelegation(forAgentID agentID: UUID) {
+        guard let vm = byID[agentID] else { return }
+        vm.objectWillChange.send()
+        vm.messages.append(Message(role: .assistant, content: ""))
+        onOpenAgentWindow?(agentID)
+    }
+
+    /// Reload an agent's messages from the persisted exchange after delegation.
+    @MainActor
+    func reloadMessages(forAgentID agentID: UUID, messages: [Message]) {
+        if let vm = byID[agentID] {
+            vm.objectWillChange.send()
+            vm.messages = messages
+        } else {
+            NSLog("[CACHE] reloadMessages: no VM for \(agentID) — creating fresh one")
+            guard let agent = MaestroTools.workspace?.agent(id: agentID) else {
+                NSLog("[CACHE] reloadMessages: can't find agent record for \(agentID)")
+                return
+            }
+            let vm = ChatViewModel(agent: agent, projectName: MaestroTools.workspace?.projectName(for: agent))
+            vm.messages = messages
+            byID[agentID] = vm
+        }
+    }
+
+    /// Check if a VM exists for an agent.
+    func hasViewModel(for agentID: UUID) -> Bool {
+        byID[agentID] != nil
+    }
+
+    /// Notify an agent that delegation finished (save history).
+    func finishDelegation(forAgentID agentID: UUID) {
+        guard let vm = byID[agentID] else { return }
+        vm.persistHistory()
+    }
 }

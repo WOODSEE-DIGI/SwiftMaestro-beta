@@ -61,6 +61,9 @@ struct Message: Identifiable, Codable {
     /// data URIs. Optional so older persisted chats (without the field) still
     /// decode (synthesized Codable uses decodeIfPresent for optionals).
     var imageData: [Data]?
+    /// Original file paths for attached images (extracted from user text).
+    /// Used to tell the model which paths to pass to ocr_image.
+    var imagePaths: [String]?
     /// Names of tools this assistant turn invoked, shown as a compact collapsed
     /// "activity" disclosure (kept out of `content` so it doesn't bloat the chat).
     var toolSteps: [String]?
@@ -79,6 +82,7 @@ struct Message: Identifiable, Codable {
         role: MessageRole,
         content: String,
         imageData: [Data]? = nil,
+        imagePaths: [String]? = nil,
         toolSteps: [String]? = nil,
         reasoning: String? = nil,
         reasoningSeconds: Double? = nil
@@ -87,6 +91,7 @@ struct Message: Identifiable, Codable {
         self.role = role
         self.content = content
         self.imageData = imageData
+        self.imagePaths = imagePaths
         self.toolSteps = toolSteps
         self.reasoning = reasoning
         self.reasoningSeconds = reasoningSeconds

@@ -83,11 +83,26 @@ struct MessageBubble: View {
                         .foregroundStyle(isUser ? theme.userBubbleText : Color.primary)
                 }
             }
+            .contextMenu {
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(copyableText, forType: .string)
+                } label: {
+                    Label("Copy message text", systemImage: "doc.on.doc")
+                }
+            }
             
             if !isUser { Spacer(minLength: 60) }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 4)
+    }
+
+    /// Text to copy when the user chooses "Copy message text".
+    /// For assistant messages this is the cleaned answer; for user messages it is the raw content.
+    private var copyableText: String {
+        if isUser { return message.content }
+        return displayAnswer
     }
     
     /// Reasoning to show: the stream-split `reasoning` field for new messages, or
@@ -100,9 +115,11 @@ struct MessageBubble: View {
 
     /// Answer to show: the already-clean `content` for new messages (think split
     /// out at stream time), or the post-`</think>` slice for legacy messages.
+    /// A final shared strip pass acts as a safety net for any channel/thinking
+    /// tags that slipped through streaming-time stripping.
     private var displayAnswer: String {
-        if message.reasoning != nil { return message.content }
-        return parsed.answer
+        let raw = message.reasoning != nil ? message.content : parsed.answer
+        return ThinkingTagStripper.strip(raw)
     }
 
     /// "Thinking…" while this message is live and still reasoning (no answer yet),

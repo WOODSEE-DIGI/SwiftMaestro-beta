@@ -201,7 +201,7 @@ enum SecretsStore {
 
         var values: [String] = []
         for meta in metas {
-            if let value = try? KeychainService.read(account: meta.account), !value.isEmpty {
+            if let value = try? KeychainService.read(account: meta.account, allowUI: false), !value.isEmpty {
                 values.append(value)
             }
         }

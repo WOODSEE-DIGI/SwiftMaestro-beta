@@ -5,6 +5,7 @@ import MLXVLM
 import MLXLMCommon
 import Hub
 import Tokenizers
+import CoreImage
 
 // MARK: - Engine State
 
@@ -106,6 +107,23 @@ struct HFHubDownloader: MLXLMCommon.Downloader {
             matching: patterns,
             progressHandler: progressHandler
         )
+    }
+}
+
+/// Downloader that returns an already-local model directory.
+/// Used for local vision models so we can pass an explicit ModelConfiguration
+/// (including toolCallFormat) through the factory's configuration-aware path.
+struct LocalDirectoryDownloader: MLXLMCommon.Downloader {
+    let directory: URL
+
+    func download(
+        id: String,
+        revision: String?,
+        matching patterns: [String],
+        useLatest: Bool,
+        progressHandler: @Sendable @escaping (Progress) -> Void
+    ) async throws -> URL {
+        directory
     }
 }
 
@@ -223,43 +241,9 @@ final class MLXInferenceEngine {
 
         state = .loading(model.displayName)
 
-        let container: ModelContainer
-        if let localPath = model.localPath {
-            // Load from local directory
-            let url = URL(fileURLWithPath: localPath)
-            if model.isVision {
-                container = try await VLMModelFactory.shared.loadContainer(
-                    from: url, using: tokenizerLoader
-                )
-            } else {
-                // Pass the catalog's declared tool-call format explicitly instead
-                // of relying on mlx-swift-lm inferring it from config.json's
-                // `model_type`. This keeps tool-call parsing correct even for
-                // checkpoints whose `model_type` isn't in mlx's infer table.
-                // A `.directory` configuration resolves locally (no download).
-                let configuration = ModelConfiguration(
-                    directory: url, toolCallFormat: model.toolCallFormat)
-                container = try await LLMModelFactory.shared.loadContainer(
-                    from: hubDownloader, using: tokenizerLoader, configuration: configuration
-                )
-            }
-        } else {
-            // Download from Hub
-            let configuration = ModelConfiguration(
-                id: model.huggingFaceID, toolCallFormat: model.toolCallFormat)
-            let factory: any ModelFactory = model.isVision
-                ? VLMModelFactory.shared
-                : LLMModelFactory.shared
-            container = try await factory.loadContainer(
-                from: hubDownloader,
-                using: tokenizerLoader,
-                configuration: configuration
-            ) { [weak self] progress in
-                Task { @MainActor in
-                    self?.downloadProgress = progress
-                }
-            }
-        }
+        // Perform the heavy container load off the main actor so the UI and
+        // Accessibility tree stay responsive during the multi-GB weight load.
+        let container = try await loadContainer(for: model)
 
         modelCache[model.id] = container
         lruClock &+= 1
@@ -268,6 +252,43 @@ final class MLXInferenceEngine {
         state = .ready(model.displayName)
         downloadProgress = nil
         return container
+    }
+
+    /// Heavy container creation performed off the main actor.
+    /// Local loaders/downloader instances are created here so the method is fully
+    /// non-isolated and can run on the cooperative pool while the UI stays live.
+    nonisolated private func loadContainer(for model: MaestroModel) async throws -> ModelContainer {
+        if let localPath = model.localPath {
+            let url = URL(fileURLWithPath: localPath)
+            if model.isVision {
+                let configuration = ModelConfiguration(
+                    directory: url, toolCallFormat: model.toolCallFormat)
+                return try await VLMModelFactory.shared.loadContainer(
+                    from: LocalDirectoryDownloader(directory: url),
+                    using: MaestroTokenizerLoader(),
+                    configuration: configuration
+                )
+            } else {
+                let configuration = ModelConfiguration(
+                    directory: url, toolCallFormat: model.toolCallFormat)
+                return try await LLMModelFactory.shared.loadContainer(
+                    from: HFHubDownloader(),
+                    using: MaestroTokenizerLoader(),
+                    configuration: configuration
+                )
+            }
+        } else {
+            let configuration = ModelConfiguration(
+                id: model.huggingFaceID, toolCallFormat: model.toolCallFormat)
+            let factory: any ModelFactory = model.isVision
+                ? VLMModelFactory.shared
+                : LLMModelFactory.shared
+            return try await factory.loadContainer(
+                from: HFHubDownloader(),
+                using: MaestroTokenizerLoader(),
+                configuration: configuration
+            ) { _ in }
+        }
     }
 
     // MARK: - Residency (budget-aware multi-model)
@@ -422,7 +443,14 @@ final class MLXInferenceEngine {
         if model.advertisesTools {
             var specs = MaestroTools.schemas
             if let mcp { specs += await mcp.currentSchemas() }
-            toolSchemas = specs.isEmpty ? nil : specs
+            // JSON round-trip to normalize all nested values to proper JSON
+            // types before swift-jinja's Value(any:) processes them.
+            toolSchemas = specs.isEmpty ? nil : (specs.map { spec in
+                guard let data = try? JSONSerialization.data(withJSONObject: spec as Any),
+                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: any Sendable]
+                else { return spec }
+                return obj
+            })
         } else {
             toolSchemas = nil
         }
@@ -477,13 +505,13 @@ final class MLXInferenceEngine {
                                 let deltaArray = MLXArray(deltaInts).reshaped([1, deltaInts.count])
                                 inputForGen = LMInput(text: .init(tokens: deltaArray))
                                 cacheForGen = pc.caches
-                                NSLog("[PERF] cache reuse: prefix=\(prefix)/\(fullTokens.count), prefill delta=\(deltaInts.count) tok")
+                                NSLog("[PERF] cache reuse: prefix=\(prefix)/\(fullTokens.count), delta=\(deltaInts.count) tok")
                             } else {
                                 let fresh = context.model.newCache(parameters: parameters)
                                 pc.caches = fresh
                                 inputForGen = lmInput
                                 cacheForGen = fresh
-                                NSLog("[PERF] cache fresh: prefill full=\(fullTokens.count) tok")
+                                NSLog("[PERF] cache fresh: prefill=\(fullTokens.count) tok")
                             }
                             pc.tokens = fullTokens
                             pc.modelID = modelID
@@ -549,6 +577,7 @@ final class MLXInferenceEngine {
     /// execution, project/cwd injection, delegation) lives in AgentExecutor; this
     /// is just the backend's generation primitive. Reuses the persistent prompt
     /// KV cache for cross-round prefix reuse.
+    @MainActor
     func generateRound(
         chatTurns: [ChatTurn],
         toolSchemas: [ToolSpec]?,
@@ -557,41 +586,53 @@ final class MLXInferenceEngine {
         temperature: Double,
         topP: Double,
         thinkingEnabled: Bool,
+        maxTokens: Int = 32768,
         onToken: @escaping @Sendable (String) -> Void,
         onInfo: @escaping @Sendable (Double) -> Void
     ) async throws -> (content: String, toolCalls: [RoundToolCall]) {
         state = .generating
-        // Build mlx Chat.Message here (on the MainActor) from the Sendable turns.
         let chat: [Chat.Message] = chatTurns.map { turn in
+            let images: [UserInput.Image] = turn.images.compactMap { data in
+                guard let ciImage = CIImage(data: data) else { return nil }
+                return .ciImage(ciImage)
+            }
             switch turn.role {
             case "system": return .system(turn.content)
             case "assistant": return .assistant(turn.content)
             case "tool": return .tool(turn.content)
-            default: return .user(turn.content)
+            default: return .user(turn.content, images: images)
             }
         }
         let container = try await loadModel(model)
         let repPen = Float(model.tunedRepetitionPenalty)
         let parameters = GenerateParameters(
-            maxTokens: 32768,
+            maxTokens: maxTokens,
             temperature: Float(temperature), topP: Float(topP), repetitionPenalty: repPen,
-            // Larger prefill chunk (vs 512 default) speeds the big system+tools
-            // prefix on cold turns; warm turns still reuse the per-agent prefix KV.
             prefillStepSize: 1024)
 
+        // Sanitize tool schemas through JSON round-trip to ensure all values
+        // are proper JSON types (String/Number/Bool/Array/Dict/NSNull) before
+        // they hit swift-jinja's Value(any:), which can mis-bridge
+        // [String: any Sendable] existential containers.
+        let sanitizedTools: [ToolSpec]? = toolSchemas.map { specs in
+            do {
+                let data = try JSONSerialization.data(withJSONObject: specs as Any)
+                let obj = try JSONSerialization.jsonObject(with: data)
+                return obj as? [ToolSpec] ?? specs
+            } catch {
+                NSLog("[ENGINE] tool schema JSON round-trip failed: \(error), using raw")
+                return specs
+            }
+        }
         let input = UserInput(
-            chat: chat, tools: toolSchemas,
+            chat: chat, tools: sanitizedTools,
             additionalContext: ["enable_thinking": thinkingEnabled])
         nonisolated(unsafe) let capturedInput = input
         nonisolated(unsafe) let pc = cache(forSession: sessionKey + "::" + model.id)
-        // Cross-model KV-cache safety: reusing THIS model's prompt cache after a
-        // DIFFERENT model generated crashes — the intervening model's evaluation
-        // invalidates the cached arrays, so the reused cache produces a malformed
-        // tensor that traps in the MoE block on the next turn (e.g. Coder's 2nd
-        // message after switching away and back). If the active model changed
-        // since the last generation, drop this model's prompt cache so it does a
-        // clean fresh prefill; consecutive same-model turns still reuse normally.
         if let last = lastGenerationModelID, last != model.id {
+            // The prompt cache is keyed by session + model id, so it is safe to keep
+            // previous models resident. Only reset the cache when actually switching
+            // models for this session; loadModel will evict if memory budget requires.
             pc.reset()
             NSLog("[ENGINE] model switch \(last) -> \(model.id): reset prompt cache (fresh prefill)")
         }
@@ -635,20 +676,19 @@ final class MLXInferenceEngine {
                 let deltaArray = MLXArray(deltaInts).reshaped([1, deltaInts.count])
                 inputForGen = LMInput(text: .init(tokens: deltaArray))
                 cacheForGen = pc.caches
-                NSLog("[PERF] cache reuse: prefix=\(prefix)/\(fullTokens.count), prefill delta=\(deltaInts.count) tok")
+                NSLog("[PERF] cache reuse: prefix=\(prefix)/\(fullTokens.count), delta=\(deltaInts.count) tok")
             } else {
                 // Diagnose WHY reuse failed so cache regressions are visible in logs:
                 // which gate failed (ready/model/empty/trimmable) or how early the
                 // token prefix diverged (rawPrefix) vs what the cache held (offset).
                 let trimmable = pc.caches.filter { $0.isTrimmable }.count
                 let rawPrefix = MLXInferenceEngine.commonPrefixLength(pc.tokens, fullTokens)
-                let minOffset = pc.caches.map { $0.offset }.min() ?? 0
-                NSLog("[PERF] cache miss: ready=\(pc.isReady) modelMatch=\(pc.modelID == modelID) slots=\(pc.caches.count) trimmable=\(trimmable) rawPrefix=\(rawPrefix) minOffset=\(minOffset) prevTok=\(pc.tokens.count) newTok=\(fullTokens.count)")
+                NSLog("[PERF] cache miss: ready=\(pc.isReady) model=\(pc.modelID == modelID) slots=\(pc.caches.count) trimmable=\(trimmable) rawPrefix=\(rawPrefix)")
                 let fresh = context.model.newCache(parameters: parameters)
                 pc.caches = fresh
                 inputForGen = lmInput
                 cacheForGen = fresh
-                NSLog("[PERF] cache fresh: prefill full=\(fullTokens.count) tok")
+                NSLog("[PERF] cache fresh: prefill=\(fullTokens.count) tok")
             }
             pc.tokens = fullTokens
             pc.modelID = modelID
@@ -682,7 +722,137 @@ final class MLXInferenceEngine {
                 content += chunk
                 onToken(chunk)
             case .info(let info):
-                NSLog("[PERF] in-process prompt=\(info.promptTokenCount) tok (\(String(format: "%.0f", info.promptTokensPerSecond)) tok/s prefill); gen=\(info.generationTokenCount) tok (\(String(format: "%.1f", info.tokensPerSecond)) tok/s)")
+                NSLog("[PERF] prompt=\(info.promptTokenCount) tok (\(String(format: "%.0f", info.promptTokensPerSecond)) tok/s prefill); gen=\(info.generationTokenCount) tok (\(String(format: "%.1f", info.tokensPerSecond)) tok/s)")
+                self.tokensPerSecond = info.tokensPerSecond
+                onInfo(info.tokensPerSecond)
+            case .toolCall(let call):
+                let argsJSON = (try? JSONEncoder().encode(call.function.arguments))
+                    .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+                toolCalls.append(RoundToolCall(
+                    id: UUID().uuidString, name: call.function.name, arguments: argsJSON))
+            }
+        }
+        state = .ready(model.displayName)
+        return (content, toolCalls)
+    }
+
+    /// Generation round that passes raw wire-format messages through the
+    /// `.messages()` path in `UserInput`, preserving `tool_calls` and
+    /// `tool_call_id` fields so the Gemma 4 Jinja template can match tool
+    /// results to their originating calls.
+    @MainActor
+    func generateRound(
+        wireMessages: [[String: any Sendable]],
+        images: [UserInput.Image],
+        toolSchemas: [ToolSpec]?,
+        model: MaestroModel,
+        sessionKey: String,
+        temperature: Double,
+        topP: Double,
+        thinkingEnabled: Bool,
+        maxTokens: Int = 32768,
+        onToken: @escaping @Sendable (String) -> Void,
+        onInfo: @escaping @Sendable (Double) -> Void
+    ) async throws -> (content: String, toolCalls: [RoundToolCall]) {
+        state = .generating
+        let container = try await loadModel(model)
+        let repPen = Float(model.tunedRepetitionPenalty)
+        let parameters = GenerateParameters(
+            maxTokens: maxTokens,
+            temperature: Float(temperature), topP: Float(topP), repetitionPenalty: repPen,
+            prefillStepSize: 1024)
+
+        let sanitizedTools: [ToolSpec]? = toolSchemas.map { specs in
+            do {
+                let data = try JSONSerialization.data(withJSONObject: specs as Any)
+                let obj = try JSONSerialization.jsonObject(with: data)
+                return obj as? [ToolSpec] ?? specs
+            } catch {
+                NSLog("[ENGINE] tool schema JSON round-trip failed: \(error), using raw")
+                return specs
+            }
+        }
+        // .messages() path: raw dictionaries pass through DefaultMessageGenerator
+        // untouched, preserving tool_calls and tool_call_id for the Jinja template.
+        let input = UserInput(
+            messages: wireMessages, images: images, tools: sanitizedTools,
+            additionalContext: ["enable_thinking": thinkingEnabled])
+        nonisolated(unsafe) let capturedInput = input
+        nonisolated(unsafe) let pc = cache(forSession: sessionKey + "::" + model.id)
+        if let last = lastGenerationModelID, last != model.id {
+            pc.reset()
+            NSLog("[ENGINE] model switch \(last) -> \(model.id): reset prompt cache (fresh prefill)")
+            // Keep previous models resident; loadModel will evict only if memory
+            // budget requires. This lets Navigator (Qwen) and Scribe (Gemma)
+            // stay loaded simultaneously instead of thrashing on every switch.
+        }
+        lastGenerationModelID = model.id
+        let modelID = model.id
+        let rngState = MLXRandom.RandomState(
+            seed: DispatchTime.now().uptimeNanoseconds
+                &+ UInt64(bitPattern: Int64(truncatingIfNeeded: sessionKey.hashValue)))
+
+        let wiredTicket = WiredMemoryTicket(
+            size: residentUsedBytes,
+            policy: ResidencyWiredPolicy(capBytes: residentBudgetBytes),
+            kind: .active)
+
+        let stream = try await container.perform { context in
+            let lmInput = try await context.processor.prepare(input: capturedInput)
+            let fullTokens = lmInput.text.tokens.asArray(Int.self)
+            let canReuse = pc.isReady
+                && pc.modelID == modelID
+                && !pc.caches.isEmpty
+                && pc.caches.allSatisfy { $0.isTrimmable }
+            var prefix = 0
+            if canReuse {
+                let minOffset = pc.caches.map { $0.offset }.min() ?? 0
+                prefix = MLXInferenceEngine.commonPrefixLength(pc.tokens, fullTokens)
+                prefix = min(prefix, minOffset, fullTokens.count - 1)
+                if prefix < 0 { prefix = 0 }
+            }
+            let inputForGen: LMInput
+            let cacheForGen: [KVCache]
+            if canReuse && prefix > 0 {
+                for c in pc.caches { c.trim(c.offset - prefix) }
+                let deltaInts = Array(fullTokens[prefix...]).map { Int32($0) }
+                let deltaArray = MLXArray(deltaInts).reshaped([1, deltaInts.count])
+                inputForGen = LMInput(text: .init(tokens: deltaArray))
+                cacheForGen = pc.caches
+                NSLog("[PERF] cache reuse: prefix=\(prefix)/\(fullTokens.count), delta=\(deltaInts.count) tok")
+            } else {
+                let trimmable = pc.caches.filter { $0.isTrimmable }.count
+                let rawPrefix = MLXInferenceEngine.commonPrefixLength(pc.tokens, fullTokens)
+                NSLog("[PERF] cache miss: ready=\(pc.isReady) model=\(pc.modelID == modelID) slots=\(pc.caches.count) trimmable=\(trimmable) rawPrefix=\(rawPrefix)")
+                let fresh = context.model.newCache(parameters: parameters)
+                pc.caches = fresh
+                inputForGen = lmInput
+                cacheForGen = fresh
+                NSLog("[PERF] cache fresh: prefill=\(fullTokens.count) tok")
+            }
+            pc.tokens = fullTokens
+            pc.modelID = modelID
+            pc.isReady = true
+            return try withError {
+                try withRandomState(rngState) {
+                    try MLXLMCommon.generate(
+                        input: inputForGen, cache: cacheForGen,
+                        parameters: parameters, context: context,
+                        wiredMemoryTicket: wiredTicket)
+                }
+            }
+        }
+
+        var content = ""
+        var toolCalls: [RoundToolCall] = []
+        for await generation in stream {
+            if Task.isCancelled { break }
+            switch generation {
+            case .chunk(let chunk):
+                content += chunk
+                onToken(chunk)
+            case .info(let info):
+                NSLog("[PERF] prompt=\(info.promptTokenCount) tok (\(String(format: "%.0f", info.promptTokensPerSecond)) tok/s prefill); gen=\(info.generationTokenCount) tok (\(String(format: "%.1f", info.tokensPerSecond)) tok/s)")
                 self.tokensPerSecond = info.tokensPerSecond
                 onInfo(info.tokensPerSecond)
             case .toolCall(let call):

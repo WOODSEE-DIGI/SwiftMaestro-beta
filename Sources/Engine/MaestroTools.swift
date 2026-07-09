@@ -31,6 +31,26 @@ enum MaestroTools {
     /// manually add every sub-folder in Settings → Context.
     nonisolated(unsafe) static var workingDirectory: String?
 
+    /// Extra authorized roots inherited from the parent agent during delegation.
+    /// Cleared at the start of each top-level run so stale roots don't leak.
+    nonisolated(unsafe) static var inheritedRoots: [String] = []
+
+    /// Returns the calling agent's authorized roots (global Settings + working
+    /// directory) so delegation can pass them to the child.
+    static func authorizedRootsForParent() -> [String] {
+        var roots = SwiftMaestroSettingsStore.loadAuthorizedFolders()
+            .filter { $0.enabled }
+            .map { URL(fileURLWithPath: unescapeShellPath(($0.path as NSString).expandingTildeInPath)).standardizedFileURL.path }
+            .filter { !$0.isEmpty }
+        if let wd = workingDirectory, !wd.isEmpty {
+            let standardized = URL(fileURLWithPath: unescapeShellPath(wd)).standardizedFileURL.path
+            if !roots.contains(standardized) {
+                roots.append(standardized)
+            }
+        }
+        return roots
+    }
+
     /// Shared workspace store, set once at app launch. Weak so the store's
     /// lifetime stays owned by the app. Workspace tools hop to the MainActor to
     /// touch it.
@@ -83,11 +103,20 @@ enum MaestroTools {
             return schemas + todoToolSpecs + planToolSpecs
                 + memoryToolSpecs + fileToolSpecs
         }
-        // Every agent gets the live todo + plan + messaging tools; Navigator also
-        // gets workspace/delegation tools.
-        var specs = schemas + todoToolSpecs + planToolSpecs + messagingToolSpecs
-            + memoryToolSpecs + fileToolSpecs + systemToolSpecs
-        if navigator { specs += navigatorToolSpecs }
+        // Every agent gets the live todo + plan tools; Navigator also
+        // gets workspace/delegation tools. Messaging tools (inbox) are
+        // excluded from Navigator — it must delegate via ask_project_agent.
+        // Navigator gets: delegation + memory (for coordination context) + OCR.
+        // File/system tools are stripped so it cannot do actual work.
+        var specs = schemas + todoToolSpecs + planToolSpecs
+        if navigator {
+            // Navigator also gets file tools so it can perform basic discovery 
+            // (list_dir, read_file) without needing to delegate.
+            specs += navigatorToolSpecs + navigatorOCRSpec + memoryToolSpecs + fileToolSpecs + indexToolSpecs
+        } else {
+            specs += memoryToolSpecs + fileToolSpecs + systemToolSpecs
+            specs += messagingToolSpecs + indexToolSpecs
+        }
         return specs
     }
 
@@ -148,12 +177,29 @@ enum MaestroTools {
 
     /// Build a function ToolSpec from already-formed JSON-schema property values
     /// (supports nested schemas like arrays, unlike `functionSpec`).
+    /// Parameter descriptions are stripped for simple types (string/integer/boolean/number)
+    /// to save prompt tokens — the parameter name is self-explanatory.
     static func rawSpec(
         _ name: String, _ description: String,
         properties: [String: any Sendable], required: [String]
     ) -> ToolSpec {
+        var slimProps: [String: any Sendable] = [:]
+        for (key, value) in properties {
+            if let dict = value as? [String: any Sendable] {
+                let t = (dict["type"] as? String) ?? ""
+                if ["string", "integer", "boolean", "number"].contains(t) {
+                    var slimmed = dict
+                    slimmed.removeValue(forKey: "description")
+                    slimProps[key] = slimmed
+                } else {
+                    slimProps[key] = value
+                }
+            } else {
+                slimProps[key] = value
+            }
+        }
         let parameters: [String: any Sendable] = [
-            "type": "object", "properties": properties, "required": required,
+            "type": "object", "properties": slimProps, "required": required,
         ]
         return ["type": "function", "function": [
             "name": name, "description": description, "parameters": parameters,
@@ -194,12 +240,12 @@ enum MaestroTools {
                     "append": ["type": "boolean", "description": "true = append content; false/omit = replace."],
                     "project": ["type": "string", "description": projectScopeDesc],
                 ], required: []),
-            rawSpec("read_plans", "List plans with their ids, titles, and count.",
+            rawSpec("read_plans", "List ALL plans (personal + project-scoped). Optionally filter by project.",
                 properties: [
                     "project": ["type": "string", "description": projectScopeDesc],
                 ], required: []),
             rawSpec("read_plan",
-                "Read a plan's full markdown content, identified by 'plan_id' or 'title'.",
+                "Read a plan's full markdown content by 'plan_id' or 'title'. Searches all scopes.",
                 properties: [
                     "plan_id": ["type": "string", "description": "Id of the plan to read."],
                     "title": ["type": "string", "description": "Alternative to plan_id: match by title text."],
@@ -221,9 +267,11 @@ enum MaestroTools {
             functionSpec(
                 name: "create_project_agent",
                 description:
-                    "Create a long-lived project agent (creating the project if it "
-                    + "does not exist). Use when the user wants ongoing, focused work "
-                    + "on a specific project. Returns the created agent.",
+                    "CREATE a new project agent (one-time setup only). WARNING: Before "
+                    + "calling this, ALWAYS call list_workspace first to check if an agent "
+                    + "with a similar name already exists. If one does, use ask_project_agent "
+                    + "instead. Do NOT create duplicate agents. This tool ONLY creates the "
+                    + "agent shell — it does NOT assign work or send tasks.",
                 properties: [
                     "project": ["type": "string", "description": "Project name."],
                     "agent": ["type": "string", "description": "Name for the new project agent."],
@@ -250,10 +298,11 @@ enum MaestroTools {
             functionSpec(
                 name: "ask_project_agent",
                 description:
-                    "Delegate a task to a project agent and get its answer. The target "
-                    + "agent runs scoped to its project's memory and its own chat history. "
-                    + "Use this to coordinate work across projects, then synthesize the "
-                    + "result for the user.",
+                    "DELEGATE a task to an EXISTING project agent and wait for its answer. "
+                    + "This actually runs the agent — it executes the task, uses tools, and "
+                    + "returns the result. Use this whenever you need a project agent to DO "
+                    + "something (read files, analyse data, write reports, etc). Do NOT use "
+                    + "create_project_agent to give work to an existing agent.",
                 properties: [
                     "project": ["type": "string", "description": "Project name of the target agent."],
                     "agent": ["type": "string", "description": "Target project agent name."],
@@ -283,6 +332,18 @@ enum MaestroTools {
         ]
     }
 
+    /// Navigator gets OCR only — no file read/write/list. Just image analysis.
+    private static var navigatorOCRSpec: [ToolSpec] {
+        [
+            rawSpec("ocr_image",
+                "Extract text from an image file using the vision model. "
+                + "Supports PNG, JPEG, HEIC, TIFF, BMP, WebP only — not PDFs.",
+                properties: [
+                    "path": ["type": "string", "description": "Absolute path to the image file."],
+                ], required: ["path"]),
+        ]
+    }
+
     /// Whether a native (in-process) tool owns the given name. Routes a tool call
     /// to the native registry before MCP. `ask_project_agent` is excluded so the
     /// executor's delegation interceptor handles it.
@@ -290,7 +351,7 @@ enum MaestroTools {
         if workspaceToolNames.contains(name) || todoToolNames.contains(name)
             || planToolNames.contains(name) || messagingToolNames.contains(name)
             || memoryToolNames.contains(name) || fileToolNames.contains(name)
-            || systemToolNames.contains(name) { return true }
+            || systemToolNames.contains(name) || indexToolNames.contains(name) { return true }
         return schemas.contains { spec in
             (spec["function"] as? [String: any Sendable])?["name"] as? String == name
         }
@@ -346,6 +407,8 @@ enum MaestroTools {
             return await writeFile(call)
         case "list_dir":
             return await listDir(call)
+        case "ocr_image":
+            return await ocrImage(call)
         case "create_reminder":
             return await createReminder(call)
         case "list_reminders":
@@ -366,6 +429,18 @@ enum MaestroTools {
             return await runShortcutTool(call)
         case "create_shortcut":
             return await createShortcutTool(call)
+        case "index_directory":
+            return await indexDirectory(call)
+        case "save_index":
+            return await saveIndex(call)
+        case "spotlight_search":
+            return await spotlightSearch(call)
+        case "index_document":
+            return await indexDocument(call)
+        case "search_chunks":
+            return await searchChunks(call)
+        case "read_chunk":
+            return await readChunk(call)
         default:
             return errorJSON("unknown tool: \(call.function.name)")
         }
@@ -619,12 +694,28 @@ enum MaestroTools {
         let append = args.append ?? false
         return await MainActor.run {
             guard let store = planStore else { return errorJSON("plan store unavailable") }
-            guard let target = store.find(idOrTitle: key, in: scope) else {
+            // Find the plan: try specified scope first, then search all scopes.
+            var target: Plan?
+            var foundScope = scope
+            if let t = store.find(idOrTitle: key, in: scope) {
+                target = t
+            } else {
+                for (scopeKey, _) in store.plansByScope {
+                    if let fallbackScope = PlanScope(key: scopeKey),
+                       fallbackScope != scope,
+                       let t = store.find(idOrTitle: key, in: fallbackScope) {
+                        target = t
+                        foundScope = fallbackScope
+                        break
+                    }
+                }
+            }
+            guard let target else {
                 return errorJSON("no plan matching \"\(key)\".\n" + renderPlanList(store.plans(in: scope)))
             }
             guard let updated = store.update(
                 id: target.id, title: args.new_title, content: args.content,
-                append: append, in: scope)
+                append: append, in: foundScope)
             else { return errorJSON("failed to update plan") }
             let action = hasContent ? (append ? "appended to" : "rewrote") : "renamed"
             return "\(action.capitalized) plan \"\(updated.title)\" (now \(updated.content.count) chars):\n\n"
@@ -633,13 +724,33 @@ enum MaestroTools {
     }
 
     private static func planReadList(_ call: ToolCall) async -> String {
-        guard let args = decodeArgs(call, as: PlanReadArgs.self),
-              let scope = planScope(agentID: args.agent_id, project: args.project) else {
-            return errorJSON("missing agent context (agent_id is injected automatically; just call the tool again)")
+        guard let args = decodeArgs(call, as: PlanReadArgs.self) else {
+            return errorJSON("could not parse arguments")
         }
         return await MainActor.run {
             guard let store = planStore else { return errorJSON("plan store unavailable") }
-            return renderPlanList(store.plans(in: scope))
+            // When no project is specified, show ALL plans: agent's personal plans
+            // plus all project-scoped plans. This lets the model discover plans
+            // regardless of scope. When project IS specified, show that project's
+            // plans plus the agent's personal plans as fallback.
+            let agentScope = agentUUID(args.agent_id).map { PlanScope.agent($0) }
+            var allPlans: [Plan] = []
+            if let agentScope {
+                allPlans += store.plans(in: agentScope)
+            }
+            if let projectName = args.project?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !projectName.isEmpty {
+                allPlans += store.plans(in: .project(projectName))
+            } else if agentScope != nil {
+                // No project filter: include all project-scoped plans too
+                for (key, plans) in store.plansByScope where key.hasPrefix("project:") {
+                    allPlans += plans
+                }
+            }
+            // Deduplicate by plan ID
+            var seen = Set<UUID>()
+            let unique = allPlans.filter { seen.insert($0.id).inserted }
+            return renderPlanList(unique)
         }
     }
 
@@ -656,10 +767,35 @@ enum MaestroTools {
         }
         return await MainActor.run {
             guard let store = planStore else { return errorJSON("plan store unavailable") }
-            guard let plan = store.find(idOrTitle: key, in: scope) else {
-                return errorJSON("no plan matching \"\(key)\".\n" + renderPlanList(store.plans(in: scope)))
+            // Try the specified scope first, then fall back to all scopes.
+            if let plan = store.find(idOrTitle: key, in: scope) {
+                return renderPlan(plan)
             }
-            return renderPlan(plan)
+            // Search across all scopes
+            for (scopeKey, _) in store.plansByScope {
+                if let fallbackScope = PlanScope(key: scopeKey),
+                   fallbackScope != scope,
+                   let plan = store.find(idOrTitle: key, in: fallbackScope) {
+                    return renderPlan(plan)
+                }
+            }
+            // Also try loading from disk for scopes not yet cached
+            let agentScope = agentUUID(args.agent_id).map { PlanScope.agent($0) }
+            var allScopes: [PlanScope] = []
+            if let agentScope { allScopes.append(agentScope) }
+            if let projectName = args.project?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !projectName.isEmpty {
+                allScopes.append(.project(projectName))
+            }
+            for s in allScopes where s != scope {
+                let plans = store.plans(in: s)
+                if let plan = plans.first(where: {
+                    ($0.id.uuidString == key) || $0.title.localizedCaseInsensitiveContains(key)
+                }) {
+                    return renderPlan(plan)
+                }
+            }
+            return errorJSON("no plan matching \"\(key)\".\n" + renderPlanList(store.plans(in: scope)))
         }
     }
 
@@ -783,7 +919,29 @@ enum MaestroTools {
 
         return await MainActor.run {
             guard let ws = workspace else { return errorJSON("workspace unavailable") }
-            let created = ws.createProjectAgent(projectName: args.project, agentName: args.agent)
+            // Prevent duplicate agents: fuzzy match — if any agent name contains
+            // the requested name (or vice versa), treat it as a duplicate.
+            // Strip spurious wrapping quotes the model sometimes emits.
+            let cleanAgent = args.agent.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            let cleanProject = args.project.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            let lowerAgent = cleanAgent.lowercased()
+            if let existing = ws.agents.first(where: {
+                let existingName = $0.name.lowercased()
+                return existingName == lowerAgent
+                    || existingName.contains(lowerAgent)
+                    || lowerAgent.contains(existingName)
+            }) {
+                let proj = ws.projectName(for: existing) ?? cleanProject
+                return jsonString([
+                    "status": "already_exists",
+                    "project": proj,
+                    "agent": existing.name,
+                    "agentId": existing.id.uuidString,
+                    "note": "An agent named '\(existing.name)' already exists in project '\(proj)'. "
+                        + "Use ask_project_agent to delegate work to it. Do NOT create a new agent.",
+                ])
+            }
+            let created = ws.createProjectAgent(projectName: cleanProject, agentName: cleanAgent)
             return jsonString([
                 "status": "created",
                 "project": args.project,
@@ -833,6 +991,7 @@ enum MaestroTools {
 
     /// Build an OpenAI-style function `ToolSpec`. `properties` maps each parameter
     /// name to its `{"type": ..., "description": ...}` JSON-schema entry.
+    /// Parameter descriptions are stripped for simple types to save tokens.
     private static func functionSpec(
         name: String,
         description: String,
@@ -840,7 +999,14 @@ enum MaestroTools {
         required: [String]
     ) -> ToolSpec {
         var props: [String: any Sendable] = [:]
-        for (key, value) in properties { props[key] = value }
+        for (key, value) in properties {
+            let t = value["type"] ?? ""
+            if ["string", "integer", "boolean", "number"].contains(t) {
+                props[key] = value.filter { $0.key != "description" }
+            } else {
+                props[key] = value
+            }
+        }
         let parameters: [String: any Sendable] = [
             "type": "object",
             "properties": props,

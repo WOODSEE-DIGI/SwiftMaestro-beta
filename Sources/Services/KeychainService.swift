@@ -63,8 +63,12 @@ enum KeychainService {
     // MARK: - Read
 
     /// Read a secret value for `account`. Matches both synced and local items.
-    static func read(account: String) throws -> String? {
-        let query: [String: Any] = [
+    /// - Parameter allowUI: when false, adds `kSecUseAuthenticationUIFail` so the
+    ///   call returns nil instead of showing a keychain password dialog. Use false
+    ///   for background reads (e.g. redaction during memory writes) where a modal
+    ///   would block the agent.
+    static func read(account: String, allowUI: Bool = true) throws -> String? {
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
@@ -72,6 +76,9 @@ enum KeychainService {
             kSecReturnData as String: kCFBooleanTrue!,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
+        if !allowUI {
+            query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
+        }
 
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)

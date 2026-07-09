@@ -1,5 +1,6 @@
 import Foundation
 import MLXLMCommon
+import CoreImage
 
 // MARK: - In-process MLX backend
 //
@@ -29,18 +30,26 @@ final class InProcessMLXBackend: GenerationBackend {
         temperature: Double,
         topP: Double,
         thinkingEnabled: Bool,
+        maxTokens: Int,
         continuation: AsyncThrowingStream<AgentOutput, Error>.Continuation
     ) async throws -> (content: String, toolCalls: [RoundToolCall]) {
-        let turns = Self.toChatTurns(convo)
         let tools: [ToolSpec]? = toolSpecs.isEmpty ? nil : toolSpecs
+        // Pass raw wire messages through to preserve tool_calls on assistant
+        // messages and tool_call_id on tool messages. The .messages() path in
+        // UserInput/DefaultMessageGenerator passes these untouched to the Jinja
+        // template, which needs tool_calls to forward-scan and match tool results.
+        let wireMessages = Self.toWireMessages(convo)
+        nonisolated(unsafe) let images = Self.extractAllImages(from: convo)
         return try await engine.generateRound(
-            chatTurns: turns,
+            wireMessages: wireMessages,
+            images: images,
             toolSchemas: tools,
             model: model,
             sessionKey: sessionKey,
             temperature: temperature,
             topP: topP,
             thinkingEnabled: thinkingEnabled,
+            maxTokens: maxTokens,
             onToken: { continuation.yield(.token($0)) },
             onInfo: { continuation.yield(.info(tokensPerSecond: $0)) }
         )
@@ -48,25 +57,58 @@ final class InProcessMLXBackend: GenerationBackend {
 
     // MARK: - Conversion
 
-    /// Convert OpenAI-wire messages to Sendable `ChatTurn`s (rebuilt into mlx
-    /// `Chat.Message` on the engine's MainActor). Prior assistant `tool_calls`
-    /// aren't structurally representable, so we keep their text content; tool
-    /// results map to role `tool`. Multimodal content arrays are flattened to
-    /// their text parts (this in-process path is text).
-    private static func toChatTurns(_ convo: [[String: Any]]) -> [ChatTurn] {
-        convo.compactMap { message in
-            guard let role = message["role"] as? String else { return nil }
-            return ChatTurn(role: role, content: text(from: message["content"]))
+    /// Convert `[[String: Any]]` wire messages to `[[String: any Sendable]]` for
+    /// the `.messages()` path. Preserves all keys (tool_calls, tool_call_id, etc).
+    private static func toWireMessages(_ convo: [[String: Any]]) -> [[String: any Sendable]] {
+        // Swift 6 concurrency: Any is not Sendable. JSON round-trip produces
+        // NSString/NSNumber/NSArray/NSDictionary which bridge to Sendable types.
+        guard let data = try? JSONSerialization.data(withJSONObject: convo as Any) else { return [] }
+        let root = try? JSONSerialization.jsonObject(with: data)
+        func bridge(_ v: Any) -> any Sendable {
+            if let s = v as? String { return s }
+            if let n = v as? NSNumber { return n }
+            if let arr = v as? [Any] { return arr.map { bridge($0) } as [any Sendable] }
+            if let dict = v as? [String: Any] {
+                var out: [String: any Sendable] = [:]
+                for (k, val) in dict { out[k] = bridge(val) }
+                return out
+            }
+            return NSNull()
+        }
+        guard let messages = root as? [Any] else { return [] }
+        return messages.compactMap { msg -> [String: any Sendable]? in
+            guard let dict = msg as? [String: Any] else { return nil }
+            var out: [String: any Sendable] = [:]
+            for (k, val) in dict { out[k] = bridge(val) }
+            return out
         }
     }
 
-    private static func text(from content: Any?) -> String {
-        if let string = content as? String { return string }
-        if let parts = content as? [[String: Any]] {
-            return parts.compactMap {
-                ($0["type"] as? String) == "text" ? $0["text"] as? String : nil
-            }.joined(separator: "\n")
+    /// Extract image data from all messages in the wire format for VLM support.
+    private static func extractAllImages(from convo: [[String: Any]]) -> [UserInput.Image] {
+        var images: [UserInput.Image] = []
+        for msg in convo {
+            let content = msg["content"]
+            if let string = content as? String { continue }
+            guard let parts = content as? [[String: Any]] else { continue }
+            for part in parts {
+                guard let type = part["type"] as? String,
+                      type == "image_url",
+                      let urlObj = part["image_url"] as? [String: Any],
+                      let urlString = urlObj["url"] as? String else { continue }
+                if let data = Data(base64Encoded: extractBase64(urlString)),
+                   let ciImage = CIImage(data: data) {
+                    images.append(.ciImage(ciImage))
+                }
+            }
         }
-        return ""
+        return images
+    }
+
+    private static func extractBase64(_ urlString: String) -> String {
+        if let range = urlString.range(of: ",") {
+            return String(urlString[range.upperBound...])
+        }
+        return urlString
     }
 }

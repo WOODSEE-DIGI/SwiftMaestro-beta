@@ -19,9 +19,15 @@ struct ChatView: View {
     @State private var exporting = false
     @State private var exportDocument: MarkdownDocument?
     @State private var exportName = "Plan"
+    /// Monitor for Cmd+V image paste before the TextField consumes it.
+    @State private var pasteMonitor: Any?
+    /// Optional override for the window/tab title. Used when this chat is shown
+    /// in a detached agent window so the title bar shows the agent name.
+    let title: String?
 
-    init(vm: ChatViewModel) {
+    init(vm: ChatViewModel, title: String? = nil) {
         _vm = ObservedObject(wrappedValue: vm)
+        self.title = title
     }
 
     var body: some View {
@@ -46,7 +52,7 @@ struct ChatView: View {
                 todoSidePanel
             }
         }
-        .navigationTitle("Chat")
+        .navigationTitle(title ?? "Chat")
         .task(id: vm.agent.id) {
             // Prime the per-agent todo + plan lists from disk (cache-fill) outside
             // of body evaluation so persisted items show after relaunch. Project
@@ -55,6 +61,50 @@ struct ChatView: View {
             _ = planStore.plans(in: .agent(vm.agent.id))
             for project in planScopeProjects { _ = planStore.plans(in: .project(project)) }
             _ = messageStore.inbox(for: vm.agent.id)
+        }
+        .onAppear {
+            // Intercept Cmd+V before the TextField consumes it, so image pastes
+            // go to pendingImages instead of being inserted as text.
+            pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                if event.keyCode == 9 && event.modifierFlags.contains(.command) {
+                    let pb = NSPasteboard.general
+                    // Check for file URLs first
+                    if let urls = pb.readObjects(forClasses: [NSURL.self], options: [
+                        .urlReadingFileURLsOnly: true
+                    ]) as? [URL] {
+                        let imageURLs = urls.filter { url in
+                            let ext = url.pathExtension.lowercased()
+                            return ["png","jpg","jpeg","gif","bmp","tiff","webp","heic"].contains(ext)
+                        }
+                        if !imageURLs.isEmpty {
+                            for url in imageURLs {
+                                if let data = ChatView.pngData(fromFileURL: url) {
+                                    vm.pendingImages.append(data)
+                                    vm.pendingImagePaths.append(url.path)
+                                }
+                            }
+                            return nil // consume the event
+                        }
+                    }
+                    // Check for image data (e.g. screenshot paste)
+                    if let images = pb.readObjects(forClasses: [NSImage.self]) as? [NSImage],
+                       !images.isEmpty {
+                        for img in images {
+                            if let data = ChatView.pngData(from: img) {
+                                vm.pendingImages.append(data)
+                            }
+                        }
+                        return nil
+                    }
+                }
+                return event
+            }
+        }
+        .onDisappear {
+            if let monitor = pasteMonitor {
+                NSEvent.removeMonitor(monitor)
+                pasteMonitor = nil
+            }
         }
         .onDrop(of: [.image, .fileURL], isTargeted: nil) { providers in
             handleProviders(providers)
@@ -68,6 +118,14 @@ struct ChatView: View {
             }
         }
         .toolbar {
+            ToolbarItem {
+                Button {
+                    openWindow(id: "agent-chat-window", value: AgentChatWindowID(agentID: vm.agent.id))
+                } label: {
+                    Label("Open in Window", systemImage: "macwindow.on.rectangle")
+                }
+                .help("Open this agent’s chat in a floating window")
+            }
             ToolbarItem {
                 Button { showingMessages = true } label: {
                     let unread = messageStore.unreadCount(for: vm.agent.id)

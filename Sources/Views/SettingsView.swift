@@ -2,12 +2,12 @@ import SwiftUI
 import AppKit
 
 enum SwiftMaestroSettingsStore {
-    private static let allowedModelsKey = "settings.models.allowedModels"
-    private static let authorizedFoldersKey = "settings.context.authorizedFolders"
-    private static let filesInMemoryKey = "settings.context.filesInMemory"
-    private static let lastImportDateKey = "settings.context.lastImportDate"
-    private static let mcpServersKey = "settings.mcp.servers"
-    private static let agentRulesKey = "settings.rules.agentRules"
+    static let allowedModelsKey = "settings.models.allowedModels"
+    static let authorizedFoldersKey = "settings.context.authorizedFolders"
+    static let filesInMemoryKey = "settings.context.filesInMemory"
+    static let lastImportDateKey = "settings.context.lastImportDate"
+    static let mcpServersKey = "settings.mcp.servers"
+    static let agentRulesKey = "settings.rules.agentRules"
 
     static func loadAllowedModels() -> [String] {
         UserDefaults.standard.stringArray(forKey: allowedModelsKey) ?? []
@@ -570,6 +570,14 @@ struct ModelsSettingsTab: View {
                                     Text(model.huggingFaceID).font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer()
+                                if let url = model.downloadURL, let link = URL(string: url) {
+                                    Link(destination: link) {
+                                        Image(systemName: "arrow.down.circle")
+                                            .help("Download from Hugging Face")
+                                    }
+                                    .buttonStyle(.plain)
+                                    .foregroundStyle(.blue)
+                                }
                                 Text("~\(model.estimatedMemoryGB)GB").font(.caption).foregroundStyle(.secondary)
                                 if model.isVision {
                                     Image(systemName: "eye").foregroundStyle(.blue)
@@ -611,6 +619,7 @@ struct TuningSettingsTab: View {
     @State private var temperature: Double = 1.0
     @State private var topP: Double = 0.95
     @State private var repetitionPenalty: Double = 1.05
+    @State private var maxTokens: Double = 32768
     @State private var thinkingEnabled: Bool = false
 
     private var model: MaestroModel? {
@@ -619,9 +628,12 @@ struct TuningSettingsTab: View {
     private var recTemp: Double { model?.recTemperature ?? 1.0 }
     private var recTopP: Double { model?.recTopP ?? 0.95 }
     private var recRepPen: Double { model?.recRepetitionPenalty ?? 1.05 }
+    private var recMaxTok: Int { model?.recMaxTokens ?? 32768 }
     private var hasOverride: Bool {
         isCustom(temperature, recTemp) || isCustom(topP, recTopP)
-            || isCustom(repetitionPenalty, recRepPen) || thinkingEnabled
+            || isCustom(repetitionPenalty, recRepPen)
+            || Int(maxTokens) != recMaxTok
+            || thinkingEnabled
     }
 
     var body: some View {
@@ -649,6 +661,29 @@ struct TuningSettingsTab: View {
                         sliderRow("Repetition Penalty", $repetitionPenalty, range: 1...1.5, step: 0.01,
                                   recommended: recRepPen, param: "repetitionPenalty",
                                   description: "Penalises tokens already used. 1.0 = no penalty. 1.1–1.2 = mild reduction. 1.2+ = strong reduction. Too high can make output sound unnatural.")
+                        // Max output tokens — integer slider with K-suffix display
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack {
+                                Text("Max Output Tokens").frame(width: 150, alignment: .leading)
+                                Slider(value: $maxTokens, in: 512...262144, step: 512, onEditingChanged: { editing in
+                                    if !editing {
+                                        UserDefaults.standard.set(
+                                            Int(maxTokens),
+                                            forKey: MaestroModel.tuningKey(selectedModelID, "maxTokens"))
+                                    }
+                                })
+                                Text(formatTokens(Int(maxTokens)))
+                                    .monospacedDigit().frame(width: 56)
+                            }
+                            Text("Maximum tokens the model can generate per response. Higher = longer answers but slower. 32K is a good default; 64K+ for long-form writing.")
+                                .font(.caption2).foregroundStyle(.tertiary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Text(Int(maxTokens) != recMaxTok
+                                 ? "Custom · recommended \(formatTokens(recMaxTok)) for this model"
+                                 : "Using model recommended (\(formatTokens(recMaxTok)))")
+                                .font(.caption2).foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                         Toggle("Enable thinking / reasoning", isOn: $thinkingEnabled)
                         Text("Lets models that support it reason step-by-step before answering. Per-model setting.")
                             .font(.caption2).foregroundStyle(.secondary)
@@ -716,13 +751,15 @@ struct TuningSettingsTab: View {
             ?? (model.recTopP ?? 0.95)
         repetitionPenalty = (d.object(forKey: MaestroModel.tuningKey(model.id, "repetitionPenalty")) as? Double)
             ?? (model.recRepetitionPenalty ?? 1.05)
+        maxTokens = Double((d.object(forKey: MaestroModel.tuningKey(model.id, "maxTokens")) as? Int)
+            ?? (model.recMaxTokens ?? 32768))
         thinkingEnabled = (d.object(forKey: MaestroModel.tuningKey(model.id, "thinking")) as? Bool)
             ?? false
     }
 
     private func resetToRecommended() {
         let d = UserDefaults.standard
-        for p in ["temperature", "topP", "repetitionPenalty", "thinking"] {
+        for p in ["temperature", "topP", "repetitionPenalty", "maxTokens", "thinking"] {
             d.removeObject(forKey: MaestroModel.tuningKey(selectedModelID, p))
         }
         loadValues()
@@ -732,6 +769,11 @@ struct TuningSettingsTab: View {
         abs(value - recommended) > 0.0001
     }
     private func fmt(_ v: Double) -> String { String(format: "%.2f", v) }
+    /// Format token counts with K suffix for readability (e.g. 32768 → "32K")
+    private func formatTokens(_ n: Int) -> String {
+        if n >= 1024 && n % 1024 == 0 { return "\(n / 1024)K" }
+        return "\(n)"
+    }
 }
 
 struct RulesSettingsTab: View {

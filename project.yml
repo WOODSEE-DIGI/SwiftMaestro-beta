@@ -88,6 +88,7 @@ targets:
         product: MCP
       - package: whisperkit
         product: WhisperKit
+      - sdk: PDFKit.framework
     scheme:
       testTargets:
         - SwiftMaestroTests

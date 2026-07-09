@@ -203,18 +203,58 @@ actor MCPClientService {
 
     // MARK: - Conversions
 
-    /// Build an mlx `ToolSpec` from an MCP tool definition. The spec is SLIMMED:
-    /// descriptions truncated and schema noise dropped. With many MCP servers
-    /// connected, the full tool surface dominates the prompt (85 tools ≈ 11k
-    /// tokens here), and on hybrid-cache models (non-trimmable KV — e.g. Qwen
-    /// 3.6) every fresh conversation pays that as a full prefill.
+    /// Build an mlx `ToolSpec` from an MCP tool definition. The spec is aggressively
+    /// slimmed: tool descriptions truncated to 60 chars, parameter descriptions to
+    /// 30 chars, and schema noise dropped. With many MCP servers connected (38+),
+    /// the full tool surface dominates the prompt (~7400 tokens), and on
+    /// hybrid-cache models (non-trimmable KV — e.g. Qwen 3.6) every fresh
+    /// conversation pays that as a full prefill.
     private static func toolSpec(for tool: MCP.Tool) -> ToolSpec {
-        let parameters = slim(sendable(from: tool.inputSchema))
+        var parameters = slim(sendable(from: tool.inputSchema)) as? [String: any Sendable] ?? [:]
+        // Ensure the top-level parameters object has a type.
+        if parameters["type"] == nil { parameters["type"] = "object" }
+        // Ensure every property inside "properties" has a "type" key.
+        // MCP servers sometimes emit empty schemas {} for free-form params
+        // (e.g. obsidian_rest_request.body), which breaks the Gemma 4 Jinja
+        // template's `value['type'] | upper` filter.
+        if var props = parameters["properties"] as? [String: [String: any Sendable]] {
+            for (key, schema) in props where schema["type"] == nil {
+                props[key]!["type"] = "string"
+            }
+            // Strip parameter descriptions for simple types — the name is enough.
+            for (key, schema) in props where schema["description"] != nil {
+                let t = (schema["type"] as? String) ?? ""
+                if ["string", "integer", "boolean", "number"].contains(t) {
+                    var s = schema
+                    s.removeValue(forKey: "description")
+                    props[key] = s
+                }
+            }
+            parameters["properties"] = props
+        } else if var props = parameters["properties"] as? [String: any Sendable] {
+            for (key, schema) in props {
+                if let dict = schema as? [String: any Sendable], dict["type"] == nil {
+                    var fixed = dict
+                    fixed["type"] = "string"
+                    props[key] = fixed
+                }
+            }
+            parameters["properties"] = props
+        }
+        // Drop nullable from all property schemas — it adds tokens without value.
+        if var props = parameters["properties"] as? [String: [String: any Sendable]] {
+            for (key, schema) in props where schema["nullable"] != nil {
+                var s = schema
+                s.removeValue(forKey: "nullable")
+                props[key] = s
+            }
+            parameters["properties"] = props
+        }
         return [
             "type": "function",
             "function": [
                 "name": tool.name,
-                "description": truncate(tool.description ?? "", limit: 200),
+                "description": truncate(tool.description ?? "", limit: 60),
                 "parameters": parameters,
             ] as [String: any Sendable],
         ]
@@ -235,6 +275,8 @@ actor MCPClientService {
     /// Schema keys that cost prompt tokens without improving tool-call accuracy.
     private static let droppedSchemaKeys: Set<String> = [
         "examples", "title", "$schema", "additionalProperties", "default",
+        "nullable",  // nullable is a JSON Schema keyword that inflates tokens; models
+                     // infer nullability from the type + required status anyway.
     ]
 
     /// Recursively slim a JSON schema: truncate nested descriptions, drop noise
@@ -245,7 +287,7 @@ actor MCPClientService {
             for (key, v) in dict {
                 if droppedSchemaKeys.contains(key) { continue }
                 if key == "description", let s = v as? String {
-                    out[key] = truncate(s, limit: 120)
+                    out[key] = truncate(s, limit: 30)
                 } else {
                     out[key] = slim(v)
                 }

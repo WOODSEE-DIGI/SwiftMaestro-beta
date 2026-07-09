@@ -29,6 +29,41 @@ actor SteerInbox {
     var hasPending: Bool { !pending.isEmpty }
 }
 
+// MARK: - Delegate stream handler
+//
+// Thread-safe handler that receives tokens from delegated sub-agent runs
+// and forwards them to the UI. When a delegation starts, the handler
+// appends an empty assistant message to the target agent's chat, then
+// streams tokens into it in real-time.
+
+@MainActor
+final class DelegateStreamHandler: ObservableObject {
+    /// The target agent's ID receiving streamed tokens.
+    let targetAgentID: String
+    /// Callback to append a token to the target agent's messages.
+    var onToken: ((String) -> Void)?
+    /// Callback when delegation starts (append empty assistant message).
+    var onStart: (() -> Void)?
+    /// Callback when delegation finishes (save history).
+    var onFinish: (() -> Void)?
+
+    init(targetAgentID: String) {
+        self.targetAgentID = targetAgentID
+    }
+
+    func token(_ text: String) {
+        onToken?(text)
+    }
+
+    func start() {
+        onStart?()
+    }
+
+    func finish() {
+        onFinish?()
+    }
+}
+
 // MARK: - Agentic executor
 //
 // Owns the backend-agnostic agentic loop: it manages the conversation, executes
@@ -44,6 +79,16 @@ final class AgentExecutor: Sendable {
     /// When set, delegated sub-agents resolve their OWN backend/model via this
     /// (per-agent models). When nil, sub-agents reuse the parent's backend.
     private let delegateBackendResolver: DelegateBackendResolver?
+    /// Stream handler for delegated sub-agent tokens. When set, tokens from
+    /// delegated runs are forwarded to this handler so the UI can show
+    /// real-time activity in the target agent's chat window.
+    nonisolated(unsafe) var delegateStreamHandler: DelegateStreamHandler?
+    /// Callback for delegation streaming events. Set by the main run() loop
+    /// to yield delegate events to the parent's continuation.
+    nonisolated(unsafe) var onDelegateEvent: ((AgentOutput) -> Void)?
+    /// Pending delegation streaming events, collected during tool execution
+    /// and drained by the main loop after each tool call.
+    nonisolated(unsafe) var pendingDelegateEvents: [AgentOutput] = []
 
     /// Designated init with an explicit backend. `modelID` identifies the model
     /// for delegation (sub-agents spin up their own executor).
@@ -64,6 +109,8 @@ final class AgentExecutor: Sendable {
         messages: [Message],
         toolSpecs: [ToolSpec],
         mcp: MCPClientService?,
+        engine: MLXInferenceEngine?,
+        catalog: ModelCatalog?,
         temperature: Double,
         topP: Double,
         thinkingEnabled: Bool,
@@ -71,6 +118,7 @@ final class AgentExecutor: Sendable {
         workingDirectory: String? = nil,
         agentID: String? = nil,
         maxRounds: Int? = nil,
+        maxTokens: Int = 32768,
         steerInbox: SteerInbox? = nil
     ) -> AsyncThrowingStream<AgentOutput, Error> {
         AsyncThrowingStream { continuation in
@@ -93,6 +141,11 @@ final class AgentExecutor: Sendable {
                     var autoNudges = 0           // CONSECUTIVE unproductive nudges
                     let maxAutoNudges = 4
                     var finalWrapUpSent = false  // bounded-run wrap-up issued
+                    var fileOpCount = 0          // file ops since last auto-save
+                    let autoSaveThreshold = 5    // trigger auto-save after N file ops
+                    // Context budget: configurable via UserDefaults; default raised from
+                    // 80K to 200K so large indexing/file ops don't trip prematurely.
+                    let tokenBudget = UserDefaults.standard.object(forKey: "agent.contextTokenBudget") as? Int ?? 200_000
                     iterations: while !Task.isCancelled {
                         // Mid-generation steering: pull any user messages queued
                         // while the previous round was streaming or executing
@@ -118,6 +171,42 @@ final class AgentExecutor: Sendable {
                         // infinite gather loops on small models.
                         var specsThisRound = toolSpecs
                         let effectiveMax = maxRounds ?? hardMaxRounds
+
+                        // MEMORY GUARD: Check system memory pressure before generation.
+                        // If memory is critically low, force the model to wrap up and save.
+                        if Self.checkMemoryPressure() {
+                            NSLog("[AGENT] MEMORY GUARD: System memory pressure detected (<15%% free)")
+                            if !finalWrapUpSent {
+                                finalWrapUpSent = true
+                                specsThisRound = []
+                                convo.append([
+                                    "role": "user",
+                                    "content":
+                                        "SYSTEM WARNING: Memory pressure detected. "
+                                        + "You MUST save your progress immediately using write_file. "
+                                        + "Do NOT read any more files or call ocr_image. "
+                                        + "Summarize what you've processed so far and save it. "
+                                        + "Then provide your final answer.",
+                                ])
+                            }
+                        }
+
+                        // CONTEXT LIMIT: Force save if conversation exceeds token budget.
+                        let currentTokens = Self.conversationTokenCount(convo)
+                        if currentTokens > tokenBudget && !finalWrapUpSent {
+                            NSLog("[AGENT] CONTEXT LIMIT: \(currentTokens) tokens exceeds budget of \(tokenBudget)")
+                            finalWrapUpSent = true
+                            specsThisRound = []
+                            convo.append([
+                                "role": "user",
+                                "content":
+                                    "SYSTEM: Context limit reached (\(currentTokens) tokens). "
+                                    + "You MUST save all progress to disk immediately using write_file. "
+                                    + "Do NOT read any more files. Provide a summary of what's been "
+                                    + "done and what remains.",
+                            ])
+                        }
+
                         if round >= effectiveMax {
                             if finalWrapUpSent { break iterations }
                             finalWrapUpSent = true
@@ -136,6 +225,7 @@ final class AgentExecutor: Sendable {
                             temperature: temperature,
                             topP: topP,
                             thinkingEnabled: thinkingEnabled,
+                            maxTokens: maxTokens,
                             continuation: continuation
                         )
                         NSLog("[AGENT] round \(round): tools=\(specsThisRound.count) content=\(content.count) chars, toolCalls=[\(toolCalls.map { $0.name }.joined(separator: ", "))]")
@@ -233,11 +323,45 @@ final class AgentExecutor: Sendable {
                             let result = await executeTool(
                                 tc, mcp: mcp, project: project,
                                 workingDirectory: workingDirectory, agentID: agentID)
-                            convo.append([
-                                "role": "tool",
-                                "tool_call_id": tc.id,
-                                "content": result,
-                            ])
+                            // VLM tools return image data that must be injected as a
+                            // user message with the image attached, not as text.
+                            if let vlmPayload = Self.parseVLMResult(result) {
+                                convo.append([
+                                    "role": "tool",
+                                    "tool_call_id": tc.id,
+                                    "content": vlmPayload.text,
+                                ])
+                            } else {
+                                convo.append([
+                                    "role": "tool",
+                                    "tool_call_id": tc.id,
+                                    "content": result,
+                                ])
+                            }
+                            // AUTO-SAVE TRIGGER: Track file operations and inject
+                            // save reminder after threshold is reached.
+                            if Self.isFileOpTool(tc.name) {
+                                fileOpCount += 1
+                                if fileOpCount >= autoSaveThreshold && !finalWrapUpSent {
+                                    NSLog("[AGENT] AUTO-SAVE: \(fileOpCount) file ops reached threshold")
+                                    convo.append([
+                                        "role": "user",
+                                        "content":
+                                            "SYSTEM: Auto-save trigger. You've performed "
+                                            + "\(fileOpCount) file read operations. "
+                                            + "Call write_file to save your current progress to disk "
+                                            + "before continuing. Include: files processed so far, "
+                                            + "key findings, and files remaining.",
+                                    ])
+                                    fileOpCount = 0
+                                }
+                            }
+                        }
+                        // Drain any delegation streaming events and yield them
+                        // so the UI can show real-time sub-agent activity.
+                        while !pendingDelegateEvents.isEmpty {
+                            let event = pendingDelegateEvents.removeFirst()
+                            continuation.yield(event)
                         }
                         round += 1
                     }
@@ -275,6 +399,10 @@ final class AgentExecutor: Sendable {
         if t.contains("todo") || t.contains("task") || t.contains("checklist") {
             return "Call update_todo_status (or create_todo_list) to change the task checklist."
         }
+        if t.contains("index") || t.contains("scan") || t.contains("directory") {
+            return "Call index_directory with 'paths' (JSON array of directory paths) to ACTUALLY scan the directory. "
+                + "Do not claim you have already indexed something — emit the tool call now."
+        }
         return "Make the tool call that actually performs the action you just described."
     }
 
@@ -285,10 +413,10 @@ final class AgentExecutor: Sendable {
     private static func claimsToolBackedMutation(_ text: String) -> Bool {
         let t = text.lowercased()
         guard !t.isEmpty else { return false }
-        let nouns = ["plan", "task", "todo", "to-do", "checklist", "message", "inbox", "agent"]
+        let nouns = ["plan", "task", "todo", "to-do", "checklist", "message", "inbox", "agent", "index"]
         let verbs = ["updated", "created", "added", "marked", "edited", "appended",
                      "deleted", "renamed", "removed", "completed", "archived",
-                     "sent", "messaged", "notified", "delivered"]
+                     "sent", "messaged", "notified", "delivered", "indexed", "scanned", "run"]
         return nouns.contains { t.contains($0) } && verbs.contains { t.contains($0) }
     }
 
@@ -367,6 +495,16 @@ final class AgentExecutor: Sendable {
         "create_plan", "edit_plan", "read_plans", "read_plan",
     ]
 
+    /// Tools the Navigator is blocked from using (executor-level guard).
+    /// The model sometimes ignores the tool spec and calls these anyway.
+    /// Memory tools are ALLOWED (for coordination context); file/system/MCP tools are blocked.
+    private static let navigatorBlockedTools: Set<String> = [
+        "execute_command",
+        "obsidian_rest_request", "obsidian_rest_health",
+        "read_note", "write_note", "search_vault", "list_vault",
+        "whisperkit_transcribe_control", "whisperkit_transcribe_snapshot",
+    ]
+
     private func executeTool(
         _ tc: RoundToolCall, mcp: MCPClientService?, project: String?,
         workingDirectory: String? = nil, agentID: String? = nil
@@ -379,6 +517,13 @@ final class AgentExecutor: Sendable {
         }
         if tc.name == "ask_project_agents" {
             return await delegateMany(argumentsJSON: tc.arguments, mcp: mcp, workingDirectory: workingDirectory)
+        }
+
+        // Navigator guard: if project is nil (Navigator), block work tools.
+        // The model sometimes ignores the tool spec and calls tools it shouldn't have.
+        if project == nil && Self.navigatorBlockedTools.contains(tc.name) {
+            return "{\"error\":\"\(tc.name) is not available to the Navigator. "
+                + "You MUST delegate this task to a project agent using ask_project_agent.\"}"
         }
 
         var argsJSON = Self.injectProject(
@@ -399,12 +544,39 @@ final class AgentExecutor: Sendable {
         // without requiring manual Settings → Context entries).
         MaestroTools.workingDirectory = workingDirectory
         if MaestroTools.handles(tc.name) {
-            return await MaestroTools.execute(call)
+            let result = await MaestroTools.execute(call)
+            // If create_project_agent returned "already_exists", rewrite the
+            // result into a hard error so the model is forced to use
+            // ask_project_agent instead of looping on create.
+            if tc.name == "create_project_agent" && result.contains("already_exists") {
+                return "{\"error\":\"AGENT ALREADY EXISTS. Do NOT call create_project_agent again. "
+                    + "You MUST use ask_project_agent with the same project and agent name to delegate work.\"}"
+            }
+            return result
         }
         if let mcp, await mcp.handles(tc.name) {
             return await mcp.execute(call)
         }
         return await MaestroTools.execute(call)
+    }
+
+    // MARK: - VLM tool result support
+
+    struct VLMResult {
+        let text: String
+    }
+
+    /// If a tool result is a VLM image payload (from ocr_image), parse it into
+    /// a VLMResult. The image is NOT re-injected — it's already visible in the
+    /// user message. The tool just provides the extracted text.
+    private static func parseVLMResult(_ result: String) -> VLMResult? {
+        guard let data = result.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              obj["__vlm_image__"] as? Bool == true,
+              let path = obj["path"] as? String else { return nil }
+        return VLMResult(
+            text: "[Image loaded from \(path)]"
+        )
     }
 
     /// Inject the agent's working directory as `cwd` for execute_command when the
@@ -515,8 +687,17 @@ final class AgentExecutor: Sendable {
             return (target, proj, msgs, targetWD)
         }
         guard let (target, proj, messages, effectiveWD) = prep else {
+            // List available agents so the model can correct itself.
+            let available = await MainActor.run {
+                guard let ws = MaestroTools.workspace else { return "none" }
+                return ws.agents.filter { $0.kind == .project }.map { agent in
+                    let p = ws.projectName(for: agent) ?? "unknown"
+                    return "\(agent.name) (project: \(p))"
+                }.joined(separator: ", ")
+            }
             return DelegateResult(project: projectName ?? "", agent: agentName, answer: nil,
-                error: "no project agent named '\(agentName)'")
+                error: "no agent named '\(agentName)' in project '\(projectName ?? "")'. "
+                    + "Available agents: \(available). Use EXACT names from list_workspace.")
         }
 
         // Delegate tool surface: project tools only (no Navigator tools), plus
@@ -538,21 +719,37 @@ final class AgentExecutor: Sendable {
         let sub = AgentExecutor(
             modelID: subModelID, backend: subBackend,
             delegateBackendResolver: delegateBackendResolver)
+        // Wire up live streaming so the target agent's UI shows activity.
+        if let handler = delegateStreamHandler {
+            sub.delegateStreamHandler = handler
+        }
         var narration = ""      // every streamed token (fallback)
         var lastRoundText = ""  // text after the most recent tool call
+        // Notify handler that delegation is starting.
+        await delegateStreamHandler?.start()
+        pendingDelegateEvents.append(.delegateStart(agentID: target.id.uuidString))
+        // Pass the parent's authorized roots to the child so it can access
+        // the same folders (e.g. the vault) without re-authorizing.
+        MaestroTools.inheritedRoots = MaestroTools.authorizedRootsForParent()
+        defer { MaestroTools.inheritedRoots = [] }
         do {
             for try await output in sub.run(
                 messages: messages, toolSpecs: specs, mcp: mcp,
+                engine: nil, catalog: nil,
                 temperature: 0.3, topP: 0.95, thinkingEnabled: false,
                 project: proj.isEmpty ? nil : proj,
                 workingDirectory: effectiveWD,
                 agentID: target.id.uuidString,
-                maxRounds: 6
+                maxRounds: 6,
+                maxTokens: 4096
             ) {
                 switch output {
                 case .token(let token):
                     narration += token
                     lastRoundText += token
+                    // Forward token to live streaming handler and collect event.
+                    await delegateStreamHandler?.token(token)
+                    pendingDelegateEvents.append(.delegateToken(agentID: target.id.uuidString, token: token))
                 case .toolCall:
                     // Rounds that end in tool calls are narration, not the answer.
                     lastRoundText = ""
@@ -560,26 +757,42 @@ final class AgentExecutor: Sendable {
                     // Sub-agents have no steer inbox, so .turnBreak never fires;
                     // handled for switch exhaustiveness.
                     break
+                case .delegateToken, .delegateStart, .delegateFinish:
+                    // Sub-agents don't nest delegations, so these shouldn't appear.
+                    break
                 }
             }
         } catch {
+            await delegateStreamHandler?.finish()
+            pendingDelegateEvents.append(.delegateFinish(agentID: target.id.uuidString))
             return DelegateResult(project: proj, agent: target.name, answer: nil,
                 error: "delegate failed: \(error.localizedDescription)")
         }
+        await delegateStreamHandler?.finish()
+        pendingDelegateEvents.append(.delegateFinish(agentID: target.id.uuidString))
         let trimmedLast = lastRoundText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let answer = trimmedLast.isEmpty
+        let rawAnswer = trimmedLast.isEmpty
             ? narration.trimmingCharacters(in: .whitespacesAndNewlines)
             : trimmedLast
+        let answer = Self.stripThinkingTags(rawAnswer)
         guard !answer.isEmpty else {
             return DelegateResult(project: proj, agent: target.name, answer: nil,
                 error: "agent finished without a text answer")
         }
 
-        // Persist the delegated exchange to the target agent's own history.
+        // Persist the delegated exchange to the target agent's own history
+        // and update the in-memory ChatViewModel so the UI reflects it.
         await MainActor.run {
             var msgs = messages
             msgs.append(Message(role: .assistant, content: answer))
             ChatHistoryStore.save(msgs, agentId: target.id)
+            NSLog("[DELEGATE] saving \(msgs.count) messages for \(target.name) (id=\(target.id))")
+            if let cache = ChatViewModelCache.shared {
+                NSLog("[DELEGATE] cache has VM for \(target.name): \(cache.hasViewModel(for: target.id))")
+                cache.reloadMessages(forAgentID: target.id, messages: msgs)
+            } else {
+                NSLog("[DELEGATE] ChatViewModelCache.shared is NIL — UI won't update")
+            }
         }
         return DelegateResult(project: proj, agent: target.name, answer: answer, error: nil)
     }
@@ -603,35 +816,54 @@ final class AgentExecutor: Sendable {
         let sub = AgentExecutor(
             modelID: subModelID, backend: subBackend,
             delegateBackendResolver: delegateBackendResolver)
+        // Wire up live streaming so the target agent's UI shows activity.
+        if let handler = delegateStreamHandler {
+            sub.delegateStreamHandler = handler
+        }
         var narration = ""
         var lastRoundText = ""
+        // Notify handler that delegation is starting.
+        await delegateStreamHandler?.start()
+        pendingDelegateEvents.append(.delegateStart(agentID: target.id.uuidString))
         do {
             for try await output in sub.run(
                 messages: messages, toolSpecs: specs, mcp: mcp,
+                engine: nil, catalog: nil,
                 temperature: 0.3, topP: 0.95, thinkingEnabled: false,
                 project: proj.isEmpty ? nil : proj,
                 workingDirectory: workingDirectory,
                 agentID: target.id.uuidString,
-                maxRounds: 6
+                maxRounds: 6,
+                maxTokens: 4096
             ) {
                 switch output {
                 case .token(let token):
                     narration += token
                     lastRoundText += token
+                    // Forward token to live streaming handler and collect event.
+                    await delegateStreamHandler?.token(token)
+                    pendingDelegateEvents.append(.delegateToken(agentID: target.id.uuidString, token: token))
                 case .toolCall:
                     lastRoundText = ""
                 case .info, .turnBreak:
                     break
+                case .delegateToken, .delegateStart, .delegateFinish:
+                    break
                 }
             }
         } catch {
+            await delegateStreamHandler?.finish()
+            pendingDelegateEvents.append(.delegateFinish(agentID: target.id.uuidString))
             return DelegateResult(project: proj, agent: target.name, answer: nil,
                 error: "delegate failed: \(error.localizedDescription)")
         }
+        await delegateStreamHandler?.finish()
+        pendingDelegateEvents.append(.delegateFinish(agentID: target.id.uuidString))
         let trimmedLast = lastRoundText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let answer = trimmedLast.isEmpty
+        let rawAnswer = trimmedLast.isEmpty
             ? narration.trimmingCharacters(in: .whitespacesAndNewlines)
             : trimmedLast
+        let answer = Self.stripThinkingTags(rawAnswer)
         guard !answer.isEmpty else {
             return DelegateResult(project: proj, agent: target.name, answer: nil,
                 error: "agent finished without a text answer")
@@ -842,6 +1074,12 @@ final class AgentExecutor: Sendable {
 
     /// Build an mlx `ToolCall` from an OpenAI tool call so we can reuse the
     /// existing native/MCP execution paths.
+    /// Strip XML thinking/channel tags from a string.
+    /// Delegates to the shared stripper so all layers use the same patterns.
+    private static func stripThinkingTags(_ text: String) -> String {
+        ThinkingTagStripper.strip(text)
+    }
+
     private static func toolCall(name: String, argumentsJSON: String) -> ToolCall {
         let args: [String: JSONValue]
         if let data = argumentsJSON.data(using: .utf8),
@@ -851,5 +1089,55 @@ final class AgentExecutor: Sendable {
             args = [:]
         }
         return ToolCall(function: .init(name: name, arguments: args))
+    }
+
+    // MARK: - Memory safety & auto-save
+
+    /// Tools that read file content or scan directories (count toward auto-save threshold).
+    static let fileOpToolNames: Set<String> = [
+        "read_file", "ocr_image", "list_dir",
+        "index_directory", "spotlight_search",
+        "index_document", "search_chunks", "read_chunk",
+    ]
+
+    /// Rough token estimate: ~4 chars per token for English text.
+    static func estimateTokens(_ msg: [String: Any]) -> Int {
+        if let content = msg["content"] as? String {
+            return content.count / 4
+        }
+        return 0
+    }
+
+    /// Check if system memory usage exceeds safe threshold.
+    /// Uses a simple heuristic based on process memory and total RAM.
+    static func checkMemoryPressure() -> Bool {
+        let totalRAM = ProcessInfo.processInfo.physicalMemory
+        // Get process memory usage via task_info
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<mach_task_basic_info>.size / MemoryLayout<integer_t>.size
+        )
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else { return false }
+
+        // If our process is using more than 40% of total RAM, trigger safety stop
+        // (this leaves room for the OS, other apps, and model loading)
+        let processBytes = info.resident_size
+        let threshold = totalRAM * 4 / 10  // 40%
+        return processBytes > threshold
+    }
+
+    /// Approximate token count of the full conversation.
+    static func conversationTokenCount(_ convo: [[String: Any]]) -> Int {
+        convo.reduce(0) { $0 + estimateTokens($1) }
+    }
+
+    /// File operation tools that count toward the auto-save threshold.
+    static func isFileOpTool(_ name: String) -> Bool {
+        fileOpToolNames.contains(name)
     }
 }

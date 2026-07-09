@@ -9,8 +9,9 @@ import MLXLMCommon
 // given the conversation (OpenAI wire format) and advertised tools, it streams
 // content tokens and returns the round's content + any requested tool calls.
 //
-// One implementation exists:
+// Two implementations exist:
 //   - InProcessMLXBackend: fully in-process via mlx-swift-lm (no external server).
+//   - RemoteLMStudioBackend: HTTP to a remote LM Studio server.
 
 /// Streamed output from a generation round / the agentic loop.
 enum AgentOutput: Sendable {
@@ -21,6 +22,14 @@ enum AgentOutput: Sendable {
     /// finalize the current assistant bubble and open a fresh one for the steered
     /// continuation (so reasoning is re-armed and bubbles stay readable).
     case turnBreak
+    /// Token from a delegated sub-agent. The UI streams this into the target
+    /// agent's chat window in real-time so the user can see sub-agent activity.
+    case delegateToken(agentID: String, token: String)
+    /// Delegation started — the UI should append an empty assistant message
+    /// to the target agent's chat and prepare for streaming.
+    case delegateStart(agentID: String)
+    /// Delegation finished — the UI should save the target agent's history.
+    case delegateFinish(agentID: String)
 }
 
 /// A backend-neutral, Sendable chat turn. Used to hand a conversation across the
@@ -29,6 +38,9 @@ enum AgentOutput: Sendable {
 struct ChatTurn: Sendable {
     let role: String   // system | user | assistant | tool
     let content: String
+    /// Raw image bytes (PNG/JPEG) attached to this turn. Only populated for
+    /// user messages with multimodal content.
+    let images: [Data]
 }
 
 /// One tool call accumulated during a generation round (OpenAI function-calling).
@@ -54,6 +66,7 @@ protocol GenerationBackend: Sendable {
         temperature: Double,
         topP: Double,
         thinkingEnabled: Bool,
+        maxTokens: Int,
         continuation: AsyncThrowingStream<AgentOutput, Error>.Continuation
     ) async throws -> (content: String, toolCalls: [RoundToolCall])
 }

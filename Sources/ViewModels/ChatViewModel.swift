@@ -14,6 +14,7 @@ class ChatViewModel: ObservableObject {
     /// Images staged for the next message (from the attach button, drag-drop, or
     /// paste). Sent as data URIs to the vision-capable model, then cleared.
     @Published var pendingImages: [Data] = []
+    @Published var pendingImagePaths: [String] = []
     /// Live, compact "what the agent is doing right now" line shown while
     /// streaming (e.g. "Running read_notes…"). Cleared when the turn ends.
     @Published var currentActivity: String?
@@ -32,6 +33,10 @@ class ChatViewModel: ObservableObject {
     private var reasoningStart: Date?
     private var streamBuffer = ""
     private var sawReasoningClose = false
+    /// Tool call XML suppression: when the model streams `<tool_call>` tokens
+    /// into the text stream alongside `.toolCall` events, suppress the raw XML
+    /// so it doesn't leak into the displayed answer.
+    private var suppressingToolCall = false
     /// Mid-generation steering queue for the in-flight run; held only while
     /// streaming so `steer(text:)` can hand the executor new user input without
     /// cancelling the run.
@@ -61,22 +66,27 @@ class ChatViewModel: ObservableObject {
         else { UserDefaults.standard.removeObject(forKey: key) }
     }
 
-    /// Build the generation backend for a model. Every model runs fully
-    /// in-process via mlx-swift-lm (the 122B included), so this is always the
-    /// in-process Apple-MLX backend.
+    /// Build the generation backend for a model. Local models run fully
+    /// in-process via mlx-swift-lm; remote models (LM Studio) use HTTP.
     static func makeBackend(
         for model: MaestroModel, engine: MLXInferenceEngine, sessionKey: String
     ) -> GenerationBackend {
-        InProcessMLXBackend(engine: engine, model: model, sessionKey: sessionKey)
+        if let remoteURL = model.remoteBaseURL {
+            let config = LMStudioConfig(baseURL: remoteURL)
+            return RemoteLMStudioBackend(config: config, model: model)
+        }
+        return InProcessMLXBackend(engine: engine, model: model, sessionKey: sessionKey)
     }
 
     func send(engine: MLXInferenceEngine, catalog: ModelCatalog, model: MaestroModel?) {
         guard !isStreaming else { return }
         // Merge typed images with any local image paths found in the text
         // (e.g. a pasted screenshot path), stripping the path from the prompt.
-        let (cleanedText, pathImages) = Self.extractImages(from: inputText)
+        let (cleanedText, pathImages, extractedPaths) = Self.extractImages(from: inputText)
         var images = pendingImages
         images.append(contentsOf: pathImages)
+        var allPaths = pendingImagePaths
+        allPaths.append(contentsOf: extractedPaths)
         let prompt = cleanedText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty || !images.isEmpty else { return }
         guard let model else {
@@ -86,19 +96,22 @@ class ChatViewModel: ObservableObject {
 
         inputText = ""
         pendingImages = []
+        pendingImagePaths = []
         errorMessage = nil
-        let userText = prompt.isEmpty ? "Describe this image." : prompt
+        let userText = prompt.isEmpty ? " " : prompt
         messages.append(Message(
-            role: .user, content: userText, imageData: images.isEmpty ? nil : images))
+            role: .user, content: userText, imageData: images.isEmpty ? nil : images,
+            imagePaths: allPaths.isEmpty ? nil : allPaths))
         messages.append(Message(role: .assistant, content: ""))
         isStreaming = true
         // Reset the stream-time reasoning split for this turn. Reasoning starts
-        // open because Qwen emits a `</think>` (even an empty block) before the
+        // open because Qwen emits a `<think>` (even an empty block) before the
         // answer regardless of the thinking toggle.
         inReasoning = true
         reasoningStart = Date()
         streamBuffer = ""
         sawReasoningClose = false
+        suppressingToolCall = false
         // Fresh steer queue for this run; the executor drains it each round.
         let inbox = SteerInbox()
         steerInbox = inbox
@@ -113,13 +126,15 @@ class ChatViewModel: ObservableObject {
             // is answered truthfully instead of echoing the agent's name.
             let modelDesc = "\(model.displayName) (model id \(model.huggingFaceID)), "
                 + "served via in-process Apple MLX"
-            let requestMessages = messagesForInference(modelDescription: modelDesc)
+            let requestMessages = messagesForInference(
+                modelDescription: modelDesc, isVisionModel: model.isVision)
             let defaults = UserDefaults.standard
             let thinking = model.tunedThinkingEnabled
             // Per-model sampling: this model's own override (Settings → Tuning)
             // or its recommended values — never one global value across models.
             let temperature = model.tunedTemperature
             let topP = model.tunedTopP
+            let maxTokens = model.tunedMaxTokens
 
             // Tool surface: project agents get the normal tools; the Navigator
             // additionally gets the workspace/delegation tools. Lite mode
@@ -129,14 +144,18 @@ class ChatViewModel: ObservableObject {
                 toolSpecs = MaestroTools.schemas(
                     navigator: isNavigator, liteMode: model.isLiteModel)
                 if let mcp = engine.mcpService {
-                    toolSpecs += await mcp.currentSchemas()
+                    // Navigator gets NO MCP tools — it delegates everything.
+                    // Only project agents get MCP tools (read_note, list_dir, etc.).
+                    if !isNavigator {
+                        toolSpecs += await mcp.currentSchemas()
+                    }
                 }
             }
             // Low temperature when tools are active keeps function-calling faithful.
             let effectiveTemp = toolSpecs.isEmpty ? temperature : min(temperature, 0.3)
 
             // Delegated sub-agents resolve their OWN model/backend via this
-            // resolver (per-agent models); all run in-process.
+            // resolver (per-agent models; local or remote depending on model).
             let delegateResolver: DelegateBackendResolver = { agentID in
                 await MainActor.run { () -> (backend: GenerationBackend, modelID: String)? in
                     guard let agent = MaestroTools.workspace?.agent(id: agentID),
@@ -153,10 +172,13 @@ class ChatViewModel: ObservableObject {
                 let executor = AgentExecutor(
                     modelID: model.huggingFaceID, backend: primaryBackend,
                     delegateBackendResolver: delegateResolver)
+
                 let stream = executor.run(
                     messages: requestMessages, toolSpecs: toolSpecs, mcp: engine.mcpService,
+                    engine: engine, catalog: catalog,
                     temperature: effectiveTemp, topP: topP, thinkingEnabled: thinking,
                     project: project, workingDirectory: workingDir, agentID: agentID,
+                    maxTokens: maxTokens,
                     steerInbox: inbox)
                 for try await output in stream {
                     guard !Task.isCancelled else { break }
@@ -165,6 +187,18 @@ class ChatViewModel: ObservableObject {
                     case .toolCall(let name): recordToolStep(name)
                     case .info(let tps): engine.reportExternalTokensPerSecond(tps)
                     case .turnBreak: beginSteeredTurn()
+                    case .delegateStart(let agentID):
+                        await Self.streamToDelegate(agentID: agentID, token: "[START]")
+                        await MainActor.run {
+                            self.currentActivity = "Delegating to sub-agent..."
+                        }
+                    case .delegateToken(let agentID, let token):
+                        await Self.streamToDelegate(agentID: agentID, token: token)
+                    case .delegateFinish(let agentID):
+                        await Self.streamToDelegate(agentID: agentID, token: "[FINISH]")
+                        await MainActor.run {
+                            self.currentActivity = nil
+                        }
                     }
                 }
             } catch {
@@ -207,6 +241,7 @@ class ChatViewModel: ObservableObject {
         reasoningStart = Date()
         streamBuffer = ""
         sawReasoningClose = false
+        suppressingToolCall = false
     }
 
     // MARK: - Image attachment helpers
@@ -218,16 +253,18 @@ class ChatViewModel: ObservableObject {
     /// Find local image-file paths inside the text (quoted paths with spaces, a
     /// bare absolute path, or the whole input being a path), load their bytes,
     /// and return the text with those paths removed.
-    static func extractImages(from text: String) -> (text: String, images: [Data]) {
+    static func extractImages(from text: String) -> (text: String, images: [Data], paths: [String]) {
         var working = text
         var loaded: [Data] = []
+        var paths: [String] = []
 
         let patterns = [
             "'([^']+)'",
             "\"([^\"]+)\"",
             "(/[^\\s\"']+\\.(?i:png|jpg|jpeg|gif|bmp|tiff|webp|heic))",
+            "([^\\s\"']+\\.(?i:png|jpg|jpeg|gif|bmp|tiff|webp|heic))",
         ]
-        for pattern in patterns {
+        for (pi, pattern) in patterns.enumerated() {
             guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
             let ns = working as NSString
             let matches = regex.matches(in: working, range: NSRange(location: 0, length: ns.length))
@@ -237,6 +274,8 @@ class ChatViewModel: ObservableObject {
                 let candidate = (working as NSString).substring(with: captureRange)
                 if let data = imageData(atPath: candidate) {
                     loaded.append(data)
+                    let resolved = resolveImagePath(candidate)
+                    paths.append(resolved ?? candidate)
                     working = (working as NSString).replacingCharacters(in: match.range, with: " ")
                 }
             }
@@ -246,20 +285,63 @@ class ChatViewModel: ObservableObject {
             let trimmed = working.trimmingCharacters(in: CharacterSet(charactersIn: " '\"\n\t"))
             if let data = imageData(atPath: trimmed) {
                 loaded.append(data)
+                let resolved = resolveImagePath(trimmed)
+                paths.append(resolved ?? trimmed)
                 working = ""
             }
         }
-        return (working, loaded.reversed())
+        return (working, loaded.reversed(), paths.reversed())
+    }
+
+    /// Resolve a relative image filename to an absolute path by searching common locations.
+    static func resolveImagePath(_ path: String) -> String? {
+        let expanded = (path as NSString).expandingTildeInPath
+        if (expanded as NSString).isAbsolutePath,
+           FileManager.default.fileExists(atPath: expanded) {
+            return expanded
+        }
+        let searchDirs = [
+            NSHomeDirectory() + "/Desktop",
+            NSHomeDirectory() + "/Downloads",
+            NSHomeDirectory() + "/Pictures",
+            NSHomeDirectory() + "/Documents",
+        ]
+        for dir in searchDirs {
+            let full = (dir as NSString).appendingPathComponent(expanded)
+            if FileManager.default.fileExists(atPath: full) { return full }
+        }
+        return nil
     }
 
     /// Load image bytes if `path` points to an existing image file.
+    /// For relative paths, searches common locations (Desktop, Downloads, working dir).
     static func imageData(atPath path: String) -> Data? {
         let expanded = (path as NSString).expandingTildeInPath
         let ext = (expanded as NSString).pathExtension.lowercased()
-        guard imageExtensions.contains(ext),
-              FileManager.default.fileExists(atPath: expanded),
-              let data = try? Data(contentsOf: URL(fileURLWithPath: expanded))
-        else { return nil }
+        guard imageExtensions.contains(ext) else { return nil }
+
+        // Try the path as-is first
+        if let data = tryLoadImage(at: expanded) { return data }
+
+        // If relative, search common locations
+        if !(expanded as NSString).isAbsolutePath {
+            let candidates = [
+                NSHomeDirectory() + "/Desktop",
+                NSHomeDirectory() + "/Downloads",
+                NSHomeDirectory() + "/Pictures",
+                NSHomeDirectory() + "/Documents",
+            ]
+            for dir in candidates where !dir.isEmpty {
+                let full = (dir as NSString).appendingPathComponent(expanded)
+                if let data = tryLoadImage(at: full) { return data }
+            }
+        }
+        return nil
+    }
+
+    private static func tryLoadImage(at path: String) -> Data? {
+        guard FileManager.default.fileExists(atPath: path),
+              let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return nil }
         return data
     }
 
@@ -274,15 +356,45 @@ class ChatViewModel: ObservableObject {
     // is still detected.
 
     private static let closeTag = "</think>"
-
+    private static let toolCallOpen = "<tool_call>"
+    private static let toolCallClose = "</tool_call>"
     /// Route one streamed chunk into reasoning (while `inReasoning`) or the answer
     /// (after the close tag), buffering a small tail to catch a split tag.
     private func consumeStreamChunk(_ token: String) {
         streamBuffer += token
         guard inReasoning else {
-            // Answer mode: emit directly; no tag search until the next round.
-            appendAnswer(streamBuffer)
-            streamBuffer = ""
+            // Answer mode: suppress `<tool_call>` XML that the model streams
+            // as text tokens alongside the `.toolCall` event (small MoE models
+            // like Qwen 3.6 35B-A3B often emit raw XML).
+            if suppressingToolCall {
+                if let r = streamBuffer.range(of: Self.toolCallClose) {
+                    suppressingToolCall = false
+                    let after = String(streamBuffer[r.upperBound...])
+                    streamBuffer = ""
+                    if !after.isEmpty { appendAnswer(after) }
+                }
+                // Stay in suppression — buffer keeps growing until close tag
+                // arrives. Don't flush partial XML.
+                return
+            }
+            // Check if the buffer contains or might contain an opening tool call tag.
+            // We need tail-buffering since the tag could span multiple tokens.
+            let openLen = Self.toolCallOpen.count
+            if let r = streamBuffer.range(of: Self.toolCallOpen) {
+                let before = String(streamBuffer[..<r.lowerBound])
+                if !before.isEmpty { appendAnswer(before) }
+                suppressingToolCall = true
+                // Keep the full text (including the open tag) in streamBuffer
+                // so `</tool_call>` spanning tokens is still detected.
+                return
+            }
+            // Flush all but a tail that might hold a partial opening tag.
+            let keep = openLen - 1
+            if streamBuffer.count > keep {
+                let split = streamBuffer.index(streamBuffer.endIndex, offsetBy: -keep)
+                appendAnswer(String(streamBuffer[..<split]))
+                streamBuffer = String(streamBuffer[split...])
+            }
             return
         }
         if let r = streamBuffer.range(of: Self.closeTag) {
@@ -350,6 +462,11 @@ class ChatViewModel: ObservableObject {
             if inReasoning { appendReasoning(streamBuffer) } else { appendAnswer(streamBuffer) }
             streamBuffer = ""
         }
+        // Discard any in-progress tool call XML suppression — the model
+        // produced a partial `<tool_call>` block that never got closed.
+        if suppressingToolCall {
+            suppressingToolCall = false
+        }
         guard !sawReasoningClose,
               let idx = messages.lastIndex(where: { $0.role == .assistant }),
               messages[idx].content.isEmpty,
@@ -378,6 +495,11 @@ class ChatViewModel: ObservableObject {
         ChatHistoryStore.save(messages, agentId: agent.id)
     }
 
+    /// Called by ChatViewModelCache to persist messages after delegation.
+    func persistHistory() {
+        saveHistory()
+    }
+
     func cancel(engine: MLXInferenceEngine) {
         generateTask?.cancel()
         engine.cancel()
@@ -394,6 +516,32 @@ class ChatViewModel: ObservableObject {
         ChatHistoryStore.clear(agentId: agent.id)
         messages = [Self.systemMessage(for: agent, projectName: projectName)]
         isStreaming = false
+    }
+
+    // MARK: - Delegate streaming
+
+    /// In-memory store of active delegate stream handlers, keyed by agent ID.
+    /// When a delegation starts, a handler is registered here so tokens can be
+    /// streamed to the target agent's chat in real-time.
+    nonisolated(unsafe) static var activeDelegateHandlers: [String: DelegateStreamHandler] = [:]
+
+    /// Stream a token to a delegated sub-agent's chat window.
+    /// Called by the executor when it receives tokens from a sub-agent run.
+    @MainActor
+    static func streamToDelegate(agentID: String, token: String) async {
+        let cache = ChatViewModelCache.shared
+        NSLog("[STREAM] streamToDelegate agentID=\(agentID) token=\(token.prefix(30)) cache=\(cache != nil ? "exists" : "NIL")")
+        if token == "[START]" {
+            cache?.beginDelegation(forAgentID: UUID(uuidString: agentID) ?? UUID())
+            return
+        }
+        if token == "[FINISH]" {
+            cache?.finishDelegation(forAgentID: UUID(uuidString: agentID) ?? UUID())
+            activeDelegateHandlers.removeValue(forKey: agentID)
+            return
+        }
+
+        cache?.appendToken(token, toAgentID: UUID(uuidString: agentID) ?? UUID())
     }
 
     // MARK: - System prompt
@@ -433,6 +581,46 @@ class ChatViewModel: ObservableObject {
         - If you have already read files and listed directories, you have enough. \
         STOP calling tools and WRITE YOUR RESPONSE. One more tool call is NOT \
         the answer — outputting text IS.
+        - read_file handles ANY file type: text files, documents (.docx, .pdf, \
+        .rtf, .odt, .pages, .html), images, and binary files. Documents are \
+        extracted to text; binary files return base64 with MIME type.
+        - write_file writes UTF-8 text by default. To write a binary file, set \
+        encoding='base64' and pass base64-encoded content.
+        - For large documents that exceed the context window, use index_document \
+        to split files into exact-text chunks, search_chunks to find relevant \
+        chunks with loose keyword/fuzzy matching, and read_chunk to retrieve the \
+        verbatim original text. NEVER summarize when the user wants exact quotes.
+        - When the user sends an image or image path, call ocr_image with the \
+        absolute path. Do NOT call list_dir on an image — that lists the parent \
+        directory. ocr_image sends the image to the vision model for text extraction.
+
+        AUTO-SAVE TRIGGER:
+        - After every 5 file read operations (read_file, ocr_image, list_dir), \
+        you MUST call write_file to save your accumulated progress to disk. \
+        This is automatic and does not require user approval.
+        - Save to your designated output path (provided in your task prompt). \
+        Each save should include: timestamp, files processed so far, key findings, \
+        and files remaining.
+        - If you crash or are interrupted, your last save preserves your work. \
+        This is critical for long-running analysis tasks.
+        - Do NOT wait for the user to ask you to save. Save proactively.
+
+        DIRECTORY INDEXING:
+        - When the user shares a directory or asks you to explore one, ALWAYS start \
+        with index_directory (NOT list_dir). It recursively scans the ENTIRE tree, \
+        uses macOS Spotlight for rich metadata (file types, sizes, dates, dimensions), \
+        and returns a structured summary. This is the FASTEST way to understand a \
+        directory's contents.
+        - index_directory is comprehensive by default — it returns ALL files and \
+        subdirectories. Do NOT filter or skip entries you think are unimportant. \
+        The user needs the COMPLETE picture.
+        - After indexing, call save_index to persist the results to shared memory \
+        so they're available in future sessions.
+        - Only use list_dir for quick checks of a SINGLE directory level. For any \
+        multi-level exploration, index_directory is the right tool.
+        - When listing a directory (list_dir), report EVERY entry — do NOT filter, \
+        prioritize, or skip files. The user asked to see the contents, not your \
+        opinion of what's important.
         """
 
     /// Guidance for the live task-checklist tools. Small local models tend to
@@ -517,6 +705,18 @@ class ChatViewModel: ObservableObject {
     ) -> Message {
         let base: String
         if agent.kind == .navigator {
+            // Inject live workspace state so the Navigator knows exact project/agent names.
+            var workspaceList = "No projects or agents exist yet."
+            if let ws = MaestroTools.workspace, !ws.projects.isEmpty {
+                var lines: [String] = []
+                for proj in ws.projects {
+                    let agentNames = ws.agents
+                        .filter { $0.kind == .project && $0.projectId == proj.id }
+                        .map { $0.name }
+                    lines.append("- Project: \"\(proj.name)\" — Agents: \(agentNames.joined(separator: ", "))")
+                }
+                workspaceList = lines.joined(separator: "\n")
+            }
             base = """
                 You are the Navigator, the conductor for SwiftMaestro. You handle general \
                 chat and coordinate project work. You can create projects and long-lived \
@@ -525,10 +725,42 @@ class ChatViewModel: ObservableObject {
                 delegate a task to a project agent (ask_project_agent) then synthesize \
                 their result for the user. To delegate to SEVERAL agents at once, use \
                 ask_project_agents with a 'requests' list of {project, agent, task}. \
-                Create a project agent when the user wants ongoing work focused on a \
-                specific project. When creating agents, use descriptive names that \
-                reflect their role (e.g. "Inspector", "Builder", "Scribe") — never \
+                You can also perform basic file discovery (list_dir, read_file) to help \
+                the user and investigate the workspace. Create a project agent when the \
+                user wants ongoing work focused on a specific project. When creating agents, \
+                use descriptive names that reflect their role (e.g. "Inspector", "Builder", "Scribe") — never \
                 use placeholder names like "NewName" or "Agent1".
+
+                CURRENT WORKSPACE:
+                \(workspaceList)
+
+                WHEN DELEGATING: Use the EXACT project and agent names listed above. \
+                Do NOT invent or guess project/agent names. If you're unsure, call \
+                list_workspace first.
+
+                YOU DO NOT HAVE FILE OR SYSTEM TOOLS. You cannot read files, list \
+                directories, search code, or run commands. You HAVE memory tools \
+                (read/write/search notes, decisions) for tracking coordination \
+                context — what agents are doing, what you've decided, project \
+                status. You also have ocr_image for reading text from images. \
+                When the user asks you to do ANY work beyond coordination (read \
+                files, analyse data, write reports, edit documents, search vault, \
+                or any multi-step task), you MUST delegate to a project agent \
+                using ask_project_agent.
+
+                BATCHING RULE — MANDATORY: If a delegated task involves scanning, \
+                reading, or analyzing more than a few files, a large folder, or a \
+                database spread across many records, you MUST break it into small \
+                batches and delegate each batch separately. Use create_todo_list or \
+                add_todos to track batches. Examples: by month, by week, by sender, \
+                by file type, or by directory subfolder. Never ask a sub-agent to \
+                process an entire folder, database, or multi-file archive in a single \
+                call. After each batch returns, save progress to disk with write_file \
+                before starting the next batch.
+
+                LANGUAGE RULE: You MUST respond in English only. Never use Vietnamese, \
+                Thai, Chinese, Japanese, or any other language. All your thoughts, \
+                tool arguments, and responses must be in English.
                 """
         } else {
             let proj = projectName ?? "this project"
@@ -536,6 +768,18 @@ class ChatViewModel: ObservableObject {
                 You are \(agent.name), a project agent for the project "\(proj)". Focus on \
                 this project's work. Project: \(proj). Use the memory tools to recall and \
                 store project knowledge — they are scoped to this project.
+
+                SELF-CORRECTION RULE: You have file tools. If a path fails (file not found, \
+                access denied, or command formatting error), do NOT give up and do NOT ask \
+                the user to fix it. Diagnose and fix it yourself. Common fixes: replace a \
+                straight apostrophe `'` with a curly apostrophe `'`, check for trailing \
+                slashes, try the parent directory, or list the directory to confirm exact \
+                filenames. Always verify the real path with list_dir before reporting a \
+                failure. You are expected to work around trivial syntax issues.
+
+                LANGUAGE RULE: You MUST respond in English only. Never use Vietnamese, \
+                Thai, Chinese, Japanese, or any other language. All your thoughts, \
+                tool arguments, and responses must be in English.
                 """
         }
         var content = base + "\n\n" + Self.toolDiscipline
@@ -579,7 +823,7 @@ class ChatViewModel: ObservableObject {
         return Message(role: .system, content: content)
     }
 
-    private func messagesForInference(modelDescription: String? = nil) -> [Message] {
+    private func messagesForInference(modelDescription: String? = nil, isVisionModel: Bool = false) -> [Message] {
         // Always regenerate the system prompt so prompt/rule changes (and tool
         // routing guidance) apply to existing chats without needing a clear.
         // The stored leading system message is display-only and is dropped here.
@@ -605,6 +849,22 @@ class ChatViewModel: ObservableObject {
         }
         if let last = output.last, last.role == .assistant, last.content.isEmpty {
             output.removeLast()
+        }
+        // When the last user message has images and the model does NOT have
+        // vision, inject a hint to use ocr_image. Vision models (like Gemma 4)
+        // can see images directly and don't need the tool — injecting the hint
+        // would cause double image injection.
+        if !isVisionModel,
+           let lastIdx = output.indices.last,
+           output[lastIdx].role == .user,
+           let imgs = output[lastIdx].imageData, !imgs.isEmpty,
+           !output[lastIdx].content.contains("ocr_image") {
+            var copy = output[lastIdx]
+            let paths = copy.imagePaths ?? []
+            let pathList = paths.isEmpty ? "the attached image" :
+                paths.map { "`\($0)`" }.joined(separator: ", ")
+            copy.content = "[The user attached \(imgs.count) image(s): \(pathList). Use the ocr_image tool with the image path to extract text from it.]\n" + copy.content
+            output[lastIdx] = copy
         }
         return output
     }

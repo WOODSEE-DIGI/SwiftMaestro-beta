@@ -49,6 +49,15 @@ struct SwiftMaestroApp: App {
                 .environment(theme)
                 .environment(whisperService)
                 .task {
+                    // Restore user settings from the external JSON backup if the
+                    // UserDefaults plist has been reset or deleted. This must run
+                    // before the observable stores read their initial values.
+                    let didRestore = SettingsBackupService.shared.restoreIfNeeded()
+                    if didRestore {
+                        catalog.selectedModelID = UserDefaults.standard.string(forKey: ModelCatalog.selectedModelKey)
+                            ?? catalog.selectedModelID
+                        theme.reloadFromDefaults()
+                    }
                     SwiftMaestroDefaultsMigration.applyIfNeeded()
                     // Create the shared ~/.ai-context scaffold up front so a fresh,
                     // self-contained install has its data directory before first use.
@@ -74,6 +83,9 @@ struct SwiftMaestroApp: App {
                     }
                     // Eagerly load WhisperKit so the mic button is ready.
                     whisperService.ensureModelLoaded()
+                    // Snapshot all user settings to ~/.config/SwiftMaestro/ so they
+                    // survive plist deletion and can be synced via Chezmoi.
+                    SettingsBackupService.shared.backup()
                 }
         }
         .defaultSize(width: 1100, height: 760)
@@ -88,6 +100,22 @@ struct SwiftMaestroApp: App {
                 .environment(theme)
         }
         .windowResizability(.contentSize)
+
+        // Floating chat window for any agent. Opens manually from the chat
+        // toolbar or automatically when Navigator delegates to a sub-agent.
+        WindowGroup("Agent Chat", id: "agent-chat-window", for: AgentChatWindowID.self) { $target in
+            AgentChatWindowView(target: target)
+                .environment(engine)
+                .environment(catalog)
+                .environment(workspace)
+                .environment(todoStore)
+                .environment(planStore)
+                .environment(messageStore)
+                .environment(theme)
+                .environment(whisperService)
+        }
+        .defaultSize(width: 960, height: 720)
+        .windowResizability(.contentMinSize)
 
         #if os(macOS)
         Settings {

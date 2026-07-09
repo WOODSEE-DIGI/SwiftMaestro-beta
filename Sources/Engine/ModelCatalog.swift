@@ -29,12 +29,20 @@ struct MaestroModel: Identifiable, Hashable {
     var recTemperature: Double? = nil
     var recTopP: Double? = nil
     var recRepetitionPenalty: Double? = nil
+    /// Per-model recommended max output tokens. nil = use global default (32768).
+    var recMaxTokens: Int? = nil
     /// Active (non-expert) parameter count in billions. MoE models like
     /// 35B-A3B have only 3B active per token; dense models match their total.
     /// Used to decide lite-mode tool sets (models with <10B active params
     /// get a reduced tool set to avoid overwhelming the smaller model).
     var activeParamsB: Int? = nil
     var isLiteModel: Bool { (activeParamsB ?? 999) < 10 }
+    /// LM Studio endpoint URL (e.g. `http://localhost:1234`). When set,
+    /// the model runs on a remote LM Studio server instead of in-process MLX.
+    var remoteBaseURL: String? = nil
+    var isRemote: Bool { remoteBaseURL != nil }
+    /// HuggingFace download URL shown in Settings so users can grab the model.
+    var downloadURL: String? = nil
 
     /// Tools are advertised only when the model is verified AND its tool-call
     /// format is known or can be inferred. No known format ⇒ no tools.
@@ -93,6 +101,17 @@ extension MaestroModel {
             ?? recRepetitionPenalty ?? 1.05
     }
 
+    /// Effective max output tokens for THIS model: the user's per-model override
+    /// if set, otherwise the model's recommended value, otherwise 32768.
+    /// Controls the maximum number of tokens the model will generate per response.
+    var tunedMaxTokens: Int {
+        let key = Self.tuningKey(id, "maxTokens")
+        if let override = UserDefaults.standard.object(forKey: key) as? Int {
+            return override
+        }
+        return recMaxTokens ?? 32768
+    }
+
     var tunedThinkingEnabled: Bool {
         (UserDefaults.standard.object(forKey: Self.tuningKey(id, "thinking")) as? Bool)
             ?? false
@@ -116,7 +135,7 @@ final class ModelCatalog {
         }
     }
 
-    private static let selectedModelKey = "models.selectedModelID"
+    static let selectedModelKey = "models.selectedModelID"
     /// Launch default when no selection has been persisted yet. The fast MoE
     /// (not the 65 GB 122B) so a fresh, self-contained install never preloads or
     /// auto-downloads a huge model on first use.
@@ -182,17 +201,53 @@ final class ModelCatalog {
             id: "local-qwen3.6-35b-a3b",
             displayName: "Qwen 3.6 35B-A3B (default)",
             huggingFaceID: "lmstudio-community/Qwen3.6-35B-A3B-MLX-4bit",
-            // Although this checkpoint is multimodal, we load it through the
-            // text MoE path (LLMModelFactory recognizes model_type `qwen3_5_moe`).
-            // The VLM pipeline ran ~3x slower (12 vs ~40 tok/s); chat is
-            // text-only, so the vision tower is pure overhead.
             isVision: false,
             localPath: localIfPresent("swiftmaestro-models/Qwen3.6-35B-A3B-MLX-4bit"),
             estimatedMemoryGB: 20,
-            supportsTools: true,  // verified: get_current_time round-trip passed
-            toolCallFormat: .xmlFunction,  // emits XML <function>/<parameter> calls
+            supportsTools: true,
+            toolCallFormat: .xmlFunction,
             recTemperature: 0.8, recTopP: 0.9, recRepetitionPenalty: 1.15,
-            activeParamsB: 3
+            activeParamsB: 3,
+            downloadURL: "https://huggingface.co/lmstudio-community/Qwen3.6-35B-A3B-MLX-4bit"
+        ),
+        MaestroModel(
+            id: "local-gemma4-26b-4bit",
+            displayName: "Gemma 4 26B-A4B (Vision+Text, 4-bit)",
+            huggingFaceID: "lmstudio-community/gemma-4-26B-A4B-it-MLX-4bit",
+            isVision: true,
+            localPath: localIfPresent("lmstudio-community/gemma-4-26B-A4B-it-MLX-4bit"),
+            estimatedMemoryGB: 16,
+            supportsTools: true,
+            toolCallFormat: .gemma4,
+            recTemperature: 0.7, recTopP: 0.9, recRepetitionPenalty: 1.1,
+            activeParamsB: 4,
+            downloadURL: "https://huggingface.co/lmstudio-community/gemma-4-26B-A4B-it-MLX-4bit"
+        ),
+        MaestroModel(
+            id: "local-gemma4-26b",
+            displayName: "Gemma 4 26B-A4B (Vision+Text, 8-bit)",
+            huggingFaceID: "lmstudio-community/gemma-4-26B-A4B-it-MLX-8bit",
+            isVision: true,
+            localPath: localIfPresent("lmstudio-community/gemma-4-26B-A4B-it-MLX-8bit"),
+            estimatedMemoryGB: 26,
+            supportsTools: true,
+            toolCallFormat: .gemma4,
+            recTemperature: 0.7, recTopP: 0.9, recRepetitionPenalty: 1.1,
+            activeParamsB: 4,
+            downloadURL: "https://huggingface.co/lmstudio-community/gemma-4-26B-A4B-it-MLX-8bit"
+        ),
+        MaestroModel(
+            id: "local-gemma4-26b-qat-4bit",
+            displayName: "Gemma 4 26B-A4B QAT 4-bit (Vision+Text)",
+            huggingFaceID: "lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit",
+            isVision: true,
+            localPath: localIfPresent("lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit"),
+            estimatedMemoryGB: 18,
+            supportsTools: true,
+            toolCallFormat: .gemma4,
+            recTemperature: 0.7, recTopP: 0.9, recRepetitionPenalty: 1.1,
+            activeParamsB: 4,
+            downloadURL: "https://huggingface.co/lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit"
         ),
         MaestroModel(
             id: "local-qwen3-coder-30b-a3b",
@@ -281,12 +336,64 @@ final class ModelCatalog {
             estimatedMemoryGB: 9
         ),
         MaestroModel(
+            id: "local-fastvlm-0.5b",
+            displayName: "FastVLM 0.5B (Apple Vision)",
+            huggingFaceID: "apple/FastVLM-0.5B",
+            isVision: true,
+            localPath: localIfPresent("apple-research/vision-language/FastVLM-0.5B-mlx"),
+            estimatedMemoryGB: 2
+        ),
+        MaestroModel(
             id: "local-nemotron-30b",
             displayName: "Nemotron Cascade 30B (A3B)",
             huggingFaceID: "JANGQ-AI/Nemotron-Cascade-2-30B-A3B-JANG_4M",
             isVision: false,
             localPath: localIfPresent("Nemotron-Cascade-2-30B-A3B-JANG_4M"),
             estimatedMemoryGB: 1
+        ),
+
+        // === Remote LM Studio models ===
+        MaestroModel(
+            id: "lmstudio-qwen3.5-35b",
+            displayName: "Qwen 3.5 35B (LM Studio)",
+            huggingFaceID: "qwen/qwen3.5-35b-a3b",
+            isVision: false,
+            localPath: nil,
+            estimatedMemoryGB: 38,
+            supportsTools: true,
+            toolCallFormat: .xmlFunction,
+            remoteBaseURL: "http://localhost:1234"
+        ),
+        MaestroModel(
+            id: "lmstudio-hermes-4-70b",
+            displayName: "Hermes 4 70B (LM Studio)",
+            huggingFaceID: "nousresearch/hermes-4-70b",
+            isVision: false,
+            localPath: nil,
+            estimatedMemoryGB: 56,
+            supportsTools: true,
+            remoteBaseURL: "http://localhost:1234"
+        ),
+        MaestroModel(
+            id: "lmstudio-qwen3-coder-next",
+            displayName: "Qwen 3 Coder Next (LM Studio)",
+            huggingFaceID: "qwen/qwen3-coder-next",
+            isVision: false,
+            localPath: nil,
+            estimatedMemoryGB: 30,
+            supportsTools: true,
+            toolCallFormat: .xmlFunction,
+            remoteBaseURL: "http://localhost:1234"
+        ),
+        MaestroModel(
+            id: "lmstudio-gpt-oss-120b",
+            displayName: "GPT-OSS 120B (LM Studio)",
+            huggingFaceID: "openai/gpt-oss-120b",
+            isVision: false,
+            localPath: nil,
+            estimatedMemoryGB: 60,
+            supportsTools: true,
+            remoteBaseURL: "http://localhost:1234"
         ),
 
         // === Hub models (download on first use) ===
