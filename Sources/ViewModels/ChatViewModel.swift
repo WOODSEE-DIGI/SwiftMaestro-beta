@@ -789,6 +789,17 @@ class ChatViewModel: ObservableObject {
                 When showing deployment steps or multi-step shell scripts, execute \
                 each step with execute_command and report the results. Only ask the \
                 user to run something manually if it requires interactive input or sudo. \
+                \
+                For LONG-RUNNING processes (HTTP servers, watchers, daemons), use \
+                start_background: true in execute_command. This spawns the process in \
+                the background and returns a process ID. Use list_background_processes \
+                to check status and stop_background_process to kill them. \
+                \
+                You also have start_server — a built-in HTTP server that serves local \
+                files over HTTP. Use start_server to let the user browse HTML/JSON/images \
+                in their browser. Example: start_server(path: "/path/to/site", port: 8080). \
+                Use stop_server(port:) to shut it down, list_servers to see what's running. \
+                \
                 When the user asks you to do ANY work beyond coordination (read \
                 files, analyse data, write reports, edit documents, search vault, \
                 or any multi-step task), you MUST delegate to a project agent \

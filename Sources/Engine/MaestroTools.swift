@@ -112,10 +112,10 @@ enum MaestroTools {
         if navigator {
             // Navigator also gets file tools so it can perform basic discovery 
             // (list_dir, read_file) without needing to delegate.
-            specs += navigatorToolSpecs + navigatorOCRSpec + memoryToolSpecs + fileToolSpecs + indexToolSpecs + shellToolSpecs
+            specs += navigatorToolSpecs + navigatorOCRSpec + memoryToolSpecs + fileToolSpecs + indexToolSpecs + shellToolSpecs + serverToolSpecs
         } else {
             specs += memoryToolSpecs + fileToolSpecs + systemToolSpecs
-            specs += messagingToolSpecs + indexToolSpecs + sqliteToolSpecs + shellToolSpecs
+            specs += messagingToolSpecs + indexToolSpecs + sqliteToolSpecs + shellToolSpecs + serverToolSpecs
         }
         return specs
     }
@@ -353,7 +353,7 @@ enum MaestroTools {
             || memoryToolNames.contains(name) || fileToolNames.contains(name)
             || systemToolNames.contains(name) || indexToolNames.contains(name)
             || sqliteToolNames.contains(name)
-            || shellToolNames.contains(name) { return true }
+            || shellToolNames.contains(name) || serverToolNames.contains(name) { return true }
         return schemas.contains { spec in
             (spec["function"] as? [String: any Sendable])?["name"] as? String == name
         }
@@ -447,6 +447,16 @@ enum MaestroTools {
             return await executeSQLite(call)
         case "execute_command":
             return await executeShell(call)
+        case "list_background_processes":
+            return await listBackgroundProcesses()
+        case "stop_background_process":
+            return await stopBackgroundProcess(call)
+        case "start_server":
+            return await startStaticServer(call)
+        case "stop_server":
+            return await stopStaticServer(call)
+        case "list_servers":
+            return await listStaticServers()
         default:
             return errorJSON("unknown tool: \(call.function.name)")
         }

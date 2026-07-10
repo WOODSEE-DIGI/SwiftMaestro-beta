@@ -13,22 +13,36 @@ import MLXLMCommon
 /// - Timeout enforcement
 extension MaestroTools {
 
-    static let shellToolNames: Set<String> = ["execute_command"]
+    static let shellToolNames: Set<String> = [
+        "execute_command", "list_background_processes", "stop_background_process",
+    ]
 
     static var shellToolSpecs: [ToolSpec] {
         [
             rawSpec("execute_command",
                 "Execute a shell command via zsh. Runs a subprocess, captures stdout/stderr, "
                 + "and returns the output. Use `dry_run` to preview the classified command "
-                + "without executing. The command will be rejected if it matches an always-deny "
-                + "rule or if the tool is disabled in settings.",
+                + "without executing. Use `start_background: true` for long-running processes "
+                + "(e.g. HTTP servers) that should survive after the command returns. "
+                + "Background processes are tracked and can be listed/stopped.",
                 properties: [
                     "command": ["type": "string", "description": "The shell command to execute (e.g. 'ls -la /tmp')."],
                     "cwd": ["type": "string", "description": "Optional working directory. Defaults to the agent workspace."],
-                    "timeout": ["type": "integer", "description": "Timeout in seconds (default: 60)."],
-                    "dry_run": ["type": "boolean", "description": "If true, classify the command against policy and return the classification without executing."]
+                    "timeout": ["type": "integer", "description": "Timeout in seconds (default: 60). Ignored for background processes."],
+                    "dry_run": ["type": "boolean", "description": "If true, classify the command against policy and return the classification without executing."],
+                    "start_background": ["type": "boolean", "description": "If true, run the process in the background. Returns immediately with a process ID. Use list_background_processes to check status."],
                 ],
                 required: ["command"]),
+            rawSpec("list_background_processes",
+                "List all running background processes started with start_background.",
+                properties: [:],
+                required: []),
+            rawSpec("stop_background_process",
+                "Stop a background process by its ID (from list_background_processes).",
+                properties: [
+                    "process_id": ["type": "string", "description": "The process ID to stop."],
+                ],
+                required: ["process_id"]),
         ]
     }
 
@@ -37,8 +51,10 @@ extension MaestroTools {
         let cwd: String?
         let timeout: Int?
         let dry_run: Bool?
+        let start_background: Bool?
 
         var dryRun: Bool { dry_run ?? false }
+        var startBackground: Bool { start_background ?? false }
     }
 
     // MARK: - Entry Point
@@ -87,7 +103,13 @@ extension MaestroTools {
             }
         }
 
-        // 6. Execute (allowed, unknown, or approved)
+        // 6. Background process — spawn and return immediately
+        if args.startBackground {
+            let workingDir = args.cwd ?? NSHomeDirectory()
+            return await spawnBackgroundProcess(raw, cwd: workingDir)
+        }
+
+        // 7. Execute (allowed, unknown, or approved)
         return await runShellCommand(raw, cwd: args.cwd, timeout: args.timeout)
     }
 
@@ -256,9 +278,94 @@ extension MaestroTools {
         }
     }
 
+    // MARK: - Background Process Management
+
+    /// Spawn a long-running process that survives after the command returns.
+    private static func spawnBackgroundProcess(_ command: String, cwd: String) async -> String {
+        let processID = UUID().uuidString.prefix(8).lowercased()
+        let logPath = NSTemporaryDirectory() + "swiftmaestro-bg-\(processID).log"
+        let errPath = NSTemporaryDirectory() + "swiftmaestro-bg-\(processID).err"
+
+        let process = Process()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        // nohup + disown ensures the process survives shell exit
+        process.arguments = ["-lic", "nohup \(command) > \"\(logPath)\" 2> \"\(errPath)\" &\necho $!"]
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        if FileManager.default.fileExists(atPath: cwd) {
+            process.currentDirectoryURL = URL(fileURLWithPath: cwd)
+        }
+
+        do {
+            try process.run()
+        } catch {
+            return errorJSON("Failed to launch background process: \(error.localizedDescription)")
+        }
+
+        process.waitUntilExit()
+
+        // Read the PID from stdout
+        let pidData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        let pid = String(data: pidData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
+
+        // Wait a moment and check if the process is actually running
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        let isRunning = await MainActor.run { BackgroundProcessManager.shared.isProcessRunning(pid: pid) }
+
+        if isRunning {
+            await MainActor.run {
+                BackgroundProcessManager.shared.addProcess(
+                    id: pid,
+                    command: command,
+                    cwd: cwd,
+                    logPath: logPath,
+                    errPath: errPath
+                )
+            }
+        }
+
+        return encodeJSON(BackgroundProcessResult(
+            success: isRunning,
+            process_id: pid,
+            command: command,
+            cwd: cwd,
+            log_path: logPath,
+            err_path: errPath,
+            message: isRunning
+                ? "Background process \(pid) started. Use list_background_processes to monitor."
+                : "Process exited immediately. Check logs at \(logPath)"
+        ))
+    }
+
+    /// List all tracked background processes.
+    static func listBackgroundProcesses() async -> String {
+        let processes = await MainActor.run { BackgroundProcessManager.shared.listProcesses() }
+        return encodeJSON(BackgroundProcessList(processes: processes, count: processes.count))
+    }
+
+    /// Stop a background process by ID.
+    static func stopBackgroundProcess(_ call: ToolCall) async -> String {
+        struct Args: Decodable { let process_id: String? }
+        guard let args = decodeArgs(call, as: Args.self),
+              let pid = args.process_id, !pid.isEmpty else {
+            return errorJSON("Provide a process_id to stop.")
+        }
+
+        let stopped = await MainActor.run { BackgroundProcessManager.shared.stopProcess(pid: pid) }
+        if stopped {
+            return jsonString(["success": true, "message": "Process \(pid) stopped."])
+        } else {
+            return errorJSON("Process \(pid) not found or already stopped.")
+        }
+    }
+
     // MARK: - Encoding Helpers
 
-    private static func encodeJSON<T: Encodable>(_ value: T) -> String {
+    static func encodeJSON<T: Encodable>(_ value: T) -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(value),
@@ -294,4 +401,78 @@ private struct ShellRawResult {
     let stderr: String
     let durationMs: Int
     let timedOut: Bool
+}
+
+private struct BackgroundProcessResult: Encodable {
+    let success: Bool
+    let process_id: String
+    let command: String
+    let cwd: String
+    let log_path: String
+    let err_path: String
+    let message: String
+}
+
+private struct BackgroundProcessList: Encodable {
+    let processes: [BackgroundProcessManager.TrackedProcess]
+    let count: Int
+}
+
+// MARK: - Background Process Manager
+
+/// Tracks long-running background processes spawned by agents.
+@MainActor
+private final class BackgroundProcessManager {
+
+    static let shared = BackgroundProcessManager()
+
+    struct TrackedProcess: Encodable {
+        let id: String
+        let command: String
+        let cwd: String
+        let logPath: String
+        let errPath: String
+        let startedAt: Date
+    }
+
+    private var processes: [String: TrackedProcess] = [:]
+
+    func addProcess(id: String, command: String, cwd: String, logPath: String, errPath: String) {
+        processes[id] = TrackedProcess(
+            id: id,
+            command: command,
+            cwd: cwd,
+            logPath: logPath,
+            errPath: errPath,
+            startedAt: Date()
+        )
+    }
+
+    func listProcesses() -> [TrackedProcess] {
+        // Prune processes that are no longer running
+        for (id, _) in processes {
+            if !isProcessRunning(pid: id) {
+                processes.removeValue(forKey: id)
+            }
+        }
+        return Array(processes.values)
+    }
+
+    func stopProcess(pid: String) -> Bool {
+        guard processes[pid] != nil else { return false }
+        // Kill the process group
+        let killResult = kill(pid_t(Int(pid) ?? 0), SIGTERM)
+        // Also try SIGKILL after a brief delay
+        DispatchQueue.global().asyncAfter(deadline: .now() + 1) {
+            kill(pid_t(Int(pid) ?? 0), SIGKILL)
+        }
+        processes.removeValue(forKey: pid)
+        return killResult == 0
+    }
+
+    func isProcessRunning(pid: String) -> Bool {
+        guard let pidNum = pid_t(pid), pidNum > 0 else { return false }
+        // kill(pid, 0) checks if process exists without sending a signal
+        return kill(pidNum, 0) == 0
+    }
 }
