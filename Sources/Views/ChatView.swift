@@ -14,6 +14,9 @@ struct ChatView: View {
     @Environment(\.openWindow) private var openWindow
     @ObservedObject var vm: ChatViewModel
     @ObservedObject private var shellLogStore = ShellLogStore.shared
+    /// Per-agent terminal visibility — toggling in one agent's chat
+    /// does NOT affect other agents' chats.
+    @State private var showTerminal = false
     @State private var showingPlans = false
     @State private var showingMessages = false
     // Markdown export driven from the Plans panel's context menu.
@@ -53,7 +56,7 @@ struct ChatView: View {
                 Divider()
                 todoSidePanel
             }
-            if shellLogStore.isVisible {
+            if showTerminal {
                 Divider()
                 TerminalView()
             }
@@ -152,13 +155,13 @@ struct ChatView: View {
             ToolbarItem {
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) {
-                        shellLogStore.isVisible.toggle()
+                        showTerminal.toggle()
                     }
                 } label: {
                     Label("Terminal", systemImage: "terminal")
-                        .symbolVariant(shellLogStore.isVisible ? .fill : .none)
+                        .symbolVariant(showTerminal ? .fill : .none)
                 }
-                .help(shellLogStore.isVisible ? "Hide Terminal" : "Show Terminal")
+                .help(showTerminal ? "Hide Terminal" : "Show Terminal")
             }
         }
         .sheet(isPresented: $showingPlans) {

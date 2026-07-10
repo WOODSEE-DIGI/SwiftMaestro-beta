@@ -48,9 +48,6 @@ public final class ShellLogStore: ObservableObject {
     /// All log entries (newest last).
     @Published public var entries: [ShellLogEntry] = []
 
-    /// Whether the terminal panel is visible.
-    @Published public var isVisible: Bool = false
-
     /// Add a new entry (called before execution starts).
     @discardableResult
     public func addEntry(command: String, cwd: String) -> UUID {
