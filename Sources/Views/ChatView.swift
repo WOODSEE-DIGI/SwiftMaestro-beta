@@ -38,9 +38,12 @@ struct ChatView: View {
     var body: some View {
         HStack(spacing: 0) {
             if !visiblePlans.isEmpty && !layoutState.isFloating(.plans) {
-                PanelContainer(panelType: .plans, agentId: vm.agent.id) {
+                PanelContainer(panelType: .plans, agentId: vm.agent.id, content: {
                     plansSidePanelContent
-                }
+                }, onFloat: { type in
+                    openWindow(id: "floating-panel-window",
+                               value: FloatingPanelWindowID(panelType: type.rawValue, agentID: vm.agent.id))
+                })
                 .frame(width: 280)
                 .onDrop(of: [.text], delegate: PanelDropDelegate(target: .plans, state: layoutState))
                 Divider()
@@ -425,19 +428,25 @@ struct ChatView: View {
     private func panelContent(for panel: PanelType) -> some View {
         switch panel {
         case .tasks:
-            PanelContainer(panelType: .tasks, agentId: vm.agent.id) {
+            PanelContainer(panelType: .tasks, agentId: vm.agent.id, content: {
                 todoSidePanelContent
-            }
+            }, onFloat: { type in
+                openWindow(id: "floating-panel-window",
+                           value: FloatingPanelWindowID(panelType: type.rawValue, agentID: vm.agent.id))
+            })
             .onDrop(of: [.text], delegate: PanelDropDelegate(target: .tasks, state: layoutState))
         case .terminal:
-            PanelContainer(panelType: .terminal, agentId: vm.agent.id) {
+            PanelContainer(panelType: .terminal, agentId: vm.agent.id, content: {
                 TerminalView()
-            }
+            }, onFloat: { type in
+                openWindow(id: "floating-panel-window",
+                           value: FloatingPanelWindowID(panelType: type.rawValue, agentID: vm.agent.id))
+            })
             .onDrop(of: [.text], delegate: PanelDropDelegate(target: .terminal, state: layoutState))
         case .plans:
-            EmptyView() // Plans are on the left
+            EmptyView()
         case .chat:
-            EmptyView() // Chat is always center
+            EmptyView()
         }
     }
 

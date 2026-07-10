@@ -117,6 +117,19 @@ struct SwiftMaestroApp: App {
         .defaultSize(width: 960, height: 720)
         .windowResizability(.contentMinSize)
 
+        // Floating panel windows (Tasks, Terminal, Plans). Opened when the user
+        // pops a panel out from the main window's right column.
+        WindowGroup("Panel", id: "floating-panel-window", for: FloatingPanelWindowID.self) { $target in
+            if let target {
+                FloatingPanelWindowView(target: target)
+                    .environment(todoStore)
+                    .environment(planStore)
+                    .environment(theme)
+            }
+        }
+        .defaultSize(width: 380, height: 520)
+        .windowResizability(.contentMinSize)
+
         #if os(macOS)
         Settings {
             SettingsView()

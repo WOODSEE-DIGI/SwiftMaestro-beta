@@ -13,6 +13,7 @@ struct PanelContainer<Content: View>: View {
     let agentId: UUID?
     @ViewBuilder let content: () -> Content
     var onClose: (() -> Void)? = nil
+    var onFloat: ((PanelType) -> Void)? = nil
 
     @State private var layoutState = PanelLayoutState.shared
     @State private var isDragHovering = false
@@ -123,6 +124,7 @@ struct PanelContainer<Content: View>: View {
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         layoutState.float(panelType)
+                        onFloat?(panelType)
                     }
                 } label: {
                     Label("Pop Out to Window", systemImage: "rectangle.expand.vertical")
