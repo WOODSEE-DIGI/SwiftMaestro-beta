@@ -14,6 +14,7 @@ struct ChatView: View {
     @Environment(\.openWindow) private var openWindow
     @ObservedObject var vm: ChatViewModel
     @ObservedObject private var shellLogStore = ShellLogStore.shared
+    @State private var layoutState = PanelLayoutState.shared
     /// Per-agent terminal visibility — toggling in one agent's chat
     /// does NOT affect other agents' chats.
     @State private var showTerminal = false
@@ -36,8 +37,12 @@ struct ChatView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            if !visiblePlans.isEmpty {
-                plansSidePanel
+            if !visiblePlans.isEmpty && !layoutState.isFloating(.plans) {
+                PanelContainer(panelType: .plans, agentId: vm.agent.id) {
+                    plansSidePanelContent
+                }
+                .frame(width: 280)
+                .onDrop(of: [.text], delegate: PanelDropDelegate(target: .plans, state: layoutState))
                 Divider()
             }
             VStack(spacing: 0) {
@@ -52,19 +57,9 @@ struct ChatView: View {
                 inputBar
             }
             .background(theme.chatBackground)
-            if !(todoStore.lists[vm.agent.id] ?? []).isEmpty || showTerminal {
+            if !rightPanelSlots.isEmpty {
                 Divider()
-                VStack(spacing: 0) {
-                    if !(todoStore.lists[vm.agent.id] ?? []).isEmpty {
-                        todoSidePanel
-                    }
-                    if showTerminal {
-                        if !(todoStore.lists[vm.agent.id] ?? []).isEmpty {
-                            Divider()
-                        }
-                        TerminalView()
-                    }
-                }
+                rightColumnPanels
             }
         }
         .navigationTitle(title ?? "Chat")
@@ -161,13 +156,19 @@ struct ChatView: View {
             ToolbarItem {
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) {
-                        showTerminal.toggle()
+                        if layoutState.isFloating(.terminal) {
+                            layoutState.dock(.terminal)
+                        } else {
+                            layoutState.toggleVisibility(.terminal)
+                        }
                     }
                 } label: {
                     Label("Terminal", systemImage: "terminal")
-                        .symbolVariant(showTerminal ? .fill : .none)
+                        .symbolVariant(
+                            layoutState.isFloating(.terminal) || !layoutState.hiddenPanels.contains(.terminal)
+                            ? .fill : .none)
                 }
-                .help(showTerminal ? "Hide Terminal" : "Show Terminal")
+                .help("Toggle Terminal panel")
             }
         }
         .sheet(isPresented: $showingPlans) {
@@ -334,6 +335,112 @@ struct ChatView: View {
         ) { _ in }
     }
 
+    /// Plans panel content (without its own header — PanelContainer provides it).
+    @ViewBuilder
+    private var plansSidePanelContent: some View {
+        let items = visiblePlans
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Spacer()
+                Text("\(items.count)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button { showingPlans = true } label: {
+                    Image(systemName: "rectangle.expand.vertical")
+                }
+                .buttonStyle(.plain)
+                .help("Open the full plans browser")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(items, id: \.plan.id) { entry in
+                        Button {
+                            openPlanWindow(entry)
+                        } label: {
+                            Text(entry.plan.title)
+                                .font(.callout.weight(.medium))
+                                .foregroundStyle(theme.plansCardText)
+                                .multilineTextAlignment(.leading)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 10)
+                                .background(
+                                    theme.accent,
+                                    in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Open \(entry.plan.title) in a window")
+                        .contextMenu {
+                            Button("Open in Window") { openPlanWindow(entry) }
+                            Button("Export as Markdown…") { startExport(entry.plan) }
+                            Divider()
+                            Button("Delete", role: .destructive) {
+                                planStore.delete(id: entry.plan.id, in: entry.scope)
+                            }
+                        }
+                    }
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .background(theme.plansPanel)
+        .fileExporter(
+            isPresented: $exporting,
+            document: exportDocument,
+            contentType: MarkdownDocument.markdown,
+            defaultFilename: exportName
+        ) { _ in }
+    }
+
+    /// Panels that go in the right column (tasks, terminal), respecting layout order.
+    private var rightPanelSlots: [PanelType] {
+        var panels: [PanelType] = []
+        for slot in layoutState.mainSlots {
+            if slot.type == .tasks || slot.type == .terminal {
+                if !layoutState.hiddenPanels.contains(slot.type)
+                    && !layoutState.isFloating(slot.type) {
+                    panels.append(slot.type)
+                }
+            }
+        }
+        return panels
+    }
+
+    /// The right column — Tasks and Terminal stacked vertically.
+    private var rightColumnPanels: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(rightPanelSlots.enumerated()), id: \.offset) { idx, panel in
+                if idx > 0 { Divider() }
+                panelContent(for: panel)
+            }
+        }
+    }
+
+    /// Returns the view content for a given panel type.
+    @ViewBuilder
+    private func panelContent(for panel: PanelType) -> some View {
+        switch panel {
+        case .tasks:
+            PanelContainer(panelType: .tasks, agentId: vm.agent.id) {
+                todoSidePanelContent
+            }
+            .onDrop(of: [.text], delegate: PanelDropDelegate(target: .tasks, state: layoutState))
+        case .terminal:
+            PanelContainer(panelType: .terminal, agentId: vm.agent.id) {
+                TerminalView()
+            }
+            .onDrop(of: [.text], delegate: PanelDropDelegate(target: .terminal, state: layoutState))
+        case .plans:
+            EmptyView() // Plans are on the left
+        case .chat:
+            EmptyView() // Chat is always center
+        }
+    }
+
     private func openPlanWindow(_ entry: (scope: PlanScope, plan: Plan)) {
         openWindow(
             id: "plan-window",
@@ -346,16 +453,13 @@ struct ChatView: View {
         exporting = true
     }
 
-    /// Live task checklist the agent maintains for this chat via the todo tools,
-    /// docked as a right-side panel. Shown only when the agent has tasks.
+    /// Live task checklist content (without header — PanelContainer provides it).
     @ViewBuilder
-    private var todoSidePanel: some View {
+    private var todoSidePanelContent: some View {
         let todos = todoStore.lists[vm.agent.id] ?? []
         let done = todos.filter { $0.done }.count
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 6) {
-                Image(systemName: "checklist")
-                Text("Tasks").font(.headline)
                 Spacer()
                 Text("\(done)/\(todos.count)")
                     .font(.caption)
@@ -690,5 +794,31 @@ struct ChatView: View {
             return png
         }
         return try? Data(contentsOf: url)
+    }
+}
+
+// MARK: - Panel Drop Delegate
+
+/// Handles drag-and-drop reordering of panels within the right column.
+struct PanelDropDelegate: DropDelegate {
+    let target: PanelType
+    let state: PanelLayoutState
+
+    func performDrop(info: DropInfo) -> Bool {
+        guard let item = info.itemProviders(for: [.text]).first else { return false }
+        var didConsumeItem = false
+        _ = item.loadObject(ofClass: NSString.self) { item, _ in
+            guard let panelID = item as? String,
+                  let draggedType = PanelType(rawValue: panelID) else { return }
+            didConsumeItem = true
+            DispatchQueue.main.async {
+                state.movePanel(draggedType, to: state.mainSlots.firstIndex(where: { $0.type == target }) ?? 0)
+            }
+        }
+        return didConsumeItem
+    }
+
+    func dropUpdated(info: DropInfo, proposal: DropProposal) -> DropProposal? {
+        DropProposal(operation: .move)
     }
 }
