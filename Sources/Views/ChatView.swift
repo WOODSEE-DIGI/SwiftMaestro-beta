@@ -36,33 +36,15 @@ struct ChatView: View {
     }
 
     var body: some View {
+        let panels = orderedPanels
         HStack(spacing: 0) {
-            if !visiblePlans.isEmpty && !layoutState.isFloating(.plans) {
-                PanelContainer(panelType: .plans, agentId: vm.agent.id, content: {
-                    plansSidePanelContent
-                }, onFloat: { type in
-                    openWindow(id: "floating-panel-window",
-                               value: FloatingPanelWindowID(panelType: type.rawValue, agentID: vm.agent.id))
-                })
-                .frame(width: 280)
-                .onDrop(of: [.text], delegate: PanelDropDelegate(target: .plans, state: layoutState))
-                Divider()
-            }
-            VStack(spacing: 0) {
-                workingDirBar
-                Divider()
-                ShellApprovalBanner()
-                messageList
-                Divider()
-                errorBanner
-                streamingStatus
-                attachmentStrip
-                inputBar
-            }
-            .background(theme.chatBackground)
-            if !rightPanelSlots.isEmpty {
-                Divider()
-                rightColumnPanels
+            ForEach(Array(panels.enumerated()), id: \.element) { idx, panel in
+                if idx > 0 { Divider() }
+                if panel == .chat {
+                    chatBody
+                } else {
+                    panelContent(for: panel)
+                }
             }
         }
         .navigationTitle(title ?? "Chat")
@@ -275,69 +257,6 @@ struct ChatView: View {
     /// panel. Each plan is an accent card; tapping (or "Open in Window") opens it
     /// in a standalone resizable window, and the context menu adds export and
     /// delete. Shown only when plans exist.
-    @ViewBuilder
-    private var plansSidePanel: some View {
-        let items = visiblePlans
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 6) {
-                Image(systemName: "doc.text")
-                Text("Plans").font(.headline)
-                Spacer()
-                Text("\(items.count)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Button { showingPlans = true } label: {
-                    Image(systemName: "rectangle.expand.vertical")
-                }
-                .buttonStyle(.plain)
-                .help("Open the full plans browser (scopes, delete)")
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(items, id: \.plan.id) { entry in
-                        Button {
-                            openPlanWindow(entry)
-                        } label: {
-                            Text(entry.plan.title)
-                                .font(.callout.weight(.medium))
-                                .foregroundStyle(theme.plansCardText)
-                                .multilineTextAlignment(.leading)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 10)
-                                .background(
-                                    theme.accent,
-                                    in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                        .help("Open “\(entry.plan.title)” in a window")
-                        .contextMenu {
-                            Button("Open in Window") { openPlanWindow(entry) }
-                            Button("Export as Markdown…") { startExport(entry.plan) }
-                            Divider()
-                            Button("Delete", role: .destructive) {
-                                planStore.delete(id: entry.plan.id, in: entry.scope)
-                            }
-                        }
-                    }
-                }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .frame(width: 280)
-        .background(theme.plansPanel)
-        .fileExporter(
-            isPresented: $exporting,
-            document: exportDocument,
-            contentType: MarkdownDocument.markdown,
-            defaultFilename: exportName
-        ) { _ in }
-    }
-
     /// Plans panel content (without its own header — PanelContainer provides it).
     @ViewBuilder
     private var plansSidePanelContent: some View {
@@ -399,34 +318,49 @@ struct ChatView: View {
         ) { _ in }
     }
 
-    /// Panels that go in the right column (tasks, terminal), respecting layout order.
-    private var rightPanelSlots: [PanelType] {
-        var panels: [PanelType] = []
-        for slot in layoutState.mainSlots {
-            if slot.type == .tasks || slot.type == .terminal {
-                if !layoutState.hiddenPanels.contains(slot.type)
-                    && !layoutState.isFloating(slot.type) {
-                    panels.append(slot.type)
-                }
+    /// Ordered list of visible panels from mainSlots, excluding floating and hidden ones.
+    /// The chat panel is always included (it cannot float or be hidden).
+    /// Plans are excluded when there are no plans to show.
+    private var orderedPanels: [PanelType] {
+        layoutState.mainSlots
+            .filter { slot in
+                if slot.type == .chat { return true }
+                if slot.isFloating || layoutState.hiddenPanels.contains(slot.type) { return false }
+                if slot.type == .plans && visiblePlans.isEmpty { return false }
+                return true
             }
-        }
-        return panels
+            .map(\.type)
     }
 
-    /// The right column — Tasks and Terminal stacked vertically.
-    private var rightColumnPanels: some View {
+    /// The chat body — always rendered, expands to fill available space.
+    private var chatBody: some View {
         VStack(spacing: 0) {
-            ForEach(Array(rightPanelSlots.enumerated()), id: \.offset) { idx, panel in
-                if idx > 0 { Divider() }
-                panelContent(for: panel)
-            }
+            workingDirBar
+            Divider()
+            ShellApprovalBanner()
+            messageList
+            Divider()
+            errorBanner
+            streamingStatus
+            attachmentStrip
+            inputBar
         }
+        .background(theme.chatBackground)
     }
 
     /// Returns the view content for a given panel type.
     @ViewBuilder
     private func panelContent(for panel: PanelType) -> some View {
         switch panel {
+        case .plans:
+            PanelContainer(panelType: .plans, agentId: vm.agent.id, content: {
+                plansSidePanelContent
+            }, onFloat: { type in
+                openWindow(id: "floating-panel-window",
+                           value: FloatingPanelWindowID(panelType: type.rawValue, agentID: vm.agent.id))
+            })
+            .frame(width: 280)
+            .onDrop(of: [.text], delegate: PanelDropDelegate(target: .plans, state: layoutState))
         case .tasks:
             PanelContainer(panelType: .tasks, agentId: vm.agent.id, content: {
                 todoSidePanelContent
@@ -434,6 +368,7 @@ struct ChatView: View {
                 openWindow(id: "floating-panel-window",
                            value: FloatingPanelWindowID(panelType: type.rawValue, agentID: vm.agent.id))
             })
+            .frame(width: 280)
             .onDrop(of: [.text], delegate: PanelDropDelegate(target: .tasks, state: layoutState))
         case .terminal:
             PanelContainer(panelType: .terminal, agentId: vm.agent.id, content: {
@@ -442,9 +377,8 @@ struct ChatView: View {
                 openWindow(id: "floating-panel-window",
                            value: FloatingPanelWindowID(panelType: type.rawValue, agentID: vm.agent.id))
             })
+            .frame(width: 280)
             .onDrop(of: [.text], delegate: PanelDropDelegate(target: .terminal, state: layoutState))
-        case .plans:
-            EmptyView()
         case .chat:
             EmptyView()
         }
