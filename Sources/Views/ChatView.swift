@@ -52,13 +52,19 @@ struct ChatView: View {
                 inputBar
             }
             .background(theme.chatBackground)
-            if !(todoStore.lists[vm.agent.id] ?? []).isEmpty {
+            if !(todoStore.lists[vm.agent.id] ?? []).isEmpty || showTerminal {
                 Divider()
-                todoSidePanel
-            }
-            if showTerminal {
-                Divider()
-                TerminalView()
+                VStack(spacing: 0) {
+                    if !(todoStore.lists[vm.agent.id] ?? []).isEmpty {
+                        todoSidePanel
+                    }
+                    if showTerminal {
+                        if !(todoStore.lists[vm.agent.id] ?? []).isEmpty {
+                            Divider()
+                        }
+                        TerminalView()
+                    }
+                }
             }
         }
         .navigationTitle(title ?? "Chat")
