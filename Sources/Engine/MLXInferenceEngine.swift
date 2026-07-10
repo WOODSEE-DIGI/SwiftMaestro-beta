@@ -86,12 +86,12 @@ struct HFHubDownloader: MLXLMCommon.Downloader {
     let hubApi: HubApi
 
     init(token: String? = nil) {
-        // Land Hub downloads in the app's customer-writable models folder
-        // (internal) instead of the default ~/Documents/huggingface, so every
-        // model lives in one place.
-        self.hubApi = HubApi(
-            downloadBase: URL(fileURLWithPath: ModelCatalog.modelsRoot),
-            hfToken: token)
+        // HubApi.snapshot() internally appends "models/<org>/<repo>" to the
+        // downloadBase.  modelsRoot already ends in "models/", so we must use
+        // its *parent* to avoid a double-nested "models/models/..." path.
+        let base = URL(fileURLWithPath: ModelCatalog.modelsRoot)
+            .deletingLastPathComponent()
+        self.hubApi = HubApi(downloadBase: base, hfToken: token)
     }
 
     func download(
@@ -219,6 +219,29 @@ final class MLXInferenceEngine {
         // cache (via mlx_detail_compile_clear_cache) at every point where we
         // clear the buffer cache. See clearMLXCaches().
         compile(enable: true)
+    }
+
+    // MARK: - Model Download
+
+    /// Download a model from HuggingFace Hub without loading it into memory.
+    /// Shows progress in the engine's `downloadProgress` so the UI can reflect it.
+    /// After completion the model's `localIfPresent` path will resolve on next access.
+    func downloadModel(_ model: MaestroModel) async throws {
+        guard model.localPath == nil else { return }  // already local
+        state = .loading("Downloading \(model.displayName)…")
+        let progress = Progress()
+        downloadProgress = progress
+        let downloader = HFHubDownloader()
+        let repo = Hub.Repo(id: model.huggingFaceID)
+        _ = try await downloader.hubApi.snapshot(
+            from: repo,
+            matching: ["*.json", "*.safetensors", "*.tinfo", "*.ngl", "*.txt"],
+            progressHandler: { @Sendable p in
+                progress.totalUnitCount = p.totalUnitCount
+                progress.completedUnitCount = p.completedUnitCount
+            })
+        downloadProgress = nil
+        state = .idle
     }
 
     // MARK: - Model Loading

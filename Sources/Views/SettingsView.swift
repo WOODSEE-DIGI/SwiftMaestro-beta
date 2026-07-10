@@ -523,6 +523,7 @@ struct ModelsSettingsTab: View {
     @Environment(MLXInferenceEngine.self) private var engine
     @AppStorage("models.localRoot") private var modelsRoot: String = ""
     @State private var hubModelID: String = ""
+    @State private var downloadingModelID: String? = nil
 
     var body: some View {
         ScrollView {
@@ -572,13 +573,28 @@ struct ModelsSettingsTab: View {
                                     Text(model.huggingFaceID).font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                if let url = model.downloadURL, let link = URL(string: url) {
-                                    Link(destination: link) {
+                                if let progress = engine.downloadProgress,
+                                   downloadingModelID == model.id {
+                                    ProgressView(value: progress.fractionCompleted)
+                                        .frame(width: 60)
+                                } else if model.localPath != nil {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundStyle(.green)
+                                        .help("Downloaded locally")
+                                } else {
+                                    Button {
+                                        downloadingModelID = model.id
+                                        Task {
+                                            try? await engine.downloadModel(model)
+                                            downloadingModelID = nil
+                                            catalog.refreshLocalPaths()
+                                        }
+                                    } label: {
                                         Image(systemName: "arrow.down.circle")
-                                            .help("Download from Hugging Face")
                                     }
                                     .buttonStyle(.plain)
                                     .foregroundStyle(.blue)
+                                    .help("Download from Hugging Face")
                                 }
                                 Text("~\(model.estimatedMemoryGB)GB").font(.caption).foregroundStyle(.secondary)
                                 if model.isVision {

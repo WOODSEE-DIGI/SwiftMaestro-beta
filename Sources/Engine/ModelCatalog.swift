@@ -12,7 +12,7 @@ struct MaestroModel: Identifiable, Hashable {
     let displayName: String
     let huggingFaceID: String
     let isVision: Bool
-    let localPath: String?
+    var localPath: String?
     let estimatedMemoryGB: Int
     /// Whether this model has passed the tool-calling round-trip verification.
     /// Per the verify-per-model rule, only verified models get tools advertised;
@@ -462,5 +462,37 @@ final class ModelCatalog {
     func removeModel(_ id: String) {
         models.removeAll { $0.id == id }
         if selectedModelID == id { selectedModelID = models.first?.id }
+    }
+
+    /// Re-evaluate `localIfPresent` for every built-in model so the UI reflects
+    /// newly downloaded files without a relaunch.
+    func refreshLocalPaths() {
+        for i in models.indices {
+            guard let sub = Self.localSubdir(for: models[i]) else { continue }
+            models[i].localPath = Self.localIfPresent(sub)
+        }
+    }
+
+    /// Derive the `localIfPresent` subdirectory for a model.  Matches the
+    /// `localIfPresent(…)` call used in `builtInModels`.
+    private static func localSubdir(for model: MaestroModel) -> String? {
+        // Hub-downloaded models live under their HF repo name; pre-installed
+        // ones use the "swiftmaestro-models/" prefix.  We infer the subdir
+        // from the model ID convention rather than duplicating the mapping.
+        let hfID = model.huggingFaceID
+        let repoName = hfID.components(separatedBy: "/").last ?? hfID
+        // Check the two known prefixes in order of likelihood.
+        if localIfPresent("swiftmaestro-models/\(repoName)") != nil {
+            return "swiftmaestro-models/\(repoName)"
+        }
+        if localIfPresent(repoName) != nil {
+            return repoName
+        }
+        // Also try the raw HF ID (org/repo style) for models like
+        // "lmstudio-community/gemma-4-..." that may live under org/repo dir.
+        if localIfPresent(hfID) != nil {
+            return hfID
+        }
+        return nil
     }
 }
