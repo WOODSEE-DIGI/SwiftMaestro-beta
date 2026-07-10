@@ -74,13 +74,18 @@ struct MessageBubble: View {
                 }
 
                 if !displayAnswer.isEmpty {
-                    Text(displayAnswer)
-                        .font(.body)
-                        .textSelection(.enabled)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(bubbleColor, in: bubbleShape)
-                        .foregroundStyle(isUser ? theme.userBubbleText : Color.primary)
+                    if isUser {
+                        Text(displayAnswer)
+                            .font(.body)
+                            .textSelection(.enabled)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(bubbleColor, in: bubbleShape)
+                            .foregroundStyle(theme.userBubbleText)
+                    } else {
+                        RichMarkdownView(text: displayAnswer, isUser: false)
+                            .padding(.vertical, 4)
+                    }
                 }
             }
             .contextMenu {
