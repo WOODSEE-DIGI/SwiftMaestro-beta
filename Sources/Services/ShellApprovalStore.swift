@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Shell Approval Result
 
 /// Result of an approval action.
-public enum ShellApprovalResult: Equatable {
+public enum ShellApprovalResult: Equatable, Sendable {
     case approved
     case approvedAndRemember
     case denied

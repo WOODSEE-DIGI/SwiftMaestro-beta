@@ -503,13 +503,13 @@ final class AgentExecutor: Sendable {
         "obsidian_rest_request", "obsidian_rest_health",
         "read_note", "write_note", "search_vault", "list_vault",
         "whisperkit_transcribe_control", "whisperkit_transcribe_snapshot",
+        "execute_sqlite",
     ]
 
     private func executeTool(
         _ tc: RoundToolCall, mcp: MCPClientService?, project: String?,
         workingDirectory: String? = nil, agentID: String? = nil
     ) async -> String {
-        NSLog("[AGENT] executeTool name=\(tc.name) args=\(tc.arguments.prefix(300))")
         // Delegation is handled here (not in MaestroTools) because it needs the
         // live endpoint/model/MCP to run the target agent's own loop.
         if tc.name == "ask_project_agent" {
@@ -1098,6 +1098,7 @@ final class AgentExecutor: Sendable {
         "read_file", "ocr_image", "list_dir",
         "index_directory", "spotlight_search",
         "index_document", "search_chunks", "read_chunk",
+        "execute_sqlite",
     ]
 
     /// Rough token estimate: ~4 chars per token for English text.

@@ -242,8 +242,6 @@ extension MaestroTools {
     }
 
     static func isAllowed(_ resolved: String, roots: [String]) -> Bool {
-        // Normalize both sides identically using the shared function that catches
-        // ALL Unicode whitespace and control characters.
         func normalize(_ p: String) -> String {
             var s = normalizePathInvisibles(p)
             s = s.trimmingCharacters(in: .whitespaces)
@@ -252,95 +250,31 @@ extension MaestroTools {
         }
         let normResolved = normalize(resolved)
         
-        // Debug: print byte-level details for troubleshooting
-        let resolvedBytes = resolved.data(using: .utf8)?.map { String(format: "%02x", $0) }.joined() ?? "N/A"
-        NSLog("[IS_ALLOWED DEBUG] resolved='\(resolved)' bytes='\(resolvedBytes)'")
-        NSLog("[IS_ALLOWED DEBUG] normResolved='\(normResolved)'")
-        
         for root in roots {
             let normRoot = normalize(root)
-            let rootBytes = root.data(using: .utf8)?.map { String(format: "%02x", $0) }.joined() ?? "N/A"
-            let hasPrefix = normResolved.hasPrefix(normRoot + "/")
-            let isEqual = normResolved == normRoot
-            
-            // Also try case-insensitive comparison as fallback
-            let hasPrefixCaseInsensitive = normResolved.caseInsensitiveCompare(normRoot + "/") == .orderedSame || normResolved.lowercased().hasPrefix(normRoot.lowercased() + "/")
-            let isEqualCaseInsensitive = normResolved.caseInsensitiveCompare(normRoot) == .orderedSame
-            
-            NSLog("[IS_ALLOWED DEBUG]   root='\(root)' bytes='\(rootBytes)'")
-            NSLog("[IS_ALLOWED DEBUG]   normRoot='\(normRoot)'")
-            NSLog("[IS_ALLOWED DEBUG]   hasPrefix('\(normRoot + "/")') = \(hasPrefix), isEqual = \(isEqual)")
-            NSLog("[IS_ALLOWED DEBUG]   caseInsensitive: hasPrefix=\(hasPrefixCaseInsensitive), isEqual=\(isEqualCaseInsensitive)")
-            
-            if isEqual || hasPrefix || isEqualCaseInsensitive || hasPrefixCaseInsensitive {
+            if normResolved == normRoot || normResolved.hasPrefix(normRoot + "/") {
                 return true
             }
-            
-            // NUCLEAR FALLBACK: If all else fails, compare after stripping ALL
-            // non-alphanumeric characters except slashes. This catches any
-            // invisible character issue while still being reasonably safe.
+            // Case-insensitive fallback
+            if normResolved.caseInsensitiveCompare(normRoot) == .orderedSame
+                || normResolved.lowercased().hasPrefix(normRoot.lowercased() + "/") {
+                return true
+            }
+            // Nuclear fallback: strip all non-alphanumeric except slashes
             func stripToCore(_ p: String) -> String {
                 var result = ""
                 for scalar in p.unicodeScalars {
-                    if scalar == "/" {
-                        result.unicodeScalars.append(scalar)
-                    } else if CharacterSet.alphanumerics.contains(scalar) {
+                    if scalar == "/" || CharacterSet.alphanumerics.contains(scalar) {
                         result.unicodeScalars.append(scalar)
                     }
-                    // Skip everything else (spaces, invisible chars, etc.)
                 }
                 return result.lowercased()
             }
             let coreResolved = stripToCore(normResolved)
             let coreRoot = stripToCore(normRoot)
-            let coreMatch = coreResolved == coreRoot || coreResolved.hasPrefix(coreRoot + "/")
-            
-            if coreMatch {
-                NSLog("[IS_ALLOWED] ALLOWED via nuclear fallback (core path match)")
+            if coreResolved == coreRoot || coreResolved.hasPrefix(coreRoot + "/") {
                 return true
             }
-            
-            // Character-by-character diff for debugging
-            if !isEqual {
-                let rChars = Array(normResolved)
-                let tChars = Array(normRoot)
-                if rChars.count == tChars.count {
-                    var diffPositions: [Int] = []
-                    for i in 0..<rChars.count {
-                        if rChars[i] != tChars[i] {
-                            diffPositions.append(i)
-                        }
-                    }
-                    if !diffPositions.isEmpty {
-                        let diffs = diffPositions.map { i in
-                            let rCode = rChars[i].utf16.first.map { String(format: "U+%04X", $0) } ?? "?"
-                            let tCode = tChars[i].utf16.first.map { String(format: "U+%04X", $0) } ?? "?"
-                            return "\(i): resolved='\(rChars[i])'(\(rCode)) vs root='\(tChars[i])'(\(tCode))"
-                        }.joined(separator: "; ")
-                        NSLog("[IS_ALLOWED DEBUG]   CHAR DIFF at positions: \(diffs)")
-                    }
-                } else {
-                    NSLog("[IS_ALLOWED DEBUG]   LENGTH DIFF: resolved=\(normResolved.count) root=\(normRoot.count)")
-                    // Show first differing region
-                    let minLen = min(rChars.count, tChars.count)
-                    for i in 0..<minLen {
-                        if rChars[i] != tChars[i] {
-                            let rCode = rChars[i].utf16.first.map { String(format: "U+%04X", $0) } ?? "?"
-                            let tCode = tChars[i].utf16.first.map { String(format: "U+%04X", $0) } ?? "?"
-                            NSLog("[IS_ALLOWED DEBUG]   FIRST DIFF at \(i): resolved='\(rChars[i])'(\(rCode)) vs root='\(tChars[i])'(\(tCode))")
-                            break
-                        }
-                    }
-                }
-            }
-        }
-        
-        // Debug: log why it failed
-        NSLog("[IS_ALLOWED] DENIED: resolved='\(resolved)' normalized='\(normResolved)'")
-        NSLog("[IS_ALLOWED] roots=\(roots)")
-        for root in roots {
-            let normRoot = normalize(root)
-            NSLog("[IS_ALLOWED]   root='\(root)' normalized='\(normRoot)' match=\(normResolved.hasPrefix(normRoot + "/"))")
         }
         return false
     }
@@ -390,12 +324,7 @@ extension MaestroTools {
         guard let resolved = resolveAbsolute(raw) else {
             return errorJSON("read_file requires an absolute path (got '\(raw)')")
         }
-        let roots = authorizedRoots()
-        NSLog("[READ_FILE] path='\(raw)' resolved='\(resolved)' roots=\(roots)")
-        guard isAllowed(resolved, roots: roots) else {
-            NSLog("[READ_FILE] DENIED: '\(resolved)' not in roots \(roots)")
-            return denied(raw)
-        }
+        guard isAllowed(resolved, roots: authorizedRoots()) else { return denied(raw) }
         let actualPath = fuzzyResolve(resolved, wantDirectory: false) ?? resolved
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: actualPath, isDirectory: &isDir), !isDir.boolValue else {
@@ -474,12 +403,7 @@ extension MaestroTools {
         guard let resolved = resolveAbsolute(raw) else {
             return errorJSON("list_dir requires an absolute path (got '\(raw)')")
         }
-        let roots = authorizedRoots()
-        NSLog("[LIST_DIR] path='\(raw)' resolved='\(resolved)' roots=\(roots)")
-        guard isAllowed(resolved, roots: roots) else {
-            NSLog("[LIST_DIR] DENIED: '\(resolved)' not in roots \(roots)")
-            return denied(raw)
-        }
+        guard isAllowed(resolved, roots: authorizedRoots()) else { return denied(raw) }
         let actualPath = fuzzyResolve(resolved, wantDirectory: true) ?? resolved
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: actualPath, isDirectory: &isDir), isDir.boolValue else {

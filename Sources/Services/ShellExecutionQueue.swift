@@ -27,6 +27,8 @@ actor AsyncSemaphore {
 
 public actor ShellExecutionQueue {
 
+    public static let shared = ShellExecutionQueue(maxConcurrent: 2)
+
     public let maxConcurrent: Int
     public private(set) var activeCount: Int = 0
 

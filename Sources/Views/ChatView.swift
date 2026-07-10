@@ -39,6 +39,7 @@ struct ChatView: View {
             VStack(spacing: 0) {
                 workingDirBar
                 Divider()
+                ShellApprovalBanner()
                 messageList
                 Divider()
                 errorBanner

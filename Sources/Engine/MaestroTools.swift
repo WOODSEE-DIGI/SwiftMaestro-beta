@@ -115,7 +115,7 @@ enum MaestroTools {
             specs += navigatorToolSpecs + navigatorOCRSpec + memoryToolSpecs + fileToolSpecs + indexToolSpecs
         } else {
             specs += memoryToolSpecs + fileToolSpecs + systemToolSpecs
-            specs += messagingToolSpecs + indexToolSpecs
+            specs += messagingToolSpecs + indexToolSpecs + sqliteToolSpecs + shellToolSpecs
         }
         return specs
     }
@@ -351,7 +351,9 @@ enum MaestroTools {
         if workspaceToolNames.contains(name) || todoToolNames.contains(name)
             || planToolNames.contains(name) || messagingToolNames.contains(name)
             || memoryToolNames.contains(name) || fileToolNames.contains(name)
-            || systemToolNames.contains(name) || indexToolNames.contains(name) { return true }
+            || systemToolNames.contains(name) || indexToolNames.contains(name)
+            || sqliteToolNames.contains(name)
+            || shellToolNames.contains(name) { return true }
         return schemas.contains { spec in
             (spec["function"] as? [String: any Sendable])?["name"] as? String == name
         }
@@ -441,6 +443,10 @@ enum MaestroTools {
             return await searchChunks(call)
         case "read_chunk":
             return await readChunk(call)
+        case "execute_sqlite":
+            return await executeSQLite(call)
+        case "execute_command":
+            return await executeShell(call)
         default:
             return errorJSON("unknown tool: \(call.function.name)")
         }

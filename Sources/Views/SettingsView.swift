@@ -112,6 +112,8 @@ struct SettingsView: View {
                 .tabItem { Label("Secrets", systemImage: "key.fill") }
             WhisperKitSettingsTab()
                 .tabItem { Label("Whisper", systemImage: "mic.fill") }
+            ShellSettingsTab()
+                .tabItem { Label("Shell", systemImage: "terminal") }
         }
         // Grow to fill whatever size the user resizes the window to (maxWidth/
         // maxHeight: .infinity), while keeping a sensible minimum so controls stay

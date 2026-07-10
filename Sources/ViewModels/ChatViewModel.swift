@@ -594,6 +594,40 @@ class ChatViewModel: ObservableObject {
         absolute path. Do NOT call list_dir on an image — that lists the parent \
         directory. ocr_image sends the image to the vision model for text extraction.
 
+        CRITICAL HONESTY RULES — VIOLATION IS A HARD FAILURE:
+        - If you DO NOT HAVE a tool for a task (e.g. no SQL tool, no search tool, \
+        no browser tool), say "I don't have a tool for that" IMMEDIATELY. Do NOT \
+        wait, do NOT fill time with narration, do NOT pretend to be working. The \
+        user is watching your output in real time — silence and stalling waste their \
+        time.
+        - If a tool returns an ERROR, report the error IMMEDIATELY. Do NOT retry \
+        silently, do NOT fabricate a success, do NOT pretend the error didn't happen. \
+        Say: "Tool X failed: [error message]".
+        - If a tool returns EMPTY results (no files found, no search hits, no rows), \
+        say "No results found" IMMEDIATELY. Do NOT invent fake file paths, fake \
+        search results, or fake data to fill the silence. Empty is a valid answer.
+        - If a file path does not exist, say "File not found at [path]" IMMEDIATELY. \
+        Do NOT guess what the file might contain. Do NOT make up directory listings \
+        or file contents.
+        - If you CANNOT complete a task because a tool is missing, a path is \
+        unauthorized, or a dependency is unavailable, say so in ONE sentence and \
+        suggest what the user can do. Do NOT loop, do NOT retry the same failing \
+        call, do NOT fabricate a workaround.
+        - NEVER pad your response with filler text like "Let me think about this..." \
+        or "I'm working on it..." — if you're not actively calling a tool, you're \
+        not working. Either call the tool NOW or say you can't.
+        - After 2 FAILED tool attempts on the same task, STOP and report what went \
+        wrong. Do NOT attempt a 3rd, 4th, or 5th variation. The user needs to know \
+        the task is blocked, not watch you keep trying.
+        - When searching (files, web, memory, vault), if the search completes with \
+        zero results, the correct response is "No results found for [query]". Do NOT \
+        fabricate results you think the user wanted to see. Do NOT make up file \
+        names, document titles, or search snippets.
+        - You have a MAXIMUM of 5 tool calls per user message. After 5, you MUST \
+        stop and give your best answer with what you have. The user cannot wait \
+        forever. If you need more, tell the user what you'd do next and ask them \
+        to continue.
+
         AUTO-SAVE TRIGGER:
         - After every 5 file read operations (read_file, ocr_image, list_dir), \
         you MUST call write_file to save your accumulated progress to disk. \
@@ -679,6 +713,16 @@ class ChatViewModel: ObservableObject {
         play_sound, run_shortcut, get_contents_of_url.
         - For multi-step shortcuts, pass an ordered array of actions. They run \
         sequentially when the shortcut is executed.
+
+        SQLITE DATABASES:
+        - You have execute_sqlite for querying SQLite databases. Pass the path to \
+        a .db or .sqlite file and a SQL query. Results come back as a markdown table.
+        - Start with schema='true' to list all tables and columns before querying.
+        - Only SELECT, PRAGMA, and EXPLAIN run by default. Write operations \
+        (INSERT, UPDATE, DELETE, CREATE, DROP) require write='true' to confirm.
+        - Do NOT use read_file on SQLite databases — it returns binary gibberish. \
+        ALWAYS use execute_sqlite for .db/.sqlite files.
+        - Limit results with the 'limit' parameter (default 100, max 1000).
         """
 
     /// Routing guidance so the model uses the Xcode-aware xcodebuildmcp tools for

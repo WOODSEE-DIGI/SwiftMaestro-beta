@@ -15,6 +15,9 @@ packages:
     path: ../mcp-swift-sdk
   whisperkit:
     path: ../WhisperKit
+  GRDB:
+    url: https://github.com/groue/GRDB.swift
+    majorVersion: 7.0.0
 
 groups:
   - Sources
@@ -88,6 +91,8 @@ targets:
         product: MCP
       - package: whisperkit
         product: WhisperKit
+      - package: GRDB
+        product: GRDB
       - sdk: PDFKit.framework
     scheme:
       testTargets:

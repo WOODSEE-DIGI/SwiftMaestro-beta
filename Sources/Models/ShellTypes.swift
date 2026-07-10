@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Shell Policy Types
 
 /// Classification of a shell command by safety policy.
-public enum ShellClassification: String, Codable {
+public enum ShellClassification: String, Codable, Sendable {
     case allowed
     case denied
     case ask
