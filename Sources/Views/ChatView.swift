@@ -13,6 +13,7 @@ struct ChatView: View {
     @Environment(WhisperKitService.self) private var whisper
     @Environment(\.openWindow) private var openWindow
     @ObservedObject var vm: ChatViewModel
+    @ObservedObject private var shellLogStore = ShellLogStore.shared
     @State private var showingPlans = false
     @State private var showingMessages = false
     // Markdown export driven from the Plans panel's context menu.
@@ -51,6 +52,10 @@ struct ChatView: View {
             if !(todoStore.lists[vm.agent.id] ?? []).isEmpty {
                 Divider()
                 todoSidePanel
+            }
+            if shellLogStore.isVisible {
+                Divider()
+                TerminalView()
             }
         }
         .navigationTitle(title ?? "Chat")
@@ -143,6 +148,17 @@ struct ChatView: View {
                         }
                 }
                 .help("Inbox")
+            }
+            ToolbarItem {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        shellLogStore.isVisible.toggle()
+                    }
+                } label: {
+                    Label("Terminal", systemImage: "terminal")
+                        .symbolVariant(shellLogStore.isVisible ? .fill : .none)
+                }
+                .help(shellLogStore.isVisible ? "Hide Terminal" : "Show Terminal")
             }
         }
         .sheet(isPresented: $showingPlans) {

@@ -139,6 +139,11 @@ extension MaestroTools {
         let effectiveTimeout = timeout ?? 60
         let workingDir = cwd ?? NSHomeDirectory()
 
+        // Log the command start
+        let logID = await MainActor.run(body: {
+            ShellLogStore.shared.addEntry(command: command, cwd: workingDir)
+        })
+
         // Run with concurrency control
         let shellQueue = await MainActor.run(body: { ShellExecutionQueue.shared })
         let result: ShellRawResult = await (try? shellQueue.execute {
@@ -152,6 +157,18 @@ extension MaestroTools {
             stderr: "Shell queue rejected command (concurrency limit or draining).",
             durationMs: 0, timedOut: false
         )
+
+        // Log the result
+        await MainActor.run(body: {
+            ShellLogStore.shared.completeEntry(
+                id: logID,
+                stdout: String(result.stdout.prefix(50_000)),
+                stderr: String(result.stderr.prefix(50_000)),
+                exitCode: result.exitCode,
+                durationMs: result.durationMs,
+                timedOut: result.timedOut
+            )
+        })
 
         return encodeJSON(ShellCommandResult(
             success: result.success,
