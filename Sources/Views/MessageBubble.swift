@@ -83,8 +83,10 @@ struct MessageBubble: View {
                             .background(bubbleColor, in: bubbleShape)
                             .foregroundStyle(theme.userBubbleText)
                     } else {
-                        RichMarkdownView(text: displayAnswer, isUser: false)
-                            .padding(.vertical, 4)
+                        RichMarkdownView(text: displayAnswer, isUser: false, onRunCommand: { command in
+                            Self.openTerminal(with: command)
+                        })
+                        .padding(.vertical, 4)
                     }
                 }
             }
@@ -170,6 +172,30 @@ struct MessageBubble: View {
             return (reasoning.isEmpty ? nil : reasoning, "")
         }
         return (nil, content)
+    }
+
+    /// Opens Terminal.app and executes the given shell command.
+    /// Uses AppleScript to create a new Terminal window with the command.
+    private static func openTerminal(with command: String) {
+        // Escape special characters for AppleScript string literals
+        let escaped = command
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+
+        let script = """
+        tell application "Terminal"
+            activate
+            do script "\(escaped)"
+        end tell
+        """
+
+        if let appleScript = NSAppleScript(source: script) {
+            var error: NSDictionary?
+            appleScript.executeAndReturnError(&error)
+            if let error {
+                NSLog("[MessageBubble] Failed to open Terminal: \(error)")
+            }
+        }
     }
 
     /// Collapse consecutive identical tool names into name + count for a compact

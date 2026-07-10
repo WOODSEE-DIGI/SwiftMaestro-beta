@@ -787,6 +787,12 @@ class ChatViewModel: ObservableObject {
                 (read/write/search notes, decisions) for tracking coordination \
                 context — what agents are doing, what you've decided, project \
                 status. You also have ocr_image for reading text from images. \
+                You HAVE the execute_command tool — use it directly to run shell \
+                commands (ls, cd, python, docker, etc.) instead of telling the \
+                user to run them manually. When showing deployment steps or \
+                multi-step shell scripts, execute each step with execute_command \
+                and report the results. Only ask the user to run something \
+                manually if it requires interactive input or sudo. \
                 When the user asks you to do ANY work beyond coordination (read \
                 files, analyse data, write reports, edit documents, search vault, \
                 or any multi-step task), you MUST delegate to a project agent \

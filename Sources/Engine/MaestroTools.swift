@@ -112,7 +112,7 @@ enum MaestroTools {
         if navigator {
             // Navigator also gets file tools so it can perform basic discovery 
             // (list_dir, read_file) without needing to delegate.
-            specs += navigatorToolSpecs + navigatorOCRSpec + memoryToolSpecs + fileToolSpecs + indexToolSpecs
+            specs += navigatorToolSpecs + navigatorOCRSpec + memoryToolSpecs + fileToolSpecs + indexToolSpecs + shellToolSpecs
         } else {
             specs += memoryToolSpecs + fileToolSpecs + systemToolSpecs
             specs += messagingToolSpecs + indexToolSpecs + sqliteToolSpecs + shellToolSpecs

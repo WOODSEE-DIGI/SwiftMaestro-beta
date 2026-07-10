@@ -8,6 +8,8 @@ struct RichMarkdownView: View {
 
     let text: String
     let isUser: Bool
+    /// Optional callback when user taps "Run" on a shell code block.
+    var onRunCommand: ((String) -> Void)? = nil
 
     /// Parsed segments: alternating text and code blocks.
     private var segments: [MarkdownSegment] {
@@ -21,10 +23,20 @@ struct RichMarkdownView: View {
                 case .text(let content):
                     TextSegmentView(content: content, isUser: isUser)
                 case .code(let language, let code, let id):
-                    CodeBlockView(language: language, code: code, segmentID: id)
+                    CodeBlockView(
+                        language: language,
+                        code: code,
+                        segmentID: id,
+                        onRun: isShellLanguage(language) ? onRunCommand : nil
+                    )
                 }
             }
         }
+    }
+
+    private func isShellLanguage(_ lang: String) -> Bool {
+        let l = lang.lowercased()
+        return ["bash", "sh", "zsh", "shell", "command", "terminal"].contains(l)
     }
 }
 
@@ -47,6 +59,7 @@ enum MarkdownSegment: Identifiable {
 enum MarkdownParser {
 
     /// Split markdown text into text and fenced code block segments.
+    /// Supports both backtick (```) and tilde (~~~) fences.
     static func parse(_ text: String) -> [MarkdownSegment] {
         var segments: [MarkdownSegment] = []
         var currentText = ""
@@ -54,31 +67,51 @@ enum MarkdownParser {
         var codeLanguage = ""
         var codeContent = ""
         var codeBlockID = 0
+        var fenceChar: Character = "`" // track which fence opened the block
 
         for line in text.components(separatedBy: .newlines) {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
 
-            if trimmed.hasPrefix("```") {
+            // Check for opening/closing fence (``` or ~~~)
+            if isFenceOpen(trimmed) || isFenceClose(trimmed) {
+                let currentFenceChar = trimmed.first!
+
                 if inCodeBlock {
-                    // End of code block
-                    segments.append(.code(
-                        language: codeLanguage,
-                        code: codeContent.trimmingCharacters(in: .whitespacesAndNewlines),
-                        id: "code-\(codeBlockID)"
-                    ))
-                    codeBlockID += 1
-                    inCodeBlock = false
-                    codeLanguage = ""
-                    codeContent = ""
-                } else {
+                    // Closing fence: same char, 3+ in a row, nothing else after
+                    if currentFenceChar == fenceChar && trimmed.filter({ $0 == fenceChar }).count >= 3
+                        && trimmed.drop(while: { $0 == fenceChar }).trimmingCharacters(in: .whitespaces).isEmpty {
+                        // End of code block
+                        segments.append(.code(
+                            language: codeLanguage,
+                            code: codeContent.trimmingCharacters(in: .whitespacesAndNewlines),
+                            id: "code-\(codeBlockID)"
+                        ))
+                        codeBlockID += 1
+                        inCodeBlock = false
+                        codeLanguage = ""
+                        codeContent = ""
+                        continue
+                    }
+                }
+
+                if !inCodeBlock && isFenceOpen(trimmed) {
                     // Start of code block — flush accumulated text
                     if !currentText.isEmpty {
                         segments.append(.text(currentText))
                         currentText = ""
                     }
                     inCodeBlock = true
-                    codeLanguage = String(trimmed.dropFirst(3))
-                        .trimmingCharacters(in: .whitespaces)
+                    fenceChar = currentFenceChar
+                    codeLanguage = String(trimmed.drop(while: { $0 == fenceChar })
+                        .trimmingCharacters(in: .whitespaces))
+                } else if inCodeBlock {
+                    // Inside code block — the line is content (mismatched fence)
+                    if !codeContent.isEmpty { codeContent += "\n" }
+                    codeContent += line
+                } else {
+                    // Not a fence, just text
+                    if !currentText.isEmpty { currentText += "\n" }
+                    currentText += line
                 }
             } else if inCodeBlock {
                 if !codeContent.isEmpty { codeContent += "\n" }
@@ -91,14 +124,34 @@ enum MarkdownParser {
 
         // Flush remaining content
         if inCodeBlock {
-            // Unclosed code block — treat as text
-            currentText += "```\n" + codeContent
+            // Unclosed code block — treat as text with the fence prefix
+            let fenceString = String(repeating: fenceChar, count: 3)
+            currentText += "\(fenceString)\(codeLanguage)\n\(codeContent)"
         }
         if !currentText.isEmpty {
             segments.append(.text(currentText))
         }
 
         return segments
+    }
+
+    /// Check if a trimmed line is an opening fence (3+ backticks or tildes, optionally with language).
+    private static func isFenceOpen(_ trimmed: String) -> Bool {
+        guard let first = trimmed.first, first == "`" || first == "~" else { return false }
+        let fenceCount = trimmed.prefix(while: { $0 == first }).count
+        guard fenceCount >= 3 else { return false }
+        // Opening: ```lang or ~~~lang (nothing after lang except whitespace)
+        let rest = String(trimmed.dropFirst(fenceCount)).trimmingCharacters(in: .whitespaces)
+        // Empty or just a language name = opening fence
+        return rest.allSatisfy { $0.isLetter || $0 == "-" || $0 == "_" || $0 == " " || $0 == "\t" }
+    }
+
+    /// Check if a trimmed line is a closing fence (3+ of the same char, nothing else).
+    private static func isFenceClose(_ trimmed: String) -> Bool {
+        guard let first = trimmed.first, first == "`" || first == "~" else { return false }
+        let fenceCount = trimmed.prefix(while: { $0 == first }).count
+        guard fenceCount >= 3 else { return false }
+        return trimmed.dropFirst(fenceCount).trimmingCharacters(in: .whitespaces).isEmpty
     }
 }
 
@@ -128,6 +181,7 @@ struct CodeBlockView: View {
     let language: String
     let code: String
     let segmentID: String
+    var onRun: ((String) -> Void)? = nil
 
     @State private var copied = false
     @State private var expanded = true
@@ -184,6 +238,19 @@ struct CodeBlockView: View {
                 .foregroundStyle(.secondary)
 
             Spacer()
+
+            // Run button for shell commands
+            if let onRun {
+                Button {
+                    onRun(code)
+                } label: {
+                    Label("Run", systemImage: "play.fill")
+                        .font(.caption2)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.green)
+                .help("Open in Terminal and run")
+            }
 
             Button {
                 withAnimation(.easeInOut(duration: 0.15)) {
@@ -263,7 +330,7 @@ enum SyntaxHighlighter {
                         "import", "from", "as", "with", "try", "except", "finally", "raise",
                         "True", "False", "None", "and", "or", "not", "in", "is", "lambda",
                         "yield", "async", "await", "self", "print"]
-        case "bash", "sh", "zsh", "shell":
+        case "bash", "sh", "zsh", "shell", "command", "terminal":
             keywords = ["if", "then", "else", "fi", "for", "do", "done", "while",
                         "case", "esac", "function", "return", "exit", "echo", "export",
                         "source", "local", "readonly", "declare", "unset", "shift"]
@@ -343,6 +410,13 @@ enum SyntaxHighlighter {
     def hello(name):
         print(f"Hello, {name}!")
     ```
+
+    And a shell command:
+
+    ~~~bash
+    cd /tmp
+    ls -la
+    ~~~
 
     **Bold text** and `inline code` work too.
     """, isUser: false)

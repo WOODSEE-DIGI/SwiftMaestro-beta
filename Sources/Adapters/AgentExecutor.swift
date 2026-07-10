@@ -499,7 +499,6 @@ final class AgentExecutor: Sendable {
     /// The model sometimes ignores the tool spec and calls these anyway.
     /// Memory tools are ALLOWED (for coordination context); file/system/MCP tools are blocked.
     private static let navigatorBlockedTools: Set<String> = [
-        "execute_command",
         "obsidian_rest_request", "obsidian_rest_health",
         "read_note", "write_note", "search_vault", "list_vault",
         "whisperkit_transcribe_control", "whisperkit_transcribe_snapshot",
