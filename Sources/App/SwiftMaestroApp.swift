@@ -93,6 +93,9 @@ struct SwiftMaestroApp: App {
                     appDelegate.mcpService = mcpService
                     appDelegate.whatsAppService = whatsAppService
                     pluginService.loadPlugins()
+                    // Must complete before any agent could possibly dispatch a
+                    // tool call — see ToolRegistry.swift's migration notes.
+                    await MaestroTools.registerAllMigratedTools()
                     // Restore user settings from the external JSON backup if the
                     // UserDefaults plist has been reset or deleted. This must run
                     // before the observable stores read their initial values.

@@ -10,6 +10,21 @@ import GRDB
 // explicit opt-in via the `write` parameter.
 extension MaestroTools {
 
+    /// Registers this file's tool(s) with `ToolRegistry` — the first group
+    /// migrated off the legacy switch-based `execute()` dispatch (see that
+    /// function's doc comment). `schemas()`/`handles()` still use the
+    /// name-set/spec-array below unchanged during this migration phase.
+    static func registerSQLiteTools() async {
+        await ToolRegistry.shared.register(
+            ToolDefinition(
+                name: "execute_sqlite",
+                spec: sqliteToolSpecs[0],
+                category: ToolCategory.sqlite.rawValue,
+                handler: { call in await executeSQLite(call) }
+            )
+        )
+    }
+
     static let sqliteToolNames: Set<String> = ["execute_sqlite"]
 
     static var sqliteToolSpecs: [ToolSpec] {
@@ -219,10 +234,17 @@ extension MaestroTools {
             }
             return result
         } else {
-            let changes = try db.execute(sql: query)
+            // db.execute(sql:) returns Void, not a row count - GRDB exposes
+            // the affected-row count separately via db.changesCount, read
+            // AFTER the statement runs. (Passing the prior Void result
+            // straight into jsonString(...) crashed JSONSerialization with
+            // "Invalid type in JSON write (__SwiftValue)" - a real,
+            // previously-untested bug found by actually exercising this
+            // write path for the first time, not a hypothetical.)
+            try db.execute(sql: query)
             return jsonString([
                 "status": "executed",
-                "changes": changes,
+                "changes": db.changesCount,
             ])
         }
     }

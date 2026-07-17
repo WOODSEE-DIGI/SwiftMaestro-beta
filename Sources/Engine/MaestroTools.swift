@@ -435,7 +435,18 @@ enum MaestroTools {
     }
 
     /// Execute a parsed tool call and return a JSON string to feed back to the model.
+    ///
+    /// Migration in progress toward `ToolRegistry` (see that file's header
+    /// comment): tools are moved one group at a time from the switch below
+    /// into a registration call, checked here FIRST. `schemas()`/`handles()`
+    /// are intentionally left untouched during this phase — their existing
+    /// name-set/concatenation logic still correctly advertises and
+    /// recognizes every tool exactly as before, so this migration only
+    /// changes how EXECUTION is routed, one safely-verifiable step at a time.
     static func execute(_ call: ToolCall) async -> String {
+        if await ToolRegistry.shared.handles(call.function.name) {
+            return await ToolRegistry.shared.execute(call)
+        }
         switch call.function.name {
         case getCurrentTime.name:
             do {
@@ -528,8 +539,6 @@ enum MaestroTools {
             return await searchChunks(call)
         case "read_chunk":
             return await readChunk(call)
-        case "execute_sqlite":
-            return await executeSQLite(call)
         case "execute_command":
             return await executeShell(call)
         case "list_background_processes":
