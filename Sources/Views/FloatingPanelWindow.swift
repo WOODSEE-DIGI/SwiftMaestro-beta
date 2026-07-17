@@ -16,6 +16,8 @@ struct FloatingPanelWindowView: View {
     @Environment(PlanStore.self) private var planStore
     @Environment(ThemeStore.self) private var theme
     @State private var layoutState = PanelLayoutState.shared
+    /// Keep this window in front of all others. Opt-in, off by default.
+    @State private var isPinnedToFront = false
 
     private var panelType: PanelType? {
         PanelType(rawValue: target.panelType)
@@ -34,6 +36,20 @@ struct FloatingPanelWindowView: View {
                     .foregroundStyle(.secondary)
 
                 Spacer()
+
+                Button {
+                    isPinnedToFront.toggle()
+                } label: {
+                    Label(
+                        isPinnedToFront ? "Unpin" : "Keep on Top",
+                        systemImage: isPinnedToFront ? "pin.fill" : "pin"
+                    )
+                    .font(.caption2)
+                }
+                .buttonStyle(.plain)
+                .help(isPinnedToFront
+                    ? "Stop keeping this window in front of all others"
+                    : "Keep this window in front of all others")
 
                 Button {
                     if let type = panelType {
@@ -65,6 +81,9 @@ struct FloatingPanelWindowView: View {
             }
         }
         .background(Color(nsColor: NSColor(red: 0.12, green: 0.12, blue: 0.13, alpha: 1.0)))
+        #if os(macOS)
+        .background(WindowPinConfigurator(isPinned: isPinnedToFront))
+        #endif
     }
 
     // MARK: - Tasks Content

@@ -49,6 +49,8 @@ struct PlanWindowView: View {
     let target: PlanWindowID?
 
     @State private var showingExporter = false
+    /// Keep this window in front of all others. Opt-in, off by default.
+    @State private var isPinnedToFront = false
 
     private var scope: PlanScope? { target.flatMap { PlanScope(key: $0.scopeKey) } }
 
@@ -79,6 +81,19 @@ struct PlanWindowView: View {
                 .navigationTitle(plan.title)
                 .toolbar {
                     ToolbarItem(placement: .primaryAction) {
+                        Button {
+                            isPinnedToFront.toggle()
+                        } label: {
+                            Label(
+                                isPinnedToFront ? "Unpin" : "Keep on Top",
+                                systemImage: isPinnedToFront ? "pin.fill" : "pin"
+                            )
+                        }
+                        .help(isPinnedToFront
+                            ? "Stop keeping this window in front of all others"
+                            : "Keep this window in front of all others")
+                    }
+                    ToolbarItem(placement: .primaryAction) {
                         Button { showingExporter = true } label: {
                             Label("Export", systemImage: "square.and.arrow.up")
                         }
@@ -103,6 +118,9 @@ struct PlanWindowView: View {
                 .padding(40)
             }
         }
+        #if os(macOS)
+        .background(WindowPinConfigurator(isPinned: isPinnedToFront))
+        #endif
     }
 
     @ViewBuilder

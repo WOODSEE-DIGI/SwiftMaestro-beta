@@ -28,6 +28,8 @@ struct AgentChatWindowView: View {
     /// updates; the shared cache keeps the same instance in sync with the main
     /// window and with delegation streaming.
     @State private var vm: ChatViewModel?
+    /// Keep this window in front of all others. Opt-in, off by default.
+    @State private var isPinnedToFront = false
 
     private var agent: AgentRecord? {
         target.flatMap { workspace.agent(id: $0.agentID) }
@@ -56,6 +58,24 @@ struct AgentChatWindowView: View {
                 defaultSize: CGSize(width: 960, height: 720)
             )
         )
+        #if os(macOS)
+        .background(WindowPinConfigurator(isPinned: isPinnedToFront))
+        #endif
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    isPinnedToFront.toggle()
+                } label: {
+                    Label(
+                        isPinnedToFront ? "Unpin" : "Keep on Top",
+                        systemImage: isPinnedToFront ? "pin.fill" : "pin"
+                    )
+                }
+                .help(isPinnedToFront
+                    ? "Stop keeping this window in front of all others"
+                    : "Keep this window in front of all others")
+            }
+        }
         .onAppear { bindViewModel() }
         .onChange(of: target) { _, _ in bindViewModel() }
     }

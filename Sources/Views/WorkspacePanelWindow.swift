@@ -27,6 +27,8 @@ struct WorkspacePanelWindowView: View {
     /// `dock(_:)` already moved it into the grid; closing on top of that
     /// would incorrectly remove it again.
     @State private var didDock = false
+    /// Keep this window in front of all others. Opt-in, off by default.
+    @State private var isPinnedToFront = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -53,6 +55,7 @@ struct WorkspacePanelWindowView: View {
                 }
             }
         )
+        .background(WindowPinConfigurator(isPinned: isPinnedToFront))
         #endif
     }
 
@@ -78,6 +81,20 @@ struct WorkspacePanelWindowView: View {
                 .lineLimit(1)
 
             Spacer()
+
+            Button {
+                isPinnedToFront.toggle()
+            } label: {
+                Label(
+                    isPinnedToFront ? "Unpin" : "Keep on Top",
+                    systemImage: isPinnedToFront ? "pin.fill" : "pin"
+                )
+                .font(.caption2)
+            }
+            .buttonStyle(.plain)
+            .help(isPinnedToFront
+                ? "Stop keeping this window in front of all others"
+                : "Keep this window in front of all others")
 
             Button {
                 didDock = true
