@@ -11,9 +11,26 @@ import UniformTypeIdentifiers
 /// down, and `list_servers` to see what's running.
 extension MaestroTools {
 
-    static let serverToolNames: Set<String> = [
-        "start_server", "stop_server", "list_servers",
-    ]
+    /// Registers this file's tools with `ToolRegistry` (see that file's
+    /// migration notes and MaestroTools.execute()'s doc comment).
+    static func registerServerTools() async {
+        await ToolRegistry.shared.register([
+            ToolDefinition(
+                name: "start_server", spec: serverToolSpecs[0],
+                category: ToolCategory.server.rawValue,
+                handler: { call in await startStaticServer(call) }),
+            ToolDefinition(
+                name: "stop_server", spec: serverToolSpecs[1],
+                category: ToolCategory.server.rawValue,
+                handler: { call in await stopStaticServer(call) }),
+            ToolDefinition(
+                name: "list_servers", spec: serverToolSpecs[2],
+                category: ToolCategory.server.rawValue,
+                handler: { _ in await listStaticServers() }),
+        ])
+    }
+
+
 
     static var serverToolSpecs: [ToolSpec] {
         [

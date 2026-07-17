@@ -10,6 +10,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     case server
     case index
     case memory
+    case messaging
     case system
     case mcp
     case sqlite
@@ -41,7 +42,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     /// service too — a reasonable follow-up, not done here.
     var isDeferrable: Bool {
         switch self {
-        case .workspace, .memory, .rules, .time, .mcp:
+        case .workspace, .memory, .messaging, .rules, .time, .mcp:
             return false
         case .file, .shell, .server, .index, .system, .sqlite,
              .notes, .kanban, .canvas, .numbers, .whatsapp:
@@ -56,6 +57,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .server: return "Server"
         case .index: return "Index"
         case .memory: return "Memory"
+        case .messaging: return "Messaging"
         case .system: return "System"
         case .mcp: return "MCP"
         case .sqlite: return "SQLite"
@@ -77,6 +79,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .server: return "network"
         case .index: return "magnifyingglass.circle"
         case .memory: return "brain"
+        case .messaging: return "bubble.left.and.bubble.right"
         case .system: return "gearshape.2"
         case .mcp: return "server.rack"
         case .sqlite: return "cylinder.split.1x2"
@@ -111,8 +114,9 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
                 "memory_write", "memory_read", "memory_search", "memory_list",
                 "create_todo_list", "add_todos", "update_todo_status", "read_todos",
                 "create_plan", "edit_plan", "read_plans", "read_plan",
-                "send_agent_message", "read_agent_messages",
             ]
+        case .messaging:
+            return ["send_agent_message", "read_agent_messages"]
         case .system:
             return [
                 "create_reminder", "list_reminders", "create_calendar_event", "list_calendar_events",
@@ -168,7 +172,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             ]
         case .project:
             return [
-                .file, .shell, .server, .index, .memory, .system, .mcp, .sqlite,
+                .file, .shell, .server, .index, .memory, .messaging, .system, .mcp, .sqlite,
                 .notes, .kanban, .canvas, .numbers, .whatsapp,
             ]
         }
@@ -177,6 +181,28 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     /// Default enabled categories for an agent kind.
     static func defaultEnabled(for kind: AgentKind) -> Set<ToolCategory> {
         Set(visible(for: kind))
+    }
+
+    /// What an agent kind gets when `MaestroTools.schemas(enabledCategories:)`
+    /// is called with NO explicit set at all — NOT the same as `visible(for:)`/
+    /// `defaultEnabled(for:)`, which are a narrower UI-curation concept (which
+    /// toggles show by default in the picker row). This instead matches the
+    /// historical hard-coded behavior from before the tool registry existed,
+    /// where each agent kind's schema-building code unconditionally
+    /// concatenated a specific set of spec arrays regardless of category:
+    /// navigator got everything except `.sqlite` and `.messaging`
+    /// (it delegates instead of messaging directly); project agents got
+    /// everything except `.workspace` (delegation is navigator-only).
+    /// Real call sites always pass a concrete `enabledCategories` (from
+    /// `WorkspaceStore.enabledToolCategories`), so this only matters for
+    /// tests and edge startup timing before that store is wired up.
+    static func unfilteredCategories(for kind: AgentKind) -> Set<ToolCategory> {
+        switch kind {
+        case .navigator:
+            return Set(allCases).subtracting([.sqlite, .messaging])
+        case .project:
+            return Set(allCases).subtracting([.workspace])
+        }
     }
 
     /// Determine the category for a native tool name.

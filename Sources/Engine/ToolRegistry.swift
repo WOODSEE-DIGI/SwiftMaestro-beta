@@ -96,5 +96,19 @@ extension MaestroTools {
     /// line here per file as each group migrates off the legacy switch.
     static func registerAllMigratedTools() async {
         await registerSQLiteTools()
+        await registerServerTools()
+        await registerShellTools()
+        await registerMemoryTools()
+        await registerFileTools()
+        await registerIndexTools()
+        await registerSystemTools()
+        await registerWhatsAppTools()
+        await registerAppsTools()
+        await registerMessagingTools()
+        await registerTodoTools()
+        await registerPlanTools()
+        await registerWorkspaceTools()
+        await registerMetaTools()
+        await registerTimeTools()
     }
 }

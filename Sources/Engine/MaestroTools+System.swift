@@ -13,13 +13,76 @@ private let sharedContactsService = ContactsService()
 // the actual outcome; permission prompts appear on first use.
 extension MaestroTools {
 
-    static let systemToolNames: Set<String> = [
-        "create_reminder", "list_reminders", "create_calendar_event",
-        "create_note", "open_url",
-        "search_contacts", "create_contact", "update_contact", "delete_contact",
-        "list_rules", "set_rule", "read_project_rules",
-        "list_shortcuts", "run_shortcut", "create_shortcut",
-    ]
+    /// This one file's specs actually span THREE categories (matches
+    /// ToolCategory's existing per-name lists exactly: rules/system/notes) -
+    /// not just `.system` for everything, since rules/create_note were
+    /// co-located here even though they're categorized separately.
+    static func registerSystemTools() async {
+        await ToolRegistry.shared.register([
+            ToolDefinition(
+                name: "list_rules", spec: systemToolSpecs[0],
+                category: ToolCategory.rules.rawValue,
+                handler: { _ in listRulesTool() }),
+            ToolDefinition(
+                name: "set_rule", spec: systemToolSpecs[1],
+                category: ToolCategory.rules.rawValue,
+                handler: { call in setRuleTool(call) }),
+            ToolDefinition(
+                name: "read_project_rules", spec: systemToolSpecs[2],
+                category: ToolCategory.rules.rawValue,
+                handler: { call in readProjectRulesTool(call) }),
+            ToolDefinition(
+                name: "create_reminder", spec: systemToolSpecs[3],
+                category: ToolCategory.system.rawValue,
+                handler: { call in await createReminder(call) }),
+            ToolDefinition(
+                name: "list_reminders", spec: systemToolSpecs[4],
+                category: ToolCategory.system.rawValue,
+                handler: { call in await listRemindersTool(call) }),
+            ToolDefinition(
+                name: "create_calendar_event", spec: systemToolSpecs[5],
+                category: ToolCategory.system.rawValue,
+                handler: { call in await createCalendarEvent(call) }),
+            ToolDefinition(
+                name: "create_note", spec: systemToolSpecs[6],
+                category: ToolCategory.notes.rawValue,
+                handler: { call in await createNoteTool(call) }),
+            ToolDefinition(
+                name: "open_url", spec: systemToolSpecs[7],
+                category: ToolCategory.system.rawValue,
+                handler: { call in await openURLTool(call) }),
+            ToolDefinition(
+                name: "search_contacts", spec: systemToolSpecs[8],
+                category: ToolCategory.system.rawValue,
+                handler: { call in await searchContactsTool(call) }),
+            ToolDefinition(
+                name: "create_contact", spec: systemToolSpecs[9],
+                category: ToolCategory.system.rawValue,
+                handler: { call in await createContactTool(call) }),
+            ToolDefinition(
+                name: "update_contact", spec: systemToolSpecs[10],
+                category: ToolCategory.system.rawValue,
+                handler: { call in await updateContactTool(call) }),
+            ToolDefinition(
+                name: "delete_contact", spec: systemToolSpecs[11],
+                category: ToolCategory.system.rawValue,
+                handler: { call in await deleteContactTool(call) }),
+            ToolDefinition(
+                name: "list_shortcuts", spec: systemToolSpecs[12],
+                category: ToolCategory.system.rawValue,
+                handler: { _ in await listShortcutsTool() }),
+            ToolDefinition(
+                name: "run_shortcut", spec: systemToolSpecs[13],
+                category: ToolCategory.system.rawValue,
+                handler: { call in await runShortcutTool(call) }),
+            ToolDefinition(
+                name: "create_shortcut", spec: systemToolSpecs[14],
+                category: ToolCategory.system.rawValue,
+                handler: { call in await createShortcutTool(call) }),
+        ])
+    }
+
+
 
     static var systemToolSpecs: [ToolSpec] {
         [

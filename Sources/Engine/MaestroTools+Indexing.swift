@@ -9,10 +9,36 @@ import MLXLMCommon
 
 extension MaestroTools {
 
-    static let indexToolNames: Set<String> = [
-        "index_directory", "save_index", "spotlight_search",
-        "index_document", "search_chunks", "read_chunk",
-    ]
+    static func registerIndexTools() async {
+        await ToolRegistry.shared.register([
+            ToolDefinition(
+                name: "index_directory", spec: indexToolSpecs[0],
+                category: ToolCategory.index.rawValue,
+                handler: { call in await indexDirectory(call) }),
+            ToolDefinition(
+                name: "save_index", spec: indexToolSpecs[1],
+                category: ToolCategory.index.rawValue,
+                handler: { call in await saveIndex(call) }),
+            ToolDefinition(
+                name: "spotlight_search", spec: indexToolSpecs[2],
+                category: ToolCategory.index.rawValue,
+                handler: { call in await spotlightSearch(call) }),
+            ToolDefinition(
+                name: "index_document", spec: indexToolSpecs[3],
+                category: ToolCategory.index.rawValue,
+                handler: { call in await indexDocument(call) }),
+            ToolDefinition(
+                name: "search_chunks", spec: indexToolSpecs[4],
+                category: ToolCategory.index.rawValue,
+                handler: { call in await searchChunks(call) }),
+            ToolDefinition(
+                name: "read_chunk", spec: indexToolSpecs[5],
+                category: ToolCategory.index.rawValue,
+                handler: { call in await readChunk(call) }),
+        ])
+    }
+
+
 
     static var indexToolSpecs: [ToolSpec] {
         [

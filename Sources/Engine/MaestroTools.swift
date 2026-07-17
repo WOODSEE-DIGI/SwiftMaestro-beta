@@ -109,6 +109,23 @@ enum MaestroTools {
         )
     }
 
+    static func registerTimeTools() async {
+        await ToolRegistry.shared.register(
+            ToolDefinition(
+                name: "get_current_time", spec: getCurrentTime.schema,
+                category: ToolCategory.time.rawValue,
+                handler: { call in
+                    do {
+                        let output = try await call.execute(with: getCurrentTime)
+                        return encode(output)
+                    } catch {
+                        return errorJSON(error.localizedDescription)
+                    }
+                }
+            )
+        )
+    }
+
     /// Base native tools exposed to every agent.
     static let all: [any ToolProtocol] = [getCurrentTime]
 
@@ -116,16 +133,38 @@ enum MaestroTools {
     /// MLXInferenceEngine agentic loop.
     static var schemas: [ToolSpec] { all.map { $0.schema } }
 
-    /// Tool schemas for an agent. Project agents get the base set; the Navigator
-    /// additionally gets workspace + delegation tools.
+    /// Approximates the old liteMode tool set (memory/file/shell/server/
+    /// index/sqlite) via categories, for the ONLY case that still matters:
+    /// no explicit `enabledCategories` was supplied at all. Not byte-for-byte
+    /// identical to the pre-registry list (that one hand-picked
+    /// todo/plan/memory but explicitly excluded messaging, which is awkward
+    /// to express as a plain category set since all three share `.memory`
+    /// today) - accepted as a reasonable approximation since this whole path
+    /// is already documented as deprecated and is superseded by real
+    /// per-agent category toggles in practice.
+    private static let liteModeCategories: Set<ToolCategory> = [.memory, .file, .shell, .server, .index, .sqlite]
+
+    /// Tool schemas for an agent, sourced entirely from `ToolRegistry` (see
+    /// that file's migration notes - this used to be a hand-built
+    /// concatenation of per-file spec arrays plus a manual category filter;
+    /// now every native tool is registered once with its own category, and
+    /// this is just a category-scoped read of that registry).
     ///
     /// - Parameters:
-    ///   - navigator: `true` for the Navigator agent.
-    ///   - liteMode: Deprecated; kept for source compatibility but ignored when
-    ///     `enabledCategories` is provided.
+    ///   - navigator: `true` for the Navigator agent. Only used to pick the
+    ///     default category scope when `enabledCategories` is nil - real
+    ///     call sites always pass a concrete `enabledCategories` (from
+    ///     `WorkspaceStore.enabledToolCategories`, itself defaulting to
+    ///     `ToolCategory.defaultEnabled(for:)` when never customized), so
+    ///     this fallback mostly matters for tests / edge startup timing.
+    ///   - liteMode: Deprecated; only consulted when `enabledCategories` is
+    ///     nil (see `liteModeCategories`'s doc comment - restores this
+    ///     function's own pre-existing documented intent, which the old
+    ///     implementation didn't actually honor: it checked `liteMode`
+    ///     unconditionally, before even looking at `enabledCategories`).
     ///   - enabledCategories: If provided, only tools whose category is in this
-    ///     set are returned. This overrides the old automatic lite-mode reduction
-    ///     and lets the user control the tool surface per agent.
+    ///     set are returned (tools with no category, e.g. get_current_time,
+    ///     are always included).
     ///   - compactMode: When `true`, categories where `ToolCategory.isDeferrable`
     ///     is true are NOT advertised as full schemas — instead they're replaced
     ///     by the `search_tools`/`call_tool` meta-tool pair, which the agent uses
@@ -137,53 +176,44 @@ enum MaestroTools {
         liteMode: Bool = false,
         enabledCategories: Set<ToolCategory>? = nil,
         compactMode: Bool = false
-    ) -> [ToolSpec] {
-        let baseSpecs: [ToolSpec]
-        if liteMode {
-            // Lite mode fallback when no explicit categories are provided.
-            baseSpecs = schemas + todoToolSpecs + planToolSpecs
-                + memoryToolSpecs + fileToolSpecs + shellToolSpecs + serverToolSpecs
-                + indexToolSpecs + sqliteToolSpecs
-        } else {
-            var specs = schemas + todoToolSpecs + planToolSpecs
-            if navigator {
-                specs += navigatorToolSpecs + navigatorOCRSpec + memoryToolSpecs
-                    + fileToolSpecs + indexToolSpecs + shellToolSpecs + serverToolSpecs
-                    + systemToolSpecs + appsToolSpecs + whatsappToolSpecs
-            } else {
-                specs += memoryToolSpecs + fileToolSpecs + systemToolSpecs
-                specs += messagingToolSpecs + indexToolSpecs + sqliteToolSpecs
-                    + shellToolSpecs + serverToolSpecs + appsToolSpecs + whatsappToolSpecs
-            }
-            baseSpecs = specs
-        }
-
-        var filtered = baseSpecs
+    ) async -> [ToolSpec] {
+        let resolvedCategories: Set<ToolCategory>
         if let enabledCategories {
-            filtered = baseSpecs.filter { spec in
-                guard let name = toolName(from: spec) else { return false }
-                guard let category = ToolCategory.category(for: name) else { return false }
-                return enabledCategories.contains(category)
-            }
+            resolvedCategories = enabledCategories
+        } else if liteMode {
+            resolvedCategories = liteModeCategories
+        } else {
+            resolvedCategories = ToolCategory.unfilteredCategories(for: navigator ? .navigator : .project)
+        }
+        let categoryScope = Set(resolvedCategories.map(\.rawValue))
+
+        let filtered = await ToolRegistry.shared.allDefinitions().filter { definition in
+            // search_tools/call_tool are never part of the normal listing —
+            // they're a discovery mechanism FOR hidden tools, added back
+            // explicitly below only when compactMode is on AND something is
+            // actually deferred. Registered with category: nil (like
+            // get_current_time) for a different reason (they have no
+            // meaningful category to gate them behind), which would
+            // otherwise make this same "uncategorized = always on" rule
+            // wrongly include them here too.
+            guard definition.name != "search_tools" && definition.name != "call_tool" else { return false }
+            guard let category = definition.category else { return true } // uncategorized always on
+            return categoryScope.contains(category)
         }
 
-        guard compactMode else { return filtered }
+        guard compactMode else { return filtered.map(\.spec) }
 
         // Split into always-on specs and specs belonging to a deferrable
         // category; the latter are replaced by the two meta-tool schemas.
-        let alwaysOn = filtered.filter { spec in
-            guard let name = toolName(from: spec),
-                  let category = ToolCategory.category(for: name)
-            else { return true } // uncategorized (e.g. get_current_time) stays on
+        let alwaysOn = filtered.filter { definition in
+            guard let category = definition.category.flatMap({ ToolCategory(rawValue: $0) }) else { return true }
             return !category.isDeferrable
         }
-        let anyDeferred = filtered.contains { spec in
-            guard let name = toolName(from: spec),
-                  let category = ToolCategory.category(for: name)
-            else { return false }
+        let anyDeferred = filtered.contains { definition in
+            guard let category = definition.category.flatMap({ ToolCategory(rawValue: $0) }) else { return false }
             return category.isDeferrable
         }
-        return anyDeferred ? alwaysOn + metaToolSpecs : alwaysOn
+        return anyDeferred ? alwaysOn.map(\.spec) + metaToolSpecs : alwaysOn.map(\.spec)
     }
 
     /// Extract the function name from a tool spec dictionary.
@@ -193,9 +223,18 @@ enum MaestroTools {
 
     // MARK: - Inter-agent messaging tools (caller agent_id injected by executor)
 
-    private static let messagingToolNames: Set<String> = [
-        "send_agent_message", "read_agent_messages",
-    ]
+    static func registerMessagingTools() async {
+        await ToolRegistry.shared.register([
+            ToolDefinition(
+                name: "send_agent_message", spec: messagingToolSpecs[0],
+                category: ToolCategory.messaging.rawValue,
+                handler: { call in await sendAgentMessage(call) }),
+            ToolDefinition(
+                name: "read_agent_messages", spec: messagingToolSpecs[1],
+                category: ToolCategory.messaging.rawValue,
+                handler: { call in await readAgentMessages(call) }),
+        ])
+    }
 
     private static var messagingToolSpecs: [ToolSpec] {
         [
@@ -216,9 +255,31 @@ enum MaestroTools {
 
     // MARK: - Live todo tools (per-agent checklist; agent_id injected by executor)
 
-    private static let todoToolNames: Set<String> = [
-        "create_todo_list", "add_todos", "update_todo_status", "read_todos",
-    ]
+    /// Categorized as `.memory` (matches ToolCategory's existing list exactly
+    /// - todo/plan fall under the same "memory" toggle as memory_write/etc.;
+    /// messaging has its own `.messaging` category since navigator needs to
+    /// get memory tools but NOT messaging - a distinction plain category
+    /// membership can't express if they shared one category).
+    static func registerTodoTools() async {
+        await ToolRegistry.shared.register([
+            ToolDefinition(
+                name: "create_todo_list", spec: todoToolSpecs[0],
+                category: ToolCategory.memory.rawValue,
+                handler: { call in await todoCreate(call, replace: true) }),
+            ToolDefinition(
+                name: "add_todos", spec: todoToolSpecs[1],
+                category: ToolCategory.memory.rawValue,
+                handler: { call in await todoCreate(call, replace: false) }),
+            ToolDefinition(
+                name: "update_todo_status", spec: todoToolSpecs[2],
+                category: ToolCategory.memory.rawValue,
+                handler: { call in await todoUpdate(call) }),
+            ToolDefinition(
+                name: "read_todos", spec: todoToolSpecs[3],
+                category: ToolCategory.memory.rawValue,
+                handler: { call in await todoRead(call) }),
+        ])
+    }
 
     private static var todoToolSpecs: [ToolSpec] {
         let items: [String: any Sendable] = [
@@ -279,9 +340,26 @@ enum MaestroTools {
 
     // MARK: - Plan tools (per-agent markdown design docs; agent_id injected by executor)
 
-    private static let planToolNames: Set<String> = [
-        "create_plan", "edit_plan", "read_plans", "read_plan",
-    ]
+    static func registerPlanTools() async {
+        await ToolRegistry.shared.register([
+            ToolDefinition(
+                name: "create_plan", spec: planToolSpecs[0],
+                category: ToolCategory.memory.rawValue,
+                handler: { call in await planCreate(call) }),
+            ToolDefinition(
+                name: "edit_plan", spec: planToolSpecs[1],
+                category: ToolCategory.memory.rawValue,
+                handler: { call in await planEdit(call) }),
+            ToolDefinition(
+                name: "read_plans", spec: planToolSpecs[2],
+                category: ToolCategory.memory.rawValue,
+                handler: { call in await planReadList(call) }),
+            ToolDefinition(
+                name: "read_plan", spec: planToolSpecs[3],
+                category: ToolCategory.memory.rawValue,
+                handler: { call in await planReadOne(call) }),
+        ])
+    }
 
     private static let projectScopeDesc =
         "Optional project name to scope this plan to that project's SHARED plans "
@@ -328,10 +406,48 @@ enum MaestroTools {
     // MARK: - Navigator (workspace + delegation) tools
 
     /// Names of the Navigator-only workspace tools executed natively here.
-    /// `ask_project_agent` is intentionally excluded — AgentExecutor runs it.
-    private static let workspaceToolNames: Set<String> = [
-        "create_project_agent", "list_workspace", "archive_project_agent",
-    ]
+    /// `ask_project_agent`/`ask_project_agents` are intentionally excluded -
+    /// AgentExecutor's own delegation interceptor runs those directly and
+    /// never reaches MaestroTools.execute() for them at all, so they're not
+    /// registered here even though their schemas live in navigatorToolSpecs.
+    static func registerWorkspaceTools() async {
+        // ask_project_agent/ask_project_agents ARE registered (for correct
+        // schema advertisement + handles() reporting) even though their
+        // handlers here should never actually fire: AgentExecutor checks
+        // `tc.name == "ask_project_agent"`/`"ask_project_agents"` and
+        // intercepts them BEFORE it ever calls MaestroTools.handles()/
+        // execute() (see AgentExecutor.swift around that exact check) - it
+        // needs the live model/endpoint/MCP context to actually run the
+        // target agent's loop, which this static registry has no access to.
+        // These defensive handlers exist only to fail loudly, not silently,
+        // if that invariant is ever broken.
+        await ToolRegistry.shared.register([
+            ToolDefinition(
+                name: "create_project_agent", spec: navigatorToolSpecs[0],
+                category: ToolCategory.workspace.rawValue,
+                handler: { call in await createProjectAgent(call) }),
+            ToolDefinition(
+                name: "list_workspace", spec: navigatorToolSpecs[1],
+                category: ToolCategory.workspace.rawValue,
+                handler: { _ in await listWorkspace() }),
+            ToolDefinition(
+                name: "archive_project_agent", spec: navigatorToolSpecs[2],
+                category: ToolCategory.workspace.rawValue,
+                handler: { call in await archiveProjectAgent(call) }),
+            ToolDefinition(
+                name: "ask_project_agent", spec: navigatorToolSpecs[3],
+                category: ToolCategory.workspace.rawValue,
+                handler: { _ in
+                    errorJSON("ask_project_agent must be intercepted by AgentExecutor, not dispatched directly.")
+                }),
+            ToolDefinition(
+                name: "ask_project_agents", spec: navigatorToolSpecs[4],
+                category: ToolCategory.workspace.rawValue,
+                handler: { _ in
+                    errorJSON("ask_project_agents must be intercepted by AgentExecutor, not dispatched directly.")
+                }),
+        ])
+    }
 
     private static var navigatorToolSpecs: [ToolSpec] {
         [
@@ -405,223 +521,25 @@ enum MaestroTools {
         ]
     }
 
-    /// Navigator gets OCR only — no file read/write/list. Just image analysis.
-    private static var navigatorOCRSpec: [ToolSpec] {
-        [
-            rawSpec("ocr_image",
-                "Extract text from an image file using the vision model. "
-                + "Supports PNG, JPEG, HEIC, TIFF, BMP, WebP only — not PDFs.",
-                properties: [
-                    "path": ["type": "string", "description": "Absolute path to the image file."],
-                ], required: ["path"]),
-        ]
-    }
 
     /// Whether a native (in-process) tool owns the given name. Routes a tool call
     /// to the native registry before MCP. `ask_project_agent` is excluded so the
     /// executor's delegation interceptor handles it.
-    static func handles(_ name: String) -> Bool {
-        if workspaceToolNames.contains(name) || todoToolNames.contains(name)
-            || planToolNames.contains(name) || messagingToolNames.contains(name)
-            || memoryToolNames.contains(name) || fileToolNames.contains(name)
-            || systemToolNames.contains(name) || indexToolNames.contains(name)
-            || sqliteToolNames.contains(name)
-            || shellToolNames.contains(name) || serverToolNames.contains(name)
-            || appsToolNames.contains(name) || metaToolNames.contains(name)
-            || whatsappToolNames.contains(name) { return true }
-        return schemas.contains { spec in
-            (spec["function"] as? [String: any Sendable])?["name"] as? String == name
-        }
+    static func handles(_ name: String) async -> Bool {
+        await ToolRegistry.shared.handles(name)
     }
 
     /// Execute a parsed tool call and return a JSON string to feed back to the model.
     ///
-    /// Migration in progress toward `ToolRegistry` (see that file's header
-    /// comment): tools are moved one group at a time from the switch below
-    /// into a registration call, checked here FIRST. `schemas()`/`handles()`
-    /// are intentionally left untouched during this phase — their existing
-    /// name-set/concatenation logic still correctly advertises and
-    /// recognizes every tool exactly as before, so this migration only
-    /// changes how EXECUTION is routed, one safely-verifiable step at a time.
+    /// Every native tool is now registered with `ToolRegistry` (see that
+    /// file's header comment for the migration this completed) — this is a
+    /// thin wrapper, not a dispatcher itself anymore. `schemas()`/`handles()`
+    /// still use their own name-set/concatenation logic independently (not
+    /// yet converted to be registry-driven) — see those functions' own
+    /// migration-status comments for what's left before the registry becomes
+    /// the single source of truth end to end.
     static func execute(_ call: ToolCall) async -> String {
-        if await ToolRegistry.shared.handles(call.function.name) {
-            return await ToolRegistry.shared.execute(call)
-        }
-        switch call.function.name {
-        case getCurrentTime.name:
-            do {
-                let output = try await call.execute(with: getCurrentTime)
-                return encode(output)
-            } catch {
-                return errorJSON(error.localizedDescription)
-            }
-        case "create_project_agent":
-            return await createProjectAgent(call)
-        case "list_workspace":
-            return await listWorkspace()
-        case "archive_project_agent":
-            return await archiveProjectAgent(call)
-        case "create_todo_list":
-            return await todoCreate(call, replace: true)
-        case "add_todos":
-            return await todoCreate(call, replace: false)
-        case "update_todo_status":
-            return await todoUpdate(call)
-        case "read_todos":
-            return await todoRead(call)
-        case "create_plan":
-            return await planCreate(call)
-        case "edit_plan":
-            return await planEdit(call)
-        case "read_plans":
-            return await planReadList(call)
-        case "read_plan":
-            return await planReadOne(call)
-        case "send_agent_message":
-            return await sendAgentMessage(call)
-        case "read_agent_messages":
-            return await readAgentMessages(call)
-        case "memory_write":
-            return await memoryWrite(call)
-        case "memory_read":
-            return await memoryRead(call)
-        case "memory_search":
-            return await memorySearch(call)
-        case "memory_list":
-            return await memoryList(call)
-        case "read_file":
-            return await readFile(call)
-        case "write_file":
-            return await writeFile(call)
-        case "list_dir":
-            return await listDir(call)
-        case "ocr_image":
-            return await ocrImage(call)
-        case "create_reminder":
-            return await createReminder(call)
-        case "list_reminders":
-            return await listRemindersTool(call)
-        case "create_calendar_event":
-            return await createCalendarEvent(call)
-        case "create_note":
-            return await createNoteTool(call)
-        case "open_url":
-            return await openURLTool(call)
-        case "search_contacts":
-            return await searchContactsTool(call)
-        case "create_contact":
-            return await createContactTool(call)
-        case "update_contact":
-            return await updateContactTool(call)
-        case "delete_contact":
-            return await deleteContactTool(call)
-        case "list_rules":
-            return listRulesTool()
-        case "set_rule":
-            return setRuleTool(call)
-        case "read_project_rules":
-            return readProjectRulesTool(call)
-        case "list_shortcuts":
-            return await listShortcutsTool()
-        case "run_shortcut":
-            return await runShortcutTool(call)
-        case "create_shortcut":
-            return await createShortcutTool(call)
-        case "index_directory":
-            return await indexDirectory(call)
-        case "save_index":
-            return await saveIndex(call)
-        case "spotlight_search":
-            return await spotlightSearch(call)
-        case "index_document":
-            return await indexDocument(call)
-        case "search_chunks":
-            return await searchChunks(call)
-        case "read_chunk":
-            return await readChunk(call)
-        case "execute_command":
-            return await executeShell(call)
-        case "list_background_processes":
-            return await listBackgroundProcesses()
-        case "stop_background_process":
-            return await stopBackgroundProcess(call)
-        case "start_server":
-            return await startStaticServer(call)
-        case "stop_server":
-            return await stopStaticServer(call)
-        case "list_servers":
-            return await listStaticServers()
-        case "list_notes":
-            return await listNotes(call)
-        case "read_note":
-            return await readNote(call)
-        case "write_note":
-            return await writeNote(call)
-        case "search_notes":
-            return await searchNotes(call)
-        case "list_kanban_boards":
-            return await listKanbanBoards()
-        case "create_kanban_board":
-            return await createKanbanBoard(call)
-        case "list_kanban_cards":
-            return await listKanbanCards(call)
-        case "create_kanban_card":
-            return await createKanbanCard(call)
-        case "move_kanban_card":
-            return await moveKanbanCard(call)
-        case "update_kanban_card":
-            return await updateKanbanCard(call)
-        case "delete_kanban_card":
-            return await deleteKanbanCard(call)
-        case "list_canvas_boards":
-            return await listCanvasBoards()
-        case "create_canvas_board":
-            return await createCanvasBoard(call)
-        case "delete_canvas_board":
-            return await deleteCanvasBoard(call)
-        case "list_apple_note_folders":
-            return await listAppleNoteFolders()
-        case "list_apple_notes":
-            return await listAppleNotes(call)
-        case "read_apple_note":
-            return await readAppleNote(call)
-        case "list_calendar_events":
-            return await listCalendarEventsTool(call)
-        case "list_numbers_documents":
-            return await listNumbersDocuments()
-        case "create_numbers_document":
-            return await createNumbersDocument()
-        case "open_numbers_document":
-            return await openNumbersDocument(call)
-        case "list_numbers_sheets":
-            return await listNumbersSheets(call)
-        case "list_numbers_tables":
-            return await listNumbersTables(call)
-        case "read_numbers_table":
-            return await readNumbersTable(call)
-        case "write_numbers_cell":
-            return await writeNumbersCell(call)
-        case "export_numbers_document":
-            return await exportNumbersDocument(call)
-        case "search_tools":
-            return await searchToolsMeta(call)
-        case "call_tool":
-            return await callToolMeta(call)
-        case "whatsapp_status":
-            return await whatsappStatusTool()
-        case "start_whatsapp_bridge":
-            return await startWhatsAppBridgeTool()
-        case "stop_whatsapp_bridge":
-            return await stopWhatsAppBridgeTool()
-        case "list_whatsapp_chats":
-            return await listWhatsAppChatsTool()
-        case "read_whatsapp_messages":
-            return await readWhatsAppMessagesTool(call)
-        case "send_whatsapp_message":
-            return await sendWhatsAppMessageTool(call)
-        default:
-            return errorJSON("unknown tool: \(call.function.name)")
-        }
+        await ToolRegistry.shared.execute(call)
     }
 
     // MARK: - Live todo implementations
@@ -1249,7 +1167,7 @@ enum MaestroTools {
 
     // MARK: - Rules tools
 
-    private static func listRulesTool() -> String {
+    static func listRulesTool() -> String {
         let rules = SwiftMaestroSettingsStore.loadRules()
         let list: [[String: Any]] = rules.map { rule in
             var item: [String: Any] = [
@@ -1263,7 +1181,7 @@ enum MaestroTools {
         return jsonString(["rules": list, "count": list.count])
     }
 
-    private static func setRuleTool(_ call: ToolCall) -> String {
+    static func setRuleTool(_ call: ToolCall) -> String {
         struct SetRuleArgs: Decodable {
             let text: String
             let enabled: Bool?
@@ -1287,7 +1205,7 @@ enum MaestroTools {
 
     // MARK: - Shortcuts tools
 
-    private static func listShortcutsTool() async -> String {
+    static func listShortcutsTool() async -> String {
         let script = #"tell application "Shortcuts" to get name of every shortcut"#
         guard let appleScript = NSAppleScript(source: script) else {
             return errorJSON("could not compile AppleScript")
@@ -1306,7 +1224,7 @@ enum MaestroTools {
         return jsonString(["shortcuts": names, "count": names.count])
     }
 
-    private static func runShortcutTool(_ call: ToolCall) async -> String {
+    static func runShortcutTool(_ call: ToolCall) async -> String {
         struct RunShortcutArgs: Decodable {
             let name: String
             let input: String?
@@ -1343,7 +1261,7 @@ enum MaestroTools {
         }
     }
 
-    private static func createShortcutTool(_ call: ToolCall) async -> String {
+    static func createShortcutTool(_ call: ToolCall) async -> String {
         struct CreateShortcutArgs: Decodable {
             let name: String
             let actions: [ShortcutAction]

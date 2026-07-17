@@ -193,7 +193,7 @@ class ChatViewModel: ObservableObject {
             // so search_tools/call_tool can see this agent's actual scope.
             MaestroTools.currentEnabledCategories = enabledCategories
             MaestroTools.currentIsNavigator = isNavigator
-            toolSpecs = MaestroTools.schemas(
+            toolSpecs = await MaestroTools.schemas(
                 navigator: isNavigator, liteMode: model.isLiteModel,
                 enabledCategories: enabledCategories, compactMode: compactMode)
             if let mcp = engine.mcpService {

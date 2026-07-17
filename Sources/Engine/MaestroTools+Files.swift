@@ -10,7 +10,28 @@ import MLXLMCommon
 // is intentionally NOT provided in the default beta build.
 extension MaestroTools {
 
-    static let fileToolNames: Set<String> = ["read_file", "write_file", "list_dir", "ocr_image"]
+    static func registerFileTools() async {
+        await ToolRegistry.shared.register([
+            ToolDefinition(
+                name: "read_file", spec: fileToolSpecs[0],
+                category: ToolCategory.file.rawValue,
+                handler: { call in await readFile(call) }),
+            ToolDefinition(
+                name: "write_file", spec: fileToolSpecs[1],
+                category: ToolCategory.file.rawValue,
+                handler: { call in await writeFile(call) }),
+            ToolDefinition(
+                name: "list_dir", spec: fileToolSpecs[2],
+                category: ToolCategory.file.rawValue,
+                handler: { call in await listDir(call) }),
+            ToolDefinition(
+                name: "ocr_image", spec: fileToolSpecs[3],
+                category: ToolCategory.file.rawValue,
+                handler: { call in await ocrImage(call) }),
+        ])
+    }
+
+
 
     /// Cap on a single read so a huge file can't blow up the model's context.
     private static let maxReadBytes = 256 * 1024

@@ -781,7 +781,7 @@ final class AgentExecutor: Sendable {
         // implicit authorized root (agents can create/edit under their cwd
         // without requiring manual Settings → Context entries).
         MaestroTools.workingDirectory = workingDirectory
-        if MaestroTools.handles(tc.name) {
+        if await MaestroTools.handles(tc.name) {
             let result = await MaestroTools.execute(call)
             // If create_project_agent returned "already_exists", rewrite the
             // result into a hard error so the model is forced to use
@@ -995,7 +995,7 @@ final class AgentExecutor: Sendable {
         }
         MaestroTools.currentEnabledCategories = enabledCategories
         MaestroTools.currentIsNavigator = false
-        var specs = MaestroTools.schemas(
+        var specs = await MaestroTools.schemas(
             navigator: false, liteMode: subIsLite,
             enabledCategories: enabledCategories, compactMode: compactMode)
         if let mcp {
@@ -1116,7 +1116,7 @@ final class AgentExecutor: Sendable {
         }
         MaestroTools.currentEnabledCategories = enabledCategories
         MaestroTools.currentIsNavigator = false
-        var specs = MaestroTools.schemas(
+        var specs = await MaestroTools.schemas(
             navigator: false, enabledCategories: enabledCategories, compactMode: compactMode)
         if let mcp {
             let mcpSchemas = await mcp.currentSchemas(audience: .delegate)

@@ -643,7 +643,7 @@ final class MLXInferenceEngine {
                             let name = call.function.name
                             continuation.yield(.toolCall(name: name))
                             let result: String
-                            if MaestroTools.handles(name) {
+                            if await MaestroTools.handles(name) {
                                 result = await MaestroTools.execute(call)
                             } else if let mcp, await mcp.handles(name) {
                                 result = await mcp.execute(call)

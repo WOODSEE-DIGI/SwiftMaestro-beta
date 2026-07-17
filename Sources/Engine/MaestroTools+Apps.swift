@@ -11,17 +11,67 @@ import MLXLMCommon
 // in sync.
 extension MaestroTools {
 
-    static let appsToolNames: Set<String> = [
-        "list_notes", "read_note", "write_note", "search_notes",
-        "list_kanban_boards", "create_kanban_board", "list_kanban_cards",
-        "create_kanban_card", "move_kanban_card", "update_kanban_card", "delete_kanban_card",
-        "list_canvas_boards", "create_canvas_board", "delete_canvas_board",
-        "list_apple_note_folders", "list_apple_notes", "read_apple_note",
-        "list_calendar_events",
-        "list_numbers_documents", "create_numbers_document", "open_numbers_document",
-        "list_numbers_sheets", "list_numbers_tables", "read_numbers_table",
-        "write_numbers_cell", "export_numbers_document",
-    ]
+    /// This file's specs span four categories (notes/kanban/canvas/numbers,
+    /// plus list_calendar_events which is `.system`) - matches ToolCategory's
+    /// existing per-name lists exactly.
+    static func registerAppsTools() async {
+        await ToolRegistry.shared.register([
+            ToolDefinition(name: "list_notes", spec: appsToolSpecs[0], category: ToolCategory.notes.rawValue,
+                handler: { call in await listNotes(call) }),
+            ToolDefinition(name: "read_note", spec: appsToolSpecs[1], category: ToolCategory.notes.rawValue,
+                handler: { call in await readNote(call) }),
+            ToolDefinition(name: "write_note", spec: appsToolSpecs[2], category: ToolCategory.notes.rawValue,
+                handler: { call in await writeNote(call) }),
+            ToolDefinition(name: "search_notes", spec: appsToolSpecs[3], category: ToolCategory.notes.rawValue,
+                handler: { call in await searchNotes(call) }),
+            ToolDefinition(name: "list_kanban_boards", spec: appsToolSpecs[4], category: ToolCategory.kanban.rawValue,
+                handler: { _ in await listKanbanBoards() }),
+            ToolDefinition(name: "create_kanban_board", spec: appsToolSpecs[5], category: ToolCategory.kanban.rawValue,
+                handler: { call in await createKanbanBoard(call) }),
+            ToolDefinition(name: "list_kanban_cards", spec: appsToolSpecs[6], category: ToolCategory.kanban.rawValue,
+                handler: { call in await listKanbanCards(call) }),
+            ToolDefinition(name: "create_kanban_card", spec: appsToolSpecs[7], category: ToolCategory.kanban.rawValue,
+                handler: { call in await createKanbanCard(call) }),
+            ToolDefinition(name: "move_kanban_card", spec: appsToolSpecs[8], category: ToolCategory.kanban.rawValue,
+                handler: { call in await moveKanbanCard(call) }),
+            ToolDefinition(name: "update_kanban_card", spec: appsToolSpecs[9], category: ToolCategory.kanban.rawValue,
+                handler: { call in await updateKanbanCard(call) }),
+            ToolDefinition(name: "delete_kanban_card", spec: appsToolSpecs[10], category: ToolCategory.kanban.rawValue,
+                handler: { call in await deleteKanbanCard(call) }),
+            ToolDefinition(name: "list_canvas_boards", spec: appsToolSpecs[11], category: ToolCategory.canvas.rawValue,
+                handler: { _ in await listCanvasBoards() }),
+            ToolDefinition(name: "create_canvas_board", spec: appsToolSpecs[12], category: ToolCategory.canvas.rawValue,
+                handler: { call in await createCanvasBoard(call) }),
+            ToolDefinition(name: "delete_canvas_board", spec: appsToolSpecs[13], category: ToolCategory.canvas.rawValue,
+                handler: { call in await deleteCanvasBoard(call) }),
+            ToolDefinition(name: "list_apple_note_folders", spec: appsToolSpecs[14], category: ToolCategory.notes.rawValue,
+                handler: { _ in await listAppleNoteFolders() }),
+            ToolDefinition(name: "list_apple_notes", spec: appsToolSpecs[15], category: ToolCategory.notes.rawValue,
+                handler: { call in await listAppleNotes(call) }),
+            ToolDefinition(name: "read_apple_note", spec: appsToolSpecs[16], category: ToolCategory.notes.rawValue,
+                handler: { call in await readAppleNote(call) }),
+            ToolDefinition(name: "list_calendar_events", spec: appsToolSpecs[17], category: ToolCategory.system.rawValue,
+                handler: { call in await listCalendarEventsTool(call) }),
+            ToolDefinition(name: "list_numbers_documents", spec: appsToolSpecs[18], category: ToolCategory.numbers.rawValue,
+                handler: { _ in await listNumbersDocuments() }),
+            ToolDefinition(name: "create_numbers_document", spec: appsToolSpecs[19], category: ToolCategory.numbers.rawValue,
+                handler: { _ in await createNumbersDocument() }),
+            ToolDefinition(name: "open_numbers_document", spec: appsToolSpecs[20], category: ToolCategory.numbers.rawValue,
+                handler: { call in await openNumbersDocument(call) }),
+            ToolDefinition(name: "list_numbers_sheets", spec: appsToolSpecs[21], category: ToolCategory.numbers.rawValue,
+                handler: { call in await listNumbersSheets(call) }),
+            ToolDefinition(name: "list_numbers_tables", spec: appsToolSpecs[22], category: ToolCategory.numbers.rawValue,
+                handler: { call in await listNumbersTables(call) }),
+            ToolDefinition(name: "read_numbers_table", spec: appsToolSpecs[23], category: ToolCategory.numbers.rawValue,
+                handler: { call in await readNumbersTable(call) }),
+            ToolDefinition(name: "write_numbers_cell", spec: appsToolSpecs[24], category: ToolCategory.numbers.rawValue,
+                handler: { call in await writeNumbersCell(call) }),
+            ToolDefinition(name: "export_numbers_document", spec: appsToolSpecs[25], category: ToolCategory.numbers.rawValue,
+                handler: { call in await exportNumbersDocument(call) }),
+        ])
+    }
+
+
 
     static var appsToolSpecs: [ToolSpec] {
         [

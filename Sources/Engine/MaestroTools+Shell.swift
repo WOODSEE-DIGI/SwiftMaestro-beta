@@ -16,9 +16,24 @@ import Darwin
 /// - Timeout enforcement
 extension MaestroTools {
 
-    static let shellToolNames: Set<String> = [
-        "execute_command", "list_background_processes", "stop_background_process",
-    ]
+    static func registerShellTools() async {
+        await ToolRegistry.shared.register([
+            ToolDefinition(
+                name: "execute_command", spec: shellToolSpecs[0],
+                category: ToolCategory.shell.rawValue,
+                handler: { call in await executeShell(call) }),
+            ToolDefinition(
+                name: "list_background_processes", spec: shellToolSpecs[1],
+                category: ToolCategory.shell.rawValue,
+                handler: { _ in await listBackgroundProcesses() }),
+            ToolDefinition(
+                name: "stop_background_process", spec: shellToolSpecs[2],
+                category: ToolCategory.shell.rawValue,
+                handler: { call in await stopBackgroundProcess(call) }),
+        ])
+    }
+
+
 
     static var shellToolSpecs: [ToolSpec] {
         [

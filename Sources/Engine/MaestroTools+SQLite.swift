@@ -25,7 +25,7 @@ extension MaestroTools {
         )
     }
 
-    static let sqliteToolNames: Set<String> = ["execute_sqlite"]
+
 
     static var sqliteToolSpecs: [ToolSpec] {
         [

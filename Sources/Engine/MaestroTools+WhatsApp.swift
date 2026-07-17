@@ -9,10 +9,36 @@ import MLXLMCommon
 // pattern already used for Kanban/Apple Notes in MaestroTools+Apps.swift.
 extension MaestroTools {
 
-    static let whatsappToolNames: Set<String> = [
-        "whatsapp_status", "start_whatsapp_bridge", "stop_whatsapp_bridge",
-        "list_whatsapp_chats", "read_whatsapp_messages", "send_whatsapp_message",
-    ]
+    static func registerWhatsAppTools() async {
+        await ToolRegistry.shared.register([
+            ToolDefinition(
+                name: "whatsapp_status", spec: whatsappToolSpecs[0],
+                category: ToolCategory.whatsapp.rawValue,
+                handler: { _ in await whatsappStatusTool() }),
+            ToolDefinition(
+                name: "start_whatsapp_bridge", spec: whatsappToolSpecs[1],
+                category: ToolCategory.whatsapp.rawValue,
+                handler: { _ in await startWhatsAppBridgeTool() }),
+            ToolDefinition(
+                name: "stop_whatsapp_bridge", spec: whatsappToolSpecs[2],
+                category: ToolCategory.whatsapp.rawValue,
+                handler: { _ in await stopWhatsAppBridgeTool() }),
+            ToolDefinition(
+                name: "list_whatsapp_chats", spec: whatsappToolSpecs[3],
+                category: ToolCategory.whatsapp.rawValue,
+                handler: { _ in await listWhatsAppChatsTool() }),
+            ToolDefinition(
+                name: "read_whatsapp_messages", spec: whatsappToolSpecs[4],
+                category: ToolCategory.whatsapp.rawValue,
+                handler: { call in await readWhatsAppMessagesTool(call) }),
+            ToolDefinition(
+                name: "send_whatsapp_message", spec: whatsappToolSpecs[5],
+                category: ToolCategory.whatsapp.rawValue,
+                handler: { call in await sendWhatsAppMessageTool(call) }),
+        ])
+    }
+
+
 
     static var whatsappToolSpecs: [ToolSpec] {
         [

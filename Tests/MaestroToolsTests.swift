@@ -7,7 +7,11 @@ final class MaestroToolsTests: XCTestCase {
 
     // MARK: - handles()
 
-    func testHandlesAllNativeTools() {
+    func testHandlesAllNativeTools() async {
+        // Registry-backed now (see ToolRegistry.swift) - must be populated
+        // before checking, since XCTest never runs the app's own startup .task.
+        await MaestroTools.registerAllMigratedTools()
+
         let expectedTools = [
             "get_current_time",
             "create_project_agent", "list_workspace", "archive_project_agent",
@@ -22,25 +26,48 @@ final class MaestroToolsTests: XCTestCase {
         ]
 
         for tool in expectedTools {
-            XCTAssertTrue(MaestroTools.handles(tool), "Should handle '\(tool)'")
+            let handled = await MaestroTools.handles(tool)
+            XCTAssertTrue(handled, "Should handle '\(tool)'")
         }
     }
 
-    func testHandlesDoesNotHandleUnknownTools() {
-        XCTAssertFalse(MaestroTools.handles("unknown_tool"))
-        XCTAssertFalse(MaestroTools.handles(""))
+    func testHandlesDoesNotHandleUnknownTools() async {
+        let unknown = await MaestroTools.handles("unknown_tool")
+        let empty = await MaestroTools.handles("")
+        XCTAssertFalse(unknown)
+        XCTAssertFalse(empty)
     }
 
-    func testHandlesShellTools() {
-        XCTAssertTrue(MaestroTools.handles("execute_command"))
-        XCTAssertTrue(MaestroTools.handles("list_background_processes"))
-        XCTAssertTrue(MaestroTools.handles("stop_background_process"))
+    func testHandlesShellTools() async {
+        await MaestroTools.registerAllMigratedTools()
+        let executeCommand = await MaestroTools.handles("execute_command")
+        let listBackground = await MaestroTools.handles("list_background_processes")
+        let stopBackground = await MaestroTools.handles("stop_background_process")
+        XCTAssertTrue(executeCommand)
+        XCTAssertTrue(listBackground)
+        XCTAssertTrue(stopBackground)
     }
 
-    func testHandlesExcludesDelegationTools() {
-        // ask_project_agent is handled by AgentExecutor, not MaestroTools
-        XCTAssertFalse(MaestroTools.handles("ask_project_agent"))
-        XCTAssertFalse(MaestroTools.handles("ask_project_agents"))
+    func testDelegationToolsAreRegisteredButDefendedAgainstDirectExecution() async {
+        // ask_project_agent/ask_project_agents ARE registered now (so they
+        // advertise correctly and handles() is accurate) - but AgentExecutor
+        // intercepts them by name BEFORE ever calling MaestroTools.handles()/
+        // execute() (it needs the live model/endpoint/MCP context this
+        // static registry has no access to). If that interception is ever
+        // bypassed, these defensive handlers must fail loudly, not silently
+        // do something wrong.
+        await MaestroTools.registerAllMigratedTools()
+        let askOne = await MaestroTools.handles("ask_project_agent")
+        let askMany = await MaestroTools.handles("ask_project_agents")
+        XCTAssertTrue(askOne)
+        XCTAssertTrue(askMany)
+
+        let oneResult = await MaestroTools.execute(
+            ToolCall(function: .init(name: "ask_project_agent", arguments: [:])))
+        let manyResult = await MaestroTools.execute(
+            ToolCall(function: .init(name: "ask_project_agents", arguments: [:])))
+        XCTAssertTrue(oneResult.contains("intercepted by AgentExecutor"))
+        XCTAssertTrue(manyResult.contains("intercepted by AgentExecutor"))
     }
 
     // MARK: - schemas()
@@ -51,8 +78,9 @@ final class MaestroToolsTests: XCTestCase {
         XCTAssertFalse(schemas.isEmpty)
     }
 
-    func testNavigatorSchemasIncludesAllCategories() {
-        let schemas = MaestroTools.schemas(navigator: true)
+    func testNavigatorSchemasIncludesAllCategories() async {
+        await MaestroTools.registerAllMigratedTools()
+        let schemas = await MaestroTools.schemas(navigator: true)
         let names = schemas.compactMap {
             ($0["function"] as? [String: Any])?["name"] as? String
         }
@@ -102,8 +130,9 @@ final class MaestroToolsTests: XCTestCase {
         XCTAssertTrue(names.contains("read_numbers_table"))
     }
 
-    func testProjectAgentSchemasExcludesWorkspaceTools() {
-        let schemas = MaestroTools.schemas(navigator: false)
+    func testProjectAgentSchemasExcludesWorkspaceTools() async {
+        await MaestroTools.registerAllMigratedTools()
+        let schemas = await MaestroTools.schemas(navigator: false)
         let names = schemas.compactMap {
             ($0["function"] as? [String: Any])?["name"] as? String
         }
@@ -123,8 +152,9 @@ final class MaestroToolsTests: XCTestCase {
 
     // MARK: - Tool spec structure
 
-    func testToolSpecsHaveCorrectStructure() {
-        let schemas = MaestroTools.schemas(navigator: true)
+    func testToolSpecsHaveCorrectStructure() async {
+        await MaestroTools.registerAllMigratedTools()
+        let schemas = await MaestroTools.schemas(navigator: true)
         for spec in schemas {
             XCTAssertEqual(spec["type"] as? String, "function")
             let function = spec["function"] as? [String: Any]
@@ -162,10 +192,11 @@ final class MaestroToolsTests: XCTestCase {
 
     // MARK: - Compact Tool Mode: schemas(compactMode:)
 
-    func testSchemasCompactModeDefaultOffIsUnchanged() {
+    func testSchemasCompactModeDefaultOffIsUnchanged() async {
+        await MaestroTools.registerAllMigratedTools()
         // compactMode defaults to false — a deferrable tool (read_file, .file
         // category) stays directly advertised, and the meta-tools are absent.
-        let names = MaestroTools.schemas(navigator: false).compactMap {
+        let names = await MaestroTools.schemas(navigator: false).compactMap {
             ($0["function"] as? [String: Any])?["name"] as? String
         }
         XCTAssertTrue(names.contains("read_file"))
@@ -173,8 +204,9 @@ final class MaestroToolsTests: XCTestCase {
         XCTAssertFalse(names.contains("call_tool"))
     }
 
-    func testSchemasCompactModeHidesDeferrableCategoriesOnly() {
-        let names = MaestroTools.schemas(
+    func testSchemasCompactModeHidesDeferrableCategoriesOnly() async {
+        await MaestroTools.registerAllMigratedTools()
+        let names = await MaestroTools.schemas(
             navigator: false,
             enabledCategories: [.file, .memory],
             compactMode: true
@@ -189,10 +221,11 @@ final class MaestroToolsTests: XCTestCase {
         XCTAssertTrue(names.contains("memory_write"))
     }
 
-    func testSchemasCompactModeOmitsMetaToolsWhenNothingIsDeferred() {
+    func testSchemasCompactModeOmitsMetaToolsWhenNothingIsDeferred() async {
+        await MaestroTools.registerAllMigratedTools()
         // Only non-deferrable categories enabled -> nothing to defer -> no
         // meta-tools added (they'd be pure overhead with nothing to search).
-        let names = MaestroTools.schemas(
+        let names = await MaestroTools.schemas(
             navigator: false,
             enabledCategories: [.memory, .rules],
             compactMode: true

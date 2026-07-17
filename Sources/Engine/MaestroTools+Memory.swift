@@ -9,9 +9,28 @@ import MLXLMCommon
 // recallable memory out of the box.
 extension MaestroTools {
 
-    static let memoryToolNames: Set<String> = [
-        "memory_write", "memory_read", "memory_search", "memory_list",
-    ]
+    static func registerMemoryTools() async {
+        await ToolRegistry.shared.register([
+            ToolDefinition(
+                name: "memory_write", spec: memoryToolSpecs[0],
+                category: ToolCategory.memory.rawValue,
+                handler: { call in await memoryWrite(call) }),
+            ToolDefinition(
+                name: "memory_read", spec: memoryToolSpecs[1],
+                category: ToolCategory.memory.rawValue,
+                handler: { call in await memoryRead(call) }),
+            ToolDefinition(
+                name: "memory_search", spec: memoryToolSpecs[2],
+                category: ToolCategory.memory.rawValue,
+                handler: { call in await memorySearch(call) }),
+            ToolDefinition(
+                name: "memory_list", spec: memoryToolSpecs[3],
+                category: ToolCategory.memory.rawValue,
+                handler: { call in await memoryList(call) }),
+        ])
+    }
+
+
 
     private static let memoryKindDesc =
         "Namespace: 'knowledge' (durable facts/decisions), 'memory' (conversation "

@@ -16,7 +16,19 @@ import MLXLMCommon
 // existing agent), none of this is advertised and behavior is unchanged.
 extension MaestroTools {
 
-    static let metaToolNames: Set<String> = ["search_tools", "call_tool"]
+    /// Category nil (always-on) - these are added to the prompt outside the
+    /// normal category filter entirely (see schemas(compactMode:)), so there's
+    /// no meaningful category to gate them behind in the registry either.
+    static func registerMetaTools() async {
+        await ToolRegistry.shared.register([
+            ToolDefinition(
+                name: "search_tools", spec: metaToolSpecs[0], category: nil,
+                handler: { call in await searchToolsMeta(call) }),
+            ToolDefinition(
+                name: "call_tool", spec: metaToolSpecs[1], category: nil,
+                handler: { call in await callToolMeta(call) }),
+        ])
+    }
 
     static var metaToolSpecs: [ToolSpec] {
         [
@@ -51,8 +63,8 @@ extension MaestroTools {
     /// `currentEnabledCategories`), built from the SAME `schemas(...)` source
     /// of truth `compactMode` uses to decide what to hide — so search results
     /// and what `call_tool` will actually accept never drift apart.
-    private static func deferredCandidates() -> [(name: String, description: String, category: ToolCategory)] {
-        schemas(
+    private static func deferredCandidates() async -> [(name: String, description: String, category: ToolCategory)] {
+        await schemas(
             navigator: currentIsNavigator,
             enabledCategories: currentEnabledCategories,
             compactMode: false
@@ -70,7 +82,7 @@ extension MaestroTools {
     static func searchToolsMeta(_ call: ToolCall) async -> String {
         let query = decodeArgs(call, as: SearchToolsArgs.self)?.query?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let candidates = deferredCandidates()
+        let candidates = await deferredCandidates()
 
         guard !query.isEmpty else {
             guard !candidates.isEmpty else { return "No additional tools available right now." }
@@ -112,7 +124,7 @@ extension MaestroTools {
         if let scope = currentEnabledCategories, !scope.contains(category) {
             return errorJSON("\"\(name)\" isn't enabled for this agent. Use search_tools to see what's available.")
         }
-        guard MaestroTools.handles(name) else {
+        guard await MaestroTools.handles(name) else {
             return errorJSON("\"\(name)\" is not implemented.")
         }
 
