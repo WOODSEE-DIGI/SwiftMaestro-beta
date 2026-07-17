@@ -16,3 +16,6 @@ build/
 
 # Artifacts
 *.dmg
+
+# Node (docs/mcp-template example server)
+node_modules/

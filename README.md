@@ -83,6 +83,9 @@ The assistant has native, in-process tools — no configuration required:
 - **Multi-agent delegation** — the Navigator can create project agents and delegate tasks to them, each running their own model.
 
 Additional tools (web, shell, etc.) can be added by configuring MCP servers in **Settings → MCP**.
+See [`docs/MCP-SERVERS.md`](docs/MCP-SERVERS.md) for how the integration works and what makes a
+server SwiftMaestro-friendly, and [`docs/mcp-template/`](docs/mcp-template/) for a minimal,
+verified-working example server to start a new one from.
 
 ## Build from source
 Requires Xcode 16+ and [`xcodegen`](https://github.com/yonaskolb/XcodeGen).
