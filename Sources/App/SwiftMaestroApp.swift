@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftMaestroKit
 
 enum SwiftMaestroDefaultsMigration {
     static func applyIfNeeded() {

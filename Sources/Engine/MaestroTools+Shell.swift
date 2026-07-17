@@ -1,5 +1,6 @@
 import Foundation
 import MLXLMCommon
+import SwiftMaestroKit
 #if canImport(Darwin)
 import Darwin
 #endif

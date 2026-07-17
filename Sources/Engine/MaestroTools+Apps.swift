@@ -1,5 +1,6 @@
 import Foundation
 import MLXLMCommon
+import SwiftMaestroKit
 
 // MARK: - Native "app" tools: Notes.md, Kanban, Canvas, richer Apple Notes, Calendar listing
 //

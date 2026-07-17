@@ -1,5 +1,6 @@
 import Foundation
 import MLXLMCommon
+import SwiftMaestroKit
 
 // MARK: - Compact Tool Mode meta-tools: search_tools / call_tool
 //

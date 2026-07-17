@@ -1,6 +1,7 @@
 import XCTest
 import MLXLMCommon
 import PDFKit
+import SwiftMaestroKit
 @testable import SwiftMaestro
 
 final class MaestroToolsTests: XCTestCase {

@@ -2,6 +2,7 @@ import Foundation
 import Network
 import MLXLMCommon
 import UniformTypeIdentifiers
+import SwiftMaestroKit
 
 // MARK: - Built-in Static File Server
 

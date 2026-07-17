@@ -1,6 +1,7 @@
 import Foundation
 import MLXLMCommon
 import GRDB
+import SwiftMaestroKit
 
 // MARK: - Native SQLite query tool
 //

@@ -1,5 +1,6 @@
 import Foundation
 import MLXLMCommon
+import SwiftMaestroKit
 
 // MARK: - Directory indexing tools
 //

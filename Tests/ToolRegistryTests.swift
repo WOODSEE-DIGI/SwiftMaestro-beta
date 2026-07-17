@@ -1,6 +1,7 @@
 import XCTest
 import MLXLMCommon
 import GRDB
+import SwiftMaestroKit
 @testable import SwiftMaestro
 
 /// Covers the new `ToolRegistry` mechanism directly, plus a real end-to-end

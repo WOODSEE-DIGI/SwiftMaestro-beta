@@ -1,5 +1,6 @@
 import Foundation
 import MLXLMCommon
+import SwiftMaestroKit
 
 // MARK: - Remote LM Studio backend
 //

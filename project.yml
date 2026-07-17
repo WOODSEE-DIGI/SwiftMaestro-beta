@@ -6,6 +6,8 @@ options:
   xcodeVersion: "16"
 
 packages:
+  SwiftMaestroKit:
+    path: ../../AI-ML-Agents/SwiftMaestroKit
   mlx-swift-lm:
     path: ../../AI-ML-Agents/mlx-swift-lm
   swift-transformers:
@@ -84,6 +86,8 @@ targets:
           CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
           OTHER_CODE_SIGN_FLAGS: "--timestamp --options runtime"
     dependencies:
+      - package: SwiftMaestroKit
+        product: SwiftMaestroKit
       - package: mlx-swift-lm
         product: MLXLLM
       - package: mlx-swift-lm

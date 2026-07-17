@@ -1,5 +1,6 @@
 import Foundation
 import MLXLMCommon
+import SwiftMaestroKit
 
 /// Drives one agent's chat. The Navigator is the top-level conductor; project
 /// agents belong to a project and operate scoped to that project's memory.

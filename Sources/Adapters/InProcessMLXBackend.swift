@@ -1,6 +1,7 @@
 import Foundation
 import MLXLMCommon
 import CoreImage
+import SwiftMaestroKit
 
 // MARK: - In-process MLX backend
 //

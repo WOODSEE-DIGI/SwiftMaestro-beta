@@ -6,6 +6,7 @@ import MLXLMCommon
 import Hub
 import Tokenizers
 import CoreImage
+import SwiftMaestroKit
 
 // MARK: - Engine State
 
