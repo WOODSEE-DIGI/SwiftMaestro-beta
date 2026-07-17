@@ -32,10 +32,16 @@ enum SwiftMaestroDefaultsMigration {
 /// separate leak, fixed at the source in `MCPClientService.connect(to:)`.)
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var mcpService: MCPClientService?
+    var whatsAppService: WhatsAppService?
 
     func applicationWillTerminate(_ notification: Notification) {
-        guard let mcpService else { return }
-        Task { await mcpService.shutdown() }
+        if let mcpService {
+            Task { await mcpService.shutdown() }
+        }
+        // The WhatsApp bridge is a long-running native process (holds the
+        // live connection) - same leak risk as MCP servers if nothing stops
+        // it on quit, so it gets the same cleanup treatment.
+        whatsAppService?.stop()
     }
 }
 
@@ -58,6 +64,7 @@ struct SwiftMaestroApp: App {
     @State private var canvasStore = CanvasStore()
     @State private var kanbanStore = KanbanStore()
     @State private var numbersService = NumbersService()
+    @State private var whatsAppService = WhatsAppService()
     @State private var pluginService = PluginService()
     private let mcpService = MCPClientService()
 
@@ -80,9 +87,11 @@ struct SwiftMaestroApp: App {
                 .environment(canvasStore)
                 .environment(kanbanStore)
                 .environment(numbersService)
+                .environment(whatsAppService)
                 .environment(pluginService)
                 .task {
                     appDelegate.mcpService = mcpService
+                    appDelegate.whatsAppService = whatsAppService
                     pluginService.loadPlugins()
                     // Restore user settings from the external JSON backup if the
                     // UserDefaults plist has been reset or deleted. This must run
@@ -210,6 +219,7 @@ struct SwiftMaestroApp: App {
                     .environment(canvasStore)
                     .environment(kanbanStore)
                     .environment(numbersService)
+                    .environment(whatsAppService)
                     .environment(pluginService)
             }
         }

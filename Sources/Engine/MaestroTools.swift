@@ -149,11 +149,11 @@ enum MaestroTools {
             if navigator {
                 specs += navigatorToolSpecs + navigatorOCRSpec + memoryToolSpecs
                     + fileToolSpecs + indexToolSpecs + shellToolSpecs + serverToolSpecs
-                    + systemToolSpecs + appsToolSpecs
+                    + systemToolSpecs + appsToolSpecs + whatsappToolSpecs
             } else {
                 specs += memoryToolSpecs + fileToolSpecs + systemToolSpecs
                 specs += messagingToolSpecs + indexToolSpecs + sqliteToolSpecs
-                    + shellToolSpecs + serverToolSpecs + appsToolSpecs
+                    + shellToolSpecs + serverToolSpecs + appsToolSpecs + whatsappToolSpecs
             }
             baseSpecs = specs
         }
@@ -427,7 +427,8 @@ enum MaestroTools {
             || systemToolNames.contains(name) || indexToolNames.contains(name)
             || sqliteToolNames.contains(name)
             || shellToolNames.contains(name) || serverToolNames.contains(name)
-            || appsToolNames.contains(name) || metaToolNames.contains(name) { return true }
+            || appsToolNames.contains(name) || metaToolNames.contains(name)
+            || whatsappToolNames.contains(name) { return true }
         return schemas.contains { spec in
             (spec["function"] as? [String: any Sendable])?["name"] as? String == name
         }
@@ -597,6 +598,18 @@ enum MaestroTools {
             return await searchToolsMeta(call)
         case "call_tool":
             return await callToolMeta(call)
+        case "whatsapp_status":
+            return await whatsappStatusTool()
+        case "start_whatsapp_bridge":
+            return await startWhatsAppBridgeTool()
+        case "stop_whatsapp_bridge":
+            return await stopWhatsAppBridgeTool()
+        case "list_whatsapp_chats":
+            return await listWhatsAppChatsTool()
+        case "read_whatsapp_messages":
+            return await readWhatsAppMessagesTool(call)
+        case "send_whatsapp_message":
+            return await sendWhatsAppMessageTool(call)
         default:
             return errorJSON("unknown tool: \(call.function.name)")
         }

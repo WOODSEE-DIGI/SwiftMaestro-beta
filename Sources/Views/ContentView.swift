@@ -235,6 +235,7 @@ struct ContentView: View {
                 sidebarRow("Reminders", kind: .reminders)
                 sidebarRow("Contacts", kind: .contacts)
                 sidebarRow("Numbers", kind: .numbers)
+                sidebarRow("WhatsApp", kind: .whatsapp)
             }
             Section("Swift Apps") {
                 sidebarRow("Notes.md", kind: .notesMD)

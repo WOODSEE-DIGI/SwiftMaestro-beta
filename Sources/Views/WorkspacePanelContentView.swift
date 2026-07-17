@@ -33,6 +33,8 @@ struct WorkspacePanelContentView: View {
             KanbanView()
         case .numbers:
             NumbersView()
+        case .whatsapp:
+            WhatsAppView()
         case .plugin(let id):
             if let manifest = pluginService.manifest(id: id) {
                 PluginPanelView(manifest: manifest)

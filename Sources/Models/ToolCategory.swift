@@ -20,6 +20,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     case kanban
     case canvas
     case numbers
+    case whatsapp
 
     var id: String { rawValue }
 
@@ -43,7 +44,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .workspace, .memory, .rules, .time, .mcp:
             return false
         case .file, .shell, .server, .index, .system, .sqlite,
-             .notes, .kanban, .canvas, .numbers:
+             .notes, .kanban, .canvas, .numbers, .whatsapp:
             return true
         }
     }
@@ -65,6 +66,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .kanban: return "Kanban"
         case .canvas: return "Canvas"
         case .numbers: return "Numbers"
+        case .whatsapp: return "WhatsApp"
         }
     }
 
@@ -85,6 +87,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .kanban: return "rectangle.split.3x1"
         case .canvas: return "rectangle.3.group"
         case .numbers: return "tablecells"
+        case .whatsapp: return "message"
         }
     }
 
@@ -145,6 +148,11 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
                 "list_numbers_sheets", "list_numbers_tables", "read_numbers_table",
                 "write_numbers_cell", "export_numbers_document",
             ]
+        case .whatsapp:
+            return [
+                "whatsapp_status", "start_whatsapp_bridge", "stop_whatsapp_bridge",
+                "list_whatsapp_chats", "read_whatsapp_messages", "send_whatsapp_message",
+            ]
         case .mcp:
             return []
         }
@@ -154,11 +162,14 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     static func visible(for kind: AgentKind) -> [ToolCategory] {
         switch kind {
         case .navigator:
-            return [.workspace, .memory, .system, .rules, .time, .notes, .kanban, .canvas, .numbers]
+            return [
+                .workspace, .memory, .system, .rules, .time,
+                .notes, .kanban, .canvas, .numbers, .whatsapp,
+            ]
         case .project:
             return [
                 .file, .shell, .server, .index, .memory, .system, .mcp, .sqlite,
-                .notes, .kanban, .canvas, .numbers,
+                .notes, .kanban, .canvas, .numbers, .whatsapp,
             ]
         }
     }
