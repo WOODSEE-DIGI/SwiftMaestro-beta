@@ -42,6 +42,7 @@ struct SwiftMaestroApp: App {
     @State private var contactsService = ContactsService()
     @State private var canvasStore = CanvasStore()
     @State private var kanbanStore = KanbanStore()
+    @State private var numbersService = NumbersService()
     private let mcpService = MCPClientService()
 
     var body: some Scene {
@@ -62,6 +63,7 @@ struct SwiftMaestroApp: App {
                 .environment(contactsService)
                 .environment(canvasStore)
                 .environment(kanbanStore)
+                .environment(numbersService)
                 .task {
                     // Restore user settings from the external JSON backup if the
                     // UserDefaults plist has been reset or deleted. This must run
@@ -188,6 +190,7 @@ struct SwiftMaestroApp: App {
                     .environment(contactsService)
                     .environment(canvasStore)
                     .environment(kanbanStore)
+                    .environment(numbersService)
             }
         }
         .defaultSize(width: 500, height: 700)

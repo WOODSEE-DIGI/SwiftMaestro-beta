@@ -19,6 +19,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     case notes
     case kanban
     case canvas
+    case numbers
 
     var id: String { rawValue }
 
@@ -38,6 +39,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .notes: return "Notes"
         case .kanban: return "Kanban"
         case .canvas: return "Canvas"
+        case .numbers: return "Numbers"
         }
     }
 
@@ -57,6 +59,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .notes: return "note.text"
         case .kanban: return "rectangle.split.3x1"
         case .canvas: return "rectangle.3.group"
+        case .numbers: return "tablecells"
         }
     }
 
@@ -111,6 +114,12 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             ]
         case .canvas:
             return ["list_canvas_boards", "create_canvas_board", "delete_canvas_board"]
+        case .numbers:
+            return [
+                "list_numbers_documents", "create_numbers_document", "open_numbers_document",
+                "list_numbers_sheets", "list_numbers_tables", "read_numbers_table",
+                "write_numbers_cell", "export_numbers_document",
+            ]
         case .mcp:
             return []
         }
@@ -120,11 +129,11 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     static func visible(for kind: AgentKind) -> [ToolCategory] {
         switch kind {
         case .navigator:
-            return [.workspace, .memory, .system, .rules, .time, .notes, .kanban, .canvas]
+            return [.workspace, .memory, .system, .rules, .time, .notes, .kanban, .canvas, .numbers]
         case .project:
             return [
                 .file, .shell, .server, .index, .memory, .system, .mcp, .sqlite,
-                .notes, .kanban, .canvas,
+                .notes, .kanban, .canvas, .numbers,
             ]
         }
     }

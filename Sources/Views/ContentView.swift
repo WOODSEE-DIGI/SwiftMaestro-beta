@@ -232,6 +232,7 @@ struct ContentView: View {
                 sidebarRow("Calendar", kind: .calendar)
                 sidebarRow("Reminders", kind: .reminders)
                 sidebarRow("Contacts", kind: .contacts)
+                sidebarRow("Numbers", kind: .numbers)
             }
             Section("Swift Apps") {
                 sidebarRow("Notes.md", kind: .notesMD)

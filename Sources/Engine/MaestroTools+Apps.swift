@@ -18,6 +18,9 @@ extension MaestroTools {
         "list_canvas_boards", "create_canvas_board", "delete_canvas_board",
         "list_apple_note_folders", "list_apple_notes", "read_apple_note",
         "list_calendar_events",
+        "list_numbers_documents", "create_numbers_document", "open_numbers_document",
+        "list_numbers_sheets", "list_numbers_tables", "read_numbers_table",
+        "write_numbers_cell", "export_numbers_document",
     ]
 
     static var appsToolSpecs: [ToolSpec] {
@@ -142,6 +145,57 @@ extension MaestroTools {
                     "days": ["type": "integer", "description": "How many days ahead to look (default 7)."],
                     "limit": ["type": "integer", "description": "Max events to return (default 25)."],
                 ], required: []),
+
+            // MARK: Apple Numbers (spreadsheets)
+            rawSpec("list_numbers_documents",
+                "List documents currently open in the macOS Numbers app. Prompts for access on first use. "
+                + "Returns each document's id/name/path — use the id (or name) to address it in other numbers tools.",
+                properties: [:], required: []),
+            rawSpec("create_numbers_document",
+                "Create a new blank Numbers document (one default sheet/table) and bring Numbers to the front. "
+                + "The document saves wherever Numbers wants by default (usually iCloud Drive); use "
+                + "export_numbers_document afterward if a specific file/format is needed.",
+                properties: [:], required: []),
+            rawSpec("open_numbers_document",
+                "Open an existing .numbers file from disk in the macOS Numbers app.",
+                properties: [
+                    "path": ["type": "string", "description": "Absolute path to a .numbers file."],
+                ], required: ["path"]),
+            rawSpec("list_numbers_sheets",
+                "List the sheets in an open Numbers document.",
+                properties: [
+                    "document": ["type": "string", "description": "Document id or name (from list_numbers_documents)."],
+                ], required: ["document"]),
+            rawSpec("list_numbers_tables",
+                "List the tables on a sheet of an open Numbers document.",
+                properties: [
+                    "document": ["type": "string", "description": "Document id or name."],
+                    "sheet": ["type": "string", "description": "Sheet name (from list_numbers_sheets)."],
+                ], required: ["document", "sheet"]),
+            rawSpec("read_numbers_table",
+                "Read all cell values of a table as a 2-D grid of strings.",
+                properties: [
+                    "document": ["type": "string", "description": "Document id or name."],
+                    "sheet": ["type": "string", "description": "Sheet name."],
+                    "table": ["type": "string", "description": "Table name (from list_numbers_tables)."],
+                ], required: ["document", "sheet", "table"]),
+            rawSpec("write_numbers_cell",
+                "Write a single cell's value in a table. Values that look like a plain number "
+                + "are written as numbers; everything else is written as text.",
+                properties: [
+                    "document": ["type": "string", "description": "Document id or name."],
+                    "sheet": ["type": "string", "description": "Sheet name."],
+                    "table": ["type": "string", "description": "Table name."],
+                    "cell": ["type": "string", "description": "A1-style cell reference, e.g. 'B2'."],
+                    "value": ["type": "string", "description": "Value to write."],
+                ], required: ["document", "sheet", "table", "cell", "value"]),
+            rawSpec("export_numbers_document",
+                "Export a Numbers document to CSV, PDF, or Excel (.xlsx) at a specific path.",
+                properties: [
+                    "document": ["type": "string", "description": "Document id or name."],
+                    "path": ["type": "string", "description": "Destination file path, including extension."],
+                    "format": ["type": "string", "description": "csv, pdf, or xlsx."],
+                ], required: ["document", "path", "format"]),
         ]
     }
 
@@ -155,6 +209,9 @@ extension MaestroTools {
 
     @MainActor
     private static let sharedCanvasStore = CanvasStore()
+
+    @MainActor
+    private static let sharedNumbersService = NumbersService()
 
     // MARK: - Notes.md vault path resolution
     //
@@ -647,6 +704,173 @@ extension MaestroTools {
                 return "- \(event.title) (\(when), \(event.calendarTitle))"
             }
             return "Events (\(events.count)):\n" + lines.joined(separator: "\n")
+        } catch {
+            return errorJSON(error.localizedDescription)
+        }
+    }
+
+    // MARK: - Numbers argument types
+
+    private struct NumbersDocumentArgs: Codable { let document: String? }
+    private struct NumbersOpenArgs: Codable { let path: String? }
+    private struct NumbersSheetArgs: Codable { let document: String?; let sheet: String? }
+    private struct NumbersTableArgs: Codable { let document: String?; let sheet: String?; let table: String? }
+    private struct NumbersWriteCellArgs: Codable {
+        let document: String?; let sheet: String?; let table: String?
+        let cell: String?; let value: String?
+    }
+    private struct NumbersExportArgs: Codable { let document: String?; let path: String?; let format: String? }
+
+    /// Fuzzy document lookup: exact id, then case-insensitive exact name,
+    /// then case-insensitive substring — mirrors `findBoard` for Kanban.
+    /// Loads the document list first if it's never been loaded.
+    @MainActor
+    private static func resolveNumbersDocument(_ key: String) async -> NumbersDocument? {
+        if sharedNumbersService.documents.isEmpty {
+            await sharedNumbersService.loadDocuments()
+        }
+        if let byID = sharedNumbersService.documents.first(where: { $0.id == key }) { return byID }
+        if let exact = sharedNumbersService.documents.first(where: { $0.name.caseInsensitiveCompare(key) == .orderedSame }) {
+            return exact
+        }
+        return sharedNumbersService.documents.first { $0.name.localizedCaseInsensitiveContains(key) }
+    }
+
+    private static func renderNumbersDocument(_ doc: NumbersDocument) -> [String: Any] {
+        var dict: [String: Any] = ["id": doc.id, "name": doc.name]
+        if let path = doc.path { dict["path"] = path }
+        return dict
+    }
+
+    // MARK: - Numbers implementations
+
+    static func listNumbersDocuments() async -> String {
+        if await MainActor.run(body: { sharedNumbersService.status }) != .authorized {
+            await sharedNumbersService.requestAuthorization()
+        }
+        await sharedNumbersService.loadDocuments()
+        return await MainActor.run {
+            if let error = sharedNumbersService.error, sharedNumbersService.documents.isEmpty {
+                return errorJSON(error)
+            }
+            let docs = sharedNumbersService.documents
+            guard !docs.isEmpty else { return "No documents open in Numbers (or access not yet granted)." }
+            return jsonString(["documents": docs.map(renderNumbersDocument)])
+        }
+    }
+
+    static func createNumbersDocument() async -> String {
+        do {
+            let doc = try await sharedNumbersService.createDocument()
+            return jsonString(renderNumbersDocument(doc))
+        } catch {
+            return errorJSON(error.localizedDescription)
+        }
+    }
+
+    static func openNumbersDocument(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: NumbersOpenArgs.self),
+              let path = args.path?.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty
+        else { return errorJSON("open_numbers_document requires 'path'") }
+        do {
+            let doc = try await sharedNumbersService.openDocument(atPath: path)
+            return jsonString(renderNumbersDocument(doc))
+        } catch {
+            return errorJSON(error.localizedDescription)
+        }
+    }
+
+    static func listNumbersSheets(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: NumbersDocumentArgs.self),
+              let key = args.document?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty
+        else { return errorJSON("list_numbers_sheets requires 'document'") }
+        guard let doc = await resolveNumbersDocument(key) else {
+            return errorJSON("no Numbers document matching \"\(key)\". Use list_numbers_documents first.")
+        }
+        do {
+            let sheets = try await sharedNumbersService.listSheets(documentID: doc.id)
+            guard !sheets.isEmpty else { return "No sheets in \"\(doc.name)\"." }
+            return jsonString(["document": doc.name, "sheets": sheets.map { ["name": $0.name, "tableCount": $0.tableCount] }])
+        } catch {
+            return errorJSON(error.localizedDescription)
+        }
+    }
+
+    static func listNumbersTables(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: NumbersSheetArgs.self),
+              let docKey = args.document?.trimmingCharacters(in: .whitespacesAndNewlines), !docKey.isEmpty,
+              let sheetName = args.sheet?.trimmingCharacters(in: .whitespacesAndNewlines), !sheetName.isEmpty
+        else { return errorJSON("list_numbers_tables requires 'document' and 'sheet'") }
+        guard let doc = await resolveNumbersDocument(docKey) else {
+            return errorJSON("no Numbers document matching \"\(docKey)\".")
+        }
+        do {
+            let tables = try await sharedNumbersService.listTables(documentID: doc.id, sheetName: sheetName)
+            guard !tables.isEmpty else { return "No tables on sheet \"\(sheetName)\" of \"\(doc.name)\"." }
+            return jsonString(["document": doc.name, "sheet": sheetName, "tables": tables.map {
+                ["name": $0.name, "rowCount": $0.rowCount, "columnCount": $0.columnCount]
+            }])
+        } catch {
+            return errorJSON(error.localizedDescription)
+        }
+    }
+
+    static func readNumbersTable(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: NumbersTableArgs.self),
+              let docKey = args.document?.trimmingCharacters(in: .whitespacesAndNewlines), !docKey.isEmpty,
+              let sheetName = args.sheet?.trimmingCharacters(in: .whitespacesAndNewlines), !sheetName.isEmpty,
+              let tableName = args.table?.trimmingCharacters(in: .whitespacesAndNewlines), !tableName.isEmpty
+        else { return errorJSON("read_numbers_table requires 'document', 'sheet', and 'table'") }
+        guard let doc = await resolveNumbersDocument(docKey) else {
+            return errorJSON("no Numbers document matching \"\(docKey)\".")
+        }
+        do {
+            let data = try await sharedNumbersService.readTable(
+                documentID: doc.id, sheetName: sheetName, tableName: tableName)
+            return jsonString([
+                "document": doc.name, "sheet": sheetName, "table": tableName,
+                "rowCount": data.rowCount, "columnCount": data.columnCount, "rows": data.rows,
+            ])
+        } catch {
+            return errorJSON(error.localizedDescription)
+        }
+    }
+
+    static func writeNumbersCell(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: NumbersWriteCellArgs.self),
+              let docKey = args.document?.trimmingCharacters(in: .whitespacesAndNewlines), !docKey.isEmpty,
+              let sheetName = args.sheet?.trimmingCharacters(in: .whitespacesAndNewlines), !sheetName.isEmpty,
+              let tableName = args.table?.trimmingCharacters(in: .whitespacesAndNewlines), !tableName.isEmpty,
+              let cell = args.cell?.trimmingCharacters(in: .whitespacesAndNewlines), !cell.isEmpty,
+              let value = args.value
+        else { return errorJSON("write_numbers_cell requires 'document', 'sheet', 'table', 'cell', and 'value'") }
+        guard let doc = await resolveNumbersDocument(docKey) else {
+            return errorJSON("no Numbers document matching \"\(docKey)\".")
+        }
+        do {
+            try await sharedNumbersService.writeCell(
+                documentID: doc.id, sheetName: sheetName, tableName: tableName, cell: cell, value: value)
+            return jsonString(["status": "written", "document": doc.name, "cell": cell, "value": value])
+        } catch {
+            return errorJSON(error.localizedDescription)
+        }
+    }
+
+    static func exportNumbersDocument(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: NumbersExportArgs.self),
+              let docKey = args.document?.trimmingCharacters(in: .whitespacesAndNewlines), !docKey.isEmpty,
+              let path = args.path?.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty,
+              let formatRaw = args.format?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !formatRaw.isEmpty
+        else { return errorJSON("export_numbers_document requires 'document', 'path', and 'format'") }
+        guard let format = NumbersExportFormat(rawValue: formatRaw) else {
+            return errorJSON("unsupported format \"\(formatRaw)\". Use csv, pdf, or xlsx.")
+        }
+        guard let doc = await resolveNumbersDocument(docKey) else {
+            return errorJSON("no Numbers document matching \"\(docKey)\".")
+        }
+        do {
+            try await sharedNumbersService.exportDocument(documentID: doc.id, toPath: path, format: format)
+            return jsonString(["status": "exported", "document": doc.name, "path": path, "format": formatRaw])
         } catch {
             return errorJSON(error.localizedDescription)
         }

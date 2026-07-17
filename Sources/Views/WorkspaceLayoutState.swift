@@ -17,6 +17,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
     case contacts
     case canvas
     case kanban
+    case numbers
     /// Shell command execution log. Used to live inside a single agent's chat
     /// as a `PanelType` sub-panel; moved here so it's a normal top-level
     /// "Swift Apps" item instead — one Terminal, independent of any agent.
@@ -32,6 +33,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .contacts: return "person.2"
         case .canvas: return "rectangle.3.group"
         case .kanban: return "rectangle.split.3x1"
+        case .numbers: return "tablecells"
         case .terminal: return "terminal"
         }
     }
@@ -49,6 +51,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .contacts: return "Contacts"
         case .canvas: return "Canvas"
         case .kanban: return "Kanban"
+        case .numbers: return "Numbers"
         case .terminal: return "Terminal"
         }
     }
@@ -78,6 +81,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .contacts: return "contacts"
         case .canvas: return "canvas"
         case .kanban: return "kanban"
+        case .numbers: return "numbers"
         case .terminal: return "terminal"
         }
     }

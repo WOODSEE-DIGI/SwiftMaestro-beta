@@ -530,6 +530,22 @@ enum MaestroTools {
             return await readAppleNote(call)
         case "list_calendar_events":
             return await listCalendarEventsTool(call)
+        case "list_numbers_documents":
+            return await listNumbersDocuments()
+        case "create_numbers_document":
+            return await createNumbersDocument()
+        case "open_numbers_document":
+            return await openNumbersDocument(call)
+        case "list_numbers_sheets":
+            return await listNumbersSheets(call)
+        case "list_numbers_tables":
+            return await listNumbersTables(call)
+        case "read_numbers_table":
+            return await readNumbersTable(call)
+        case "write_numbers_cell":
+            return await writeNumbersCell(call)
+        case "export_numbers_document":
+            return await exportNumbersDocument(call)
         default:
             return errorJSON("unknown tool: \(call.function.name)")
         }

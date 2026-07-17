@@ -30,6 +30,8 @@ struct WorkspacePanelContentView: View {
             }
         case .kanban:
             KanbanView()
+        case .numbers:
+            NumbersView()
         case .terminal:
             TerminalView()
         case .agentChat(let id):

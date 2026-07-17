@@ -111,34 +111,10 @@ final class AppleNotesService {
 
     // MARK: - Script runner
 
-    /// Runs a JXA script through `/usr/bin/osascript` off the main actor.
+    /// Runs a JXA script off the main actor via the shared `AppleScriptRunner`.
     /// Throws a localized error if the script fails or the user denies permission.
     private nonisolated func runScript(_ source: String, arguments: [String]) async throws -> String {
-        try await Task.detached(priority: .userInitiated) {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-            process.arguments = ["-l", "JavaScript", "-e", source] + arguments
-
-            let outputPipe = Pipe()
-            let errorPipe = Pipe()
-            process.standardOutput = outputPipe
-            process.standardError = errorPipe
-
-            try process.run()
-            process.waitUntilExit()
-
-            let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: outputData, encoding: .utf8) ?? ""
-            let stderr = String(data: errorData, encoding: .utf8) ?? ""
-
-            guard process.terminationStatus == 0 else {
-                let message = stderr.isEmpty ? output : stderr
-                throw AppleNotesError.scriptFailed(message.trimmingCharacters(in: .whitespacesAndNewlines))
-            }
-
-            return output.trimmingCharacters(in: .whitespacesAndNewlines)
-        }.value
+        try await AppleScriptRunner.run(source, arguments: arguments)
     }
 
     // MARK: - Scripts
@@ -265,15 +241,4 @@ struct AppleNotesNote: Identifiable, Codable, Hashable, Sendable {
     let body: String?
     let folderID: String
     let modified: Date?
-}
-
-enum AppleNotesError: LocalizedError {
-    case scriptFailed(String)
-
-    var errorDescription: String? {
-        switch self {
-        case .scriptFailed(let message):
-            return message
-        }
-    }
 }
