@@ -14,6 +14,7 @@ enum EngineState: Equatable {
     case loading(String)
     case ready(String)
     case generating
+    case downloading(String)
     case error(String)
 }
 
@@ -224,23 +225,75 @@ final class MLXInferenceEngine {
     // MARK: - Model Download
 
     /// Download a model from HuggingFace Hub without loading it into memory.
-    /// Shows progress in the engine's `downloadProgress` so the UI can reflect it.
+    /// Uses the SwiftMaestro-managed Python helper with `huggingface_hub` + Xet
+    /// acceleration; supports resume and reports progress to the UI.
     /// After completion the model's `localIfPresent` path will resolve on next access.
-    func downloadModel(_ model: MaestroModel) async throws {
-        guard model.localPath == nil else { return }  // already local
-        state = .loading("Downloading \(model.displayName)…")
-        let progress = Progress()
+    /// - Parameter repair: When true, remove any existing local directory first
+    ///   so incomplete/corrupt downloads can be fixed.
+    func downloadModel(_ model: MaestroModel, repair: Bool = false) async throws {
+        let repoName = model.huggingFaceID.components(separatedBy: "/").last ?? model.huggingFaceID
+        let destination = URL(fileURLWithPath: ModelCatalog.modelsRoot)
+            .appendingPathComponent("swiftmaestro-models/\(repoName)", isDirectory: true)
+
+        if repair, FileManager.default.fileExists(atPath: destination.path) {
+            try FileManager.default.removeItem(at: destination)
+        }
+
+        let metadataOnly: Bool
+        if FileManager.default.fileExists(atPath: destination.path) {
+            // If weights are already present, this is a metadata repair run.
+            // Skip the weight files and only pull missing templates/configs.
+            guard !ModelFileHealthService.isMetadataComplete(for: model) else { return }
+            metadataOnly = true
+        } else {
+            metadataOnly = false
+        }
+
+        state = .downloading("Downloading \(model.displayName)…")
+
+        // Observe the shared download service's progress and mirror it into the
+        // engine's `downloadProgress` so the UI can stay on its existing Progress.
+        let observed = HuggingFaceDownloadService.shared
+        let progress = Progress(totalUnitCount: 100)
         downloadProgress = progress
-        let downloader = HFHubDownloader()
-        let repo = Hub.Repo(id: model.huggingFaceID)
-        _ = try await downloader.hubApi.snapshot(
-            from: repo,
-            matching: ["*.json", "*.safetensors", "*.tinfo", "*.ngl", "*.txt"],
-            progressHandler: { @Sendable p in
-                progress.totalUnitCount = p.totalUnitCount
-                progress.completedUnitCount = p.completedUnitCount
-            })
-        downloadProgress = nil
+        let observation = Task {
+            var last: Double = 0
+            while !Task.isCancelled {
+                let current = observed.progress
+                if current != last {
+                    progress.completedUnitCount = Int64(current * 100)
+                    last = current
+                }
+                if !observed.isRunning { break }
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
+        defer { observation.cancel(); downloadProgress = nil }
+
+        // Pull the HuggingFace token from the project keychain if the user has stored one.
+        // Unauthenticated downloads are rate-limited and can hang on large Xet-hosted files.
+        let token = SecretsStore.resolveValue(name: "HUGGINGFACE_TOKEN", currentProject: "SwiftMaestro")
+
+        let allowPatterns: [String]
+        if metadataOnly {
+            allowPatterns = ModelFileHealthService.requirements(for: model)
+                .filter { !$0.isWeight }
+                .map { $0.filename }
+        } else {
+            allowPatterns = [
+                "*.json", "*.safetensors", "*.tinfo", "*.ngl",
+                "*.txt", "*.py", "*.model", "*.jinja", "*.md",
+                ".gitattributes"
+            ]
+        }
+
+        _ = try await HuggingFaceDownloadService.shared.download(
+            repoID: model.huggingFaceID,
+            localDir: destination.path,
+            allowPatterns: allowPatterns,
+            ignorePatterns: ["*.msgpack", "*.h5", "*.ot"],
+            token: token
+        )
         state = .idle
     }
 
@@ -253,6 +306,13 @@ final class MLXInferenceEngine {
             touchResident(model.id)
             state = .ready(model.displayName)
             return cached
+        }
+
+        // Ensure metadata files are present before attempting to load. This is
+        // especially important for VLMs, where a missing processor config or
+        // chat template can cause cryptic loader errors.
+        if model.hasLocalWeights {
+            await ModelFileHealthService.repairMetadataIfNeeded(for: model)
         }
 
         // Budget-aware residency: evict the least-recently-used model(s) only if
@@ -295,7 +355,7 @@ final class MLXInferenceEngine {
                 let configuration = ModelConfiguration(
                     directory: url, toolCallFormat: model.toolCallFormat)
                 return try await LLMModelFactory.shared.loadContainer(
-                    from: HFHubDownloader(),
+                    from: LocalDirectoryDownloader(directory: url),
                     using: MaestroTokenizerLoader(),
                     configuration: configuration
                 )
@@ -411,8 +471,10 @@ final class MLXInferenceEngine {
     ) async throws -> AsyncStream<GenerationOutput> {
         cancel()
         state = .generating
+        ModelActivitySampler.shared.register(model, state: .loading)
 
         let container = try await loadModel(model)
+        ModelActivitySampler.shared.register(model, state: .idle)
 
         // Map SwiftMaestro messages to MLX Chat.Message
         let chat: [Chat.Message] = messages.map { msg in
@@ -489,6 +551,8 @@ final class MLXInferenceEngine {
                 var conversation = chat
                 do {
                     iterations: while !Task.isCancelled {
+                        ProcessResourceSampler.shared.startGeneration()
+                        ModelActivitySampler.shared.startGeneration(id: model.id)
                         let input = UserInput(
                             chat: conversation,
                             tools: toolSchemas,
@@ -525,7 +589,11 @@ final class MLXInferenceEngine {
                             if canReuse && prefix > 0 {
                                 for c in pc.caches { c.trim(c.offset - prefix) }
                                 let deltaInts = Array(fullTokens[prefix...]).map { Int32($0) }
-                                let deltaArray = MLXArray(deltaInts).reshaped([1, deltaInts.count])
+                                // Keep delta tokens 1-D. mlx-swift-lm's LLMModel.prepare and TokenIterator
+                                // internally add the batch axis via .newAxis; passing a 2-D array here
+                                // makes chunking slice the wrong axis and feeds the model 3-D/1-D inputs
+                                // instead of 2-D [batch, sequence], crashing in convertToToken's subscript.
+                                let deltaArray = MLXArray(deltaInts)
                                 inputForGen = LMInput(text: .init(tokens: deltaArray))
                                 cacheForGen = pc.caches
                                 NSLog("[PERF] cache reuse: prefix=\(prefix)/\(fullTokens.count), delta=\(deltaInts.count) tok")
@@ -544,13 +612,16 @@ final class MLXInferenceEngine {
                                 input: inputForGen,
                                 cache: cacheForGen,
                                 parameters: parameters,
-                                context: context
+                                context: context,
+                                tools: toolSchemas?.map { $0 as [String: any Sendable] }
                             )
                         }
                         for await generation in stream {
                             guard !Task.isCancelled else { break iterations }
                             switch generation {
                             case .chunk(let chunk):
+                                ProcessResourceSampler.shared.recordToken()
+                                ModelActivitySampler.shared.recordToken(id: model.id)
                                 continuation.yield(.token(chunk))
                             case .info(let info):
                                 NSLog("[PERF] prompt=\(info.promptTokenCount) tok in \(String(format: "%.2f", info.promptTime))s (\(String(format: "%.0f", info.promptTokensPerSecond)) tok/s prefill); gen=\(info.generationTokenCount) tok in \(String(format: "%.2f", info.generateTime))s (\(String(format: "%.1f", info.tokensPerSecond)) tok/s)")
@@ -562,6 +633,8 @@ final class MLXInferenceEngine {
                                 pendingCalls.append(call)
                             }
                         }
+                        ProcessResourceSampler.shared.stopGeneration()
+                        ModelActivitySampler.shared.stopGeneration(id: model.id)
                         // No tool calls -> the model produced its final answer.
                         if pendingCalls.isEmpty { break iterations }
                         // Execute each tool call and feed the result back for the next round.
@@ -583,6 +656,9 @@ final class MLXInferenceEngine {
                 } catch {
                     // Propagate via the stream — caller handles errors / fallback
                 }
+                ProcessResourceSampler.shared.stopGeneration()
+                ProcessResourceSampler.shared.stopGeneration()
+                ModelActivitySampler.shared.stopGeneration(id: model.id)
                 continuation.finish()
                 await MainActor.run {
                     self.state = .ready(model.displayName)
@@ -614,6 +690,7 @@ final class MLXInferenceEngine {
         onInfo: @escaping @Sendable (Double) -> Void
     ) async throws -> (content: String, toolCalls: [RoundToolCall]) {
         state = .generating
+        ModelActivitySampler.shared.register(model, state: .loading)
         let chat: [Chat.Message] = chatTurns.map { turn in
             let images: [UserInput.Image] = turn.images.compactMap { data in
                 guard let ciImage = CIImage(data: data) else { return nil }
@@ -627,14 +704,19 @@ final class MLXInferenceEngine {
             }
         }
         let container = try await loadModel(model)
-        let repPen = Float(model.tunedRepetitionPenalty)
+        ModelActivitySampler.shared.register(model, state: .idle)
+        // Gemma 4's text path crashes when repetitionPenalty is non-nil
+        // (mlx-swift-lm issue #258). Disable it for Gemma 4 family models.
+        let repPen: Float? = model.huggingFaceID.lowercased().contains("gemma-4")
+            ? nil
+            : Float(model.tunedRepetitionPenalty)
         let parameters = GenerateParameters(
             maxTokens: maxTokens,
             temperature: Float(temperature), topP: Float(topP), repetitionPenalty: repPen,
             prefillStepSize: 1024)
 
         // Sanitize tool schemas through JSON round-trip to ensure all values
-        // are proper JSON types (String/Number/Bool/Array/Dict/NSNull) before
+        // are proper JSON types (String/Number/Boolean/Array/Dict/NSNull) before
         // they hit swift-jinja's Value(any:), which can mis-bridge
         // [String: any Sendable] existential containers.
         let sanitizedTools: [ToolSpec]? = toolSchemas.map { specs in
@@ -696,7 +778,11 @@ final class MLXInferenceEngine {
             if canReuse && prefix > 0 {
                 for c in pc.caches { c.trim(c.offset - prefix) }
                 let deltaInts = Array(fullTokens[prefix...]).map { Int32($0) }
-                let deltaArray = MLXArray(deltaInts).reshaped([1, deltaInts.count])
+                // Keep delta tokens 1-D. mlx-swift-lm's LLMModel.prepare and TokenIterator
+                // internally add the batch axis via .newAxis; passing a 2-D array here
+                // makes chunking slice the wrong axis and feeds the model 3-D/1-D inputs
+                // instead of 2-D [batch, sequence], crashing in convertToToken's subscript.
+                let deltaArray = MLXArray(deltaInts)
                 inputForGen = LMInput(text: .init(tokens: deltaArray))
                 cacheForGen = pc.caches
                 NSLog("[PERF] cache reuse: prefix=\(prefix)/\(fullTokens.count), delta=\(deltaInts.count) tok")
@@ -738,10 +824,14 @@ final class MLXInferenceEngine {
 
         var content = ""
         var toolCalls: [RoundToolCall] = []
+        ProcessResourceSampler.shared.startGeneration()
+        ModelActivitySampler.shared.startGeneration(id: model.id)
         for await generation in stream {
             if Task.isCancelled { break }
             switch generation {
             case .chunk(let chunk):
+                ProcessResourceSampler.shared.recordToken()
+                ModelActivitySampler.shared.recordToken(id: model.id)
                 content += chunk
                 onToken(chunk)
             case .info(let info):
@@ -749,12 +839,15 @@ final class MLXInferenceEngine {
                 self.tokensPerSecond = info.tokensPerSecond
                 onInfo(info.tokensPerSecond)
             case .toolCall(let call):
-                let argsJSON = (try? JSONEncoder().encode(call.function.arguments))
+                let argsObj = call.function.arguments.mapValues { $0.anyValue }
+                let argsJSON = (try? JSONSerialization.data(withJSONObject: argsObj))
                     .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
                 toolCalls.append(RoundToolCall(
                     id: UUID().uuidString, name: call.function.name, arguments: argsJSON))
             }
         }
+        ProcessResourceSampler.shared.stopGeneration()
+        ModelActivitySampler.shared.stopGeneration(id: model.id)
         state = .ready(model.displayName)
         return (content, toolCalls)
     }
@@ -778,8 +871,14 @@ final class MLXInferenceEngine {
         onInfo: @escaping @Sendable (Double) -> Void
     ) async throws -> (content: String, toolCalls: [RoundToolCall]) {
         state = .generating
+        ModelActivitySampler.shared.register(model, state: .loading)
         let container = try await loadModel(model)
-        let repPen = Float(model.tunedRepetitionPenalty)
+        ModelActivitySampler.shared.register(model, state: .idle)
+        // Gemma 4's text path crashes when repetitionPenalty is non-nil
+        // (mlx-swift-lm issue #258). Disable it for Gemma 4 family models.
+        let repPen: Float? = model.huggingFaceID.lowercased().contains("gemma-4")
+            ? nil
+            : Float(model.tunedRepetitionPenalty)
         let parameters = GenerateParameters(
             maxTokens: maxTokens,
             temperature: Float(temperature), topP: Float(topP), repetitionPenalty: repPen,
@@ -797,6 +896,7 @@ final class MLXInferenceEngine {
         }
         // .messages() path: raw dictionaries pass through DefaultMessageGenerator
         // untouched, preserving tool_calls and tool_call_id for the Jinja template.
+        NSLog("[ENGINE] generateRound messages=\(wireMessages.count) images=\(images.count) hf=\(model.huggingFaceID)")
         let input = UserInput(
             messages: wireMessages, images: images, tools: sanitizedTools,
             additionalContext: ["enable_thinking": thinkingEnabled])
@@ -839,7 +939,11 @@ final class MLXInferenceEngine {
             if canReuse && prefix > 0 {
                 for c in pc.caches { c.trim(c.offset - prefix) }
                 let deltaInts = Array(fullTokens[prefix...]).map { Int32($0) }
-                let deltaArray = MLXArray(deltaInts).reshaped([1, deltaInts.count])
+                // Keep delta tokens 1-D. mlx-swift-lm's LLMModel.prepare and TokenIterator
+                // internally add the batch axis via .newAxis; passing a 2-D array here
+                // makes chunking slice the wrong axis and feeds the model 3-D/1-D inputs
+                // instead of 2-D [batch, sequence], crashing in convertToToken's subscript.
+                let deltaArray = MLXArray(deltaInts)
                 inputForGen = LMInput(text: .init(tokens: deltaArray))
                 cacheForGen = pc.caches
                 NSLog("[PERF] cache reuse: prefix=\(prefix)/\(fullTokens.count), delta=\(deltaInts.count) tok")
@@ -861,17 +965,22 @@ final class MLXInferenceEngine {
                     try MLXLMCommon.generate(
                         input: inputForGen, cache: cacheForGen,
                         parameters: parameters, context: context,
-                        wiredMemoryTicket: wiredTicket)
+                        wiredMemoryTicket: wiredTicket,
+                        tools: sanitizedTools?.map { $0 as [String: any Sendable] })
                 }
             }
         }
 
         var content = ""
         var toolCalls: [RoundToolCall] = []
+        ProcessResourceSampler.shared.startGeneration()
+        ModelActivitySampler.shared.startGeneration(id: model.id)
         for await generation in stream {
             if Task.isCancelled { break }
             switch generation {
             case .chunk(let chunk):
+                ProcessResourceSampler.shared.recordToken()
+                ModelActivitySampler.shared.recordToken(id: model.id)
                 content += chunk
                 onToken(chunk)
             case .info(let info):
@@ -879,14 +988,114 @@ final class MLXInferenceEngine {
                 self.tokensPerSecond = info.tokensPerSecond
                 onInfo(info.tokensPerSecond)
             case .toolCall(let call):
-                let argsJSON = (try? JSONEncoder().encode(call.function.arguments))
+                let argsObj = call.function.arguments.mapValues { $0.anyValue }
+                let argsJSON = (try? JSONSerialization.data(withJSONObject: argsObj))
                     .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
                 toolCalls.append(RoundToolCall(
                     id: UUID().uuidString, name: call.function.name, arguments: argsJSON))
             }
         }
+        ProcessResourceSampler.shared.stopGeneration()
+        ModelActivitySampler.shared.stopGeneration(id: model.id)
         state = .ready(model.displayName)
         return (content, toolCalls)
+    }
+
+    // MARK: - Vision Proxy
+
+    /// Generate a short text description for an image using a FastVLM vision model.
+    /// This lets non-vision models receive a compressed image description instead
+    /// of raw pixels. The proxy model is loaded through the same residency cache as
+    /// the main model, so it stays resident if the budget allows, and it uses a
+    /// separate prompt cache key so captioning never contaminates the main chat's KV cache.
+    @MainActor
+    func captionWithFastVLM(
+        proxyModel: MaestroModel,
+        image: UserInput.Image,
+        prompt: String,
+        maxTokens: Int = 128
+    ) async throws -> String {
+        ModelActivitySampler.shared.register(proxyModel, state: .loading)
+        let container = try await loadModel(proxyModel)
+        ModelActivitySampler.shared.register(proxyModel, state: .idle)
+
+        let chat: [Chat.Message] = [.user(prompt, images: [image])]
+        let input = UserInput(chat: chat, tools: nil)
+
+        let parameters = GenerateParameters(
+            maxTokens: maxTokens,
+            temperature: 0.3,
+            topP: 0.9,
+            repetitionPenalty: 1.0,
+            prefillStepSize: 512)
+
+        // Dedicated session key isolates the proxy cache from the main model's cache.
+        let sessionKey = "vision-proxy::\(proxyModel.id)"
+        nonisolated(unsafe) let capturedInput = input
+        nonisolated(unsafe) let pc = cache(forSession: sessionKey)
+        let rngState = MLXRandom.RandomState(
+            seed: DispatchTime.now().uptimeNanoseconds)
+
+        let stream = try await container.perform { context in
+            let lmInput = try await context.processor.prepare(input: capturedInput)
+            let fullTokens = lmInput.text.tokens.asArray(Int.self)
+            let canReuse = pc.isReady
+                && pc.modelID == proxyModel.id
+                && !pc.caches.isEmpty
+                && pc.caches.allSatisfy { $0.isTrimmable }
+            var prefix = 0
+            if canReuse {
+                let minOffset = pc.caches.map { $0.offset }.min() ?? 0
+                prefix = MLXInferenceEngine.commonPrefixLength(pc.tokens, fullTokens)
+                prefix = min(prefix, minOffset, fullTokens.count - 1)
+                if prefix < 0 { prefix = 0 }
+            }
+            let inputForGen: LMInput
+            let cacheForGen: [KVCache]
+            if canReuse && prefix > 0 {
+                for c in pc.caches { c.trim(c.offset - prefix) }
+                let deltaInts = Array(fullTokens[prefix...]).map { Int32($0) }
+                // Keep delta tokens 1-D. mlx-swift-lm's LLMModel.prepare and TokenIterator
+                // internally add the batch axis via .newAxis; passing a 2-D array here
+                // makes chunking slice the wrong axis and feeds the model 3-D/1-D inputs
+                // instead of 2-D [batch, sequence], crashing in convertToToken's subscript.
+                let deltaArray = MLXArray(deltaInts)
+                inputForGen = LMInput(text: .init(tokens: deltaArray))
+                cacheForGen = pc.caches
+            } else {
+                let fresh = context.model.newCache(parameters: parameters)
+                pc.caches = fresh
+                inputForGen = lmInput
+                cacheForGen = fresh
+            }
+            pc.tokens = fullTokens
+            pc.modelID = proxyModel.id
+            pc.isReady = true
+            return try withError {
+                try withRandomState(rngState) {
+                    try MLXLMCommon.generate(
+                        input: inputForGen, cache: cacheForGen,
+                        parameters: parameters, context: context)
+                }
+            }
+        }
+
+        var content = ""
+        ProcessResourceSampler.shared.startGeneration()
+        ModelActivitySampler.shared.startGeneration(id: proxyModel.id)
+        for await generation in stream {
+            if Task.isCancelled { break }
+            switch generation {
+            case .chunk(let chunk):
+                ProcessResourceSampler.shared.recordToken()
+                ModelActivitySampler.shared.recordToken(id: proxyModel.id)
+                content += chunk
+            case .info, .toolCall: break
+            }
+        }
+        ProcessResourceSampler.shared.stopGeneration()
+        ModelActivitySampler.shared.stopGeneration(id: proxyModel.id)
+        return content.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Control
@@ -894,6 +1103,7 @@ final class MLXInferenceEngine {
     func cancel() {
         generateTask?.cancel()
         generateTask = nil
+        ProcessResourceSampler.shared.stopGeneration()
         if case .generating = state {
             state = .idle
         }

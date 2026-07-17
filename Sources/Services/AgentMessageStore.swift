@@ -63,7 +63,7 @@ final class AgentMessageStore {
     // MARK: - Persistence (App Support/SwiftMaestro/messages/<agentId>.json)
 
     private nonisolated static func dir() -> URL {
-        let base = WorkspaceStore.appSupportDir()
+        let base = WorkspaceStore.dataDir()
             .appendingPathComponent("messages", isDirectory: true)
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         return base

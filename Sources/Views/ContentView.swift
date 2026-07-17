@@ -3,12 +3,27 @@ import SwiftUI
 struct ContentView: View {
     @Environment(MLXInferenceEngine.self) private var engine
     @Environment(ModelCatalog.self) private var catalog
+    @Environment(VisionProxyService.self) private var visionProxyService
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(AgentMessageStore.self) private var messageStore
     @Environment(ThemeStore.self) private var theme
     @Environment(WhisperKitService.self) private var whisper
+    @Environment(NotesViewModel.self) private var notesViewModel
+    @Environment(KanbanStore.self) private var kanbanStore
+    @Environment(ContactsService.self) private var contactsService
     @Environment(\.openWindow) private var openWindow
-    @State private var selectedAgentID: UUID?
+    /// Sidebar selection can be an agent chat, an Apple app, or a SwiftMaestro app.
+    private enum SidebarItem: Hashable {
+        case agent(UUID)
+        case notesMD
+        case appleNotes
+        case calendar
+        case reminders
+        case contacts
+        case canvas
+        case kanban
+    }
+    @State private var selectedItem: SidebarItem?
     /// Per-agent chat view-models, kept alive so switching agents preserves the
     /// in-flight view state (history itself is persisted by ChatHistoryStore).
     @State private var chatCache = ChatViewModelCache()
@@ -18,6 +33,8 @@ struct ContentView: View {
     @AppStorage("onboarding.seenV1") private var onboardingSeen = false
     /// WhisperKit first-run: shown once when the speech model needs downloading.
     @AppStorage("whisperkit.seenV1") private var whisperKitSeen = false
+    /// Notes iCloud sync first-run: shown once so new users can confirm sync.
+    @AppStorage("notes.icloudOnboardingSeen") private var notesOnboardingSeen = false
     /// The single active modal sheet. SwiftUI only honours ONE `.sheet`
     /// modifier per view; stacking two (new-agent + onboarding) silently drops
     /// one, which previously suppressed the first-run model picker. Driving a
@@ -28,6 +45,7 @@ struct ContentView: View {
         case newAgent
         case onboarding
         case whisperSetup
+        case notesOnboarding
         var id: Int { hashValue }
     }
 
@@ -77,12 +95,15 @@ struct ContentView: View {
             case .whisperSetup:
                 WhisperKitSetupSheet(onDone: { whisperKitSeen = true; activeSheet = nil })
                     .environment(whisper)
+            case .notesOnboarding:
+                NotesOnboardingSheet(onDone: { activeSheet = nil })
             }
         }
         .onAppear {
-            if selectedAgentID == nil { selectedAgentID = workspace.navigator.id }
+            if selectedItem == nil { selectedItem = .agent(workspace.navigator.id) }
             // Set shared instance for delegate streaming.
             ChatViewModelCache.shared = chatCache
+            chatCache.setVisionProxyService(visionProxyService)
             // When a delegation starts, open/front a floating chat window for the
             // sub-agent so the user can watch Navigator and Scribe side-by-side.
             chatCache.onOpenAgentWindow = { [openWindow] agentID in
@@ -114,26 +135,63 @@ struct ContentView: View {
                     if activeSheet == nil { activeSheet = .whisperSetup }
                 }
             }
+            // Notes iCloud onboarding: prompt once, after other first-run sheets.
+            if !notesOnboardingSeen && activeSheet == nil {
+                if NotesiCloudSupport.onboardingChoiceMade {
+                    notesOnboardingSeen = true
+                } else {
+                    activeSheet = .notesOnboarding
+                }
+            }
         }
     }
 
-    // MARK: - Sidebar (Navigator + Projects → project agents)
+    // MARK: - Sidebar (Agents / Apps / Loaded)
 
     private var sidebar: some View {
-        List(selection: $selectedAgentID) {
-            Section("Navigator") {
+        VStack(spacing: 0) {
+            agentsSidebar
+                .frame(minHeight: 120, maxHeight: .infinity)
+
+            Divider()
+                .padding(.horizontal, 8)
+
+            appsSidebar
+                .frame(minHeight: 120, maxHeight: .infinity)
+
+            Divider()
+                .padding(.horizontal, 8)
+
+            loadedAgentsPanel
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+        }
+        .navigationTitle("SwiftMaestro")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { activeSheet = .newAgent } label: {
+                    Image(systemName: "plus")
+                }
+                .help("New project agent")
+            }
+        }
+    }
+
+    private var agentsSidebar: some View {
+        List(selection: $selectedItem) {
+            Section("Agents") {
                 agentRow(
                     title: workspace.navigator.name,
                     systemImage: "point.3.connected.trianglepath.dotted",
                     id: workspace.navigator.id
                 )
-                .tag(workspace.navigator.id)
+                .tag(SidebarItem.agent(workspace.navigator.id))
             }
             ForEach(workspace.projects) { project in
                 Section(project.name) {
                     ForEach(workspace.projectAgents(in: project.id)) { agent in
                         agentRow(title: agent.name, systemImage: nil, id: agent.id)
-                            .tag(agent.id)
+                            .tag(SidebarItem.agent(agent.id))
                             .contextMenu {
                                 Button("Clear Chat") {
                                     chatCache.viewModel(for: agent, projectName: project.name)
@@ -147,30 +205,55 @@ struct ContentView: View {
                 }
             }
         }
-        .navigationTitle("SwiftMaestro")
-        // Only replace the list's default material when the user set a custom
-        // sidebar color; otherwise leave the system appearance untouched.
+        .listStyle(.sidebar)
         .scrollContentBackground(theme.sidebarOverridden ? .hidden : .automatic)
         .background(theme.sidebarOverridden ? theme.sidebarBackground : Color.clear)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button { activeSheet = .newAgent } label: {
-                    Image(systemName: "plus")
-                }
-                .help("New project agent")
+    }
+
+    private var appsSidebar: some View {
+        List(selection: $selectedItem) {
+            Section("Apple Apps") {
+                Label("Apple Notes", systemImage: "note.text")
+                    .tag(SidebarItem.appleNotes)
+                Label("Calendar", systemImage: "calendar")
+                    .tag(SidebarItem.calendar)
+                Label("Reminders", systemImage: "checklist")
+                    .tag(SidebarItem.reminders)
+                Label("Contacts", systemImage: "person.2")
+                    .tag(SidebarItem.contacts)
+            }
+            Section("Swift Apps") {
+                Label("Notes.md", systemImage: "doc.text")
+                    .tag(SidebarItem.notesMD)
+                Label("Canvas", systemImage: "rectangle.3.group")
+                    .tag(SidebarItem.canvas)
+                Label("Kanban", systemImage: "rectangle.split.3x1")
+                    .tag(SidebarItem.kanban)
             }
         }
-        .safeAreaInset(edge: .bottom) {
+        .listStyle(.sidebar)
+        .scrollContentBackground(theme.sidebarOverridden ? .hidden : .automatic)
+        .background(theme.sidebarOverridden ? theme.sidebarBackground : Color.clear)
+    }
+
+    private var loadedAgentsPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Loaded Agents")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            ModelResourceMonitor()
+            ProcessResourceMonitor()
             EngineStatusBar()
-                .padding(.horizontal, 12)
-                .padding(.bottom, 8)
         }
     }
 
     /// A sidebar agent row showing its name plus a red unread-message badge.
     @ViewBuilder
     private func agentRow(title: String, systemImage: String?, id: UUID) -> some View {
-        let isSelected = selectedAgentID == id
+        let isSelected = selectedItem == .agent(id)
         HStack {
             Group {
                 if let systemImage {
@@ -197,28 +280,56 @@ struct ContentView: View {
 
     @ViewBuilder
     private var detail: some View {
-        if let id = selectedAgentID, let agent = workspace.agent(id: id) {
-            ChatView(vm: chatCache.viewModel(for: agent,
-                                             projectName: workspace.projectName(for: agent)))
-                .id(agent.id)
-                .toolbar {
-                    ToolbarItem(placement: .destructiveAction) {
-                        Button {
-                            chatCache.viewModel(
-                                for: agent,
-                                projectName: workspace.projectName(for: agent)
-                            ).clearChat()
-                        } label: {
-                            Label("Clear Chat", systemImage: "eraser")
+        switch selectedItem {
+        case .notesMD:
+            NotesView(viewModel: notesViewModel)
+        case .appleNotes:
+            AppleNotesView()
+        case .calendar:
+            CalendarView()
+        case .reminders:
+            RemindersView()
+        case .contacts:
+            ContactsView()
+        case .canvas:
+            if #available(macOS 26.0, *) {
+                CanvasView()
+            } else {
+                CanvasFallbackView()
+            }
+        case .kanban:
+            KanbanView()
+        case .agent(let id):
+            if let agent = workspace.agent(id: id) {
+                ChatView(vm: chatCache.viewModel(
+                    for: agent,
+                    projectName: workspace.projectName(for: agent)))
+                    .id(agent.id)
+                    .toolbar {
+                        ToolbarItem(placement: .destructiveAction) {
+                            Button {
+                                chatCache.viewModel(
+                                    for: agent,
+                                    projectName: workspace.projectName(for: agent)
+                                ).clearChat()
+                            } label: {
+                                Label("Clear Chat", systemImage: "eraser")
+                            }
+                            .help("Clear this chat (keeps project memory)")
                         }
-                        .help("Clear this chat (keeps project memory)")
                     }
-                }
-        } else {
+            } else {
+                ContentUnavailableView(
+                    "Agent Not Found",
+                    systemImage: "bubble.left.and.text.bubble.right",
+                    description: Text("The selected agent no longer exists")
+                )
+            }
+        case .none:
             ContentUnavailableView(
-                "Select an Agent",
+                "Select an Item",
                 systemImage: "bubble.left.and.text.bubble.right",
-                description: Text("Choose an agent from the sidebar to start chatting")
+                description: Text("Choose an agent or app from the sidebar")
             )
         }
     }
@@ -254,7 +365,7 @@ struct ContentView: View {
             projectName: newProjectName.trimmingCharacters(in: .whitespaces),
             agentName: newAgentName.trimmingCharacters(in: .whitespaces)
         )
-        selectedAgentID = created.id
+        selectedItem = .agent(created.id)
         resetNewAgent()
     }
 
@@ -265,10 +376,10 @@ struct ContentView: View {
     }
 
     private func removeAgent(_ agent: AgentRecord) {
-        let wasSelected = selectedAgentID == agent.id
+        let wasSelected = selectedItem == .agent(agent.id)
         workspace.archiveAgent(id: agent.id)
         chatCache.drop(agent.id)
-        if wasSelected { selectedAgentID = workspace.navigator.id }
+        if wasSelected { selectedItem = .agent(workspace.navigator.id) }
     }
 }
 
@@ -322,6 +433,7 @@ struct EngineStatusBar: View {
         case .loading: return .orange
         case .ready: return .green
         case .generating: return .blue
+        case .downloading: return .cyan
         case .error: return .red
         }
     }
@@ -332,6 +444,7 @@ struct EngineStatusBar: View {
         case .loading(let name): return "Loading \(name)…"
         case .ready: return "Ready"
         case .generating: return "Generating…"
+        case .downloading(let name): return name
         case .error(let msg): return msg
         }
     }
@@ -345,6 +458,7 @@ struct EngineStatusBar: View {
 @MainActor
 final class ChatViewModelCache {
     private var byID: [UUID: ChatViewModel] = [:]
+    private var visionProxyService: VisionProxyService?
 
     /// Shared instance accessible from static methods for delegate streaming.
     nonisolated(unsafe) static var shared: ChatViewModelCache?
@@ -352,9 +466,16 @@ final class ChatViewModelCache {
     /// can open or front a floating chat window for that sub-agent.
     var onOpenAgentWindow: ((UUID) -> Void)?
 
+    func setVisionProxyService(_ service: VisionProxyService) {
+        self.visionProxyService = service
+    }
+
     func viewModel(for agent: AgentRecord, projectName: String?) -> ChatViewModel {
         if let existing = byID[agent.id] { return existing }
-        let vm = ChatViewModel(agent: agent, projectName: projectName)
+        let vm = ChatViewModel(
+            agent: agent,
+            projectName: projectName,
+            visionProxyService: visionProxyService ?? VisionProxyService())
         byID[agent.id] = vm
         return vm
     }
@@ -402,7 +523,10 @@ final class ChatViewModelCache {
                 NSLog("[CACHE] reloadMessages: can't find agent record for \(agentID)")
                 return
             }
-            let vm = ChatViewModel(agent: agent, projectName: MaestroTools.workspace?.projectName(for: agent))
+            let vm = ChatViewModel(
+                agent: agent,
+                projectName: MaestroTools.workspace?.projectName(for: agent),
+                visionProxyService: visionProxyService ?? VisionProxyService())
             vm.messages = messages
             byID[agentID] = vm
         }

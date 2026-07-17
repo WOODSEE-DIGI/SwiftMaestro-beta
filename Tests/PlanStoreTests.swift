@@ -153,10 +153,14 @@ final class PlanStoreTests: XCTestCase {
 
     func testMarkdownMirrorExists() {
         let plan = store.create(title: "Mirror Test", content: "body", in: .agent(agentId))
-        let plansDir = WorkspaceStore.appSupportDir()
-            .appendingPathComponent("plans", isDirectory: true)
-        let scopeDir = plansDir.appendingPathComponent(agentId.uuidString, isDirectory: true)
-        let mdFile = scopeDir.appendingPathComponent("\(plan.id.uuidString).md")
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let mdFile = home
+            .appendingPathComponent(".ai-context")
+            .appendingPathComponent("memory")
+            .appendingPathComponent("knowledge")
+            .appendingPathComponent("plans")
+            .appendingPathComponent(agentId.uuidString, isDirectory: true)
+            .appendingPathComponent("\(plan.id.uuidString).md")
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: mdFile.path))
     }

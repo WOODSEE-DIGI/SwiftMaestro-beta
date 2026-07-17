@@ -27,7 +27,8 @@ enum AgentOutput: Sendable {
     case delegateToken(agentID: String, token: String)
     /// Delegation started — the UI should append an empty assistant message
     /// to the target agent's chat and prepare for streaming.
-    case delegateStart(agentID: String)
+    /// `modelID` is the effective (possibly promoted) wire model ID for the sub-agent.
+    case delegateStart(agentID: String, modelID: String)
     /// Delegation finished — the UI should save the target agent's history.
     case delegateFinish(agentID: String)
 }
@@ -71,8 +72,10 @@ protocol GenerationBackend: Sendable {
     ) async throws -> (content: String, toolCalls: [RoundToolCall])
 }
 
-/// Resolves a delegated target agent's own backend + wire model id, so each
-/// sub-agent can run its assigned model. Built on the MainActor (needs the
-/// engine + catalog). Returns `nil` when the agent/model can't be resolved.
+/// Resolves a delegated target agent's own backend, wire model id, and per-run
+/// token budget, so each sub-agent runs its assigned model (or a promoted model
+/// if the assigned one is too weak for tool-calling work). Built on the
+/// MainActor (needs the engine + catalog). Returns `nil` when the agent/model
+/// can't be resolved.
 typealias DelegateBackendResolver =
-    @Sendable (_ agentID: UUID) async -> (backend: GenerationBackend, modelID: String)?
+    @Sendable (_ agentID: UUID) async -> (backend: GenerationBackend, modelID: String, maxTokens: Int)?

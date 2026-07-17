@@ -131,16 +131,69 @@ struct PlansSheet: View {
                 .padding(12)
                 Divider()
                 ScrollView {
-                    Text(Self.rendered(plan.content))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(12)
+                    VStack(alignment: .leading, spacing: 12) {
+                        metadataSection(for: plan)
+                        Divider()
+                        Text(Self.rendered(plan.content))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(12)
                 }
             }
         } else {
             VStack { Spacer(); Text("Select a plan").foregroundStyle(.secondary); Spacer() }
                 .frame(maxWidth: .infinity)
         }
+    }
+
+    @ViewBuilder
+    private func metadataSection(for plan: Plan) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 4) {
+                Image(systemName: "clock")
+                    .foregroundStyle(.secondary)
+                Text("Created \(PlanMetadataFormatter.dateString(plan.createdAt))")
+                    .font(.caption)
+                Spacer()
+                Text(PlanMetadataFormatter.relativeString(plan.createdAt))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 4) {
+                Image(systemName: "pencil")
+                    .foregroundStyle(.secondary)
+                Text("Edited \(PlanMetadataFormatter.dateString(plan.updatedAt))")
+                    .font(.caption)
+                Spacer()
+                Text(PlanMetadataFormatter.relativeString(plan.updatedAt))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if !plan.history.isEmpty {
+                Text("History")
+                    .font(.caption.weight(.semibold))
+                    .padding(.top, 4)
+                ForEach(plan.history) { entry in
+                    HStack(alignment: .top, spacing: 6) {
+                        Image(systemName: PlanMetadataFormatter.historyIcon(for: entry.kind))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 16)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(entry.summary)
+                                .font(.caption)
+                            Text(PlanMetadataFormatter.dateString(entry.timestamp))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// Render markdown preserving line breaks (inline styles only); falls back to

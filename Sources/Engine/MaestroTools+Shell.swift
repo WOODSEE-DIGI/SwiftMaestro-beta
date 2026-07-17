@@ -1,5 +1,8 @@
 import Foundation
 import MLXLMCommon
+#if canImport(Darwin)
+import Darwin
+#endif
 
 // MARK: - Shell Execution Tool
 
@@ -21,10 +24,16 @@ extension MaestroTools {
         [
             rawSpec("execute_command",
                 "Execute a shell command via zsh. Runs a subprocess, captures stdout/stderr, "
-                + "and returns the output. Use `dry_run` to preview the classified command "
-                + "without executing. Use `start_background: true` for long-running processes "
-                + "(e.g. HTTP servers) that should survive after the command returns. "
-                + "Background processes are tracked and can be listed/stopped.",
+                + "and returns the output. This is your terminal — use it whenever the user asks "
+                + "you to run a command, start a server, or perform any shell operation. "
+                + "Use `dry_run` to preview the classified command without executing. "
+                + "ALWAYS use `start_background: true` for long-running processes such as HTTP "
+                + "servers, watchers, or daemons so they survive after the command returns. "
+                + "Background processes are tracked and can be listed/stopped. "
+                + "EXACT tool call format example:\n"
+                + "<tool_call>\n<function=execute_command>\n<parameter=command>\n"
+                + "cd /path/to/site && python3 -m http.server 8001\n"
+                + "</parameter>\n</function>\n</tool_call>",
                 properties: [
                     "command": ["type": "string", "description": "The shell command to execute (e.g. 'ls -la /tmp')."],
                     "cwd": ["type": "string", "description": "Optional working directory. Defaults to the agent workspace."],
@@ -55,6 +64,62 @@ extension MaestroTools {
 
         var dryRun: Bool { dry_run ?? false }
         var startBackground: Bool { start_background ?? false }
+
+        enum CodingKeys: String, CodingKey {
+            case command, cwd, timeout, dry_run, start_background
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            command = try container.decodeIfPresent(String.self, forKey: .command)
+            cwd = try container.decodeIfPresent(String.self, forKey: .cwd)
+            timeout = try container.decodeIfPresent(FlexibleInt.self, forKey: .timeout)?.value
+            dry_run = try container.decodeIfPresent(FlexibleBool.self, forKey: .dry_run)?.value
+            start_background = try container.decodeIfPresent(FlexibleBool.self, forKey: .start_background)?.value
+        }
+    }
+
+    /// Decodes a Bool from either a JSON boolean or a string like "true"/"false".
+    private struct FlexibleBool: Decodable {
+        let value: Bool
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            if let bool = try? container.decode(Bool.self) {
+                value = bool
+                return
+            }
+            if let string = try? container.decode(String.self) {
+                switch string.lowercased().trimmingCharacters(in: .whitespaces) {
+                case "true", "1", "yes", "on": value = true
+                case "false", "0", "no", "off": value = false
+                default:
+                    throw DecodingError.dataCorruptedError(
+                        in: container,
+                        debugDescription: "Cannot decode '\(string)' as Bool")
+                }
+                return
+            }
+            throw DecodingError.dataCorruptedError(
+                in: container, debugDescription: "Expected Bool or String")
+        }
+    }
+
+    /// Decodes an Int from either a JSON integer or a numeric string.
+    private struct FlexibleInt: Decodable {
+        let value: Int
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            if let int = try? container.decode(Int.self) {
+                value = int
+                return
+            }
+            if let string = try? container.decode(String.self), let int = Int(string) {
+                value = int
+                return
+            }
+            throw DecodingError.dataCorruptedError(
+                in: container, debugDescription: "Expected Int or numeric String")
+        }
     }
 
     // MARK: - Entry Point
@@ -63,7 +128,13 @@ extension MaestroTools {
         guard let args = decodeArgs(call, as: ShellArgs.self),
               let raw = args.command?.trimmingCharacters(in: .whitespacesAndNewlines),
               !raw.isEmpty else {
-            return errorJSON("Command is empty. Provide a shell command to execute.")
+            NSLog("[SHELL] executeShell called with empty command. args: \(String(describing: call.function.arguments))")
+            return errorJSON(
+                "Command is empty. You MUST provide a non-empty shell command in the "
+                + "`command` parameter. Example:\n"
+                + "<tool_call>\n<function=execute_command>\n<parameter=command>\n"
+                + "python3 /path/to/script.py\n</parameter>\n</function>\n</tool_call>"
+            )
         }
 
         // 1. Check if shell tool is enabled
@@ -283,21 +354,35 @@ extension MaestroTools {
     /// Spawn a long-running process that survives after the command returns.
     private static func spawnBackgroundProcess(_ command: String, cwd: String) async -> String {
         let processID = UUID().uuidString.prefix(8).lowercased()
-        let logPath = NSTemporaryDirectory() + "swiftmaestro-bg-\(processID).log"
-        let errPath = NSTemporaryDirectory() + "swiftmaestro-bg-\(processID).err"
+        let logsDir = SwiftMaestroPaths.logsDir.path
+        let logPath = "\(logsDir)/swiftmaestro-bg-\(processID).log"
+        let errPath = "\(logsDir)/swiftmaestro-bg-\(processID).err"
+
+        // If the command starts with `cd /path &&` or `cd /path;`, extract the directory
+        // and run the remainder directly in that directory. This avoids the `cd` builtin
+        // failing when wrapped with nohup, and keeps the tracked PID as the actual
+        // nohup process rather than a short-lived subshell.
+        let (effectiveCwd, effectiveCommand) = splitLeadingCd(command: command, baseCwd: cwd)
+
+        // Check for an obvious port conflict before spawning.
+        if let port = portFromCommand(effectiveCommand), isPortInUse(port: port) {
+            return errorJSON(
+                "Port \(port) is already in use. Stop the existing process or choose a different port."
+            )
+        }
 
         let process = Process()
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
 
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        // nohup + disown ensures the process survives shell exit
-        process.arguments = ["-lic", "nohup \(command) > \"\(logPath)\" 2> \"\(errPath)\" &\necho $!"]
+        // nohup + disown ensures the process survives the launcher shell's exit.
+        process.arguments = ["-lic", "nohup \(effectiveCommand) > \"\(logPath)\" 2> \"\(errPath)\" &\necho $!"]
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
-        if FileManager.default.fileExists(atPath: cwd) {
-            process.currentDirectoryURL = URL(fileURLWithPath: cwd)
+        if FileManager.default.fileExists(atPath: effectiveCwd) {
+            process.currentDirectoryURL = URL(fileURLWithPath: effectiveCwd)
         }
 
         do {
@@ -321,10 +406,26 @@ extension MaestroTools {
                 BackgroundProcessManager.shared.addProcess(
                     id: pid,
                     command: command,
-                    cwd: cwd,
+                    cwd: effectiveCwd,
                     logPath: logPath,
                     errPath: errPath
                 )
+            }
+        }
+
+        let message: String
+        if isRunning {
+            message = "Background process \(pid) started. Use list_background_processes to monitor."
+        } else {
+            let errTail = (try? String(contentsOfFile: errPath, encoding: .utf8))?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .components(separatedBy: .newlines)
+                .prefix(3)
+                .joined(separator: "\n") ?? ""
+            if errTail.isEmpty {
+                message = "Process exited immediately. Check logs at \(logPath)"
+            } else {
+                message = "Process exited immediately. Error:\n\(errTail)"
             }
         }
 
@@ -332,13 +433,78 @@ extension MaestroTools {
             success: isRunning,
             process_id: pid,
             command: command,
-            cwd: cwd,
+            cwd: effectiveCwd,
             log_path: logPath,
             err_path: errPath,
-            message: isRunning
-                ? "Background process \(pid) started. Use list_background_processes to monitor."
-                : "Process exited immediately. Check logs at \(logPath)"
+            message: message
         ))
+    }
+
+    /// If `command` starts with `cd /path && ...` or `cd /path; ...`, return the
+    /// extracted directory and the remainder of the command. Otherwise return the
+    /// original cwd and command unchanged.
+    private static func splitLeadingCd(command: String, baseCwd: String) -> (cwd: String, command: String) {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        let patterns: [(String, String)] = [
+            (#"^cd\s+(\S+)\s+&&\s+(.+)$"#, "&&"),
+            (#"^cd\s+(\S+)\s*;\s*(.+)$"#, ";"),
+        ]
+        for (pattern, _) in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]),
+                  let match = regex.firstMatch(in: trimmed, options: [],
+                                               range: NSRange(trimmed.startIndex..<trimmed.endIndex, in: trimmed))
+            else { continue }
+            guard let pathRange = Range(match.range(at: 1), in: trimmed),
+                  let restRange = Range(match.range(at: 2), in: trimmed)
+            else { continue }
+            let path = String(trimmed[pathRange])
+            let rest = String(trimmed[restRange])
+            let resolved = URL(fileURLWithPath: path, relativeTo: URL(fileURLWithPath: baseCwd)).path
+            return (resolved, rest)
+        }
+        return (baseCwd, command)
+    }
+
+    /// Extract a TCP port number from a command string, if one is present.
+    /// Handles common patterns like `python3 -m http.server 8001`, `nohup ... 8001`, etc.
+    private static func portFromCommand(_ command: String) -> Int? {
+        // Look for a bare port number (4-5 digits) preceded by a space or `--port=` / `-p `.
+        let patterns: [String] = [
+            #"\s--port=(\d{2,5})\b"#,
+            #"\s-p\s+(\d{2,5})\b"#,
+            #"\s(\d{2,5})\b"#,
+        ]
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else { continue }
+            let range = NSRange(command.startIndex..<command.endIndex, in: command)
+            if let match = regex.firstMatch(in: command, options: [], range: range),
+               let portRange = Range(match.range(at: 1), in: command),
+               let port = Int(command[portRange]), port > 0, port <= 65535 {
+                return port
+            }
+        }
+        return nil
+    }
+
+    /// Check whether a TCP port is currently in use on localhost.
+    private static func isPortInUse(port: Int) -> Bool {
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = in_port_t(port).bigEndian
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+
+        let sock = socket(AF_INET, SOCK_STREAM, 0)
+        guard sock >= 0 else { return false }
+        defer { close(sock) }
+
+        let result = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        // If bind fails, the port is in use.
+        return result != 0
     }
 
     /// List all tracked background processes.
@@ -459,12 +625,14 @@ private final class BackgroundProcessManager {
     }
 
     func stopProcess(pid: String) -> Bool {
-        guard processes[pid] != nil else { return false }
-        // Kill the process group
-        let killResult = kill(pid_t(Int(pid) ?? 0), SIGTERM)
+        guard let pidNum = pid_t(pid), pidNum > 0, processes[pid] != nil else { return false }
+        // Kill the process group first (negative pid), then the specific process.
+        kill(-pidNum, SIGTERM)
+        let killResult = kill(pidNum, SIGTERM)
         // Also try SIGKILL after a brief delay
         DispatchQueue.global().asyncAfter(deadline: .now() + 1) {
-            kill(pid_t(Int(pid) ?? 0), SIGKILL)
+            kill(-pidNum, SIGKILL)
+            kill(pidNum, SIGKILL)
         }
         processes.removeValue(forKey: pid)
         return killResult == 0

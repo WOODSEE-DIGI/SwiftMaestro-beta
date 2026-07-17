@@ -5,7 +5,7 @@ import Foundation
 /// memory is never touched. History survives app restarts.
 enum ChatHistoryStore {
     private static func chatsDir() -> URL {
-        let dir = WorkspaceStore.appSupportDir().appendingPathComponent("chats", isDirectory: true)
+        let dir = WorkspaceStore.dataDir().appendingPathComponent("chats", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }

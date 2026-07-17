@@ -8,6 +8,7 @@ enum SwiftMaestroSettingsStore {
     static let lastImportDateKey = "settings.context.lastImportDate"
     static let mcpServersKey = "settings.mcp.servers"
     static let agentRulesKey = "settings.rules.agentRules"
+    static let collapseCompactionSummariesKey = "settings.compaction.collapseSummariesByDefault"
 
     static func loadAllowedModels() -> [String] {
         UserDefaults.standard.stringArray(forKey: allowedModelsKey) ?? []
@@ -18,18 +19,32 @@ enum SwiftMaestroSettingsStore {
     }
 
     static func loadAuthorizedFolders() -> [AuthorizedFolder] {
+        let home = NSHomeDirectory()
+        let defaults: [AuthorizedFolder] = [
+            AuthorizedFolder(path: SwiftMaestroPaths.appSupportDir.path, enabled: true),
+            AuthorizedFolder(path: home + "/.ai-context", enabled: true),
+            AuthorizedFolder(path: home + "/Documents", enabled: true),
+            AuthorizedFolder(path: home + "/Obsidian", enabled: true),
+        ]
+
         guard
             let data = UserDefaults.standard.data(forKey: authorizedFoldersKey),
-            let folders = try? JSONDecoder().decode([AuthorizedFolder].self, from: data)
+            let savedFolders = try? JSONDecoder().decode([AuthorizedFolder].self, from: data)
         else {
-            let home = NSHomeDirectory()
-            return [
-                AuthorizedFolder(path: home + "/.ai-context", enabled: true),
-                AuthorizedFolder(path: home + "/Documents", enabled: true),
-                AuthorizedFolder(path: home + "/Obsidian", enabled: true),
-            ]
+            return defaults
         }
-        return folders
+
+        // Merge saved folders with the SwiftMaestro app-support directory. The app
+        // must always be able to read its own logs/data/backups, so this entry is
+        // added automatically if the user removed it or created the list before it
+        // was a default.
+        var merged = savedFolders
+        let appSupportPath = SwiftMaestroPaths.appSupportDir.path
+        if !merged.contains(where: { $0.path == appSupportPath }) {
+            merged.insert(AuthorizedFolder(path: appSupportPath, enabled: true), at: 0)
+            saveAuthorizedFolders(merged)
+        }
+        return merged
     }
 
     static func saveAuthorizedFolders(_ folders: [AuthorizedFolder]) {
@@ -85,11 +100,20 @@ enum SwiftMaestroSettingsStore {
             UserDefaults.standard.set(data, forKey: agentRulesKey)
         }
     }
+
+    static func loadCollapseCompactionSummaries() -> Bool {
+        UserDefaults.standard.object(forKey: collapseCompactionSummariesKey) as? Bool ?? false
+    }
+
+    static func saveCollapseCompactionSummaries(_ value: Bool) {
+        UserDefaults.standard.set(value, forKey: collapseCompactionSummariesKey)
+    }
 }
 
 struct SettingsView: View {
     @Environment(ModelCatalog.self) private var catalog
     @Environment(MLXInferenceEngine.self) private var engine
+    @Environment(VisionProxyService.self) private var visionProxy
     @Environment(ThemeStore.self) private var theme
 
     var body: some View {
@@ -98,6 +122,8 @@ struct SettingsView: View {
                 .tabItem { Label("Models", systemImage: "cpu") }
             TuningSettingsTab()
                 .tabItem { Label("Tuning", systemImage: "slider.horizontal.3") }
+            VisionProxySettingsTab()
+                .tabItem { Label("Vision Proxy", systemImage: "eye") }
             AppearanceSettingsTab()
                 .tabItem { Label("Appearance", systemImage: "paintpalette") }
             RulesSettingsTab()
@@ -120,15 +146,15 @@ struct SettingsView: View {
         // usable. The window itself is resizable via `.windowResizability` on the
         // Settings scene.
         .frame(
-            minWidth: 620, idealWidth: 760, maxWidth: .infinity,
-            minHeight: 680, idealHeight: 820, maxHeight: .infinity)
+            minWidth: 760, idealWidth: 900, maxWidth: .infinity,
+            minHeight: 780, idealHeight: 960, maxHeight: .infinity)
         .tint(theme.accent)
         .preferredColorScheme(theme.appearance.colorScheme)
         #if os(macOS)
         .background(
             WindowSizeConfigurator(
-                minSize: CGSize(width: 620, height: 680),
-                defaultSize: CGSize(width: 760, height: 820)
+                minSize: CGSize(width: 760, height: 780),
+                defaultSize: CGSize(width: 900, height: 960)
             )
         )
         #endif
@@ -278,36 +304,43 @@ struct StorageSettingsTab: View {
     @State private var planCount = 0
 
     private var root: URL { WorkspaceStore.appSupportDir() }
-    private var todosDir: URL { root.appendingPathComponent("todos", isDirectory: true) }
-    private var plansDir: URL { root.appendingPathComponent("plans", isDirectory: true) }
+    private var dataDir: URL { WorkspaceStore.dataDir() }
+    private var modelsDir: URL { URL(fileURLWithPath: ModelCatalog.modelsRoot) }
+    private var logsDir: URL { SwiftMaestroPaths.logsDir }
+    private var todosDir: URL { dataDir.appendingPathComponent("todos", isDirectory: true) }
+    private var plansDir: URL { dataDir.appendingPathComponent("plans", isDirectory: true) }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 GroupBox("Storage Locations") {
                     VStack(alignment: .leading, spacing: 12) {
-                        locationRow("Data folder", root,
-                            subtitle: "All SwiftMaestro app data")
+                        locationRow("App root", root,
+                            subtitle: "All SwiftMaestro data, models, logs, and backups")
+                        Divider()
+                        locationRow("Models", modelsDir,
+                            subtitle: "MLX model files — override in Settings → Models")
                         Divider()
                         locationRow("Todos", todosDir,
                             subtitle: "\(todoCount) checklist file(s) — one JSON per agent")
                         Divider()
                         locationRow("Plans", plansDir,
                             subtitle: "\(planCount) scope file(s) — per agent + per project, each plan also mirrored as .md")
+                        Divider()
+                        locationRow("Logs", logsDir,
+                            subtitle: "Background process output and download logs")
                     }
                     .padding(8)
                 }
                 GroupBox("About") {
-                    Text("Todos are a per-agent live checklist. Plans are markdown design "
-                        + "documents scoped either to an agent (personal) or a project (shared). "
-                        + "Each plan is mirrored as a .md file for easy viewing in Finder or Obsidian.")
+                    Text("SwiftMaestro keeps everything in one app root under Application Support. "
+                        + "Shared memory still lives in ~/.ai-context/memory/ so Warp, Qwen Code, and other tools can read it.")
                         .font(.caption).foregroundStyle(.secondary).padding(8)
                 }
                 Spacer()
             }
-            .padding()
+            .padding(8)
         }
-        .onAppear { refresh() }
     }
 
     @ViewBuilder
@@ -524,6 +557,8 @@ struct ModelsSettingsTab: View {
     @AppStorage("models.localRoot") private var modelsRoot: String = ""
     @State private var hubModelID: String = ""
     @State private var downloadingModelID: String? = nil
+    @State private var loadingModelID: String? = nil
+    private let sampler = ModelActivitySampler.shared
 
     var body: some View {
         ScrollView {
@@ -564,38 +599,43 @@ struct ModelsSettingsTab: View {
                     }
                     .padding(8)
                 }
-                GroupBox("MLX Models (download from Hugging Face on first use)") {
+                GroupBox {
                     VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("MLX Models (download from Hugging Face on first use)")
+                                .font(.headline)
+                            Spacer()
+                            Button {
+                                catalog.refreshLocalPaths()
+                            } label: {
+                                Image(systemName: "arrow.clockwise")
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                            .help("Refresh local model paths")
+                        }
                         ForEach(catalog.models) { model in
-                            HStack {
-                                VStack(alignment: .leading) {
+                            HStack(alignment: .top, spacing: 8) {
+                                VStack(alignment: .leading, spacing: 2) {
                                     Text(model.displayName).font(.body.bold())
-                                    Text(model.huggingFaceID).font(.caption).foregroundStyle(.secondary)
+                                    if let localPath = model.localPath {
+                                        Text(localPath.replacingOccurrences(
+                                            of: ModelCatalog.modelsRoot,
+                                            with: ""))
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                    } else {
+                                        Text(model.huggingFaceID)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                    }
                                 }
                                 Spacer()
-                                if let progress = engine.downloadProgress,
-                                   downloadingModelID == model.id {
-                                    ProgressView(value: progress.fractionCompleted)
-                                        .frame(width: 60)
-                                } else if model.localPath != nil {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .foregroundStyle(.green)
-                                        .help("Downloaded locally")
-                                } else {
-                                    Button {
-                                        downloadingModelID = model.id
-                                        Task {
-                                            try? await engine.downloadModel(model)
-                                            downloadingModelID = nil
-                                            catalog.refreshLocalPaths()
-                                        }
-                                    } label: {
-                                        Image(systemName: "arrow.down.circle")
-                                    }
-                                    .buttonStyle(.plain)
-                                    .foregroundStyle(.blue)
-                                    .help("Download from Hugging Face")
-                                }
+                                modelStatus(model: model)
                                 Text("~\(model.estimatedMemoryGB)GB").font(.caption).foregroundStyle(.secondary)
                                 if model.isVision {
                                     Image(systemName: "eye").foregroundStyle(.blue)
@@ -621,6 +661,143 @@ struct ModelsSettingsTab: View {
                 Spacer()
             }
             .padding()
+        }
+        .onAppear {
+            // Rescan the model root so models that live under the
+            // swiftmaestro-models/ layout are recognized without requiring a
+            // manual download attempt.
+            catalog.refreshLocalPaths()
+        }
+    }
+
+    /// Live status for a model row: downloading, explicit loading,
+    /// loaded with unload, ready with load, or missing/repairable.
+    @ViewBuilder
+    private func modelStatus(model: MaestroModel) -> some View {
+        let isResident = engine.residentModelsReadout.contains { $0.id == model.id }
+
+        if downloadingModelID == model.id {
+            HStack(spacing: 6) {
+                if let progress = engine.downloadProgress {
+                    ProgressView(value: progress.fractionCompleted)
+                        .frame(width: 60)
+                } else {
+                    ProgressView()
+                        .frame(width: 16)
+                }
+                Text("Downloading…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } else if loadingModelID == model.id {
+            HStack(spacing: 6) {
+                ProgressView()
+                    .frame(width: 16)
+                Text("Loading…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } else if isResident, let activity = sampler.models[model.id] {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(activityStateColor(activity.state))
+                    .frame(width: 6, height: 6)
+                Text(activityStateText(activity.state))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if activity.state == .generating {
+                    Text(String(format: "%.1f tok/s", activity.currentTokensPerSecond))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                Button {
+                    engine.unloadModel(model.id)
+                    sampler.remove(id: model.id)
+                } label: {
+                    Image(systemName: "eject")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Unload \(model.displayName) from memory")
+            }
+        } else if model.hasLocalWeights {
+            let metadataComplete = ModelFileHealthService.isMetadataComplete(for: model)
+            HStack(spacing: 4) {
+                if metadataComplete {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    Text("Ready")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button {
+                        loadingModelID = model.id
+                        Task {
+                            try? await engine.loadModel(model)
+                            loadingModelID = nil
+                        }
+                    } label: {
+                        Image(systemName: "play.circle")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.blue)
+                    .help("Load \(model.displayName) into memory")
+                } else {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.yellow)
+                    Text("Missing metadata")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button {
+                        downloadingModelID = model.id
+                        Task {
+                            try? await engine.downloadModel(model, repair: false)
+                            downloadingModelID = nil
+                            catalog.refreshLocalPaths()
+                        }
+                    } label: {
+                        Image(systemName: "arrow.clockwise.circle")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.blue)
+                    .help("Repair missing metadata files for \(model.displayName)")
+                }
+            }
+            .help(metadataComplete ? "Downloaded locally" : "Weights present but metadata files are missing")
+        } else {
+            let isRepair = model.localPath != nil
+            Button {
+                downloadingModelID = model.id
+                Task {
+                    try? await engine.downloadModel(model, repair: isRepair)
+                    downloadingModelID = nil
+                    catalog.refreshLocalPaths()
+                }
+            } label: {
+                Image(systemName: isRepair
+                      ? "arrow.clockwise.circle"
+                      : "arrow.down.circle")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.blue)
+            .help(isRepair
+                  ? "Repair incomplete download"
+                  : "Download from Hugging Face")
+        }
+    }
+
+    private func activityStateColor(_ state: ModelActivityState) -> Color {
+        switch state {
+        case .loading: return .orange
+        case .generating: return .blue
+        case .idle: return .green
+        }
+    }
+
+    private func activityStateText(_ state: ModelActivityState) -> String {
+        switch state {
+        case .loading: return "Loading"
+        case .generating: return "Generating"
+        case .idle: return "Ready"
         }
     }
 }
@@ -878,6 +1055,7 @@ struct ContextSettingsTab: View {
     @State private var importStatus: String = ""
     @State private var filesInMemory: Int = 0
     @State private var lastImportDate: String = ""
+    @State private var collapseCompactionSummaries: Bool = false
     @State private var saveMessage: String?
 
     var body: some View {
@@ -900,11 +1078,17 @@ struct ContextSettingsTab: View {
                                 Image(systemName: "folder.fill").foregroundStyle(.blue)
                                 Text(folder.path).font(.caption).lineLimit(1).truncationMode(.middle)
                                 Spacer()
-                                Toggle("", isOn: $folder.enabled).labelsHidden()
+                                Toggle("", isOn: $folder.enabled)
+                                    .labelsHidden()
+                                    .disabled(folder.path == SwiftMaestroPaths.appSupportDir.path)
                                 Button { authorizedFolders.removeAll { $0.id == folder.id } } label: {
                                     Image(systemName: "minus.circle").foregroundStyle(.red)
                                 }
                                 .buttonStyle(.plain)
+                                .disabled(folder.path == SwiftMaestroPaths.appSupportDir.path)
+                                .help(folder.path == SwiftMaestroPaths.appSupportDir.path
+                                      ? "SwiftMaestro must access its own Application Support directory"
+                                      : "Remove this folder")
                             }
                         }
                         HStack {
@@ -945,6 +1129,18 @@ struct ContextSettingsTab: View {
                     }
                     .padding(8)
                 }
+                GroupBox("Chat Compaction") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Toggle(
+                            "Collapse compaction summaries by default",
+                            isOn: $collapseCompactionSummaries)
+                        Text("When on, the \"Context compacted\" summary is collapsed until you expand it, with Show/Hide buttons at the top and bottom.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(8)
+                }
                 Spacer()
                 HStack {
                     if let saveMessage {
@@ -955,6 +1151,7 @@ struct ContextSettingsTab: View {
                         SwiftMaestroSettingsStore.saveAuthorizedFolders(authorizedFolders)
                         SwiftMaestroSettingsStore.saveFilesInMemory(filesInMemory)
                         SwiftMaestroSettingsStore.saveLastImportDate(lastImportDate)
+                        SwiftMaestroSettingsStore.saveCollapseCompactionSummaries(collapseCompactionSummaries)
                         saveMessage = "Saved"
                     }
                 }
@@ -965,6 +1162,7 @@ struct ContextSettingsTab: View {
             authorizedFolders = SwiftMaestroSettingsStore.loadAuthorizedFolders()
             filesInMemory = SwiftMaestroSettingsStore.loadFilesInMemory()
             lastImportDate = SwiftMaestroSettingsStore.loadLastImportDate()
+            collapseCompactionSummaries = SwiftMaestroSettingsStore.loadCollapseCompactionSummaries()
         }
     }
 }

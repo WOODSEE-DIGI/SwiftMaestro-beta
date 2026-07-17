@@ -32,11 +32,14 @@ extension MaestroTools {
             rawSpec("write_file",
                 "Create or overwrite any file. Default is UTF-8 text. Set encoding='base64' "
                 + "and provide base64 content to write binary files (images, PDFs, archives, etc.). "
+                + "Set append=true to add content to the end of an existing file instead of replacing it "
+                + "(useful for building large files in chunks). "
                 + "Your working directory is automatically authorized for writing.",
                 properties: [
                     "path": ["type": "string", "description": "Absolute path to the file."],
                     "content": ["type": "string", "description": "The content to write. Text when encoding is utf8 (default); base64 string when encoding is base64."],
                     "encoding": ["type": "string", "description": "Encoding of 'content': 'utf8' (default) or 'base64'."],
+                    "append": ["type": "boolean", "description": "If true, append content to the end of the existing file instead of overwriting. Default false."],
                 ], required: ["path", "content"]),
             rawSpec("list_dir",
                 "List ALL entries (files and subdirectories) of a directory. Use an absolute path. "
@@ -62,7 +65,7 @@ extension MaestroTools {
         let offset: Int?
         let limit: Int?
     }
-    private struct WriteFileArgs: Codable { let path: String?; let content: String?; let encoding: String? }
+    private struct WriteFileArgs: Codable { let path: String?; let content: String?; let encoding: String?; let append: Bool? }
     private struct ListDirArgs: Codable { let path: String? }
     private struct OCRImageArgs: Codable { let path: String? }
 
@@ -209,6 +212,8 @@ extension MaestroTools {
     /// paths. A target path is permitted only if it equals one of these roots or
     /// is nested inside one. The agent's working directory is always an implicit
     /// root so the agent can create/edit files under it without manual setup.
+    /// Project agents also inherit each other's working directories so a parent
+    /// agent can verify files a sub-agent wrote under its own project path.
     static func authorizedRoots() -> [String] {
         var roots = SwiftMaestroSettingsStore.loadAuthorizedFolders()
             .filter { $0.enabled }
@@ -227,6 +232,12 @@ extension MaestroTools {
             if !roots.contains(standardized) {
                 roots.append(standardized)
             }
+        }
+        // Working directories of agents that were delegated to during this run.
+        // This lets a delegating agent verify or continue work a sub-agent
+        // created under its own project-scoped path.
+        for wd in MaestroTools.delegatedAgentWorkingDirectories where !roots.contains(wd) {
+            roots.append(wd)
         }
         return roots
     }
@@ -377,8 +388,25 @@ extension MaestroTools {
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
 
+            let append = args.append ?? false
             let bytesWritten: Int
-            if encoding == "base64" {
+            if append && FileManager.default.fileExists(atPath: resolved) {
+                if encoding == "base64" {
+                    guard let data = Data(base64Encoded: content, options: .ignoreUnknownCharacters) else {
+                        return errorJSON("write_file could not decode content as base64")
+                    }
+                    let handle = try FileHandle(forWritingTo: url)
+                    try handle.seekToEnd()
+                    try handle.write(contentsOf: data)
+                    try handle.close()
+                    bytesWritten = data.count
+                } else {
+                    let existing = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+                    let newContent = existing + content
+                    try newContent.write(to: url, atomically: true, encoding: .utf8)
+                    bytesWritten = content.utf8.count
+                }
+            } else if encoding == "base64" {
                 guard let data = Data(base64Encoded: content, options: .ignoreUnknownCharacters) else {
                     return errorJSON("write_file could not decode content as base64")
                 }
@@ -389,7 +417,8 @@ extension MaestroTools {
                 try content.write(to: url, atomically: true, encoding: .utf8)
                 bytesWritten = content.utf8.count
             }
-            return jsonString(["status": "written", "path": resolved, "bytes": "\(bytesWritten)"])
+            let status = append ? "appended" : "written"
+            return jsonString(["status": status, "path": resolved, "bytes": "\(bytesWritten)"])
         } catch {
             return errorJSON("failed to write '\(resolved)': \(error.localizedDescription)")
         }

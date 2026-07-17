@@ -31,6 +31,8 @@ struct MaestroModel: Identifiable, Hashable {
     var recRepetitionPenalty: Double? = nil
     /// Per-model recommended max output tokens. nil = use global default (32768).
     var recMaxTokens: Int? = nil
+    /// Per-model recommended context length in tokens. nil = use global default (128000).
+    var recContextLength: Int? = nil
     /// Active (non-expert) parameter count in billions. MoE models like
     /// 35B-A3B have only 3B active per token; dense models match their total.
     /// Used to decide lite-mode tool sets (models with <10B active params
@@ -43,6 +45,9 @@ struct MaestroModel: Identifiable, Hashable {
     var isRemote: Bool { remoteBaseURL != nil }
     /// HuggingFace download URL shown in Settings so users can grab the model.
     var downloadURL: String? = nil
+    /// Whether this entry should appear in the main model picker.
+    /// Hidden models (e.g., the vision proxy model) are still loadable.
+    var isHidden: Bool = false
 
     /// Tools are advertised only when the model is verified AND its tool-call
     /// format is known or can be inferred. No known format ⇒ no tools.
@@ -63,10 +68,28 @@ struct MaestroModel: Identifiable, Hashable {
     var modelConfiguration: ModelConfiguration {
         if let localPath {
             return ModelConfiguration(
-                directory: URL(fileURLWithPath: localPath)
+                directory: URL(fileURLWithPath: localPath),
+                toolCallFormat: toolCallFormat
             )
         }
-        return ModelConfiguration(id: huggingFaceID)
+        return ModelConfiguration(id: huggingFaceID, toolCallFormat: toolCallFormat)
+    }
+
+    /// True when the model's local directory actually contains at least one
+    /// `.safetensors` weight file. A directory with only JSON/tokenizer files
+    /// is considered incomplete and should not be treated as downloaded.
+    var hasLocalWeights: Bool {
+        guard let localPath else { return false }
+        let url = URL(fileURLWithPath: localPath)
+        guard let enumerator = FileManager.default.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants])
+        else { return false }
+        for case let fileURL as URL in enumerator {
+            if fileURL.pathExtension == "safetensors" { return true }
+        }
+        return false
     }
 
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
@@ -110,6 +133,17 @@ extension MaestroModel {
             return override
         }
         return recMaxTokens ?? 32768
+    }
+
+    /// Effective context-window size for THIS model: the user's per-model override
+    /// if set, otherwise the model's recommended value, otherwise 128000.
+    /// Used to decide when chat-history compaction should run.
+    var tunedContextLength: Int {
+        let key = Self.tuningKey(id, "contextLength")
+        if let override = UserDefaults.standard.object(forKey: key) as? Int {
+            return override
+        }
+        return recContextLength ?? 128_000
     }
 
     var tunedThinkingEnabled: Bool {
@@ -158,6 +192,66 @@ final class ModelCatalog {
         model(forID: agent.modelID) ?? selectedModel
     }
 
+    // MARK: - Vision Proxy
+
+    /// Persistent configuration for the vision proxy feature.
+    struct VisionProxyConfiguration: Codable, Equatable {
+        var isEnabled: Bool = true
+        var provider: Provider = .pythonServer
+        var inProcessModelPath: String = ModelCatalog.defaultVisionProxyModelPath
+        var serverHost: String = "localhost"
+        var serverPort: Int = 8765
+        var serverScriptPath: String = VisionProxyServerScript.installedPath
+        var serverModelPath: String = VisionProxyServerScript.defaultModelPath
+        var captionPrompt: String = "Describe this image concisely in one sentence."
+        var maxCaptionTokens: Int = 128
+
+        enum Provider: String, Codable, CaseIterable, Equatable {
+            case inProcess = "In-Process MLX"
+            case pythonServer = "Python Server"
+        }
+    }
+
+    /// Default path to the SwiftMaestro vision proxy model.
+    /// Resolved relative to the user's configured `modelsRoot` so the proxy uses the
+    /// same model directory as the rest of the catalog.
+    nonisolated static var defaultVisionProxyModelPath: String {
+        (Self.modelsRoot as NSString).appendingPathComponent("mlx-community/Qwen3-VL-8B-Instruct-4bit")
+    }
+
+    /// Current vision proxy configuration. Persisted to UserDefaults.
+    var visionProxyConfig: VisionProxyConfiguration {
+        get {
+            if let data = UserDefaults.standard.data(forKey: "visionProxy.config"),
+               let decoded = try? JSONDecoder().decode(VisionProxyConfiguration.self, from: data) {
+                return decoded
+            }
+            return VisionProxyConfiguration()
+        }
+        set {
+            if let encoded = try? JSONEncoder().encode(newValue) {
+                UserDefaults.standard.set(encoded, forKey: "visionProxy.config")
+            }
+        }
+    }
+
+    /// Build a loadable model for the vision proxy. Uses the configured path if it
+    /// exists on disk, otherwise falls back to the built-in vision entry.
+    func visionProxyModel() -> MaestroModel {
+        let config = visionProxyConfig
+        let path = config.inProcessModelPath
+        let exists = FileManager.default.fileExists(atPath: path)
+        return MaestroModel(
+            id: "vision-proxy-qwen3-vl",
+            displayName: "Qwen3-VL 8B Vision Proxy",
+            huggingFaceID: "mlx-community/Qwen3-VL-8B-Instruct-4bit",
+            isVision: true,
+            localPath: exists ? path : Self.builtInModels.first { $0.id == "local-qwen3-vl-8b-4bit" }?.localPath,
+            estimatedMemoryGB: 6,
+            isHidden: true
+        )
+    }
+
     init() {
         models = Self.builtInModels
         // Restore the persisted selection if it still resolves to a known model;
@@ -181,8 +275,7 @@ final class ModelCatalog {
     nonisolated static var modelsRoot: String {
         let override = UserDefaults.standard.string(forKey: "models.localRoot")
         if let override, !override.isEmpty { return override }
-        return WorkspaceStore.appSupportDir()
-            .appendingPathComponent("models", isDirectory: true).path
+        return SwiftMaestroPaths.modelsDir.path
     }
 
     /// Resolve a model's local directory under `modelsRoot` ONLY if it exists on
@@ -192,6 +285,17 @@ final class ModelCatalog {
     nonisolated static func localIfPresent(_ subdir: String) -> String? {
         let path = (modelsRoot as NSString).appendingPathComponent(subdir)
         return FileManager.default.fileExists(atPath: path) ? path : nil
+    }
+
+    /// Try several candidate subdirectories under `modelsRoot` and return the
+    /// first one that exists. Used when a model may have been downloaded to
+    /// different folder conventions (e.g. `swiftmaestro-models/` vs the raw
+    /// HuggingFace org/repo layout).
+    nonisolated static func localIfPresent(_ subdirs: [String]) -> String? {
+        for subdir in subdirs {
+            if let path = localIfPresent(subdir) { return path }
+        }
+        return nil
     }
 
     static let builtInModels: [MaestroModel] = [
@@ -207,6 +311,7 @@ final class ModelCatalog {
             supportsTools: true,
             toolCallFormat: .xmlFunction,
             recTemperature: 0.8, recTopP: 0.9, recRepetitionPenalty: 1.15,
+            recContextLength: 131_072,
             activeParamsB: 3,
             downloadURL: "https://huggingface.co/lmstudio-community/Qwen3.6-35B-A3B-MLX-4bit"
         ),
@@ -215,11 +320,12 @@ final class ModelCatalog {
             displayName: "Gemma 4 26B-A4B (Vision+Text, 4-bit)",
             huggingFaceID: "lmstudio-community/gemma-4-26B-A4B-it-MLX-4bit",
             isVision: true,
-            localPath: localIfPresent("lmstudio-community/gemma-4-26B-A4B-it-MLX-4bit"),
+            localPath: localIfPresent("swiftmaestro-models/gemma-4-26B-A4B-it-MLX-4bit"),
             estimatedMemoryGB: 16,
             supportsTools: true,
             toolCallFormat: .gemma4,
             recTemperature: 0.7, recTopP: 0.9, recRepetitionPenalty: 1.1,
+            recContextLength: 128_000,
             activeParamsB: 4,
             downloadURL: "https://huggingface.co/lmstudio-community/gemma-4-26B-A4B-it-MLX-4bit"
         ),
@@ -228,11 +334,12 @@ final class ModelCatalog {
             displayName: "Gemma 4 26B-A4B (Vision+Text, 8-bit)",
             huggingFaceID: "lmstudio-community/gemma-4-26B-A4B-it-MLX-8bit",
             isVision: true,
-            localPath: localIfPresent("lmstudio-community/gemma-4-26B-A4B-it-MLX-8bit"),
+            localPath: localIfPresent("swiftmaestro-models/gemma-4-26B-A4B-it-MLX-8bit"),
             estimatedMemoryGB: 26,
             supportsTools: true,
             toolCallFormat: .gemma4,
             recTemperature: 0.7, recTopP: 0.9, recRepetitionPenalty: 1.1,
+            recContextLength: 128_000,
             activeParamsB: 4,
             downloadURL: "https://huggingface.co/lmstudio-community/gemma-4-26B-A4B-it-MLX-8bit"
         ),
@@ -241,11 +348,12 @@ final class ModelCatalog {
             displayName: "Gemma 4 26B-A4B QAT 4-bit (Vision+Text)",
             huggingFaceID: "lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit",
             isVision: true,
-            localPath: localIfPresent("lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit"),
+            localPath: localIfPresent("swiftmaestro-models/gemma-4-26B-A4B-it-QAT-MLX-4bit"),
             estimatedMemoryGB: 18,
             supportsTools: true,
             toolCallFormat: .gemma4,
             recTemperature: 0.7, recTopP: 0.9, recRepetitionPenalty: 1.1,
+            recContextLength: 128_000,
             activeParamsB: 4,
             downloadURL: "https://huggingface.co/lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit"
         ),
@@ -261,6 +369,8 @@ final class ModelCatalog {
             supportsTools: true,
             toolCallFormat: .xmlFunction,
             recTemperature: 0.7, recTopP: 0.8, recRepetitionPenalty: 1.05,
+            recMaxTokens: 65536,
+            recContextLength: 128_000,
             activeParamsB: 3
         ),
         MaestroModel(
@@ -272,6 +382,7 @@ final class ModelCatalog {
             estimatedMemoryGB: 14,
             supportsTools: true,  // Qwen 3.5 family uses xmlFunction
             recTemperature: 0.7, recTopP: 0.9, recRepetitionPenalty: 1.05,
+            recContextLength: 262_144,
             activeParamsB: 27
         ),
         MaestroModel(
@@ -279,7 +390,7 @@ final class ModelCatalog {
             displayName: "Qwen 3.5 122B (A10B)",
             huggingFaceID: "mlx-community/Qwen3.5-122B-A10B-4bit",
             isVision: false,
-            localPath: localIfPresent("Qwen3.5-122B-A10B-4bit"),
+            localPath: localIfPresent("swiftmaestro-models/Qwen3.5-122B-A10B-4bit"),
             estimatedMemoryGB: 65,
             // In-process load works with the current mlx-swift-lm loader, which
             // quantizes a module only when the checkpoint has its `.scales`
@@ -291,14 +402,16 @@ final class ModelCatalog {
             supportsTools: true,
             toolCallFormat: .xmlFunction,
             recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05,
+            recMaxTokens: 200_000,
+            recContextLength: 262_144,
             activeParamsB: 10
         ),
         MaestroModel(
             id: "local-hermes-70b",
-            displayName: "Hermes 4 70B (6-bit)",
-            huggingFaceID: "lmstudio-community/Hermes-4-70B-MLX-6bit",
+            displayName: "Hermes 4 70B (4-bit)",
+            huggingFaceID: "lmstudio-community/Hermes-4-70B-MLX-4bit",
             isVision: false,
-            localPath: localIfPresent("Hermes-4-70B-MLX-6bit"),
+            localPath: localIfPresent("swiftmaestro-models/Hermes-4-70B-MLX-4bit"),
             estimatedMemoryGB: 56
         ),
         MaestroModel(
@@ -306,7 +419,7 @@ final class ModelCatalog {
             displayName: "Magistral Small 2509",
             huggingFaceID: "lmstudio-community/Magistral-Small-2509-MLX-4bit",
             isVision: false,
-            localPath: localIfPresent("Magistral-Small-2509-MLX-4bit"),
+            localPath: localIfPresent("swiftmaestro-models/Magistral-Small-2509-MLX-4bit"),
             estimatedMemoryGB: 13
         ),
         MaestroModel(
@@ -324,7 +437,7 @@ final class ModelCatalog {
             displayName: "GPT-OSS 20B",
             huggingFaceID: "mlx-community/gpt-oss-20b-MXFP4-Q8",
             isVision: false,
-            localPath: localIfPresent("gpt-oss-20b-MXFP4-Q8"),
+            localPath: localIfPresent("swiftmaestro-models/gpt-oss-20b-MXFP4-Q8"),
             estimatedMemoryGB: 11
         ),
         MaestroModel(
@@ -332,68 +445,62 @@ final class ModelCatalog {
             displayName: "DeepSeek VL2 Small (Vision)",
             huggingFaceID: "mlx-community/deepseek-vl2-small-4bit",
             isVision: true,
-            localPath: localIfPresent("deepseek-vl2-small-4bit"),
+            localPath: localIfPresent("swiftmaestro-models/deepseek-vl2-small-4bit"),
             estimatedMemoryGB: 9
         ),
         MaestroModel(
-            id: "local-fastvlm-0.5b",
-            displayName: "FastVLM 0.5B (Apple Vision)",
-            huggingFaceID: "apple/FastVLM-0.5B",
+            id: "local-qwen3-vl-8b-4bit",
+            displayName: "Qwen3-VL 8B (Vision Proxy)",
+            huggingFaceID: "mlx-community/Qwen3-VL-8B-Instruct-4bit",
             isVision: true,
-            localPath: localIfPresent("apple-research/vision-language/FastVLM-0.5B-mlx"),
-            estimatedMemoryGB: 2
+            localPath: localIfPresent("swiftmaestro-models/Qwen3-VL-8B-Instruct-4bit"),
+            estimatedMemoryGB: 6
         ),
         MaestroModel(
             id: "local-nemotron-30b",
             displayName: "Nemotron Cascade 30B (A3B)",
             huggingFaceID: "JANGQ-AI/Nemotron-Cascade-2-30B-A3B-JANG_4M",
             isVision: false,
-            localPath: localIfPresent("Nemotron-Cascade-2-30B-A3B-JANG_4M"),
+            localPath: localIfPresent("swiftmaestro-models/Nemotron-Cascade-2-30B-A3B-JANG_4M"),
             estimatedMemoryGB: 1
         ),
 
-        // === Remote LM Studio models ===
+        // === Larger MLX models (download on first use) ===
         MaestroModel(
-            id: "lmstudio-qwen3.5-35b",
-            displayName: "Qwen 3.5 35B (LM Studio)",
-            huggingFaceID: "qwen/qwen3.5-35b-a3b",
+            id: "local-qwen3.5-35b-a3b",
+            displayName: "Qwen 3.5 35B-A3B",
+            huggingFaceID: "mlx-community/Qwen3.5-35B-A3B-OptiQ-4bit",
             isVision: false,
-            localPath: nil,
-            estimatedMemoryGB: 38,
+            localPath: localIfPresent("swiftmaestro-models/Qwen3.5-35B-A3B-OptiQ-4bit"),
+            estimatedMemoryGB: 20,
             supportsTools: true,
             toolCallFormat: .xmlFunction,
-            remoteBaseURL: "http://localhost:1234"
+            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05,
+            recContextLength: 262_144,
+            activeParamsB: 3
         ),
         MaestroModel(
-            id: "lmstudio-hermes-4-70b",
-            displayName: "Hermes 4 70B (LM Studio)",
-            huggingFaceID: "nousresearch/hermes-4-70b",
+            id: "local-qwen3-coder-next",
+            displayName: "Qwen 3 Coder Next",
+            huggingFaceID: "mlx-community/Qwen3-Coder-Next-4bit",
             isVision: false,
-            localPath: nil,
-            estimatedMemoryGB: 56,
-            supportsTools: true,
-            remoteBaseURL: "http://localhost:1234"
-        ),
-        MaestroModel(
-            id: "lmstudio-qwen3-coder-next",
-            displayName: "Qwen 3 Coder Next (LM Studio)",
-            huggingFaceID: "qwen/qwen3-coder-next",
-            isVision: false,
-            localPath: nil,
-            estimatedMemoryGB: 30,
+            localPath: localIfPresent("swiftmaestro-models/Qwen3-Coder-Next-4bit"),
+            estimatedMemoryGB: 45,
             supportsTools: true,
             toolCallFormat: .xmlFunction,
-            remoteBaseURL: "http://localhost:1234"
+            recTemperature: 0.7, recTopP: 0.8, recRepetitionPenalty: 1.05,
+            recContextLength: 128_000
         ),
         MaestroModel(
-            id: "lmstudio-gpt-oss-120b",
-            displayName: "GPT-OSS 120B (LM Studio)",
-            huggingFaceID: "openai/gpt-oss-120b",
+            id: "local-gpt-oss-120b",
+            displayName: "GPT-OSS 120B",
+            huggingFaceID: "mlx-community/gpt-oss-120b-4bit",
             isVision: false,
-            localPath: nil,
+            localPath: localIfPresent("swiftmaestro-models/gpt-oss-120b-4bit"),
             estimatedMemoryGB: 60,
             supportsTools: true,
-            remoteBaseURL: "http://localhost:1234"
+            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05,
+            recContextLength: 128_000
         ),
 
         // === Hub models (download on first use) ===
@@ -445,6 +552,7 @@ final class ModelCatalog {
             estimatedMemoryGB: memoryGB
         )
         models.append(model)
+        Task { await validateAndUpdateCapabilities(for: model.id) }
     }
 
     func addHubModel(name: String, huggingFaceID: String, isVision: Bool, memoryGB: Int) {
@@ -459,40 +567,71 @@ final class ModelCatalog {
         models.append(model)
     }
 
+    /// Re-read a model's on-disk config files and merge discovered capabilities
+    /// into its catalog entry. Only promotes capabilities (never demotes a
+    /// built-in `supportsTools=true` to false) and fills missing sampling
+    /// defaults so user-added local models behave correctly without manual tuning.
+    func validateAndUpdateCapabilities(for id: String) async {
+        guard let index = models.firstIndex(where: { $0.id == id }),
+              let localPath = models[index].localPath else { return }
+
+        let report = ModelCapabilityValidator.validate(modelDirectory: localPath)
+        var model = models[index]
+
+        if report.supportsTools {
+            model.supportsTools = true
+        }
+        if let format = report.toolCallFormat, model.toolCallFormat == nil {
+            model.toolCallFormat = format
+        }
+        if model.recTemperature == nil {
+            model.recTemperature = report.recommendedTemperature
+        }
+        if model.recTopP == nil {
+            model.recTopP = report.recommendedTopP
+        }
+        if model.recRepetitionPenalty == nil {
+            model.recRepetitionPenalty = report.recommendedRepetitionPenalty
+        }
+        if model.recMaxTokens == nil {
+            model.recMaxTokens = report.recommendedMaxTokens
+        }
+
+        models[index] = model
+
+        if !report.validationErrors.isEmpty {
+            NSLog("[ModelCapabilityValidator] \(id): \(report.validationErrors.joined(separator: "; "))")
+        }
+    }
+
+    /// Re-evaluate capabilities for every catalog entry that has resolved a local path.
+    func refreshCapabilities() async {
+        for id in models.map(\.id) {
+            await validateAndUpdateCapabilities(for: id)
+        }
+    }
+
     func removeModel(_ id: String) {
         models.removeAll { $0.id == id }
         if selectedModelID == id { selectedModelID = models.first?.id }
     }
 
     /// Re-evaluate `localIfPresent` for every built-in model so the UI reflects
-    /// newly downloaded files without a relaunch.
+    /// newly downloaded files without a relaunch, then refresh each model's
+    /// discovered capabilities from its on-disk config.
     func refreshLocalPaths() {
         for i in models.indices {
             guard let sub = Self.localSubdir(for: models[i]) else { continue }
             models[i].localPath = Self.localIfPresent(sub)
         }
+        Task { await refreshCapabilities() }
     }
 
-    /// Derive the `localIfPresent` subdirectory for a model.  Matches the
-    /// `localIfPresent(…)` call used in `builtInModels`.
+    /// Derive the `localIfPresent` subdirectory for a model. All built-in
+    /// local models are expected under the `swiftmaestro-models/` prefix so
+    /// the layout is predictable and not fragmented across HF org folders.
     private static func localSubdir(for model: MaestroModel) -> String? {
-        // Hub-downloaded models live under their HF repo name; pre-installed
-        // ones use the "swiftmaestro-models/" prefix.  We infer the subdir
-        // from the model ID convention rather than duplicating the mapping.
-        let hfID = model.huggingFaceID
-        let repoName = hfID.components(separatedBy: "/").last ?? hfID
-        // Check the two known prefixes in order of likelihood.
-        if localIfPresent("swiftmaestro-models/\(repoName)") != nil {
-            return "swiftmaestro-models/\(repoName)"
-        }
-        if localIfPresent(repoName) != nil {
-            return repoName
-        }
-        // Also try the raw HF ID (org/repo style) for models like
-        // "lmstudio-community/gemma-4-..." that may live under org/repo dir.
-        if localIfPresent(hfID) != nil {
-            return hfID
-        }
-        return nil
+        let repoName = model.huggingFaceID.components(separatedBy: "/").last ?? model.huggingFaceID
+        return "swiftmaestro-models/\(repoName)"
     }
 }

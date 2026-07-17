@@ -10,15 +10,9 @@ final class SettingsBackupService {
 
     static let shared = SettingsBackupService()
 
-    /// Backups live in `~/.config/SwiftMaestro/` so they are:
-    /// - Outside the app sandbox and easy to inspect.
-    /// - In a conventional XDG-style location that Chezmoi can manage.
-    private static var backupDirectory: URL {
-        let config = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config", isDirectory: true)
-            .appendingPathComponent("SwiftMaestro", isDirectory: true)
-        return config
-    }
+    /// Backups live in `~/Library/Application Support/SwiftMaestro/backups/` so they are
+    /// alongside all other SwiftMaestro data and easy to inspect.
+    private static var backupDirectory: URL { SwiftMaestroPaths.backupsDir }
 
     private static var backupURL: URL {
         backupDirectory.appendingPathComponent("settings-backup.json")

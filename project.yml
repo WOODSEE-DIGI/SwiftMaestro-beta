@@ -7,14 +7,14 @@ options:
 
 packages:
   mlx-swift-lm:
-    path: ../mlx-swift-lm
+    path: ../../AI-ML-Agents/mlx-swift-lm
   swift-transformers:
     url: https://github.com/huggingface/swift-transformers
     majorVersion: 1.3.0
   mcp-swift-sdk:
-    path: ../mcp-swift-sdk
+    path: ../../AI-ML-Agents/mcp-swift-sdk
   whisperkit:
-    path: ../WhisperKit
+    path: ../../AI-ML-Agents/WhisperKit
   GRDB:
     url: https://github.com/groue/GRDB.swift
     majorVersion: 7.0.0
@@ -94,6 +94,10 @@ targets:
       - package: GRDB
         product: GRDB
       - sdk: PDFKit.framework
+      - sdk: EventKit.framework
+      - sdk: Contacts.framework
+      - sdk: PaperKit.framework
+      - sdk: PencilKit.framework
     scheme:
       testTargets:
         - SwiftMaestroTests

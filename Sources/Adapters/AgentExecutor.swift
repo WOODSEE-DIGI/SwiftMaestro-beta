@@ -89,6 +89,12 @@ final class AgentExecutor: Sendable {
     /// Pending delegation streaming events, collected during tool execution
     /// and drained by the main loop after each tool call.
     nonisolated(unsafe) var pendingDelegateEvents: [AgentOutput] = []
+    /// Catalog reference captured at run() start so delegation can look up the
+    /// target model's size and choose a reduced tool surface for small MoE models.
+    nonisolated(unsafe) var catalog: ModelCatalog? = nil
+    /// Per-run token budget for this executor. Delegated sub-agents inherit this
+    /// unless the backend resolver supplies a model-specific value.
+    nonisolated(unsafe) var maxTokens: Int = 32768
 
     /// Designated init with an explicit backend. `modelID` identifies the model
     /// for delegation (sub-agents spin up their own executor).
@@ -122,6 +128,12 @@ final class AgentExecutor: Sendable {
         steerInbox: SteerInbox? = nil
     ) -> AsyncThrowingStream<AgentOutput, Error> {
         AsyncThrowingStream { continuation in
+            // Keep catalog reachable during this run so delegated sub-agents can
+            // adapt their tool surface to the target model's capacity.
+            self.catalog = catalog
+            self.maxTokens = maxTokens
+            // Reset per-run delegation state so stale sub-agent roots don't leak.
+            MaestroTools.delegatedAgentWorkingDirectories = []
             let task = Task {
                 do {
                     // Conversation in OpenAI wire format; we append assistant
@@ -219,7 +231,7 @@ final class AgentExecutor: Sendable {
                                     + "to the original request now, as plain text.",
                             ])
                         }
-                        let (content, toolCalls) = try await backend.streamRound(
+                        let (content, rawToolCalls) = try await backend.streamRound(
                             convo: convo,
                             toolSpecs: specsThisRound,
                             temperature: temperature,
@@ -228,13 +240,26 @@ final class AgentExecutor: Sendable {
                             maxTokens: maxTokens,
                             continuation: continuation
                         )
-                        NSLog("[AGENT] round \(round): tools=\(specsThisRound.count) content=\(content.count) chars, toolCalls=[\(toolCalls.map { $0.name }.joined(separator: ", "))]")
+                        let cleanContent = Self.stripRawToolCallXML(content)
+                        let callNames = rawToolCalls.map { $0.name }.joined(separator: ", ")
+                        if rawToolCalls.isEmpty {
+                            let preview = cleanContent.prefix(200).replacingOccurrences(of: "\n", with: "\\n")
+                            NSLog("[AGENT] round \(round): tools=\(specsThisRound.count) content=\(cleanContent.count) chars, toolCalls=[] — content preview: \(preview)")
+                        } else {
+                            NSLog("[AGENT] round \(round): tools=\(specsThisRound.count) content=\(cleanContent.count) chars, toolCalls=[\(callNames)]")
+                        }
+
+                        // Fallback: if the model emitted an execute_command call but the
+                        // XML parser returned an empty/missing `command` argument, recover
+                        // the command from the assistant's text (fenced block, command-like
+                        // line, or raw XML) so it actually runs.
+                        var effectiveToolCalls = Self.recoverShellCommands(in: rawToolCalls, from: content)
 
                         guard !Task.isCancelled else { break iterations }
                         // The forced wrap-up round IS the final answer.
                         if finalWrapUpSent { break iterations }
 
-                        if toolCalls.isEmpty {
+                        if effectiveToolCalls.isEmpty {
                             // Small models end a turn either (a) NARRATING a future
                             // action ("I'll mark it done now") after using a tool, or
                             // (b) CLAIMING in past tense that they changed a plan/
@@ -252,19 +277,30 @@ final class AgentExecutor: Sendable {
                             // user. If the model pauses with narration, just end the
                             // turn rather than fabricating a correction message.
                             let falseClaim = !usedMutator
-                                && (Self.claimsToolBackedMutation(content)
-                                    || Self.claimsDelegation(content))
-                            // Future-tense narration ("I'll delegate", "Now I'll mark it")
-                            // should ALWAYS trigger a nudge — the model is announcing
-                            // intent it never followed through on, regardless of whether
-                            // an earlier round already ran a mutating tool.
+                                && (Self.claimsToolBackedMutation(cleanContent)
+                                    || Self.claimsDelegation(cleanContent))
+                            // Future-tense narration ("I'll delegate", "Now I'll mark it",
+                            // "I will now:", "Step 1: ...") should ALWAYS trigger a nudge —
+                            // the model is announcing intent it never followed through on.
                             let futureNarration = !specsThisRound.isEmpty
-                                && Self.claimsFutureAction(content)
+                                && Self.claimsFutureAction(cleanContent)
+                            // A displayed shell command the user is expected to run manually
+                            // is a tool-use failure — the model should execute it itself.
+                            let unexecutedShell = !specsThisRound.isEmpty
+                                && Self.containsUnexecutedShellCommand(cleanContent)
+                            // A displayed HTML/CSS/JS/JSON code block that the model is
+                            // writing is a tool-use failure — it should use write_file.
+                            let unexecutedFileWrite = !specsThisRound.isEmpty
+                                && Self.containsUnexecutedFileWrite(cleanContent)
                             if !specsThisRound.isEmpty, autoNudges < maxAutoNudges,
-                                falseClaim || futureNarration {
+                                falseClaim || futureNarration || unexecutedShell || unexecutedFileWrite {
                                 autoNudges += 1
-                                NSLog("[AGENT] auto-nudge \(autoNudges): falseClaim")
-                                convo.append(["role": "assistant", "content": content])
+                                let reason: String
+                                if unexecutedShell { reason = "unexecutedShell" }
+                                else if unexecutedFileWrite { reason = "unexecutedFileWrite" }
+                                else { reason = falseClaim ? "falseClaim" : "futureNarration" }
+                                NSLog("[AGENT] auto-nudge \(autoNudges): \(reason)")
+                                convo.append(["role": "assistant", "content": cleanContent])
                                 // The correction is a USER-role message: a mid-conversation
                                 // SYSTEM message breaks the Qwen Jinja chat template
                                 // (Jinja.TemplateException — it only accepts a system message
@@ -278,7 +314,7 @@ final class AgentExecutor: Sendable {
                                         "[automated check — NOT a message from the user] Your previous "
                                         + "message described an action but did not include the tool call "
                                         + "that performs it. "
-                                        + Self.nudgeInstruction(for: content)
+                                        + Self.nudgeInstruction(for: cleanContent)
                                         + " Emit ONLY that tool call now, with correct arguments and no "
                                         + "unrelated tools. If the action was already completed in an "
                                         + "earlier step, or no tool is needed, just give your final answer.",
@@ -290,7 +326,7 @@ final class AgentExecutor: Sendable {
                             // top-of-loop drain injects the steer and the model
                             // responds to it (instead of dropping it).
                             if let steerInbox, await steerInbox.hasPending {
-                                convo.append(["role": "assistant", "content": content])
+                                convo.append(["role": "assistant", "content": cleanContent])
                                 round += 1
                                 continue iterations
                             }
@@ -303,7 +339,7 @@ final class AgentExecutor: Sendable {
                         // more than 2 follow-throughs per turn; refuse-loops still
                         // terminate after 2 nudges in a row without a tool call.
                         autoNudges = 0
-                        if toolCalls.contains(where: {
+                        if effectiveToolCalls.contains(where: {
                             Self.agentScopedTools.contains($0.name)
                                 || Self.nonInjectedMutators.contains($0.name)
                         }) {
@@ -313,12 +349,12 @@ final class AgentExecutor: Sendable {
                         // Record the assistant turn that requested the tools.
                         convo.append([
                             "role": "assistant",
-                            "content": content,
-                            "tool_calls": toolCalls.map { $0.wire },
+                            "content": cleanContent,
+                            "tool_calls": effectiveToolCalls.map { $0.wire },
                         ])
 
                         // Execute each tool and feed the result back.
-                        for tc in toolCalls {
+                        for tc in effectiveToolCalls {
                             continuation.yield(.toolCall(name: tc.name))
                             let result = await executeTool(
                                 tc, mcp: mcp, project: project,
@@ -379,14 +415,42 @@ final class AgentExecutor: Sendable {
     /// tools from a menu (e.g. creating a todo list when asked to send a message).
     private static func nudgeInstruction(for content: String) -> String {
         let t = content.lowercased()
+        // Shell / server / command execution takes priority — this is the main failure
+        // mode the user is asking about.
+        if containsUnexecutedShellCommand(content) || t.contains("nohup") || t.contains("http.server")
+            || t.contains("python3 -m") || t.contains("curl") || t.contains("lsof") || t.contains("kill")
+            || t.contains("server") || t.contains("port") {
+            return "Call execute_command with the EXACT shell command you just displayed. "
+                + "Use this XML format:\n"
+                + "<tool_call>\n<function=execute_command>\n<parameter=command>\n"
+                + "YOUR_COMMAND_HERE\n</parameter>\n</function>\n</tool_call>\n"
+                + "Do NOT output the command again as a code block or numbered step. "
+                + "Use start_background: true for long-running servers. Run it now."
+        }
+        // File write dumps: the model pasted HTML/CSS/JS/JSON in chat instead of
+        // calling write_file — redirect it to the tool.
+        if containsUnexecutedFileWrite(content) {
+            return "You just displayed a file's contents as a code block. You MUST use write_file "
+                + "to actually create or overwrite the file. Use this XML format:\n"
+                + "<tool_call>\n<function=write_file>\n"
+                + "<parameter=path>/absolute/path/to/file.html</parameter>\n"
+                + "<parameter=content>\nPASTE THE ENTIRE FILE CONTENTS HERE\n</parameter>\n"
+                + "</function>\n</tool_call>\n"
+                + "Do NOT output the file contents again as a code block. Write the file now."
+        }
         let messageish = ["message", "inbox", "sent", "messaged", "notified", "deliver"]
         if messageish.contains(where: { t.contains($0) }) {
             return "Call send_agent_message with to_agent, subject, and message."
         }
         if claimsDelegation(content) {
             return "Call ask_project_agents with a 'requests' list of {project, agent, task} "
-                + "(or ask_project_agent for a single one) to ACTUALLY delegate. Do not invent "
-                + "the agents' answers — only report what the tool returns."
+                + "(or ask_project_agent for a single one) to ACTUALLY delegate. Use this XML format:\n"
+                + "<tool_call>\n<function=ask_project_agent>\n"
+                + "<parameter=project>PROJECT_NAME</parameter>\n"
+                + "<parameter=agent>AGENT_NAME</parameter>\n"
+                + "<parameter=task>THE TASK TO HAND OFF</parameter>\n"
+                + "</function>\n</tool_call>\n"
+                + "Do not invent the agents' answers — only report what the tool returns."
         }
         if t.contains("agent") {
             return "Call create_project_agent with 'project' and 'agent' (or ask_project_agent "
@@ -402,6 +466,21 @@ final class AgentExecutor: Sendable {
         if t.contains("index") || t.contains("scan") || t.contains("directory") {
             return "Call index_directory with 'paths' (JSON array of directory paths) to ACTUALLY scan the directory. "
                 + "Do not claim you have already indexed something — emit the tool call now."
+        }
+        if t.contains("read") || t.contains("file") || t.contains("content") || t.contains("config")
+            || t.contains("guide") || t.contains("json") || t.contains("md") {
+            return "Call read_file with the absolute 'path' of the file you just mentioned. "
+                + "Use this XML format:\n"
+                + "<tool_call>\n<function=read_file>\n<parameter=path>\n"
+                + "/absolute/path/to/file.txt\n</parameter>\n</function>\n</tool_call>\n"
+                + "If you are unsure of the exact path, call list_dir first. Emit the tool call now."
+        }
+        if t.contains("list") || t.contains("files") || t.contains("folder") {
+            return "Call list_dir with the absolute 'path' of the directory you just mentioned. "
+                + "Use this XML format:\n"
+                + "<tool_call>\n<function=list_dir>\n<parameter=path>\n"
+                + "/absolute/path/to/directory\n</parameter>\n</function>\n</tool_call>\n"
+                + "Emit the tool call now, do not just describe what you would list."
         }
         return "Make the tool call that actually performs the action you just described."
     }
@@ -422,38 +501,193 @@ final class AgentExecutor: Sendable {
 
     /// Heuristic: does this text CLAIM the model delegated to / consulted project
     /// agents (and is likely reporting fabricated answers) without calling the
-    /// delegation tool? Requires the word "agent" plus a PAST-TENSE completed-
-    /// action cue. Present-tense capability descriptions ("I delegate tasks to
-    /// specialists when needed") must NOT match — flagging those nudges the model
-    /// into delegating spuriously (e.g. on "what's your role?").
+    /// delegation tool? Requires the word "agent" plus a completed-action or
+    /// present-progress cue. Present-tense capability descriptions ("I delegate
+    /// tasks to specialists when needed") must NOT match.
     private static func claimsDelegation(_ text: String) -> Bool {
         let t = text.lowercased()
         guard t.contains("agent") else { return false }
-        let cues = ["i asked", "i've asked", "i have asked", "asked both",
-                    "delegated", "consulted", "queried", "their response",
-                    "their suggestion", "suggested", "responded", "replied",
-                    "both agents"]
+        let cues = [
+            "i asked", "i've asked", "i have asked", "asked both",
+            "delegated", "consulted", "queried", "their response",
+            "their suggestion", "suggested", "responded", "replied",
+            "both agents",
+            // Model claiming an agent is doing / has done work without actually
+            // delegating via ask_project_agent.
+            "agent has confirmed", "agent has verified", "agent has completed",
+            "agent has checked", "agent has created", "agent has updated",
+            "agent is now", "agent is working", "agent is checking",
+            "agent is taking", "agent is processing", "agent will",
+        ]
         return cues.contains { t.contains($0) }
     }
 
     /// Heuristic: does this text NARRATE a future action the model intends to
-    /// take ("I'll delegate now", "Now I'll mark it done") but the turn ends
-    /// without the tool call actually firing? Catches the 35B model's pattern
+    /// take ("I'll delegate now", "Now I'll mark it done", "I will now:") but the
+    /// turn ends without the tool call actually firing? Catches the model's pattern
     /// of announcing intent and then stopping.
     private static func claimsFutureAction(_ text: String) -> Bool {
         let t = text.lowercased()
         guard !t.isEmpty else { return false }
-        let intents = ["i'll delegate", "i'll create", "i'll mark", "i'll send",
-                       "i'll add", "i'll update", "i'll set", "i'll remove",
-                       "i'll read", "i'll list", "i'll check", "i'll look",
-                       "i'll explore", "i'll gather", "i'll collect",
-                       "now i'll", "let me delegate", "let me create",
-                       "let me mark", "let me send", "let me add",
-                       "let me read", "let me list", "let me check",
-                       "let me explore", "let me gather", "let me collect",
-                       "next, i'll", "next i'll",
-                       "now let me", "good, i'll", "i have the"]
+        let intents = [
+            // Delegation / asking agents
+            "i'll delegate", "i'll ask", "i'll task", "i'll instruct", "i'll have",
+            "i'll get", "i'll make", "i'll tell", "i will delegate", "i will ask",
+            "i will task", "i will instruct", "i will have", "i will get", "i will make",
+            "i will tell", "i'm going to ask", "i'm going to task", "i'm going to instruct",
+            "i am going to ask", "i am going to task", "i am going to instruct",
+            // General future actions
+            "i'll create", "i'll mark", "i'll send",
+            "i'll add", "i'll update", "i'll set", "i'll remove",
+            "i'll read", "i'll list", "i'll check", "i'll look",
+            "i'll explore", "i'll gather", "i'll collect", "i'll help",
+            "i will now", "i will:", "i will first", "i will then",
+            "i will help", "i will read", "i will check", "i will explore",
+            "i need to", "i need read", "i need check", "i need explore",
+            "i am going to", "i'm going to",
+            "now i'll", "let me delegate", "let me create",
+            "let me mark", "let me send", "let me add",
+            "let me read", "let me list", "let me check",
+            "let me explore", "let me gather", "let me collect",
+            "let me now", "let me start", "let me help",
+            "next, i'll", "next i'll", "next, let me", "next let me",
+            "now let me", "good, i'll", "i have the",
+            "step 1:", "step 2:", "step 3:", "step 4:", "step 5:",
+            "first, i will", "then i will", "finally, i will",
+            "first, i'll", "then i'll", "finally, i'll"]
         return intents.contains { t.contains($0) }
+    }
+
+    /// Heuristic: does the text contain a bash/shell code block that the model
+    /// displayed but never executed? Catches the pattern where the model prints a
+    /// command for the user to run instead of calling execute_command.
+    private static func containsUnexecutedShellCommand(_ text: String) -> Bool {
+        let t = text.lowercased()
+        guard !t.isEmpty else { return false }
+        // Detect a fenced bash/zsh/shell code block.
+        let patterns = [
+            "```bash", "```sh", "```zsh", "```shell",
+            "<code class=\"language-bash\"", "<code class=\"language-sh\""
+        ]
+        return patterns.contains { t.contains($0) }
+    }
+
+    /// Heuristic: does the text contain a fenced code block that looks like a
+    /// file the model is writing (HTML/CSS/JS/JSON) but the model never called
+    /// write_file? Catches the pattern where small models dump file contents in
+    /// chat instead of using the tool.
+    private static func containsUnexecutedFileWrite(_ text: String) -> Bool {
+        let t = text.lowercased()
+        guard !t.isEmpty else { return false }
+        let tags = [
+            "```html", "```css", "```js", "```javascript", "```json",
+            "```xml", "```swift", "```python", "```md", "```markdown",
+            "<code class=\"language-html\"", "<code class=\"language-css\"",
+            "<code class=\"language-js\"", "<code class=\"language-javascript\"",
+            "<code class=\"language-json\"",
+        ]
+        return tags.contains { t.contains($0) }
+    }
+
+    /// Strip raw XML tool-call blocks that the parser consumed as `.toolCall`
+    /// events. Keeping them in the assistant content fed back to the model adds
+    /// noise and can confuse small XML-format models into echoing malformed tags.
+    private static func stripRawToolCallXML(_ text: String) -> String {
+        var result = text
+        let patterns = [
+            "(?s)<tool_call>.*?</tool_call>",
+            "(?s)<function=[^>]+>.*?</function>",
+        ]
+        for pattern in patterns {
+            result = result.replacingOccurrences(
+                of: pattern, with: "", options: .regularExpression)
+        }
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Recover a shell command from the assistant's text when the XML parser
+    /// returned an execute_command tool call with an empty or missing `command`
+    /// argument. Tries, in order: a fenced code block, a command-like line in
+    /// the prose, then the raw `<parameter=command>` value inside any leftover
+    /// XML tool_call block.
+    private static func recoverShellCommands(
+        in toolCalls: [RoundToolCall], from content: String
+    ) -> [RoundToolCall] {
+        guard let command = firstShellCommand(in: content)
+                ?? firstCommandLikeLine(in: content)
+                ?? firstCommandFromRawXML(in: content)
+        else { return toolCalls }
+        return toolCalls.map { tc in
+            guard tc.name == "execute_command" else { return tc }
+            var args = ((try? JSONSerialization.jsonObject(
+                with: Data(tc.arguments.utf8)
+            )) as? [String: Any]) ?? [:]
+            let existing = (args["command"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard existing == nil || existing?.isEmpty == true else { return tc }
+            args["command"] = command
+            guard let data = try? JSONSerialization.data(withJSONObject: args),
+                  let json = String(data: data, encoding: .utf8)
+            else { return tc }
+            NSLog("[AGENT] recovered execute_command args: \(json)")
+            return RoundToolCall(id: tc.id, name: tc.name, arguments: json)
+        }
+    }
+
+    /// Extract the first shell command from a fenced code block.
+    private static func firstShellCommand(in text: String) -> String? {
+        let tags = ["```bash", "```sh", "```zsh", "```shell"]
+        var candidates: [String] = []
+        for tag in tags {
+            var search = text
+            while let startRange = search.range(of: tag, options: .caseInsensitive) {
+                let afterStart = search[startRange.upperBound...]
+                guard let endRange = afterStart.range(of: "```") else { break }
+                let block = String(afterStart[..<endRange.lowerBound])
+                let cmd = block.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !cmd.isEmpty { candidates.append(cmd) }
+                search = String(afterStart[endRange.upperBound...])
+            }
+        }
+        return candidates.first
+    }
+
+    /// Heuristic: find a line that looks like an executable command.
+    private static func firstCommandLikeLine(in text: String) -> String? {
+        let commandStarters = [
+            "python3 ", "python ", "node ", "npm ", "yarn ", "swift ", "xcodegen ",
+            "xcodebuild ", "cd ", "ls ", "cat ", "mkdir ", "cp ", "mv ", "rm ",
+            "touch ", "echo ", "grep ", "find ", "awk ", "sed ", "curl ", "git ",
+            "make ", "docker ", "kill ", "lsof ", "nohup ", "open ", "defaults ",
+            "plutil ", "security "
+        ]
+        let operators = ["&&", "||", "|", ";", ">", ">>", " 2>&1"]
+        for line in text.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty else { continue }
+            let lower = trimmed.lowercased()
+            if commandStarters.contains(where: { lower.hasPrefix($0) }) { return trimmed }
+            if operators.contains(where: { trimmed.contains($0) })
+                && !trimmed.hasPrefix("-") && !trimmed.hasPrefix("*") {
+                return trimmed
+            }
+        }
+        return nil
+    }
+
+    /// Last resort: parse any raw `<function=execute_command>` XML block in the
+    /// text and return the value of its `<parameter=command>` tag.
+    private static func firstCommandFromRawXML(in text: String) -> String? {
+        guard let funcMatch = text.range(
+            of: #"<function=execute_command>([\s\S]*?)</function>"#,
+            options: .regularExpression)
+        else { return nil }
+        let funcContent = String(text[funcMatch])
+        guard let paramStart = funcContent.range(of: "<parameter=command>") else { return nil }
+        let afterStart = funcContent[paramStart.upperBound...]
+        guard let paramEnd = afterStart.range(of: "</parameter>") else { return nil }
+        let value = String(afterStart[..<paramEnd.lowerBound])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
     }
 
     /// Mutating tools that are NOT agent-scoped (no agent_id injection) but still
@@ -532,6 +766,11 @@ final class AgentExecutor: Sendable {
         argsJSON = Self.injectCwd(
             into: argsJSON, toolName: tc.name, workingDirectory: workingDirectory
         )
+        // Default create_project_agent's working directory to the creating agent's
+        // working directory so sub-agents inherit a sensible base path.
+        argsJSON = Self.injectCreateAgentCwd(
+            into: argsJSON, toolName: tc.name, workingDirectory: workingDirectory
+        )
         // Stamp the calling agent's id onto live-todo tools (the model can't know
         // its own id; the live checklist is keyed by agent).
         argsJSON = Self.injectAgentID(
@@ -591,6 +830,25 @@ final class AgentExecutor: Sendable {
         )) as? [String: Any]) ?? [:]
         let existing = obj["cwd"] as? String
         if existing == nil || existing?.isEmpty == true { obj["cwd"] = wd }
+        guard let data = try? JSONSerialization.data(withJSONObject: obj),
+              let string = String(data: data, encoding: .utf8)
+        else { return argumentsJSON }
+        return string
+    }
+
+    /// Default create_project_agent's working directory to the parent agent's
+    /// working directory when the model didn't supply one.
+    private static func injectCreateAgentCwd(
+        into argumentsJSON: String, toolName: String, workingDirectory: String?
+    ) -> String {
+        guard let wd = workingDirectory, !wd.isEmpty, toolName == "create_project_agent" else {
+            return argumentsJSON
+        }
+        var obj = ((try? JSONSerialization.jsonObject(
+            with: Data(argumentsJSON.utf8)
+        )) as? [String: Any]) ?? [:]
+        let existing = obj["workingDirectory"] as? String
+        if existing == nil || existing?.isEmpty == true { obj["workingDirectory"] = wd }
         guard let data = try? JSONSerialization.data(withJSONObject: obj),
               let string = String(data: data, encoding: .utf8)
         else { return argumentsJSON }
@@ -675,9 +933,15 @@ final class AgentExecutor: Sendable {
             }
             guard let target else { return nil }
             let proj = ws.projectName(for: target) ?? (projectName ?? "")
-            // Look up the target agent's own working directory from UserDefaults.
-            let targetWD = workingDirectory
+            // Prefer the target agent's own working directory from its record,
+            // then legacy UserDefaults, then the parent agent's working directory.
+            let targetWD = target.workingDirectory
                 ?? UserDefaults.standard.string(forKey: "workingDir.\(target.id.uuidString)")
+                ?? workingDirectory
+            if let targetWD, !targetWD.isEmpty,
+               !MaestroTools.delegatedAgentWorkingDirectories.contains(targetWD) {
+                MaestroTools.delegatedAgentWorkingDirectories.append(targetWD)
+            }
             var msgs = ChatHistoryStore.load(agentId: target.id)
                 ?? [ChatViewModel.systemMessage(
                     for: target, projectName: proj.isEmpty ? nil : proj,
@@ -699,22 +963,47 @@ final class AgentExecutor: Sendable {
                     + "Available agents: \(available). Use EXACT names from list_workspace.")
         }
 
-        // Delegate tool surface: project tools only (no Navigator tools), plus
-        // MCP servers the user exposes to delegated sub-agents.
-        var specs = MaestroTools.schemas(navigator: false)
-        if let mcp { specs += await mcp.currentSchemas(audience: .delegate) }
-        NSLog("[DELEGATE] -> '\(target.name)' (project='\(proj)') with \(specs.count) tools")
-
         // Per-agent model: when a resolver is wired, the sub-agent runs on ITS
         // own assigned in-process model/backend; otherwise it reuses the
         // parent's. Bounded tool budget: a delegated run must terminate and
         // answer (the wrap-up round in `run` forces a final tool-free reply).
         var subModelID = modelID
         var subBackend = backend
+        var subMaxTokens = maxTokens
+        var subIsLite = false
         if let delegateBackendResolver, let resolved = await delegateBackendResolver(target.id) {
             subModelID = resolved.modelID
             subBackend = resolved.backend
+            subMaxTokens = resolved.maxTokens
+            // Small MoE models (<10B active params) are easily overwhelmed by the
+            // full tool menu; give them the reduced essential+file set.
+            if let catalog = self.catalog {
+                subIsLite = await MainActor.run {
+                    catalog.models.first { $0.huggingFaceID == resolved.modelID }?.isLiteModel ?? false
+                }
+            }
         }
+
+        // Delegate tool surface: project tools only (no Navigator tools), plus
+        // MCP servers the user exposes to delegated sub-agents. Per-agent enabled
+        // categories override the old automatic lite-mode reduction.
+        let enabledCategories = await MainActor.run {
+            MaestroTools.workspace?.enabledToolCategories(for: target.id)
+        }
+        var specs = MaestroTools.schemas(
+            navigator: false, liteMode: subIsLite,
+            enabledCategories: enabledCategories)
+        if let mcp {
+            let mcpSchemas = await mcp.currentSchemas(audience: .delegate)
+            if let enabledCategories {
+                if enabledCategories.contains(.mcp) {
+                    specs += mcpSchemas
+                }
+            } else {
+                specs += mcpSchemas
+            }
+        }
+        NSLog("[DELEGATE] -> '\(target.name)' (project='\(proj)', lite=\(subIsLite), maxTokens=\(subMaxTokens)) with \(specs.count) tools")
         let sub = AgentExecutor(
             modelID: subModelID, backend: subBackend,
             delegateBackendResolver: delegateBackendResolver)
@@ -724,9 +1013,12 @@ final class AgentExecutor: Sendable {
         }
         var narration = ""      // every streamed token (fallback)
         var lastRoundText = ""  // text after the most recent tool call
-        // Notify handler that delegation is starting.
+        // Notify handler and global sampler that delegation is starting.
+        await MainActor.run {
+            ProcessResourceSampler.shared.startSubagent(id: target.id.uuidString, name: target.name)
+        }
         await delegateStreamHandler?.start()
-        pendingDelegateEvents.append(.delegateStart(agentID: target.id.uuidString))
+        pendingDelegateEvents.append(.delegateStart(agentID: target.id.uuidString, modelID: subModelID))
         // Pass the parent's authorized roots to the child so it can access
         // the same folders (e.g. the vault) without re-authorizing.
         MaestroTools.inheritedRoots = MaestroTools.authorizedRootsForParent()
@@ -740,13 +1032,16 @@ final class AgentExecutor: Sendable {
                 workingDirectory: effectiveWD,
                 agentID: target.id.uuidString,
                 maxRounds: 6,
-                maxTokens: 4096
+                maxTokens: subMaxTokens
             ) {
                 switch output {
                 case .token(let token):
                     narration += token
                     lastRoundText += token
                     // Forward token to live streaming handler and collect event.
+                    await MainActor.run {
+                        ProcessResourceSampler.shared.recordSubagentToken(id: target.id.uuidString)
+                    }
                     await delegateStreamHandler?.token(token)
                     pendingDelegateEvents.append(.delegateToken(agentID: target.id.uuidString, token: token))
                 case .toolCall:
@@ -756,16 +1051,22 @@ final class AgentExecutor: Sendable {
                     // Sub-agents have no steer inbox, so .turnBreak never fires;
                     // handled for switch exhaustiveness.
                     break
-                case .delegateToken, .delegateStart, .delegateFinish:
+                case .delegateToken, .delegateStart(_, _), .delegateFinish:
                     // Sub-agents don't nest delegations, so these shouldn't appear.
                     break
                 }
             }
         } catch {
+            await MainActor.run {
+                ProcessResourceSampler.shared.stopSubagent(id: target.id.uuidString)
+            }
             await delegateStreamHandler?.finish()
             pendingDelegateEvents.append(.delegateFinish(agentID: target.id.uuidString))
             return DelegateResult(project: proj, agent: target.name, answer: nil,
                 error: "delegate failed: \(error.localizedDescription)")
+        }
+        await MainActor.run {
+            ProcessResourceSampler.shared.stopSubagent(id: target.id.uuidString)
         }
         await delegateStreamHandler?.finish()
         pendingDelegateEvents.append(.delegateFinish(agentID: target.id.uuidString))
@@ -802,15 +1103,29 @@ final class AgentExecutor: Sendable {
         target: AgentRecord, proj: String, messages: [Message], task: String,
         mcp: MCPClientService?, workingDirectory: String?
     ) async -> DelegateResult {
-        var specs = MaestroTools.schemas(navigator: false)
-        if let mcp { specs += await mcp.currentSchemas(audience: .delegate) }
+        let enabledCategories = await MainActor.run {
+            MaestroTools.workspace?.enabledToolCategories(for: target.id)
+        }
+        var specs = MaestroTools.schemas(navigator: false, enabledCategories: enabledCategories)
+        if let mcp {
+            let mcpSchemas = await mcp.currentSchemas(audience: .delegate)
+            if let enabledCategories {
+                if enabledCategories.contains(.mcp) {
+                    specs += mcpSchemas
+                }
+            } else {
+                specs += mcpSchemas
+            }
+        }
         NSLog("[DELEGATE] -> '\(target.name)' (project='\(proj)') with \(specs.count) tools [resolved]")
 
         var subModelID = modelID
         var subBackend = backend
+        var subMaxTokens = maxTokens
         if let delegateBackendResolver, let resolved = await delegateBackendResolver(target.id) {
             subModelID = resolved.modelID
             subBackend = resolved.backend
+            subMaxTokens = resolved.maxTokens
         }
         let sub = AgentExecutor(
             modelID: subModelID, backend: subBackend,
@@ -821,9 +1136,12 @@ final class AgentExecutor: Sendable {
         }
         var narration = ""
         var lastRoundText = ""
-        // Notify handler that delegation is starting.
+        // Notify handler and global sampler that delegation is starting.
+        await MainActor.run {
+            ProcessResourceSampler.shared.startSubagent(id: target.id.uuidString, name: target.name)
+        }
         await delegateStreamHandler?.start()
-        pendingDelegateEvents.append(.delegateStart(agentID: target.id.uuidString))
+        pendingDelegateEvents.append(.delegateStart(agentID: target.id.uuidString, modelID: subModelID))
         do {
             for try await output in sub.run(
                 messages: messages, toolSpecs: specs, mcp: mcp,
@@ -833,13 +1151,16 @@ final class AgentExecutor: Sendable {
                 workingDirectory: workingDirectory,
                 agentID: target.id.uuidString,
                 maxRounds: 6,
-                maxTokens: 4096
+                maxTokens: subMaxTokens
             ) {
                 switch output {
                 case .token(let token):
                     narration += token
                     lastRoundText += token
                     // Forward token to live streaming handler and collect event.
+                    await MainActor.run {
+                        ProcessResourceSampler.shared.recordSubagentToken(id: target.id.uuidString)
+                    }
                     await delegateStreamHandler?.token(token)
                     pendingDelegateEvents.append(.delegateToken(agentID: target.id.uuidString, token: token))
                 case .toolCall:
@@ -851,10 +1172,16 @@ final class AgentExecutor: Sendable {
                 }
             }
         } catch {
+            await MainActor.run {
+                ProcessResourceSampler.shared.stopSubagent(id: target.id.uuidString)
+            }
             await delegateStreamHandler?.finish()
             pendingDelegateEvents.append(.delegateFinish(agentID: target.id.uuidString))
             return DelegateResult(project: proj, agent: target.name, answer: nil,
                 error: "delegate failed: \(error.localizedDescription)")
+        }
+        await MainActor.run {
+            ProcessResourceSampler.shared.stopSubagent(id: target.id.uuidString)
         }
         await delegateStreamHandler?.finish()
         pendingDelegateEvents.append(.delegateFinish(agentID: target.id.uuidString))
@@ -929,8 +1256,13 @@ final class AgentExecutor: Sendable {
                 }
                 guard let target else { return nil }
                 let proj = ws.projectName(for: target) ?? (p.project ?? "")
-                let targetWD = workingDirectory
+                let targetWD = target.workingDirectory
                     ?? UserDefaults.standard.string(forKey: "workingDir.\(target.id.uuidString)")
+                    ?? workingDirectory
+                if let targetWD, !targetWD.isEmpty,
+                   !MaestroTools.delegatedAgentWorkingDirectories.contains(targetWD) {
+                    MaestroTools.delegatedAgentWorkingDirectories.append(targetWD)
+                }
                 var msgs = ChatHistoryStore.load(agentId: target.id)
                     ?? [ChatViewModel.systemMessage(
                         for: target, projectName: proj.isEmpty ? nil : proj,

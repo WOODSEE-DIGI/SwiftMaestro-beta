@@ -68,7 +68,7 @@ final class TodoStore {
     // MARK: - Persistence (App Support/SwiftMaestro/todos/<agentId>.json)
 
     private nonisolated static func dir() -> URL {
-        let base = WorkspaceStore.appSupportDir().appendingPathComponent("todos", isDirectory: true)
+        let base = WorkspaceStore.dataDir().appendingPathComponent("todos", isDirectory: true)
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         return base
     }

@@ -28,8 +28,13 @@ final class MaestroToolsTests: XCTestCase {
 
     func testHandlesDoesNotHandleUnknownTools() {
         XCTAssertFalse(MaestroTools.handles("unknown_tool"))
-        XCTAssertFalse(MaestroTools.handles("execute_command"))
         XCTAssertFalse(MaestroTools.handles(""))
+    }
+
+    func testHandlesShellTools() {
+        XCTAssertTrue(MaestroTools.handles("execute_command"))
+        XCTAssertTrue(MaestroTools.handles("list_background_processes"))
+        XCTAssertTrue(MaestroTools.handles("stop_background_process"))
     }
 
     func testHandlesExcludesDelegationTools() {

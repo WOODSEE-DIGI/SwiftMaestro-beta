@@ -64,18 +64,14 @@ enum SecretsStore {
 
     // MARK: Index location (machine-local; only Keychain values sync)
 
-    private static var indexURL: URL {
-        let support = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
-            .first!
-            .appendingPathComponent("SwiftMaestro", isDirectory: true)
-        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
-        return support.appendingPathComponent("secrets-index.json")
-    }
+    private static var indexURL: URL { SwiftMaestroPaths.secretsIndexURL }
 
     private static let lock = NSLock()
     // Access is always guarded by `lock`, so this shared mutable state is safe.
     nonisolated(unsafe) private static var valueCache: [String]? // cached raw values for redaction
+    // Cached resolved values per (account) to avoid repeated keychain auth prompts.
+    // Invalidated whenever secrets are added/removed/updated.
+    nonisolated(unsafe) private static var resolvedCache: [String: String] = [:]
 
     // MARK: Index IO
 
@@ -120,6 +116,7 @@ enum SecretsStore {
             items[idx].note = note
             items[idx].updatedAt = now
             valueCache = nil
+            resolvedCache.removeValue(forKey: scope.account(for: cleanName))
             saveIndexLocked(items)
             return items[idx]
         }
@@ -135,6 +132,7 @@ enum SecretsStore {
         )
         items.append(meta)
         valueCache = nil
+        resolvedCache.removeValue(forKey: scope.account(for: cleanName))
         saveIndexLocked(items)
         return meta
     }
@@ -145,6 +143,7 @@ enum SecretsStore {
         var items = loadIndexLocked()
         items.removeAll { $0.account == meta.account }
         valueCache = nil
+        resolvedCache.removeValue(forKey: meta.account)
         saveIndexLocked(items)
     }
 
@@ -165,17 +164,32 @@ enum SecretsStore {
     }
 
     static func resolveValue(name: String, currentProject: String?) -> String? {
-        if let project = currentProject {
-            let projectAccount = SecretScope.project(project).account(for: name)
-            if let value = try? KeychainService.read(account: projectAccount), !value.isEmpty {
-                touchLastUsed(name: name, scope: .project(project))
-                return value
+        // If the login keychain is locked, skip reads entirely rather than
+        // risk a keychain password dialog during model inference.
+        guard KeychainService.isDefaultKeychainUnlocked() else { return nil }
+
+        let accounts = [currentProject.map { SecretScope.project($0).account(for: name) },
+                        SecretScope.global.account(for: name)].compactMap { $0 }
+
+        lock.lock()
+        for account in accounts {
+            if let cached = resolvedCache[account], !cached.isEmpty {
+                lock.unlock()
+                return cached
             }
         }
-        let globalAccount = SecretScope.global.account(for: name)
-        if let value = try? KeychainService.read(account: globalAccount), !value.isEmpty {
-            touchLastUsed(name: name, scope: .global)
-            return value
+        lock.unlock()
+
+        for account in accounts {
+            // Use `allowUI: false` for injection-point reads so background model runs
+            // and secret resolution never pop a keychain password dialog. If the item
+            // is inaccessible without UI, we fail silently rather than interrupt the user.
+            if let value = try? KeychainService.read(account: account, allowUI: false), !value.isEmpty {
+                lock.lock()
+                resolvedCache[account] = value
+                lock.unlock()
+                return value
+            }
         }
         return nil
     }
@@ -194,6 +208,10 @@ enum SecretsStore {
     /// All raw secret values currently stored (cached). Used only in-process by
     /// `SecretRedactor` to strip values before anything is persisted or logged.
     static func knownValues() -> [String] {
+        // If the login keychain is locked, return empty so redaction silently
+        // skips instead of triggering a keychain password dialog.
+        guard KeychainService.isDefaultKeychainUnlocked() else { return [] }
+
         lock.lock()
         if let cache = valueCache { lock.unlock(); return cache }
         let metas = loadIndexLocked()
@@ -210,7 +228,10 @@ enum SecretsStore {
     }
 
     static func invalidateValueCache() {
-        lock.lock(); valueCache = nil; lock.unlock()
+        lock.lock()
+        valueCache = nil
+        resolvedCache.removeAll()
+        lock.unlock()
     }
 }
 

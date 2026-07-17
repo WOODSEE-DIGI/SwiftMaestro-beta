@@ -35,6 +35,13 @@ struct SwiftMaestroApp: App {
     @State private var messageStore = AgentMessageStore()
     @State private var theme = ThemeStore()
     @State private var whisperService = WhisperKitService()
+    @State private var visionProxyService = VisionProxyService()
+    @State private var notesViewModel = NotesViewModel()
+    @State private var eventKitStore = EventKitStore()
+    @State private var appleNotesService = AppleNotesService()
+    @State private var contactsService = ContactsService()
+    @State private var canvasStore = CanvasStore()
+    @State private var kanbanStore = KanbanStore()
     private let mcpService = MCPClientService()
 
     var body: some Scene {
@@ -42,12 +49,19 @@ struct SwiftMaestroApp: App {
             ContentView()
                 .environment(engine)
                 .environment(catalog)
+                .environment(visionProxyService)
                 .environment(workspace)
                 .environment(todoStore)
                 .environment(planStore)
                 .environment(messageStore)
                 .environment(theme)
                 .environment(whisperService)
+                .environment(notesViewModel)
+                .environment(eventKitStore)
+                .environment(appleNotesService)
+                .environment(contactsService)
+                .environment(canvasStore)
+                .environment(kanbanStore)
                 .task {
                     // Restore user settings from the external JSON backup if the
                     // UserDefaults plist has been reset or deleted. This must run
@@ -59,11 +73,19 @@ struct SwiftMaestroApp: App {
                         theme.reloadFromDefaults()
                     }
                     SwiftMaestroDefaultsMigration.applyIfNeeded()
+                    // Migrate any pre-centralized app data into the single
+                    // SwiftMaestro app root (data/, models/, logs/, backups/).
+                    SwiftMaestroPaths.migrateFromFlatLayout()
                     // Create the shared ~/.ai-context scaffold up front so a fresh,
                     // self-contained install has its data directory before first use.
                     SimpleMemoryStore.ensureScaffold()
                     // Expose the workspace to native delegation/workspace tools.
                     MaestroTools.workspace = workspace
+                    // Recover plans from previous builds and migrate them to the shared
+                    // memory store so they survive workspace resets and reinstalls.
+                    planStore.migrateFromLegacyStorage(navigatorID: workspace.navigator.id)
+                    // Wire the vision proxy service to the live inference engine.
+                    visionProxyService.setEngine(engine)
                     // Expose the live-todo store to the native todo tools.
                     MaestroTools.todoStore = todoStore
                     // Expose the plan store to the native plan tools.
@@ -74,11 +96,22 @@ struct SwiftMaestroApp: App {
                     // spawn the user-enabled servers (permissioned by MCP flags).
                     engine.mcpService = mcpService
                     await mcpService.startEnabledServers()
+                    // Validate capabilities for every locally-present model so
+                    // tool-call format / thinking support are known before any
+                    // generation runs. This is fast (JSON reads only).
+                    await catalog.refreshCapabilities()
                     // Eagerly load the default model at startup so the first
-                    // message doesn't block on model init/download.
-                    if let model = catalog.selectedModel {
-                        Task.detached(priority: .userInitiated) {
-                            _ = try? await engine.loadModel(model)
+                    // message doesn't block on model init/download. Avoid surprise
+                    // downloads or OOM crashes: only auto-load models that are already
+                    // present and fit comfortably within half of the installed RAM.
+                    if let model = catalog.selectedModel,
+                       model.hasLocalWeights {
+                        let physicalGB = Int(ProcessInfo.processInfo.physicalMemory / 1_073_741_824)
+                        let safeAutoLoadGB = max(32, physicalGB / 2)
+                        if model.estimatedMemoryGB <= safeAutoLoadGB {
+                            Task.detached(priority: .userInitiated) {
+                                _ = try? await engine.loadModel(model)
+                            }
                         }
                     }
                     // Eagerly load WhisperKit so the mic button is ready.
@@ -107,6 +140,7 @@ struct SwiftMaestroApp: App {
             AgentChatWindowView(target: target)
                 .environment(engine)
                 .environment(catalog)
+                .environment(visionProxyService)
                 .environment(workspace)
                 .environment(todoStore)
                 .environment(planStore)
@@ -135,6 +169,7 @@ struct SwiftMaestroApp: App {
             SettingsView()
                 .environment(engine)
                 .environment(catalog)
+                .environment(visionProxyService)
                 .environment(workspace)
                 .environment(todoStore)
                 .environment(planStore)
@@ -142,7 +177,7 @@ struct SwiftMaestroApp: App {
                 .environment(theme)
                 .environment(whisperService)
         }
-        .defaultSize(width: 760, height: 820)
+        .defaultSize(width: 900, height: 960)
         // Settings scenes default to `.contentSize`, which pins the window to the
         // content's size (so it can't be resized). `.contentMinSize` enforces only
         // the content's MINIMUM, letting the user resize the window larger to use

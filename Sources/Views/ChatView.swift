@@ -113,6 +113,9 @@ struct ChatView: View {
             }
         }
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                toolCategoryPicker
+            }
             ToolbarItem {
                 Button {
                     openWindow(id: "agent-chat-window", value: AgentChatWindowID(agentID: vm.agent.id))
@@ -216,15 +219,26 @@ struct ChatView: View {
             Image(systemName: "cpu").foregroundStyle(.secondary)
             Text("This agent").foregroundStyle(.secondary)
             Picker("", selection: agentModelBinding) {
-                Text("Default (global)").tag("")
+                Text(defaultAgentModelLabel).tag("")
                 ForEach(catalog.models) { m in
                     Text(m.displayName).tag(m.id)
                 }
             }
             .labelsHidden()
             .pickerStyle(.menu)
-            .frame(maxWidth: 200)
-            .help("Model used by THIS agent. “Default (global)” follows the toolbar’s Default picker.")
+            .frame(maxWidth: 220)
+            .help("Model used by THIS agent. “Default” follows the toolbar’s Default picker.")
+            if let effective = ChatViewModel.effectiveDelegateModelNames[vm.agent.id.uuidString] {
+                HStack(spacing: 4) {
+                    Image(systemName: "bolt.circle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.blue)
+                    Text("Running on \(effective)")
+                        .font(.caption2)
+                        .foregroundStyle(.blue)
+                }
+                .help("This delegation is actually running on \(effective) because the configured model was promoted or overridden.")
+            }
         }
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -235,6 +249,121 @@ struct ChatView: View {
     private var workingDirLabel: String {
         guard let wd = vm.workingDirectory else { return "Set working directory…" }
         return (wd as NSString).lastPathComponent
+    }
+
+    /// Always-visible per-agent tool category toggles in the title bar.
+    /// Each toggle shows an icon and a small text label so the user can tell
+    /// what each tool group is without hovering.
+    ///
+    /// The default set for the agent kind is always shown; additional categories
+    /// can be added with the "+" menu and will appear while they are enabled.
+    private var toolCategoryPicker: some View {
+        HStack(spacing: 8) {
+            ForEach(toolbarCategories) { category in
+                let active = enabledCategories.contains(category)
+                Button {
+                    toggleCategory(category)
+                } label: {
+                    VStack(spacing: 1) {
+                        Image(systemName: category.icon)
+                            .symbolVariant(active ? .fill : .none)
+                            .foregroundStyle(active ? theme.accent : .secondary)
+                            .frame(height: 14)
+                        Text(category.displayName)
+                            .font(.system(size: 8, weight: active ? .semibold : .medium))
+                            .foregroundStyle(active ? theme.accent : .secondary)
+                            .lineLimit(1)
+                    }
+                    .frame(minWidth: 34)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 2)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(active ? theme.accent.opacity(0.12) : Color.clear)
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("\(category.displayName): \(active ? "enabled" : "disabled")")
+            }
+
+            if !addableCategories.isEmpty {
+                Menu {
+                    ForEach(addableCategories) { category in
+                        Button {
+                            enableCategory(category)
+                        } label: {
+                            Label(category.displayName, systemImage: category.icon)
+                        }
+                    }
+                } label: {
+                    VStack(spacing: 1) {
+                        Image(systemName: "plus")
+                            .foregroundStyle(.secondary)
+                            .frame(height: 14)
+                        Text("Add")
+                            .font(.system(size: 8, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    .frame(minWidth: 34)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 2)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(.secondary.opacity(0.3), lineWidth: 1)
+                    )
+                    .contentShape(Rectangle())
+                }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .help("Add more tool categories")
+            }
+        }
+        .padding(.horizontal, 6)
+    }
+
+    /// Categories always shown for this agent kind.
+    private var defaultVisibleCategories: [ToolCategory] {
+        ToolCategory.visible(for: vm.agent.kind)
+    }
+
+    /// Categories rendered in the toolbar: the default visible set plus any
+    /// additional categories the user has enabled.
+    private var toolbarCategories: [ToolCategory] {
+        let defaults = Set(defaultVisibleCategories)
+        let extras = enabledCategories.subtracting(defaults)
+            .sorted { $0.displayName.localizedCompare($1.displayName) == .orderedAscending }
+        return defaultVisibleCategories + extras
+    }
+
+    /// Additional categories the user can add (not in the default visible set).
+    private var addableCategories: [ToolCategory] {
+        let defaults = Set(defaultVisibleCategories)
+        return ToolCategory.allCases
+            .filter { !defaults.contains($0) }
+            .sorted { $0.displayName.localizedCompare($1.displayName) == .orderedAscending }
+    }
+
+    /// Current enabled categories for this agent.
+    private var enabledCategories: Set<ToolCategory> {
+        workspace.enabledToolCategories(for: vm.agent.id)
+    }
+
+    private func toggleCategory(_ category: ToolCategory) {
+        var updated = enabledCategories
+        if updated.contains(category) {
+            updated.remove(category)
+        } else {
+            updated.insert(category)
+        }
+        workspace.setEnabledToolCategories(updated, for: vm.agent.id)
+    }
+
+    private func enableCategory(_ category: ToolCategory) {
+        var updated = enabledCategories
+        updated.insert(category)
+        workspace.setEnabledToolCategories(updated, for: vm.agent.id)
     }
 
     /// Live per-agent model override binding ("" = use the global default),
@@ -251,6 +380,15 @@ struct ChatView: View {
     private var effectiveModelForAgent: MaestroModel? {
         let live = workspace.agent(id: vm.agent.id) ?? vm.agent
         return catalog.effectiveModel(for: live)
+    }
+
+    /// Label for the "use global default" option in the per-agent model picker,
+    /// showing the currently selected default model name for clarity.
+    private var defaultAgentModelLabel: String {
+        if let defaultModel = catalog.selectedModel {
+            return "Default — \(defaultModel.displayName)"
+        }
+        return "Default (global)"
     }
 
     /// This agent's plans, docked as a left-side panel that mirrors the Tasks
@@ -457,7 +595,10 @@ struct ChatView: View {
                     ForEach(vm.messages.filter { $0.role != .system }) { message in
                         MessageBubble(
                             message: message,
-                            isActive: vm.isStreaming && message.id == vm.messages.last?.id
+                            isActive: vm.isStreaming && message.id == vm.messages.last?.id,
+                            onRevert: message.role == .user
+                                ? { vm.inputText = message.content }
+                                : nil
                         )
                         .id(message.id)
                     }
@@ -513,6 +654,7 @@ struct ChatView: View {
     private var loadingText: String {
         switch engine.state {
         case .loading(let name): return "Loading \(name)… (first load can take a while)"
+        case .downloading(let name): return "\(name) (download in progress)"
         case .generating:        return "Generating…"
         case .error(let msg):    return msg
         default:                 return "Working…"

@@ -94,7 +94,24 @@ actor MCPClientService {
         let stdoutPipe = Pipe()  // server stdout -> SwiftMaestro
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
-        // stderr is left inherited so server logs surface in the console.
+
+        // Redirect server stderr to a per-server log file so chatty MCP servers
+        // (e.g. XcodeBuildMCP) don't flood Xcode's console and get the debug
+        // session killed by the "high logging volume" quarantine.
+        let logDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first?
+            .appendingPathComponent("SwiftMaestro/logs/mcp", isDirectory: true)
+        if let logDir {
+            try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
+            let logPath = logDir.appendingPathComponent("\(entry.name).stderr.log").path
+            if FileManager.default.fileExists(atPath: logPath) {
+                // Truncate the previous log on each launch.
+                try? "".write(toFile: logPath, atomically: true, encoding: .utf8)
+            }
+            if let stderrHandle = FileHandle(forWritingAtPath: logPath) {
+                process.standardError = stderrHandle
+            }
+        }
 
         try process.run()
 

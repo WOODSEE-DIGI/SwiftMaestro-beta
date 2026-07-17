@@ -2,7 +2,7 @@ import Foundation
 
 /// Simple memory store using MaestroURI for organization
 /// Provides basic context recall without full MaestroMemory complexity
-final class SimpleMemoryStore {
+struct SimpleMemoryStore: Sendable {
     private let baseDir: URL
     
     /// Maps MaestroURI kinds to the shared memory directory structure.

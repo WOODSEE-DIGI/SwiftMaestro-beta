@@ -13,6 +13,7 @@ struct AgentChatWindowID: Hashable, Codable {
 struct AgentChatWindowView: View {
     @Environment(MLXInferenceEngine.self) private var engine
     @Environment(ModelCatalog.self) private var catalog
+    @Environment(VisionProxyService.self) private var visionProxyService
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(TodoStore.self) private var todoStore
     @Environment(PlanStore.self) private var planStore
@@ -75,7 +76,10 @@ struct AgentChatWindowView: View {
     }
 
     private func makeViewModel(for agent: AgentRecord) -> ChatViewModel {
-        ChatViewModel(agent: agent, projectName: workspace.projectName(for: agent))
+        ChatViewModel(
+            agent: agent,
+            projectName: workspace.projectName(for: agent),
+            visionProxyService: visionProxyService)
     }
 
     private var missingAgentView: some View {

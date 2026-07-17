@@ -7,9 +7,15 @@ struct MessageBubble: View {
     /// True when this is the assistant message currently being streamed. Drives
     /// the live "Thinking…" label and the auto-expand-while-reasoning behavior.
     var isActive: Bool = false
+    /// Called when the user taps the revert action on a user message.
+    /// Typically used to place the message text back into the input field.
+    var onRevert: (() -> Void)? = nil
     /// User's manual override of the reasoning disclosure; `nil` defers to the
     /// automatic expand-while-live / collapse-when-done behavior.
     @State private var userExpanded: Bool?
+    /// User's manual override of compaction summary collapse. `nil` defers to
+    /// the global default in Settings → Context.
+    @State private var userCompactionCollapsed: Bool?
     private var isUser: Bool { message.role == .user }
     
     var body: some View {
@@ -74,7 +80,9 @@ struct MessageBubble: View {
                 }
 
                 if !displayAnswer.isEmpty {
-                    if isUser {
+                    if message.isCompaction == true {
+                        collapsibleCompactionContent(displayAnswer)
+                    } else if isUser {
                         Text(displayAnswer)
                             .font(.body)
                             .textSelection(.enabled)
@@ -89,6 +97,8 @@ struct MessageBubble: View {
                         .padding(.vertical, 4)
                     }
                 }
+
+                messageActions
             }
             .contextMenu {
                 Button {
@@ -115,9 +125,15 @@ struct MessageBubble: View {
     /// Reasoning to show: the stream-split `reasoning` field for new messages, or
     /// the legacy in-`content` `<think>` parse for older persisted chats (whose
     /// `reasoning` is nil because they predate stream-time splitting).
+    /// Strip any residual channel/thinking tags so the reasoning disclosure
+    /// never leaks markers like `<channel>`.
     private var displayReasoning: String? {
-        if let r = message.reasoning { return r.isEmpty ? nil : r }
-        return parsed.reasoning
+        let raw: String
+        if let r = message.reasoning { raw = r }
+        else if let p = parsed.reasoning { raw = p }
+        else { return nil }
+        let cleaned = ThinkingTagStripper.strip(raw)
+        return cleaned.isEmpty ? nil : cleaned
     }
 
     /// Answer to show: the already-clean `content` for new messages (think split
@@ -215,6 +231,9 @@ struct MessageBubble: View {
     }
 
     private var roleLabel: String {
+        if message.isCompaction == true {
+            return "Context"
+        }
         switch message.role {
         case .user: return "You"
         case .assistant: return "Assistant"
@@ -232,5 +251,141 @@ struct MessageBubble: View {
     
     private var bubbleShape: some Shape {
         RoundedRectangle(cornerRadius: 14, style: .continuous)
+    }
+
+    /// Visible action bar beneath each message: timestamp/model metadata +
+    /// copy + revert for user messages, metadata + copy for assistant messages.
+    /// Matches the OpenCode-style affordance set.
+    @ViewBuilder
+    private var messageActions: some View {
+        HStack(spacing: 10) {
+            if isUser {
+                Spacer()
+                metadataText
+                actionButton(label: "Copy", systemImage: "doc.on.doc", action: copyMessage)
+                if let onRevert {
+                    actionButton(label: "Revert", systemImage: "arrow.uturn.left", action: onRevert)
+                }
+            } else {
+                metadataText
+                actionButton(label: "Copy", systemImage: "doc.on.doc", action: copyMessage)
+                Spacer()
+            }
+        }
+        .padding(.horizontal, 4)
+        .padding(.top, 2)
+    }
+
+    @ViewBuilder
+    private var metadataText: some View {
+        let text = footerMetadata
+        if !text.isEmpty {
+            Text(text)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var footerMetadata: String {
+        var parts: [String] = []
+        if !isUser, let modelName = message.modelName, !modelName.isEmpty {
+            parts.append(modelName)
+        }
+        if let timestamp = message.timestamp {
+            parts.append(Self.timestampFormatter.string(from: timestamp))
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private static let timestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short
+        return formatter
+    }()
+
+    private func copyMessage() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(copyableText, forType: .string)
+    }
+
+    private func actionButton(
+        label: String,
+        systemImage: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Image(systemName: systemImage)
+                Text(label)
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .help("\(label) message")
+    }
+
+    /// Collapsible compaction summary with toggle buttons at both top and bottom.
+    private func collapsibleCompactionContent(_ text: String) -> some View {
+        let collapsed = userCompactionCollapsed
+            ?? SwiftMaestroSettingsStore.loadCollapseCompactionSummaries()
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Image(systemName: "archivebox")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Context compacted")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        userCompactionCollapsed?.toggle()
+                            ?? (SwiftMaestroSettingsStore.loadCollapseCompactionSummaries()
+                                ? (userCompactionCollapsed = false)
+                                : (userCompactionCollapsed = true))
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: collapsed ? "chevron.down" : "chevron.up")
+                        Text(collapsed ? "Show summary" : "Hide summary")
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+
+            if !collapsed {
+                RichMarkdownView(text: text, isUser: false, onRunCommand: { command in
+                    Self.openTerminal(with: command)
+                })
+                .padding(.vertical, 2)
+
+                HStack {
+                    Spacer()
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            userCompactionCollapsed?.toggle()
+                                ?? (SwiftMaestroSettingsStore.loadCollapseCompactionSummaries()
+                                    ? (userCompactionCollapsed = false)
+                                    : (userCompactionCollapsed = true))
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.up")
+                            Text("Hide summary")
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.secondary.opacity(0.08), in: bubbleShape)
     }
 }

@@ -25,6 +25,7 @@ class ChatViewModel: ObservableObject {
 
     let agent: AgentRecord
     let projectName: String?
+    let visionProxyService: VisionProxyService
     private var generateTask: Task<Void, Never>?
 
     // Stream-time reasoning split state (reset per send). See the
@@ -41,11 +42,23 @@ class ChatViewModel: ObservableObject {
     /// streaming so `steer(text:)` can hand the executor new user input without
     /// cancelling the run.
     private var steerInbox: SteerInbox?
+    /// Display name of the model driving the current generation, used to tag
+    /// assistant bubbles with the model that produced them.
+    private var currentModelDisplayName: String?
+    /// Tracks the last auto-compaction so we don't re-summarize identical
+    /// history on every turn when the context is still over budget.
+    private var lastCompactionMessageCount: Int = 0
+    private var lastCompactionTime: Date?
 
-    init(agent: AgentRecord, projectName: String?) {
+    init(agent: AgentRecord, projectName: String?, visionProxyService: VisionProxyService) {
         self.agent = agent
         self.projectName = projectName
-        let wd = UserDefaults.standard.string(forKey: Self.workingDirKey(agent.id))
+        self.visionProxyService = visionProxyService
+        // Prefer the working directory stored on the agent record (set at creation
+        // time by create_project_agent), then fall back to the legacy UserDefaults key.
+        let recordWD = agent.workingDirectory?.trimmingCharacters(in: .whitespaces)
+        let legacyWD = UserDefaults.standard.string(forKey: Self.workingDirKey(agent.id))
+        let wd = (recordWD?.isEmpty == false) ? recordWD : legacyWD
         self.workingDirectory = wd
         if let saved = ChatHistoryStore.load(agentId: agent.id), !saved.isEmpty {
             self.messages = saved
@@ -64,6 +77,8 @@ class ChatViewModel: ObservableObject {
         let key = Self.workingDirKey(agent.id)
         if let wd = workingDirectory { UserDefaults.standard.set(wd, forKey: key) }
         else { UserDefaults.standard.removeObject(forKey: key) }
+        // Also sync to the agent record so sub-agents and the workspace see it.
+        MaestroTools.workspace?.setWorkingDirectory(workingDirectory, for: agent.id)
     }
 
     /// Build the generation backend for a model. Local models run fully
@@ -93,17 +108,28 @@ class ChatViewModel: ObservableObject {
             errorMessage = "No model selected. Open Settings (⌘,) to configure."
             return
         }
+        currentModelDisplayName = model.displayName
 
         inputText = ""
         pendingImages = []
         pendingImagePaths = []
         errorMessage = nil
         let userText = prompt.isEmpty ? " " : prompt
+        let isCompactionRequest = Self.isCompactionCommand(userText)
+        let now = Date()
         messages.append(Message(
             role: .user, content: userText, imageData: images.isEmpty ? nil : images,
-            imagePaths: allPaths.isEmpty ? nil : allPaths))
-        messages.append(Message(role: .assistant, content: ""))
+            imagePaths: allPaths.isEmpty ? nil : allPaths, timestamp: now))
+        messages.append(Message(
+            role: .assistant, content: "", timestamp: now,
+            modelName: currentModelDisplayName))
         isStreaming = true
+
+        // Manual compaction command: bypass the model and compact history immediately.
+        if isCompactionRequest, !model.isRemote {
+            generateTask = Task { await handleManualCompaction(engine: engine, catalog: catalog, model: model) }
+            return
+        }
         // Reset the stream-time reasoning split for this turn. Reasoning starts
         // open because Qwen emits a `<think>` (even an empty block) before the
         // answer regardless of the thinking toggle.
@@ -126,8 +152,28 @@ class ChatViewModel: ObservableObject {
             // is answered truthfully instead of echoing the agent's name.
             let modelDesc = "\(model.displayName) (model id \(model.huggingFaceID)), "
                 + "served via in-process Apple MLX"
-            let requestMessages = messagesForInference(
-                modelDescription: modelDesc, isVisionModel: model.isVision)
+            let summaryModel = Self.pickSummaryModel(active: model, catalog: catalog)
+            let (requestMessages, compactionSummary) = await messagesForInference(
+                model: model, modelDescription: modelDesc, engine: engine,
+                summaryModel: summaryModel)
+
+            // If history was auto-compacted, surface a visible context-boundary
+            // message in the chat history so the user knows older turns were
+            // summarized (and where to find the saved checkpoint).
+            if let compactionSummary, !compactionSummary.isEmpty {
+                let notice = Message(
+                    role: .assistant,
+                    content: "Context compacted. Older conversation summarized and saved to AI-Context memory.\n\n" + compactionSummary,
+                    isCompaction: true,
+                    timestamp: Date(),
+                    modelName: currentModelDisplayName)
+                if let last = messages.last, last.role == .assistant, last.content.isEmpty {
+                    messages.insert(notice, at: messages.count - 1)
+                } else {
+                    messages.append(notice)
+                }
+            }
+
             let defaults = UserDefaults.standard
             let thinking = model.tunedThinkingEnabled
             // Per-model sampling: this model's own override (Settings → Tuning)
@@ -136,33 +182,68 @@ class ChatViewModel: ObservableObject {
             let topP = model.tunedTopP
             let maxTokens = model.tunedMaxTokens
 
-            // Tool surface: project agents get the normal tools; the Navigator
-            // additionally gets the workspace/delegation tools. Lite mode
-            // (small MoE models with <10B active params) gets a reduced set.
-            var toolSpecs: [ToolSpec] = []
-            if model.advertisesTools {
-                toolSpecs = MaestroTools.schemas(
-                    navigator: isNavigator, liteMode: model.isLiteModel)
-                if let mcp = engine.mcpService {
-                    // Navigator gets NO MCP tools — it delegates everything.
-                    // Only project agents get MCP tools (read_note, list_dir, etc.).
-                    if !isNavigator {
-                        toolSpecs += await mcp.currentSchemas()
+        // Tool surface: project agents get the normal tools; the Navigator
+        // additionally gets the workspace/delegation tools. Per-agent enabled
+        // tool categories override the old automatic lite-mode reduction.
+        var toolSpecs: [ToolSpec] = []
+        if model.advertisesTools {
+            let enabledCategories = MaestroTools.workspace?.enabledToolCategories(for: agent.id)
+            toolSpecs = MaestroTools.schemas(
+                navigator: isNavigator, liteMode: model.isLiteModel,
+                enabledCategories: enabledCategories)
+            if let mcp = engine.mcpService {
+                // Navigator gets NO MCP tools — it delegates everything.
+                // Only project agents get MCP tools (read_note, list_dir, etc.).
+                if !isNavigator {
+                    let mcpSchemas = await mcp.currentSchemas()
+                    if let enabledCategories {
+                        let mcpCategory = ToolCategory.mcp
+                        if enabledCategories.contains(mcpCategory) {
+                            toolSpecs += mcpSchemas
+                        }
+                    } else {
+                        toolSpecs += mcpSchemas
                     }
                 }
             }
+        }
             // Low temperature when tools are active keeps function-calling faithful.
             let effectiveTemp = toolSpecs.isEmpty ? temperature : min(temperature, 0.3)
 
             // Delegated sub-agents resolve their OWN model/backend via this
-            // resolver (per-agent models; local or remote depending on model).
+            // resolver. Lite / known-weak tool-calling models are promoted to a
+            // capable model (parent, then default) so that delegated build work
+            // actually produces real file output instead of stubs.
             let delegateResolver: DelegateBackendResolver = { agentID in
-                await MainActor.run { () -> (backend: GenerationBackend, modelID: String)? in
+                await MainActor.run { () -> (backend: GenerationBackend, modelID: String, maxTokens: Int)? in
                     guard let agent = MaestroTools.workspace?.agent(id: agentID),
-                          let m = catalog.effectiveModel(for: agent) else { return nil }
+                          let targetModel = catalog.effectiveModel(for: agent) else { return nil }
+
+                    func isCapable(_ m: MaestroModel) -> Bool {
+                        m.localPath != nil
+                            && !m.isLiteModel && m.advertisesTools
+                            && !m.huggingFaceID.lowercased().contains("gemma-4")
+                    }
+
+                    let effectiveModel: MaestroModel
+                    if isCapable(targetModel) {
+                        effectiveModel = targetModel
+                    } else {
+                        let defaultModel = catalog.models.first { $0.id == catalog.selectedModelID }
+                        if let capable = [model, defaultModel].compactMap({ $0 }).first(where: isCapable) {
+                            effectiveModel = capable
+                            NSLog("[DELEGATE] promoting subagent '\(targetModel.displayName)' -> '\(capable.displayName)' for task")
+                        } else if let capable = catalog.models.first(where: isCapable) {
+                            effectiveModel = capable
+                            NSLog("[DELEGATE] promoting subagent '\(targetModel.displayName)' -> '\(capable.displayName)' (fallback)")
+                        } else {
+                            effectiveModel = targetModel
+                        }
+                    }
+
                     let backend = ChatViewModel.makeBackend(
-                        for: m, engine: engine, sessionKey: agentID.uuidString)
-                    return (backend, m.huggingFaceID)
+                        for: effectiveModel, engine: engine, sessionKey: agentID.uuidString)
+                    return (backend, effectiveModel.huggingFaceID, effectiveModel.tunedMaxTokens)
                 }
             }
             let primaryBackend = ChatViewModel.makeBackend(
@@ -187,7 +268,9 @@ class ChatViewModel: ObservableObject {
                     case .toolCall(let name): recordToolStep(name)
                     case .info(let tps): engine.reportExternalTokensPerSecond(tps)
                     case .turnBreak: beginSteeredTurn()
-                    case .delegateStart(let agentID):
+                    case .delegateStart(let agentID, let modelID):
+                        let displayName = catalog.models.first { $0.huggingFaceID == modelID }?.displayName ?? modelID
+                        Self.effectiveDelegateModelNames[agentID] = displayName
                         await Self.streamToDelegate(agentID: agentID, token: "[START]")
                         await MainActor.run {
                             self.currentActivity = "Delegating to sub-agent..."
@@ -226,7 +309,7 @@ class ChatViewModel: ObservableObject {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard isStreaming, !trimmed.isEmpty, let inbox = steerInbox else { return }
         inputText = ""
-        messages.append(Message(role: .user, content: trimmed))
+        messages.append(Message(role: .user, content: trimmed, timestamp: Date()))
         Task { await inbox.append(trimmed) }
     }
 
@@ -236,7 +319,9 @@ class ChatViewModel: ObservableObject {
     /// block is captured instead of leaking into the answer.
     private func beginSteeredTurn() {
         finishStreamParsing()
-        messages.append(Message(role: .assistant, content: ""))
+        messages.append(Message(
+            role: .assistant, content: "", timestamp: Date(),
+            modelName: currentModelDisplayName))
         inReasoning = true
         reasoningStart = Date()
         streamBuffer = ""
@@ -355,11 +440,15 @@ class ChatViewModel: ObservableObject {
     // `streamBuffer` holds a short tail so a `</think>` split across token chunks
     // is still detected.
 
-    private static let closeTag = "</think>"
+    private static let qwenCloseTag = "</think>"
+    private static let gemmaCloseTag = "</channel>"
     private static let toolCallOpen = "<tool_call>"
     private static let toolCallClose = "</tool_call>"
     /// Route one streamed chunk into reasoning (while `inReasoning`) or the answer
     /// (after the close tag), buffering a small tail to catch a split tag.
+    /// Handles both Qwen (`</think>`) and Gemma 4 (`<channel>`/`</channel>`)
+    /// reasoning markers; strips residual thinking/channel tags from each flushed
+    /// chunk so they never appear in the UI or persisted history.
     private func consumeStreamChunk(_ token: String) {
         streamBuffer += token
         guard inReasoning else {
@@ -369,7 +458,7 @@ class ChatViewModel: ObservableObject {
             if suppressingToolCall {
                 if let r = streamBuffer.range(of: Self.toolCallClose) {
                     suppressingToolCall = false
-                    let after = String(streamBuffer[r.upperBound...])
+                    let after = ThinkingTagStripper.strip(String(streamBuffer[r.upperBound...]))
                     streamBuffer = ""
                     if !after.isEmpty { appendAnswer(after) }
                 }
@@ -381,7 +470,7 @@ class ChatViewModel: ObservableObject {
             // We need tail-buffering since the tag could span multiple tokens.
             let openLen = Self.toolCallOpen.count
             if let r = streamBuffer.range(of: Self.toolCallOpen) {
-                let before = String(streamBuffer[..<r.lowerBound])
+                let before = ThinkingTagStripper.strip(String(streamBuffer[..<r.lowerBound]))
                 if !before.isEmpty { appendAnswer(before) }
                 suppressingToolCall = true
                 // Keep the full text (including the open tag) in streamBuffer
@@ -392,25 +481,39 @@ class ChatViewModel: ObservableObject {
             let keep = openLen - 1
             if streamBuffer.count > keep {
                 let split = streamBuffer.index(streamBuffer.endIndex, offsetBy: -keep)
-                appendAnswer(String(streamBuffer[..<split]))
+                let chunk = ThinkingTagStripper.strip(String(streamBuffer[..<split]))
+                appendAnswer(chunk)
                 streamBuffer = String(streamBuffer[split...])
             }
             return
         }
-        if let r = streamBuffer.range(of: Self.closeTag) {
-            appendReasoning(String(streamBuffer[..<r.lowerBound]))
+        // Reasoning mode: close on either Qwen or Gemma 4 end-of-thinking markers.
+        if let r = streamBuffer.range(of: Self.qwenCloseTag) {
+            let reasoning = ThinkingTagStripper.strip(String(streamBuffer[..<r.lowerBound]))
+            appendReasoning(reasoning)
             markReasoningClosed()
-            let after = String(streamBuffer[r.upperBound...])
+            let after = ThinkingTagStripper.strip(String(streamBuffer[r.upperBound...]))
+            streamBuffer = ""
+            inReasoning = false
+            if !after.isEmpty { appendAnswer(after) }
+            return
+        }
+        if let r = streamBuffer.range(of: Self.gemmaCloseTag) {
+            let reasoning = ThinkingTagStripper.strip(String(streamBuffer[..<r.lowerBound]))
+            appendReasoning(reasoning)
+            markReasoningClosed()
+            let after = ThinkingTagStripper.strip(String(streamBuffer[r.upperBound...]))
             streamBuffer = ""
             inReasoning = false
             if !after.isEmpty { appendAnswer(after) }
             return
         }
         // No close tag yet: flush all but a tail that might hold a partial tag.
-        let keep = Self.closeTag.count - 1
+        let keep = max(Self.qwenCloseTag.count, Self.gemmaCloseTag.count) - 1
         if streamBuffer.count > keep {
             let split = streamBuffer.index(streamBuffer.endIndex, offsetBy: -keep)
-            appendReasoning(String(streamBuffer[..<split]))
+            let chunk = ThinkingTagStripper.strip(String(streamBuffer[..<split]))
+            appendReasoning(chunk)
             streamBuffer = String(streamBuffer[split...])
         }
     }
@@ -441,11 +544,12 @@ class ChatViewModel: ObservableObject {
     /// for the next round.
     private func foldNarrationIntoReasoning() {
         if !streamBuffer.isEmpty {
-            if inReasoning { appendReasoning(streamBuffer) } else { appendAnswer(streamBuffer) }
+            let stripped = ThinkingTagStripper.strip(streamBuffer)
+            if inReasoning { appendReasoning(stripped) } else { appendAnswer(stripped) }
             streamBuffer = ""
         }
         if let idx = messages.lastIndex(where: { $0.role == .assistant }) {
-            let narration = messages[idx].content
+            let narration = ThinkingTagStripper.strip(messages[idx].content)
             if !narration.isEmpty {
                 let sep = (messages[idx].reasoning?.isEmpty == false) ? "\n" : ""
                 messages[idx].reasoning = (messages[idx].reasoning ?? "") + sep + narration
@@ -455,11 +559,13 @@ class ChatViewModel: ObservableObject {
         inReasoning = true
     }
 
-    /// Flush the tail at end of stream. If no `</think>` ever arrived (a model that
-    /// doesn't emit think tags), treat the accumulated reasoning as the answer.
+    /// Flush the tail at end of stream. If no `</think>`/`</channel>` ever arrived
+    /// (a model that doesn't emit thinking tags), treat the accumulated reasoning
+    /// as the answer after stripping any residual markers.
     private func finishStreamParsing() {
         if !streamBuffer.isEmpty {
-            if inReasoning { appendReasoning(streamBuffer) } else { appendAnswer(streamBuffer) }
+            let stripped = ThinkingTagStripper.strip(streamBuffer)
+            if inReasoning { appendReasoning(stripped) } else { appendAnswer(stripped) }
             streamBuffer = ""
         }
         // Discard any in-progress tool call XML suppression — the model
@@ -471,7 +577,7 @@ class ChatViewModel: ObservableObject {
               let idx = messages.lastIndex(where: { $0.role == .assistant }),
               messages[idx].content.isEmpty,
               let reasoning = messages[idx].reasoning, !reasoning.isEmpty else { return }
-        messages[idx].content = reasoning
+        messages[idx].content = ThinkingTagStripper.strip(reasoning)
         messages[idx].reasoning = nil
         messages[idx].reasoningSeconds = nil
     }
@@ -516,6 +622,8 @@ class ChatViewModel: ObservableObject {
         ChatHistoryStore.clear(agentId: agent.id)
         messages = [Self.systemMessage(for: agent, projectName: projectName)]
         isStreaming = false
+        lastCompactionMessageCount = 0
+        lastCompactionTime = nil
     }
 
     // MARK: - Delegate streaming
@@ -524,6 +632,11 @@ class ChatViewModel: ObservableObject {
     /// When a delegation starts, a handler is registered here so tokens can be
     /// streamed to the target agent's chat in real-time.
     nonisolated(unsafe) static var activeDelegateHandlers: [String: DelegateStreamHandler] = [:]
+
+    /// Maps a sub-agent ID to the display name of the model actually running it
+    /// during a delegation (which may differ from the agent's configured model
+    /// due to runtime promotion).
+    nonisolated(unsafe) static var effectiveDelegateModelNames: [String: String] = [:]
 
     /// Stream a token to a delegated sub-agent's chat window.
     /// Called by the executor when it receives tokens from a sub-agent run.
@@ -538,6 +651,7 @@ class ChatViewModel: ObservableObject {
         if token == "[FINISH]" {
             cache?.finishDelegation(forAgentID: UUID(uuidString: agentID) ?? UUID())
             activeDelegateHandlers.removeValue(forKey: agentID)
+            effectiveDelegateModelNames.removeValue(forKey: agentID)
             return
         }
 
@@ -549,112 +663,96 @@ class ChatViewModel: ObservableObject {
     /// Hard rules governing tool use (anti-fabrication). Injected into every agent.
     private static let toolDiscipline = """
         TOOL USE — STRICT RULES:
-        - Your tools are REAL and execute on the user's actual system. Use them by \
-        making a real tool call. NEVER write a tool call, shell command, JSON, or a \
-        tool's output as plain text or inside a code block to simulate it.
-        - When a request can be answered by a tool you have, CALL IT rather than \
-        declining or telling the user to do it themselves.
-        - NEVER invent, guess, paraphrase, or pre-write tool results. Only state what \
-        a tool ACTUALLY returned to you after you called it.
-        - When you need to read multiple files, BATCH them: call read_file on all \
-        needed files in a single turn. The results come back together so you can \
-        work faster. Do NOT read files one at a time in sequence.
-        - Make ONE tool call at a time for UNRELATED tasks, but batch related reads \
-        (e.g. reading several source files to understand a project). Do not narrate \
-        a sequence of imaginary calls.
-        - If a tool returns empty or no output, say exactly that — do not fabricate a \
-        plausible-looking result (e.g. fake file listings, paths, or timestamps).
-        - If you cannot or did not call a tool, say so plainly. Never claim an action \
-        happened unless a real tool result confirms it.
-        - NEVER claim you saved, wrote, or created a file unless you actually called \
-        write_file and got a success response. Running create_todo_list, create_plan, \
-        or any other tool does NOT write files — only write_file writes files.
-        - NEVER claim you read a file unless you actually called read_file and got \
-        its content back.
-        - STOP GATHERING after 2 tool rounds. You have enough context. Start writing \
-        your answer or output NOW. Do NOT do read → list → read → list → read loops. \
-        Work with what you have. The user is waiting.
-        - NEVER narrate future tool calls. Do NOT say "Let me read...", "Now I'll \
-        list...", "I'll check..." — just CALL the tool. Narration without action \
-        wastes a full round and frustrates the user. If you need a file, call \
-        read_file NOW. If you need a directory, call list_dir NOW. No preamble.
-        - If you have already read files and listed directories, you have enough. \
-        STOP calling tools and WRITE YOUR RESPONSE. One more tool call is NOT \
-        the answer — outputting text IS.
-        - read_file handles ANY file type: text files, documents (.docx, .pdf, \
-        .rtf, .odt, .pages, .html), images, and binary files. Documents are \
-        extracted to text; binary files return base64 with MIME type.
-        - write_file writes UTF-8 text by default. To write a binary file, set \
-        encoding='base64' and pass base64-encoded content.
-        - For large documents that exceed the context window, use index_document \
-        to split files into exact-text chunks, search_chunks to find relevant \
-        chunks with loose keyword/fuzzy matching, and read_chunk to retrieve the \
-        verbatim original text. NEVER summarize when the user wants exact quotes.
-        - When the user sends an image or image path, call ocr_image with the \
-        absolute path. Do NOT call list_dir on an image — that lists the parent \
-        directory. ocr_image sends the image to the vision model for text extraction.
+        - Tools are REAL and execute on the user's system. NEVER simulate tool calls \
+        as text or code blocks.
+        - When the user asks you to run a command, execute it IMMEDIATELY with \
+        execute_command. Do NOT show code blocks for manual execution.
+        - NEVER invent, guess, or pre-write tool results. Only report what a tool \
+        ACTUALLY returned after calling it.
+        - BATCH file reads: call read_file on all needed files in one turn.
+        - If a tool returns empty or errors, say so IMMEDIATELY. Do NOT fabricate \
+        fake results, file paths, or data.
+        - NEVER claim you wrote, saved, or created a file unless write_file returned \
+        success. NEVER claim you read a file unless read_file returned content.
+        - STOP GATHERING after 2 tool rounds. Start writing your answer NOW.
+        - Do NOT narrate future tool calls ("Let me read..."). Just call the tool.
+        - read_file handles ANY file type including .docx, .pdf, images, binary.
+        - For large documents, use index_document/search_chunks/read_chunk.
+        - Send images via ocr_image (not list_dir).
+        - For creating or overwriting files, use write_file. NEVER paste the file contents \
+        in chat as a code block — the tool writes the file; the chat is only for reasoning.
+        - MAX 5 tool calls per message. If you need more, tell the user what you'd do next.
 
-        CRITICAL HONESTY RULES — VIOLATION IS A HARD FAILURE:
-        - If you DO NOT HAVE a tool for a task (e.g. no SQL tool, no search tool, \
-        no browser tool), say "I don't have a tool for that" IMMEDIATELY. Do NOT \
-        wait, do NOT fill time with narration, do NOT pretend to be working. The \
-        user is watching your output in real time — silence and stalling waste their \
-        time.
-        - If a tool returns an ERROR, report the error IMMEDIATELY. Do NOT retry \
-        silently, do NOT fabricate a success, do NOT pretend the error didn't happen. \
-        Say: "Tool X failed: [error message]".
-        - If a tool returns EMPTY results (no files found, no search hits, no rows), \
-        say "No results found" IMMEDIATELY. Do NOT invent fake file paths, fake \
-        search results, or fake data to fill the silence. Empty is a valid answer.
-        - If a file path does not exist, say "File not found at [path]" IMMEDIATELY. \
-        Do NOT guess what the file might contain. Do NOT make up directory listings \
-        or file contents.
-        - If you CANNOT complete a task because a tool is missing, a path is \
-        unauthorized, or a dependency is unavailable, say so in ONE sentence and \
-        suggest what the user can do. Do NOT loop, do NOT retry the same failing \
-        call, do NOT fabricate a workaround.
-        - NEVER pad your response with filler text like "Let me think about this..." \
-        or "I'm working on it..." — if you're not actively calling a tool, you're \
-        not working. Either call the tool NOW or say you can't.
-        - After 2 FAILED tool attempts on the same task, STOP and report what went \
-        wrong. Do NOT attempt a 3rd, 4th, or 5th variation. The user needs to know \
-        the task is blocked, not watch you keep trying.
-        - When searching (files, web, memory, vault), if the search completes with \
-        zero results, the correct response is "No results found for [query]". Do NOT \
-        fabricate results you think the user wanted to see. Do NOT make up file \
-        names, document titles, or search snippets.
-        - You have a MAXIMUM of 5 tool calls per user message. After 5, you MUST \
-        stop and give your best answer with what you have. The user cannot wait \
-        forever. If you need more, tell the user what you'd do next and ask them \
-        to continue.
+        CRITICAL HONESTY RULES:
+        - If you lack a tool for a task, say "I don't have a tool for that" NOW.
+        - If a tool errors, report it: "Tool X failed: [error]". Do NOT retry silently.
+        - If results are empty, say "No results found". Do NOT invent fake data.
+        - After 2 FAILED attempts on the same task, STOP and report what went wrong.
+        - NEVER fill silence with "Let me think..." — either call a tool or say you can't.
 
-        AUTO-SAVE TRIGGER:
-        - After every 5 file read operations (read_file, ocr_image, list_dir), \
-        you MUST call write_file to save your accumulated progress to disk. \
-        This is automatic and does not require user approval.
-        - Save to your designated output path (provided in your task prompt). \
-        Each save should include: timestamp, files processed so far, key findings, \
-        and files remaining.
-        - If you crash or are interrupted, your last save preserves your work. \
-        This is critical for long-running analysis tasks.
-        - Do NOT wait for the user to ask you to save. Save proactively.
+        AUTO-SAVE:
+        - After every 5 file reads, call write_file to save progress to disk.
 
         DIRECTORY INDEXING:
-        - When the user shares a directory or asks you to explore one, ALWAYS start \
-        with index_directory (NOT list_dir). It recursively scans the ENTIRE tree, \
-        uses macOS Spotlight for rich metadata (file types, sizes, dates, dimensions), \
-        and returns a structured summary. This is the FASTEST way to understand a \
-        directory's contents.
-        - index_directory is comprehensive by default — it returns ALL files and \
-        subdirectories. Do NOT filter or skip entries you think are unimportant. \
-        The user needs the COMPLETE picture.
-        - After indexing, call save_index to persist the results to shared memory \
-        so they're available in future sessions.
-        - Only use list_dir for quick checks of a SINGLE directory level. For any \
-        multi-level exploration, index_directory is the right tool.
-        - When listing a directory (list_dir), report EVERY entry — do NOT filter, \
-        prioritize, or skip files. The user asked to see the contents, not your \
-        opinion of what's important.
+        - For directory exploration, use index_directory (recursive, Spotlight metadata). \
+        Only use list_dir for single-directory-level checks.
+        """
+
+    /// Exact XML tool-call format for models whose chat template uses XML function
+    /// calls (e.g. Qwen 3 Coder). Reinforces the schema so small models don't emit
+    /// empty/malformed parameters.
+    private static let xmlToolFormatGuidance = """
+        XML TOOL CALL FORMAT (mandatory for this model):
+        You MUST call tools using exactly these tags:
+        <tool_call>
+        <function=FUNCTION_NAME>
+        <parameter=PARAMETER_NAME>
+        parameter value here
+        </parameter>
+        </function>
+        </tool_call>
+
+        Example — execute_command:
+        <tool_call>
+        <function=execute_command>
+        <parameter=command>
+        python3 /path/to/script.py
+        </parameter>
+        </function>
+        </tool_call>
+
+        Example — write_file:
+        <tool_call>
+        <function=write_file>
+        <parameter=path>/path/to/file.txt</parameter>
+        <parameter=content>
+        file contents here
+        </parameter>
+        </function>
+        </tool_call>
+
+        Example — read_file:
+        <tool_call>
+        <function=read_file>
+        <parameter=path>/path/to/file.txt</parameter>
+        </function>
+        </tool_call>
+
+        Example — write_file with append:
+        <tool_call>
+        <function=write_file>
+        <parameter=path>/path/to/file.txt</parameter>
+        <parameter=content>
+        more content here
+        </parameter>
+        <parameter=append>true</parameter>
+        </function>
+        </tool_call>
+
+        - ALWAYS put the value BETWEEN the opening and closing parameter tags.
+        - NEVER leave the `command` parameter empty. Put the exact shell command inside it.
+        - NEVER leave the `path` parameter empty. Put the absolute file path inside it.
+        - NEVER wrap tool calls in markdown code blocks (no ```xml around them).
         """
 
     /// Guidance for the live task-checklist tools. Small local models tend to
@@ -745,7 +843,7 @@ class ChatViewModel: ObservableObject {
 
     static func systemMessage(
         for agent: AgentRecord, projectName: String?, workingDirectory: String? = nil,
-        modelDescription: String? = nil
+        modelDescription: String? = nil, usesXMLTools: Bool = false
     ) -> Message {
         let base: String
         if agent.kind == .navigator {
@@ -763,61 +861,46 @@ class ChatViewModel: ObservableObject {
             }
             base = """
                 You are the Navigator, the conductor for SwiftMaestro. You handle general \
-                chat and coordinate project work. You can create projects and long-lived \
-                project agents (create_project_agent), list the workspace (list_workspace), \
-                remove agents that are no longer needed (archive_project_agent), and \
-                delegate a task to a project agent (ask_project_agent) then synthesize \
-                their result for the user. To delegate to SEVERAL agents at once, use \
-                ask_project_agents with a 'requests' list of {project, agent, task}. \
-                You can also perform basic file discovery (list_dir, read_file) to help \
-                the user and investigate the workspace. Create a project agent when the \
-                user wants ongoing work focused on a specific project. When creating agents, \
-                use descriptive names that reflect their role (e.g. "Inspector", "Builder", "Scribe") — never \
-                use placeholder names like "NewName" or "Agent1".
+                chat and coordinate project work. You delegate to project agents and \
+                synthesize their results for the user.
 
-                CURRENT WORKSPACE:
+                ═══ EXISTING PROJECT AGENTS (USE THESE — DO NOT CREATE DUPLICATES) ═══
                 \(workspaceList)
 
-                WHEN DELEGATING: Use the EXACT project and agent names listed above. \
-                Do NOT invent or guess project/agent names. If you're unsure, call \
-                list_workspace first.
+                DELEGATION RULES — FOLLOW IN ORDER:
+                1. If an existing agent can handle the task, call ask_project_agent \
+                IMMEDIATELY with its EXACT name from the list above. Do NOT create a \
+                new agent if one already exists for this work.
+                2. Only call create_project_agent if NO existing agent can handle the task. \
+                Use descriptive role names (e.g. "Inspector", "Builder", "Scribe").
+                3. To delegate to several agents at once, use ask_project_agents with \
+                a 'requests' list of {project, agent, task}.
+                4. NEVER invent or guess project/agent names. Use the EXACT names above.
+                5. BATCHING: If a task involves many files/records, break it into small \
+                batches and delegate each separately. Track with create_todo_list.
 
-                YOU HAVE the execute_command tool — this IS your terminal. Use it \
-                to run ANY shell command (ls, cd, python, docker, cat, grep, etc.) \
-                and show the user the results. NEVER say "I cannot open a terminal" \
-                or "I don't have terminal access" — execute_command IS your terminal. \
-                When showing deployment steps or multi-step shell scripts, execute \
-                each step with execute_command and report the results. Only ask the \
-                user to run something manually if it requires interactive input or sudo. \
-                \
-                For LONG-RUNNING processes (HTTP servers, watchers, daemons), use \
-                start_background: true in execute_command. This spawns the process in \
-                the background and returns a process ID. Use list_background_processes \
-                to check status and stop_background_process to kill them. \
-                \
-                You also have start_server — a built-in HTTP server that serves local \
-                files over HTTP. Use start_server to let the user browse HTML/JSON/images \
-                in their browser. Example: start_server(path: "/path/to/site", port: 8080). \
-                Use stop_server(port:) to shut it down, list_servers to see what's running. \
-                \
-                When the user asks you to do ANY work beyond coordination (read \
-                files, analyse data, write reports, edit documents, search vault, \
-                or any multi-step task), you MUST delegate to a project agent \
-                using ask_project_agent.
+                DIRECT DELEGATION COMMAND:
+                - If the user says "ask Frontend Designer to ...", "tell Frontend Designer \
+                to ...", "have Frontend Designer ...", or any similar instruction, you MUST \
+                call ask_project_agent IMMEDIATELY. Do NOT write "I will ask..." or a plan \
+                first — just emit the tool call.
+                - If the user asks what an agent is doing or tells you to check on an agent, \
+                call ask_project_agent with the question/task instead of guessing.
 
-                BATCHING RULE — MANDATORY: If a delegated task involves scanning, \
-                reading, or analyzing more than a few files, a large folder, or a \
-                database spread across many records, you MUST break it into small \
-                batches and delegate each batch separately. Use create_todo_list or \
-                add_todos to track batches. Examples: by month, by week, by sender, \
-                by file type, or by directory subfolder. Never ask a sub-agent to \
-                process an entire folder, database, or multi-file archive in a single \
-                call. After each batch returns, save progress to disk with write_file \
-                before starting the next batch.
+                TOOLS:
+                - execute_command: Your terminal. Run ANY shell command immediately. \
+                For long-running processes, use start_background: true.
+                - start_server: Built-in HTTP server. start_server(path:, port:). \
+                stop_server(port:) to shut down.
+                - list_dir, read_file: Quick file discovery (delegate bulk work).
+                - list_workspace: See all projects and agents if unsure.
 
-                LANGUAGE RULE: You MUST respond in English only. Never use Vietnamese, \
-                Thai, Chinese, Japanese, or any other language. All your thoughts, \
-                tool arguments, and responses must be in English.
+                LANGUAGE RULE: Respond in English only. All tool arguments in English.
+
+                CONTEXT COMPACTION:
+                The chat history is automatically compacted when it approaches the model's \
+                context limit. Older turns are summarized into a checkpoint that is injected \
+                into the inference context. You do not need to compact or delete history yourself.
                 """
         } else {
             let proj = projectName ?? "this project"
@@ -825,6 +908,36 @@ class ChatViewModel: ObservableObject {
                 You are \(agent.name), a project agent for the project "\(proj)". Focus on \
                 this project's work. Project: \(proj). Use the memory tools to recall and \
                 store project knowledge — they are scoped to this project.
+
+                CONTEXT COMPACTION:
+                The chat history is automatically compacted when it approaches the model's \
+                context limit. Older turns are summarized into a checkpoint that is injected \
+                into the inference context. You do not need to compact or delete history yourself.
+
+                EXECUTION RULE — FOLLOW IN ORDER:
+                1. When the user asks you to read, write, analyze, or modify files, your \
+                FIRST response MUST contain the actual tool calls (read_file, list_dir, \
+                write_file, execute_command, etc.). Do NOT introduce the task with a plan, \
+                numbered list, or explanation first.
+                2. You may emit 1-2 sentences of reasoning BEFORE a tool call, but every \
+                sentence that describes an action must be immediately followed by that tool call.
+                3. If you say "Let me read...", "I will check...", "I need to see...", or \
+                similar, the VERY NEXT tokens must be a <tool_call> block, not more text.
+                4. Stop gathering after 2 tool rounds; then write/summarize the answer.
+
+                VERIFY / RESUME RULE:
+                When the user asks you to continue, resume, verify, or "try again", do NOT
+                trust any previous assistant message that claimed files were written or tasks
+                were completed. Always start by reading the relevant files (read_file, list_dir)
+                to confirm the actual state. If the files are missing, incomplete, or still
+                placeholders, immediately call write_file to create or overwrite them with the
+                correct full implementation. Only report success after the files are actually
+                written and verified on disk.
+
+                FILE OUTPUT RULE:
+                - For any file larger than a paragraph, use write_file. NEVER paste HTML, CSS, \
+                JavaScript, JSON, or any other file contents in the chat as a code block. The \
+                user wants the file on disk, not a preview in chat.
 
                 SELF-CORRECTION RULE: You have file tools. If a path fails (file not found, \
                 access denied, or command formatting error), do NOT give up and do NOT ask \
@@ -840,7 +953,10 @@ class ChatViewModel: ObservableObject {
                 """
         }
         var content = base + "\n\n" + Self.toolDiscipline
-            + "\n\n" + Self.taskToolGuidance + "\n\n" + Self.appleBuildGuidance
+        if agent.kind != .navigator && usesXMLTools {
+            content += "\n\n" + Self.xmlToolFormatGuidance
+        }
+        content += "\n\n" + Self.taskToolGuidance + "\n\n" + Self.appleBuildGuidance
 
         if let modelDescription, !modelDescription.isEmpty {
             content += """
@@ -864,6 +980,11 @@ class ChatViewModel: ObservableObject {
                 list_dir). You can read, write, and list anywhere under this directory. \
                 If a relative path is given, resolve it against this directory.
                 """
+
+            let projectRules = ProjectRuleService.shared.rules(forWorkingDirectory: wd)
+            if !projectRules.isEmpty {
+                content += "\n\n" + ProjectRuleService.shared.renderRules(projectRules)
+            }
         }
 
         let applicable = SwiftMaestroSettingsStore.loadRules().filter { rule in
@@ -880,13 +1001,20 @@ class ChatViewModel: ObservableObject {
         return Message(role: .system, content: content)
     }
 
-    private func messagesForInference(modelDescription: String? = nil, isVisionModel: Bool = false) -> [Message] {
+    private func messagesForInference(
+        model: MaestroModel,
+        modelDescription: String? = nil,
+        engine: MLXInferenceEngine,
+        summaryModel: MaestroModel?
+    ) async -> (messages: [Message], compactionSummary: String?) {
         // Always regenerate the system prompt so prompt/rule changes (and tool
         // routing guidance) apply to existing chats without needing a clear.
         // The stored leading system message is display-only and is dropped here.
-        var output: [Message] = [Self.systemMessage(
+        let systemMessage = Self.systemMessage(
             for: agent, projectName: projectName, workingDirectory: workingDirectory,
-            modelDescription: modelDescription)]
+            modelDescription: modelDescription,
+            usesXMLTools: model.toolCallFormat == .xmlFunction)
+        var output: [Message] = [systemMessage]
         for message in messages where message.role != .system {
             // Strip the display-only "🔧 called `name`" markers so the model can't
             // replay/imitate them and fabricate tool calls.
@@ -911,19 +1039,161 @@ class ChatViewModel: ObservableObject {
         // vision, inject a hint to use ocr_image. Vision models (like Gemma 4)
         // can see images directly and don't need the tool — injecting the hint
         // would cause double image injection.
-        if !isVisionModel,
+        if !model.isVision,
            let lastIdx = output.indices.last,
            output[lastIdx].role == .user,
            let imgs = output[lastIdx].imageData, !imgs.isEmpty,
            !output[lastIdx].content.contains("ocr_image") {
             var copy = output[lastIdx]
-            let paths = copy.imagePaths ?? []
-            let pathList = paths.isEmpty ? "the attached image" :
-                paths.map { "`\($0)`" }.joined(separator: ", ")
-            copy.content = "[The user attached \(imgs.count) image(s): \(pathList). Use the ocr_image tool with the image path to extract text from it.]\n" + copy.content
+
+            if visionProxyService.config.isEnabled {
+                // Route the images through the vision proxy and describe them in
+                // text so the non-vision model can still "see" them.
+                var descriptions: [String] = []
+                for (index, data) in imgs.enumerated() {
+                    do {
+                        if let caption = try await visionProxyService.caption(imageData: data) {
+                            descriptions.append("[Image \(index + 1): \(caption)]")
+                        }
+                    } catch {
+                        NSLog("[VISION PROXY] caption failed for image \(index + 1): \(error)")
+                        descriptions.append("[Image \(index + 1): <vision proxy unavailable>]")
+                    }
+                }
+                if !descriptions.isEmpty {
+                    copy.content = descriptions.joined(separator: "\n") + "\n" + copy.content
+                }
+                // The non-vision model cannot consume raw pixels; strip the image
+                // data so the backend only receives text.
+                copy.imageData = nil
+                copy.imagePaths = nil
+            } else {
+                // Fallback to the OCR-path hint when the proxy is disabled.
+                let paths = copy.imagePaths ?? []
+                let pathList = paths.isEmpty ? "the attached image" :
+                    paths.map { "`\($0)`" }.joined(separator: ", ")
+                copy.content = "[The user attached \(imgs.count) image(s): \(pathList). Use the ocr_image tool with the image path to extract text from it.]\n" + copy.content
+                // Keep the original image data so the ocr_image tool can read the
+                // path later; the LLM backend still ignores it.
+            }
             output[lastIdx] = copy
         }
-        return output
+
+        // Compact older history if the regenerated context is approaching the
+        // model's context window. The checkpoint is a synthetic user message;
+        // the visible chat history is left intact. The summary is autosaved
+        // to the shared AI-Context memory.
+        var compactionSummary: String?
+        let nonSystemOutput = Array(output.dropFirst())
+        let totalTokens = ChatCompaction.estimateTokens(
+            for: nonSystemOutput.map { ChatCompaction.serialize($0) })
+        let budgetExceeded = totalTokens > model.tunedContextLength - max(model.tunedMaxTokens, 20_000)
+        let hasNewActivitySinceCompaction = nonSystemOutput.count != lastCompactionMessageCount
+        // Re-compact at most once per minute even when budget is exceeded, and
+        // only when the message count actually changed (no new activity = skip).
+        let canAutoCompact: Bool = {
+            guard budgetExceeded else { return false }
+            guard hasNewActivitySinceCompaction else { return false }
+            if let last = lastCompactionTime {
+                return Date().timeIntervalSince(last) >= 60
+            }
+            return true
+        }()
+        if canAutoCompact {
+            currentActivity = "Compacting chat history…"
+            if let compacted = await ChatCompaction.compactIfNeeded(
+                messages: nonSystemOutput,
+                model: model,
+                engine: engine,
+                contextLength: model.tunedContextLength,
+                outputTokens: model.tunedMaxTokens,
+                agentID: agent.id.uuidString,
+                summaryModel: summaryModel) {
+                output = [systemMessage, compacted.checkpoint] + compacted.recentMessages
+                compactionSummary = compacted.summary
+                lastCompactionMessageCount = nonSystemOutput.count
+                lastCompactionTime = Date()
+            }
+            currentActivity = nil
+        }
+
+        return (output, compactionSummary)
+    }
+
+    /// Choose a small, verified local model to summarize history for compaction.
+    /// Falls back to the active model if nothing faster is available.
+    private static func pickSummaryModel(
+        active model: MaestroModel, catalog: ModelCatalog
+    ) -> MaestroModel? {
+        // If the active model is already small, just use it.
+        if model.estimatedMemoryGB <= 16 { return nil }
+        let preferredIDs = [
+            "local-deepseek-r1-8b",
+            "local-qwen3.5-27b",
+            "local-qwen3-coder-30b-a3b",
+            "local-qwen3.6-35b-a3b",
+        ]
+        if let fast = preferredIDs.lazy.compactMap({ catalog.model(forID: $0) })
+            .first(where: { $0.supportsTools && !$0.isRemote }) {
+            return fast
+        }
+        return catalog.models
+            .filter { $0.supportsTools && !$0.isRemote && $0.estimatedMemoryGB <= 16 }
+            .min(by: { $0.estimatedMemoryGB < $1.estimatedMemoryGB })
+    }
+
+    /// Detect a manual compaction request (e.g. "can you compact this chat?").
+    private static func isCompactionCommand(_ text: String) -> Bool {
+        let lower = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let commands = [
+            "compact this chat", "compact the chat", "compact chat",
+            "compact conversation", "compact this conversation", "compact history",
+            "/compact",
+        ]
+        return commands.contains { lower.contains($0) }
+    }
+
+    /// Handle a manual compaction request by summarizing the head and saving the
+    /// checkpoint to AI-Context memory. The visible chat history is left intact.
+    private func handleManualCompaction(
+        engine: MLXInferenceEngine, catalog: ModelCatalog, model: MaestroModel
+    ) async {
+        let summaryModel = Self.pickSummaryModel(active: model, catalog: catalog)
+        currentActivity = "Compacting chat history…"
+        let nonSystemMessages = messages.filter { $0.role != .system }
+        let compacted = await ChatCompaction.compactIfNeeded(
+            messages: nonSystemMessages,
+            model: model,
+            engine: engine,
+            contextLength: model.tunedContextLength,
+            outputTokens: model.tunedMaxTokens,
+            agentID: agent.id.uuidString,
+            summaryModel: summaryModel,
+            force: true)
+        currentActivity = nil
+
+        // Replace the empty assistant placeholder with a confirmation or error.
+        if let last = messages.last, last.role == .assistant {
+            messages.removeLast()
+        }
+        if let compacted {
+            let summaryText = compacted.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+            let body = summaryText.isEmpty
+                ? "Chat history compacted. Older turns are summarized into the inference context and saved to AI-Context memory."
+                : "Context compacted. Older conversation summarized and saved to AI-Context memory.\n\n" + summaryText
+            messages.append(Message(
+                role: .assistant,
+                content: body,
+                isCompaction: true,
+                timestamp: Date()))
+        } else {
+            messages.append(Message(
+                role: .assistant,
+                content: "I couldn't compact the chat history (the conversation may be too short to summarize, or no local summary model is available).",
+                timestamp: Date()))
+        }
+        saveHistory()
+        isStreaming = false
     }
 
     private static func stripToolMarkers(_ content: String) -> String {

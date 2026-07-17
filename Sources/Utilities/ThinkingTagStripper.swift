@@ -8,6 +8,7 @@ import Foundation
 /// - bracket style: `[channel]`, `[/channel]`, `[thought]`, `[/thought]`
 /// - plain angle style: `<channel>`, `</channel>`, `<channel/>`, `<channel >`
 /// - pipe style: `<|channel>`, `</|channel>`, `<|channel|>`, `</|channel|>`
+/// - combined tokens: `<channel>thought`, `<channel><channel>thought`, `</channel>thought`
 /// - bare reasoning markers: `thought`, `|thought`, `[thought]`
 ///
 /// The function strips all of these and collapses the resulting whitespace.
@@ -15,47 +16,53 @@ enum ThinkingTagStripper {
     static func strip(_ text: String) -> String {
         var result = text
 
-        // 1. Literal tag markers. Order matters: longer prefixes first.
-        let patterns = [
-            // Combined channel+thought tokens (Gemma 4 emits these as one token)
-            "<channel>thought", "</channel>thought",
-            "[channel]thought", "[/channel]thought",
-            "<|channel>thought", "</|channel>thought",
-            // Bracket style (Gemma 4)
-            "[/channel]", "[/channel]>", "[channel]", "[channel]>",
-            "[/thought]", "[/thought]>", "[thought]", "[thought]>", "[thought",
-            // Pipe/angle style (Qwen and some Gemma 4 checkpoints)
-            "</|channel|>", "<|channel|>", "</|channel|", "<|channel|",
-            "</|channel>", "<|channel>", "<|channel>>", "</|channel>>",
-            "<|channel|>thought", "<|channel>thought",
-            "|thought>", "|/thought>", "|thought", "|/thought",
-            // Plain angle style (observed in some Gemma 4 outputs)
-            "</channel>", "<channel>", "<channel/>", "</channel/>",
-            "<channel >", "</channel >",
-            // Legacy / partial forms
-            "<|channel", "</channel",
+        // 1. Remove complete reasoning blocks for all known formats. These regexes
+        //    are greedy enough to swallow nested/repeated opening tags such as
+        //    `<channel><channel>...
+        let blockPatterns: [(String, String)] = [
+            // Gemma 4 <channel>...</channel> (handles repeated opening tags)
+            (#"(?i)<\s*channel(?:\s*>\s*)+.*?<\s*/\s*channel\s*>"#, ""),
+            // Qwen / pipe <|channel|>...</|channel|>
+            (#"(?i)<\s*\|\s*channel\s*\|(?:\s*>\s*)+.*?<\s*/\s*\|\s*channel\s*\|\s*>"#, ""),
+            (#"(?i)<\s*\|\s*channel(?:\s*>\s*)+.*?<\s*/\s*\|\s*channel\s*>"#, ""),
+            // Bracket [channel]...[/channel]
+            (#"(?i)\[\s*channel(?:\s*\]\s*)+.*?\[/\s*channel\s*\]"#, ""),
+            // Qwen <think>...</think>
+            (#"(?i)<\s*think\s*>.*?<\s*/\s*think\s*>"#, ""),
         ]
-        for pattern in patterns {
-            result = result.replacingOccurrences(of: pattern, with: "")
+        for (pattern, template) in blockPatterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) {
+                let range = NSRange(result.startIndex..., in: result)
+                result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: template)
+            }
         }
 
-        // 2. Regex block stripping: remove `<channel>...</channel>` blocks
-        // non-greedily, plus matching variants. This catches tags that span
-        // token boundaries with content inside.
-        let blockPatterns = [
-            #"<\s*channel\s*[^>]*>.*?<\s*/\s*channel\s*>"#,
-            #"<\|\s*channel\s*\|>.*?<\s*/\s*\|\s*channel\s*\|>"#,
-            #"<\|\s*channel\s*>.*?<\s*/\s*\|\s*channel\s*>"#,
-            #"\[\s*channel\s*\].*?\[/\s*channel\s*\]"#,
+        // 2. Remove any remaining standalone opening/closing tags. This catches
+        //    unclosed markers and repeated tags like `<channel><channel>` that
+        //    were not part of a complete block.
+        let tagPatterns: [String] = [
+            #"(?i)<\s*channel\s*/?>"#,
+            #"(?i)</\s*channel\s*>"#,
+            #"(?i)<\s*\|\s*channel\s*\|\s*/?>"#,
+            #"(?i)</\s*\|\s*channel\s*\|\s*>"#,
+            #"(?i)<\s*\|\s*channel\s*/?>"#,
+            #"(?i)</\s*\|\s*channel\s*>"#,
+            #"(?i)\[\s*channel\s*\]"#,
+            #"(?i)\[/\s*channel\s*\]"#,
+            #"(?i)<\s*think\s*/?>"#,
+            #"(?i)</\s*think\s*>"#,
+            #"(?i)\[\s*thought\s*\]"#,
+            #"(?i)\[/\s*thought\s*\]"#,
         ]
-        for pattern in blockPatterns {
-            if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive, .dotMatchesLineSeparators]) {
+        for pattern in tagPatterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: []) {
                 let range = NSRange(result.startIndex..., in: result)
                 result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "")
             }
         }
 
-        // 3. Collapse stray "thought" lines that are only thinking markers.
+        // 3. Collapse stray lines that are only thinking markers or their remnants.
+        //    This catches `<channel>thought` becoming `thought` after tag stripping.
         let lines = result.components(separatedBy: .newlines)
         let cleaned = lines.map { line -> String in
             let trimmed = line.trimmingCharacters(in: .whitespaces)

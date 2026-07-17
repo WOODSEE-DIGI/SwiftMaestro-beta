@@ -30,6 +30,40 @@ enum MacOSIntegration {
 
     // MARK: - Reminders
 
+    struct ReminderItem: Sendable, Identifiable {
+        let id: String
+        let title: String
+        let isCompleted: Bool
+        let dueDate: Date?
+        let listTitle: String
+        let notes: String?
+    }
+
+    static func fetchReminders(limit: Int = 50) async throws -> [ReminderItem] {
+        let store = EKEventStore()
+        guard try await store.requestFullAccessToReminders() else {
+            throw IntegrationError.accessDenied("Reminders")
+        }
+        let predicate = store.predicateForReminders(in: nil)
+        return await withCheckedContinuation { (cont: CheckedContinuation<[ReminderItem], Never>) in
+            store.fetchReminders(matching: predicate) { reminders in
+                let items = (reminders ?? []).prefix(limit).map { reminder -> ReminderItem in
+                    let due = reminder.dueDateComponents
+                        .flatMap { Calendar.current.date(from: $0) }
+                    return ReminderItem(
+                        id: reminder.calendarItemIdentifier,
+                        title: reminder.title ?? "(untitled)",
+                        isCompleted: reminder.isCompleted,
+                        dueDate: due,
+                        listTitle: reminder.calendar?.title ?? "Reminders",
+                        notes: reminder.notes
+                    )
+                }
+                cont.resume(returning: items)
+            }
+        }
+    }
+
     static func createReminder(title: String, notes: String?, due: String?) async throws -> String {
         let store = EKEventStore()
         guard try await store.requestFullAccessToReminders() else {
@@ -76,6 +110,39 @@ enum MacOSIntegration {
     }
 
     // MARK: - Calendar
+
+    struct CalendarEvent: Sendable, Identifiable {
+        let id: String
+        let title: String
+        let startDate: Date
+        let endDate: Date
+        let isAllDay: Bool
+        let calendarTitle: String
+        let notes: String?
+    }
+
+    static func fetchCalendarEvents(
+        start: Date,
+        end: Date,
+        limit: Int = 50
+    ) async throws -> [CalendarEvent] {
+        let store = EKEventStore()
+        guard try await store.requestFullAccessToEvents() else {
+            throw IntegrationError.accessDenied("Calendar")
+        }
+        let predicate = store.predicateForEvents(withStart: start, end: end, calendars: nil)
+        return store.events(matching: predicate).prefix(limit).map { event in
+            CalendarEvent(
+                id: event.calendarItemIdentifier,
+                title: event.title ?? "(untitled)",
+                startDate: event.startDate,
+                endDate: event.endDate,
+                isAllDay: event.isAllDay,
+                calendarTitle: event.calendar?.title ?? "Calendar",
+                notes: event.notes
+            )
+        }
+    }
 
     static func createCalendarEvent(title: String, start: String, end: String, notes: String?) async throws -> String {
         let store = EKEventStore()

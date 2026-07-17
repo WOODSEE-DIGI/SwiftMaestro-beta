@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(AppKit)
+import AppKit
+#endif
 
 // MARK: - Rich Markdown View
 
@@ -135,15 +138,83 @@ enum MarkdownParser {
         return segments
     }
 
+    /// Convert plain http/https URLs in text segments into markdown link syntax so
+    /// SwiftUI's Text renderer makes them clickable. Skips URLs that already appear
+    /// inside markdown link syntax `[text](url)` or angle brackets `<url>`.
+    static func autoLinkURLs(_ text: String) -> String {
+        // Use a greedy path so the whole URL (including trailing paths like
+        // /timeline_single_file.html) is captured as one link.
+        let pattern = #"(?<![\]\(<"'])https?://[\w\-\.]+(:\d+)?(/[\w\-\.~%!$&'()*+,;=:@/]*)?(\?[\w\-\.~%!$&'()*+,;=:@/?#]*)?"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else { return text }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        var result = text
+        // Enumerate matches right-to-left so earlier replacements don't shift ranges.
+        let matches = regex.matches(in: text, options: [], range: range).reversed()
+        for match in matches {
+            guard let matchRange = Range(match.range, in: result) else { continue }
+            let url = String(result[matchRange])
+            // Don't double-link if the URL already looks wrapped in markdown or angle brackets.
+            let prefix = result[..<matchRange.lowerBound]
+            let lastTwo = String(prefix.suffix(2))
+            let lastOne = String(prefix.suffix(1))
+            if lastTwo == "](" || lastTwo == "=[" || lastOne == "<" || lastOne == "\"" || lastOne == "'" {
+                continue
+            }
+            result.replaceSubrange(matchRange, with: "[\(url)](\(url))")
+        }
+        return result
+    }
+
+    /// Parse text into alternating plain text and markdown link segments.
+    /// Handles `[label](url)` markdown links and `<url>` autolinks. Everything
+    /// else is returned as plain text. URLs are NOT auto-linked here — that is
+    /// done by `autoLinkURLs` before this function is called.
+    fileprivate static func parseLinkedText(_ text: String) -> [TextPiece] {
+        var pieces: [TextPiece] = []
+        var remaining = text
+        // Markdown link: [label](url)  OR  autolink: <url>
+        let combined = #"\[([^\]]+)\]\(([^\)]+)\)|<((?:https?|mailto)://[^>]+)>"#
+        guard let regex = try? NSRegularExpression(pattern: combined, options: []) else {
+            return [.plain(text)]
+        }
+        while let match = regex.firstMatch(
+            in: remaining,
+            options: [],
+            range: NSRange(remaining.startIndex..<remaining.endIndex, in: remaining)
+        ) {
+            guard let matchRange = Range(match.range, in: remaining) else { break }
+            let prefix = String(remaining[..<matchRange.lowerBound])
+            if !prefix.isEmpty { pieces.append(.plain(prefix)) }
+
+            if let labelRange = Range(match.range(at: 1), in: remaining),
+               let urlRange = Range(match.range(at: 2), in: remaining),
+               let url = URL(string: String(remaining[urlRange])),
+               !url.absoluteString.isEmpty {
+                pieces.append(.link(label: String(remaining[labelRange]), url: url))
+            } else if let urlRange = Range(match.range(at: 3), in: remaining),
+                      let url = URL(string: String(remaining[urlRange])),
+                      !url.absoluteString.isEmpty {
+                pieces.append(.link(label: url.absoluteString, url: url))
+            } else {
+                pieces.append(.plain(String(remaining[matchRange])))
+            }
+
+            remaining = String(remaining[matchRange.upperBound...])
+        }
+        if !remaining.isEmpty { pieces.append(.plain(remaining)) }
+        return pieces
+    }
+
     /// Check if a trimmed line is an opening fence (3+ backticks or tildes, optionally with language).
     private static func isFenceOpen(_ trimmed: String) -> Bool {
         guard let first = trimmed.first, first == "`" || first == "~" else { return false }
         let fenceCount = trimmed.prefix(while: { $0 == first }).count
         guard fenceCount >= 3 else { return false }
-        // Opening: ```lang or ~~~lang (nothing after lang except whitespace)
+        // Opening: ```lang or ~~~lang (nothing after lang except whitespace).
+        // The info string can contain letters, digits, common punctuation for
+        // language identifiers (e.g. python3, c++, c#), and spaces.
         let rest = String(trimmed.dropFirst(fenceCount)).trimmingCharacters(in: .whitespaces)
-        // Empty or just a language name = opening fence
-        return rest.allSatisfy { $0.isLetter || $0 == "-" || $0 == "_" || $0 == " " || $0 == "\t" }
+        return rest.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == "+" || $0 == "#" || $0 == " " || $0 == "\t" || $0 == "." }
     }
 
     /// Check if a trimmed line is a closing fence (3+ of the same char, nothing else).
@@ -163,15 +234,51 @@ struct TextSegmentView: View {
     let isUser: Bool
 
     var body: some View {
-        // Render with SwiftUI's built-in markdown support
-        // which handles **bold**, *italic*, `code`, lists, etc.
-        Text(LocalizedStringKey(content))
+        // Render text with clickable links. Plain URLs are auto-linked, and
+        // existing markdown links [text](url) are rendered as native Link views.
+        LinkedText(content: MarkdownParser.autoLinkURLs(content))
             .font(.body)
             .textSelection(.enabled)
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
+}
+
+/// Splits text into alternating plain text and markdown link segments.
+private struct LinkedText: View {
+    let content: String
+
+    private var pieces: [TextPiece] {
+        MarkdownParser.parseLinkedText(content)
+    }
+
+    var body: some View {
+        // Build a single line of text by concatenating plain text and Link views.
+        pieces.reduce(Text("")) { partial, piece in
+            switch piece {
+            case .plain(let text):
+                return partial + Text(text)
+            case .link(let label, let url):
+                // SwiftUI Text cannot embed a Link; use a styled Text with the
+                // URL as a run attribute. The environment's `openURL` handler
+                // will make it clickable on both macOS and iOS.
+                var attributed = AttributedString(label)
+                attributed.link = url
+                attributed.foregroundColor = .accentColor
+                return partial + Text(attributed)
+            }
+        }
+        .environment(\.openURL, OpenURLAction { url in
+            NSWorkspace.shared.open(url)
+            return .handled
+        })
+    }
+}
+
+fileprivate enum TextPiece {
+    case plain(String)
+    case link(label: String, url: URL)
 }
 
 // MARK: - Code Block View

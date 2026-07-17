@@ -42,6 +42,8 @@ final class ThemeStore {
     static let plansTextKey = "theme.plansTextHex"
     static let tasksPanelKey = "theme.tasksPanelHex"
     static let tasksTextKey = "theme.tasksTextHex"
+    static let backgroundKey = "theme.backgroundHex"
+    static let secondaryBackgroundKey = "theme.secondaryBackgroundHex"
 
     /// Subtle neutral tint used by the side panels unless the user overrides them.
     static let defaultPanelTint = Color.secondary.opacity(0.04)
@@ -66,6 +68,8 @@ final class ThemeStore {
     private var plansTextOverride: Color?
     private var tasksPanelOverride: Color?
     private var tasksTextOverride: Color?
+    private var backgroundOverride: Color?
+    private var secondaryBackgroundOverride: Color?
 
     init() {
         let defaults = UserDefaults.standard
@@ -81,6 +85,8 @@ final class ThemeStore {
         plansTextOverride = defaults.string(forKey: Self.plansTextKey).flatMap(Color.init(hex:))
         tasksPanelOverride = defaults.string(forKey: Self.tasksPanelKey).flatMap(Color.init(hex:))
         tasksTextOverride = defaults.string(forKey: Self.tasksTextKey).flatMap(Color.init(hex:))
+        backgroundOverride = defaults.string(forKey: Self.backgroundKey).flatMap(Color.init(hex:))
+        secondaryBackgroundOverride = defaults.string(forKey: Self.secondaryBackgroundKey).flatMap(Color.init(hex:))
     }
 
     /// Re-read all persisted theme values. Used after a settings restore so the
@@ -99,6 +105,8 @@ final class ThemeStore {
         plansTextOverride = defaults.string(forKey: Self.plansTextKey).flatMap(Color.init(hex:))
         tasksPanelOverride = defaults.string(forKey: Self.tasksPanelKey).flatMap(Color.init(hex:))
         tasksTextOverride = defaults.string(forKey: Self.tasksTextKey).flatMap(Color.init(hex:))
+        backgroundOverride = defaults.string(forKey: Self.backgroundKey).flatMap(Color.init(hex:))
+        secondaryBackgroundOverride = defaults.string(forKey: Self.secondaryBackgroundKey).flatMap(Color.init(hex:))
     }
 
     // MARK: - Effective colors (override, else the app default)
@@ -131,6 +139,12 @@ final class ThemeStore {
     var tasksPanel: Color { tasksPanelOverride ?? Self.defaultPanelTint }
     /// Task (todo) title text for open items. Defaults to `.primary`.
     var tasksText: Color { tasksTextOverride ?? .primary }
+    /// Generic view background (e.g. Notes editor). Defaults to the system window
+    /// background so it matches the rest of the app chrome.
+    var background: Color { backgroundOverride ?? Color(nsColor: .windowBackgroundColor) }
+    /// Generic secondary background (e.g. Notes toolbar/search bar). Defaults to
+    /// the system control background for subtle contrast.
+    var secondaryBackground: Color { secondaryBackgroundOverride ?? Color(nsColor: .controlBackgroundColor) }
 
     /// True when any color has been customized (drives the Reset button).
     var hasColorOverrides: Bool {
@@ -138,6 +152,7 @@ final class ThemeStore {
             || chatBackgroundOverride != nil || sidebarOverride != nil || sidebarTextOverride != nil
             || plansPanelOverride != nil || plansTextOverride != nil
             || tasksPanelOverride != nil || tasksTextOverride != nil
+            || backgroundOverride != nil || secondaryBackgroundOverride != nil
     }
 
     // MARK: - ColorPicker bindings
@@ -183,6 +198,8 @@ final class ThemeStore {
     func setPlansText(_ color: Color) { plansTextOverride = color; persist(Self.plansTextKey, color) }
     func setTasksPanel(_ color: Color) { tasksPanelOverride = color; persist(Self.tasksPanelKey, color) }
     func setTasksText(_ color: Color) { tasksTextOverride = color; persist(Self.tasksTextKey, color) }
+    func setBackground(_ color: Color) { backgroundOverride = color; persist(Self.backgroundKey, color) }
+    func setSecondaryBackground(_ color: Color) { secondaryBackgroundOverride = color; persist(Self.secondaryBackgroundKey, color) }
 
     /// Clear all color overrides (back to the system accent / white text).
     func resetColors() {
@@ -196,10 +213,13 @@ final class ThemeStore {
         plansTextOverride = nil
         tasksPanelOverride = nil
         tasksTextOverride = nil
+        backgroundOverride = nil
+        secondaryBackgroundOverride = nil
         for key in [
             Self.accentKey, Self.userBubbleKey, Self.userBubbleTextKey,
             Self.chatBackgroundKey, Self.sidebarKey, Self.sidebarTextKey,
             Self.plansPanelKey, Self.plansTextKey, Self.tasksPanelKey, Self.tasksTextKey,
+            Self.backgroundKey, Self.secondaryBackgroundKey,
         ] {
             UserDefaults.standard.removeObject(forKey: key)
         }

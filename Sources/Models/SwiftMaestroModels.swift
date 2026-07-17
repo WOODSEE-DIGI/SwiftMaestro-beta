@@ -76,6 +76,15 @@ struct Message: Identifiable, Codable {
     /// Wall-clock seconds spent reasoning (send → final `</think>`), used for the
     /// "Thought for Ns" label. Optional/back-compatible.
     var reasoningSeconds: Double?
+    /// True for synthetic checkpoint messages that compress older history.
+    /// Rendered as a collapsed context boundary instead of a normal chat bubble.
+    /// Optional/back-compatible.
+    var isCompaction: Bool?
+    /// Wall-clock timestamp when the message was created. Optional/back-compatible.
+    var timestamp: Date?
+    /// Display name of the model that generated this message (assistant only).
+    /// Optional/back-compatible.
+    var modelName: String?
 
     init(
         id: UUID = UUID(),
@@ -85,7 +94,10 @@ struct Message: Identifiable, Codable {
         imagePaths: [String]? = nil,
         toolSteps: [String]? = nil,
         reasoning: String? = nil,
-        reasoningSeconds: Double? = nil
+        reasoningSeconds: Double? = nil,
+        isCompaction: Bool? = nil,
+        timestamp: Date? = nil,
+        modelName: String? = nil
     ) {
         self.id = id
         self.role = role
@@ -95,6 +107,9 @@ struct Message: Identifiable, Codable {
         self.toolSteps = toolSteps
         self.reasoning = reasoning
         self.reasoningSeconds = reasoningSeconds
+        self.isCompaction = isCompaction
+        self.timestamp = timestamp
+        self.modelName = modelName
     }
 }
 

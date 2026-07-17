@@ -12,8 +12,9 @@ public final class ShellPolicyStore: ObservableObject {
     private static let alwaysAskKey = "settings.shell.alwaysAsk"
     private static let neverAllowKey = "settings.shell.neverAllow"
 
-    /// Whether the shell tool is enabled.
-    @Published public var enabled: Bool = false
+    /// Whether the shell tool is enabled. Default is true so the agent can execute
+    /// commands when asked; users can disable it in Settings → Shell for safety.
+    @Published public var enabled: Bool = true
 
     // MARK: - Execution Settings
     @Published public var defaultTimeout: Int = 30 // seconds
@@ -37,7 +38,12 @@ public final class ShellPolicyStore: ObservableObject {
     /// Load settings from UserDefaults.
     public func load() {
         let defaults = UserDefaults.standard
-        enabled = defaults.bool(forKey: "settings.shell.enabled")
+        // Default to enabled (true) only when the user has never set the key.
+        if let explicit = defaults.object(forKey: "settings.shell.enabled") as? Bool {
+            enabled = explicit
+        } else {
+            enabled = true
+        }
         defaultTimeout = defaults.integer(forKey: "settings.shell.defaultTimeout")
         if defaultTimeout == 0 { defaultTimeout = 30 }
         outputCap = defaults.integer(forKey: "settings.shell.outputCap")
@@ -178,6 +184,18 @@ public final class ShellPolicyStore: ObservableObject {
             .literal("git tag"),
         ]
         policy.alwaysAllow.append(contentsOf: safeReadOnly)
+
+        // ── Always-allow safe local server / background commands ──────
+        let safeServers: [ShellPolicyRule] = [
+            .regex("(?i)^cd\\s+.*&&\\s*nohup\\s+python3?\\s+-m\\s+http\\.server\\s+\\d+.*$"),
+            .regex("(?i)^nohup\\s+python3?\\s+-m\\s+http\\.server\\s+\\d+.*$"),
+            .regex("(?i)^python3?\\s+-m\\s+http\\.server\\s+\\d+.*$"),
+            .regex("(?i)\\bnohup\\s+python3?\\s+-m\\s+http\\.server\\b"),
+            .literal("lsof -ti:"),
+            .regex("(?i)lsof\\s+-ti:\\d+.*xargs\\s+kill\\s+-9"),
+            .regex("(?i)^curl\\s+-s\\s+http://localhost:\\d+.*$"),
+        ]
+        policy.alwaysAllow.append(contentsOf: safeServers)
 
         save()
     }

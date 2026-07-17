@@ -34,12 +34,26 @@ final class InProcessMLXBackend: GenerationBackend {
         continuation: AsyncThrowingStream<AgentOutput, Error>.Continuation
     ) async throws -> (content: String, toolCalls: [RoundToolCall]) {
         let tools: [ToolSpec]? = toolSpecs.isEmpty ? nil : toolSpecs
-        // Pass raw wire messages through to preserve tool_calls on assistant
-        // messages and tool_call_id on tool messages. The .messages() path in
-        // UserInput/DefaultMessageGenerator passes these untouched to the Jinja
-        // template, which needs tool_calls to forward-scan and match tool results.
-        let wireMessages = Self.toWireMessages(convo)
-        nonisolated(unsafe) let images = Self.extractAllImages(from: convo)
+        NSLog("[MLXBackend] model=\(model.id) hf=\(model.huggingFaceID) toolCallFormat=\(String(describing: model.toolCallFormat)) tools=\(tools?.count ?? 0) lite=\(model.isLiteModel)")
+        // Gemma 4's chat template expects image parts as `{"type": "image"}`,
+        // not OpenAI-style `{"type": "image_url", ...}`. The current
+        // mlx-swift-lm Gemma 4 implementation also only supports a single image
+        // per prompt; multiple images cause an "image token count mismatch"
+        // crash. We therefore keep at most one image and only from the most
+        // recent user message.
+        let isGemma4 = model.huggingFaceID.lowercased().contains("gemma-4")
+        let preparedConvo: [[String: Any]]
+        nonisolated(unsafe) let images: [UserInput.Image]
+        if isGemma4 {
+            let prepared = Self.prepareGemma4Convo(convo)
+            preparedConvo = prepared.convo
+            images = prepared.images
+        } else {
+            preparedConvo = convo
+            images = Self.extractAllImages(from: convo)
+        }
+        let wireMessages = Self.toWireMessages(preparedConvo)
+        NSLog("[InProcessMLXBackend] streamRound model=\(model.id) images=\(images.count) messages=\(wireMessages.count) gemma4=\(isGemma4)")
         return try await engine.generateRound(
             wireMessages: wireMessages,
             images: images,
@@ -87,22 +101,87 @@ final class InProcessMLXBackend: GenerationBackend {
     /// Extract image data from all messages in the wire format for VLM support.
     private static func extractAllImages(from convo: [[String: Any]]) -> [UserInput.Image] {
         var images: [UserInput.Image] = []
-        for msg in convo {
+        for (index, msg) in convo.enumerated() {
             let content = msg["content"]
             if let string = content as? String { continue }
-            guard let parts = content as? [[String: Any]] else { continue }
+            guard let parts = content as? [[String: Any]] else {
+                if content != nil {
+                    NSLog("[InProcessMLXBackend] message \(index) has non-array content: \(type(of: content))")
+                }
+                continue
+            }
             for part in parts {
-                guard let type = part["type"] as? String,
-                      type == "image_url",
-                      let urlObj = part["image_url"] as? [String: Any],
-                      let urlString = urlObj["url"] as? String else { continue }
-                if let data = Data(base64Encoded: extractBase64(urlString)),
-                   let ciImage = CIImage(data: data) {
-                    images.append(.ciImage(ciImage))
+                guard let type = part["type"] as? String else { continue }
+                if type == "image_url",
+                   let urlObj = part["image_url"] as? [String: Any],
+                   let urlString = urlObj["url"] as? String {
+                    if let data = Data(base64Encoded: extractBase64(urlString)),
+                       let ciImage = CIImage(data: data) {
+                        images.append(.ciImage(ciImage))
+                        NSLog("[InProcessMLXBackend] extracted image from message \(index)")
+                    } else {
+                        NSLog("[InProcessMLXBackend] failed to decode image from message \(index)")
+                    }
                 }
             }
         }
+        if !images.isEmpty {
+            NSLog("[InProcessMLXBackend] extracted \(images.count) image(s) from conversation")
+        }
         return images
+    }
+
+    /// Prepare a conversation for Gemma 4:
+    /// 1. Convert the most recent user message's `image_url` part(s) to the
+    ///    plain `{"type": "image"}` shape that Gemma 4's Jinja template expects.
+    /// 2. Keep at most one image total — the current mlx-swift-lm Gemma 4
+    ///    implementation only supports a single image per prompt.
+    /// 3. Drop any image parts from earlier turns and any stray `{"type": "image"}`
+    ///    placeholders so the image token count always matches the number of
+    ///    supplied images, preventing the Gemma4 image token mismatch crash.
+    private static func prepareGemma4Convo(
+        _ convo: [[String: Any]]
+    ) -> (convo: [[String: Any]], images: [UserInput.Image]) {
+        let lastUserIndex = convo.lastIndex { msg in
+            (msg["role"] as? String)?.lowercased() == "user"
+        } ?? -1
+        var images: [UserInput.Image] = []
+        var haveImage = false
+        let rewritten = convo.enumerated().map { (index, msg) -> [String: Any] in
+            var out = msg
+            let role = (msg["role"] as? String)?.lowercased() ?? ""
+            let isLastUser = role == "user" && index == lastUserIndex
+            guard let parts = msg["content"] as? [[String: Any]] else { return out }
+            var newParts: [[String: Any]] = []
+            for part in parts {
+                let type = part["type"] as? String
+                if type == "image_url" {
+                    if isLastUser, !haveImage,
+                       let urlObj = part["image_url"] as? [String: Any],
+                       let urlString = urlObj["url"] as? String,
+                       let data = Data(base64Encoded: extractBase64(urlString)),
+                       let ciImage = CIImage(data: data) {
+                        images.append(.ciImage(ciImage))
+                        haveImage = true
+                        newParts.append(["type": "image"])
+                        NSLog("[InProcessMLXBackend] Gemma 4 keeping image from last user message \(index)")
+                    } else {
+                        NSLog("[InProcessMLXBackend] Gemma 4 dropping image part from message \(index) (isLastUser=\(isLastUser), haveImage=\(haveImage))")
+                    }
+                } else if type == "image" {
+                    // Drop stray legacy placeholders.
+                    NSLog("[InProcessMLXBackend] Gemma 4 dropping stray plain image part from message \(index)")
+                } else {
+                    newParts.append(part)
+                }
+            }
+            out["content"] = newParts
+            return out
+        }
+        if !images.isEmpty {
+            NSLog("[InProcessMLXBackend] Gemma 4 prepared: \(images.count) image(s), \(rewritten.count) messages")
+        }
+        return (rewritten, images)
     }
 
     private static func extractBase64(_ urlString: String) -> String {

@@ -28,13 +28,23 @@ struct AgentRecord: Identifiable, Codable, Hashable {
     /// `nil` means use the global default model. Optional so existing
     /// `workspace.json` (written before this field) still decodes.
     var modelID: String?
+    /// Per-agent working directory. Injected into the system prompt and used as
+    /// the default cwd for shell/file tools. `nil` means no fixed directory.
+    /// Optional so existing `workspace.json` (written before this field) decodes.
+    var workingDirectory: String?
+    /// Per-agent enabled tool categories. `nil` means use the defaults for the
+    /// agent kind. Stored as raw strings so older decoders ignore unknown values.
+    var enabledToolCategories: [String]?
     init(id: UUID = UUID(), name: String, kind: AgentKind, projectId: UUID? = nil,
-         modelID: String? = nil) {
+         modelID: String? = nil, workingDirectory: String? = nil,
+         enabledToolCategories: [String]? = nil) {
         self.id = id
         self.name = name
         self.kind = kind
         self.projectId = projectId
         self.modelID = modelID
+        self.workingDirectory = workingDirectory
+        self.enabledToolCategories = enabledToolCategories
     }
 }
 
@@ -54,7 +64,7 @@ final class WorkspaceStore {
     private let fileURL: URL
 
     init() {
-        self.fileURL = WorkspaceStore.appSupportDir().appendingPathComponent("workspace.json")
+        self.fileURL = WorkspaceStore.dataDir().appendingPathComponent("workspace.json")
         load()
     }
 
@@ -104,8 +114,13 @@ final class WorkspaceStore {
     }
 
     @discardableResult
-    func createAgent(name: String, in project: Project) -> AgentRecord {
-        let a = AgentRecord(name: name, kind: .project, projectId: project.id)
+    func createAgent(
+        name: String, in project: Project,
+        workingDirectory: String? = nil, modelID: String? = nil
+    ) -> AgentRecord {
+        let a = AgentRecord(
+            name: name, kind: .project, projectId: project.id,
+            modelID: modelID, workingDirectory: workingDirectory)
         agents.append(a)
         save()
         return a
@@ -113,10 +128,15 @@ final class WorkspaceStore {
 
     /// Create (or return existing) a project agent, creating the project if new.
     @discardableResult
-    func createProjectAgent(projectName: String, agentName: String) -> AgentRecord {
+    func createProjectAgent(
+        projectName: String, agentName: String,
+        workingDirectory: String? = nil, modelID: String? = nil
+    ) -> AgentRecord {
         let p = ensureProject(named: projectName)
         if let existing = findAgent(projectName: projectName, agentName: agentName) { return existing }
-        return createAgent(name: agentName, in: p)
+        return createAgent(
+            name: agentName, in: p,
+            workingDirectory: workingDirectory, modelID: modelID)
     }
 
     /// Remove a project agent (and its chat history); prune the project if empty.
@@ -147,6 +167,32 @@ final class WorkspaceStore {
         guard let i = agents.firstIndex(where: { $0.id == agentID }) else { return }
         let trimmed = modelID?.trimmingCharacters(in: .whitespaces)
         agents[i].modelID = (trimmed?.isEmpty ?? true) ? nil : trimmed
+        save()
+    }
+
+    /// Set (or clear with `nil`) a per-agent working directory and persist.
+    func setWorkingDirectory(_ path: String?, for agentID: UUID) {
+        guard let i = agents.firstIndex(where: { $0.id == agentID }) else { return }
+        let trimmed = path?.trimmingCharacters(in: .whitespaces)
+        agents[i].workingDirectory = (trimmed?.isEmpty ?? true) ? nil : trimmed
+        save()
+    }
+
+    /// Enabled tool categories for an agent. Returns saved values if present,
+    /// otherwise the defaults for the agent's kind.
+    func enabledToolCategories(for agentID: UUID) -> Set<ToolCategory> {
+        guard let agent = agent(id: agentID) else { return [] }
+        if let saved = agent.enabledToolCategories {
+            let valid = Set(saved.compactMap { ToolCategory(rawValue: $0) })
+            if !valid.isEmpty { return valid }
+        }
+        return ToolCategory.defaultEnabled(for: agent.kind)
+    }
+
+    /// Replace the enabled tool categories for an agent and persist.
+    func setEnabledToolCategories(_ categories: Set<ToolCategory>, for agentID: UUID) {
+        guard let i = agents.firstIndex(where: { $0.id == agentID }) else { return }
+        agents[i].enabledToolCategories = Array(categories.map(\.rawValue))
         save()
     }
 
@@ -191,10 +237,8 @@ final class WorkspaceStore {
         try? data.write(to: fileURL)
     }
 
-    nonisolated static func appSupportDir() -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let dir = base.appendingPathComponent("SwiftMaestro", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir
-    }
+    nonisolated static func appSupportDir() -> URL { SwiftMaestroPaths.appSupportDir }
+
+    /// Data subdirectory: chats, plans, todos, workspace.json.
+    nonisolated static func dataDir() -> URL { SwiftMaestroPaths.dataDir }
 }

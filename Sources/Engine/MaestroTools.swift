@@ -35,6 +35,12 @@ enum MaestroTools {
     /// Cleared at the start of each top-level run so stale roots don't leak.
     nonisolated(unsafe) static var inheritedRoots: [String] = []
 
+    /// Working directories of agents that have been delegated to during the
+    /// current run. The parent agent can read/write files under these paths so
+    /// it can verify or continue work a sub-agent created under its own project
+    /// directory.
+    nonisolated(unsafe) static var delegatedAgentWorkingDirectories: [String] = []
+
     /// Returns the calling agent's authorized roots (global Settings + working
     /// directory) so delegation can pass them to the child.
     static func authorizedRootsForParent() -> [String] {
@@ -91,33 +97,50 @@ enum MaestroTools {
     static var schemas: [ToolSpec] { all.map { $0.schema } }
 
     /// Tool schemas for an agent. Project agents get the base set; the Navigator
-    /// additionally gets workspace + delegation tools. When `liteMode` is true
-    /// (for small MoE models with <10B active params), only the essential tools
-    /// are returned to avoid overwhelming the model.
-    static func schemas(navigator: Bool, liteMode: Bool = false) -> [ToolSpec] {
+    /// additionally gets workspace + delegation tools.
+    ///
+    /// - Parameters:
+    ///   - navigator: `true` for the Navigator agent.
+    ///   - liteMode: Deprecated; kept for source compatibility but ignored when
+    ///     `enabledCategories` is provided.
+    ///   - enabledCategories: If provided, only tools whose category is in this
+    ///     set are returned. This overrides the old automatic lite-mode reduction
+    ///     and lets the user control the tool surface per agent.
+    static func schemas(
+        navigator: Bool,
+        liteMode: Bool = false,
+        enabledCategories: Set<ToolCategory>? = nil
+    ) -> [ToolSpec] {
+        let baseSpecs: [ToolSpec]
         if liteMode {
-            // Lite mode: essential tools only (15 total). The model still
-            // performs well with file ops, todos, plans, memory, and time.
-            // System tools (reminders, calendar, shortcuts, notes, rules)
-            // and inter-agent messaging are cut to reduce choice paralysis.
-            return schemas + todoToolSpecs + planToolSpecs
-                + memoryToolSpecs + fileToolSpecs
-        }
-        // Every agent gets the live todo + plan tools; Navigator also
-        // gets workspace/delegation tools. Messaging tools (inbox) are
-        // excluded from Navigator — it must delegate via ask_project_agent.
-        // Navigator gets: delegation + memory (for coordination context) + OCR.
-        // File/system tools are stripped so it cannot do actual work.
-        var specs = schemas + todoToolSpecs + planToolSpecs
-        if navigator {
-            // Navigator also gets file tools so it can perform basic discovery 
-            // (list_dir, read_file) without needing to delegate.
-            specs += navigatorToolSpecs + navigatorOCRSpec + memoryToolSpecs + fileToolSpecs + indexToolSpecs + shellToolSpecs + serverToolSpecs
+            // Lite mode fallback when no explicit categories are provided.
+            baseSpecs = schemas + todoToolSpecs + planToolSpecs
+                + memoryToolSpecs + fileToolSpecs + shellToolSpecs + serverToolSpecs
+                + indexToolSpecs + sqliteToolSpecs
         } else {
-            specs += memoryToolSpecs + fileToolSpecs + systemToolSpecs
-            specs += messagingToolSpecs + indexToolSpecs + sqliteToolSpecs + shellToolSpecs + serverToolSpecs
+            var specs = schemas + todoToolSpecs + planToolSpecs
+            if navigator {
+                specs += navigatorToolSpecs + navigatorOCRSpec + memoryToolSpecs
+                    + fileToolSpecs + indexToolSpecs + shellToolSpecs + serverToolSpecs
+            } else {
+                specs += memoryToolSpecs + fileToolSpecs + systemToolSpecs
+                specs += messagingToolSpecs + indexToolSpecs + sqliteToolSpecs
+                    + shellToolSpecs + serverToolSpecs
+            }
+            baseSpecs = specs
         }
-        return specs
+
+        guard let enabledCategories else { return baseSpecs }
+        return baseSpecs.filter { spec in
+            guard let name = toolName(from: spec) else { return false }
+            guard let category = ToolCategory.category(for: name) else { return false }
+            return enabledCategories.contains(category)
+        }
+    }
+
+    /// Extract the function name from a tool spec dictionary.
+    private static func toolName(from spec: ToolSpec) -> String? {
+        (spec["function"] as? [String: any Sendable])?["name"] as? String
     }
 
     // MARK: - Inter-agent messaging tools (caller agent_id injected by executor)
@@ -275,6 +298,8 @@ enum MaestroTools {
                 properties: [
                     "project": ["type": "string", "description": "Project name."],
                     "agent": ["type": "string", "description": "Name for the new project agent."],
+                    "workingDirectory": ["type": "string", "description": "Optional absolute working directory for the agent. Inherited from the creating agent when omitted."],
+                    "model": ["type": "string", "description": "Optional model identifier. Use 'coding' to select the coding-specialist model, or pass a full MaestroModel id (e.g. 'local-qwen3.5-122b'). Defaults to the global default model."],
                 ],
                 required: ["project", "agent"]
             ),
@@ -421,10 +446,20 @@ enum MaestroTools {
             return await createNoteTool(call)
         case "open_url":
             return await openURLTool(call)
+        case "search_contacts":
+            return await searchContactsTool(call)
+        case "create_contact":
+            return await createContactTool(call)
+        case "update_contact":
+            return await updateContactTool(call)
+        case "delete_contact":
+            return await deleteContactTool(call)
         case "list_rules":
             return listRulesTool()
         case "set_rule":
             return setRuleTool(call)
+        case "read_project_rules":
+            return readProjectRulesTool(call)
         case "list_shortcuts":
             return await listShortcutsTool()
         case "run_shortcut":
@@ -925,6 +960,48 @@ enum MaestroTools {
     private struct ProjectAgentArgs: Codable {
         let project: String
         let agent: String
+        let workingDirectory: String?
+        let model: String?
+
+        enum CodingKeys: String, CodingKey {
+            case project, agent, workingDirectory, model
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            project = try c.decode(String.self, forKey: .project)
+            agent = try c.decode(String.self, forKey: .agent)
+            workingDirectory = try c.decodeIfPresent(String.self, forKey: .workingDirectory)
+            model = try c.decodeIfPresent(String.self, forKey: .model)
+        }
+    }
+
+    /// Resolve a free-form model hint into a known `MaestroModel.id`.
+    /// Supported: "coding"/"coder" → the local Qwen 3 Coder model; otherwise
+    /// the raw string is kept if it matches a known model id.
+    @MainActor
+    private static func resolveAgentModelID(
+        _ hint: String?, agentName: String? = nil, catalog: ModelCatalog?
+    ) -> String? {
+        let resolvedHint = hint?.trimmingCharacters(in: .whitespaces)
+        let lowerAgent = agentName?.lowercased() ?? ""
+        let isCodingAgent = lowerAgent.contains("coding") || lowerAgent.contains("coder")
+            || lowerAgent.contains("code")
+        if let resolvedHint, !resolvedHint.isEmpty {
+            let lower = resolvedHint.lowercased()
+            if lower == "coding" || lower == "coder" || lower == "code" {
+                return "local-qwen3-coder-30b-a3b"
+            }
+            // If the hint matches a known catalog id, use it verbatim.
+            if let catalog = catalog, catalog.model(forID: resolvedHint) != nil {
+                return resolvedHint
+            }
+            return resolvedHint
+        }
+        if isCodingAgent {
+            return "local-qwen3-coder-30b-a3b"
+        }
+        return nil
     }
 
     private static func createProjectAgent(_ call: ToolCall) async -> String {
@@ -957,12 +1034,19 @@ enum MaestroTools {
                         + "Use ask_project_agent to delegate work to it. Do NOT create a new agent.",
                 ])
             }
-            let created = ws.createProjectAgent(projectName: cleanProject, agentName: cleanAgent)
+
+            let catalog = ModelCatalog()
+            let modelID = resolveAgentModelID(args.model, agentName: cleanAgent, catalog: catalog)
+            let created = ws.createProjectAgent(
+                projectName: cleanProject, agentName: cleanAgent,
+                workingDirectory: args.workingDirectory, modelID: modelID)
             return jsonString([
                 "status": "created",
                 "project": args.project,
                 "agent": created.name,
                 "agentId": created.id.uuidString,
+                "modelID": created.modelID ?? NSNull(),
+                "workingDirectory": created.workingDirectory ?? NSNull(),
             ])
         }
     }

@@ -1,17 +1,23 @@
 import Foundation
 import MLXLMCommon
 
+// MARK: - Shared contacts service
+
+@MainActor
+private let sharedContactsService = ContactsService()
+
 // MARK: - Native macOS system tools
 //
 // Expose the real `MacOSIntegration` (EventKit Reminders/Calendar, Notes via
-// Apple Events, URL opening) as in-process agent tools. Each reports the actual
-// outcome; permission prompts appear on first use.
+// Apple Events, URL opening, Contacts) as in-process agent tools. Each reports
+// the actual outcome; permission prompts appear on first use.
 extension MaestroTools {
 
     static let systemToolNames: Set<String> = [
         "create_reminder", "list_reminders", "create_calendar_event",
         "create_note", "open_url",
-        "list_rules", "set_rule",
+        "search_contacts", "create_contact", "update_contact", "delete_contact",
+        "list_rules", "set_rule", "read_project_rules",
         "list_shortcuts", "run_shortcut", "create_shortcut",
     ]
 
@@ -27,6 +33,10 @@ extension MaestroTools {
                     "enabled": ["type": "boolean", "description": "Whether the rule is active (default true)."],
                     "scope": ["type": "string", "description": "Scope: 'All' for every agent, or a specific agent name."],
                 ], required: ["text"]),
+            rawSpec("read_project_rules",
+                "Read the project rule files (AGENTS.md, README.md, .ai-context/README.md) from the agent's working directory. "
+                + "Use to verify which project rules are currently loaded.",
+                properties: [:], required: []),
             rawSpec("create_reminder",
                 "Create a reminder in the macOS Reminders app. Prompts for access on first use.",
                 properties: [
@@ -58,6 +68,36 @@ extension MaestroTools {
                 properties: [
                     "url": ["type": "string", "description": "The URL to open (https://…)."],
                 ], required: ["url"]),
+            rawSpec("search_contacts",
+                "Search the macOS Contacts app. Matches name, organization, phone, email, or URL. Prompts for access on first use.",
+                properties: [
+                    "query": ["type": "string", "description": "Optional search string. Leave empty to list contacts."],
+                    "limit": ["type": "integer", "description": "Max contacts to return (default 50)."],
+                ], required: []),
+            rawSpec("create_contact",
+                "Create a new contact in the macOS Contacts app.",
+                properties: [
+                    "given_name": ["type": "string", "description": "First name."],
+                    "family_name": ["type": "string", "description": "Last name."],
+                    "organization": ["type": "string", "description": "Company or organization."],
+                    "phone": ["type": "string", "description": "Phone number."],
+                    "email": ["type": "string", "description": "Email address."],
+                ], required: ["given_name"]),
+            rawSpec("update_contact",
+                "Update an existing contact in the macOS Contacts app.",
+                properties: [
+                    "id": ["type": "string", "description": "The contact identifier from search_contacts."],
+                    "given_name": ["type": "string", "description": "First name."],
+                    "family_name": ["type": "string", "description": "Last name."],
+                    "organization": ["type": "string", "description": "Company or organization."],
+                    "phone": ["type": "string", "description": "Phone number."],
+                    "email": ["type": "string", "description": "Email address."],
+                ], required: ["id", "given_name"]),
+            rawSpec("delete_contact",
+                "Delete a contact from the macOS Contacts app by identifier.",
+                properties: [
+                    "id": ["type": "string", "description": "The contact identifier from search_contacts."],
+                ], required: ["id"]),
             rawSpec("list_shortcuts",
                 "List all Apple Shortcuts on this Mac. Returns shortcut names.",
                 properties: [:], required: []),
@@ -81,6 +121,16 @@ extension MaestroTools {
     private struct EventArgs: Codable { let title: String?; let start: String?; let end: String?; let notes: String? }
     private struct NoteArgs: Codable { let title: String?; let body: String? }
     private struct OpenURLArgs: Codable { let url: String? }
+    private struct SearchContactsArgs: Codable { let query: String?; let limit: Int? }
+    private struct ContactWriteArgs: Codable {
+        let id: String?
+        let given_name: String?
+        let family_name: String?
+        let organization: String?
+        let phone: String?
+        let email: String?
+    }
+    private struct DeleteContactArgs: Codable { let id: String? }
 
     static func createReminder(_ call: ToolCall) async -> String {
         guard let a = decodeArgs(call, as: ReminderArgs.self),
@@ -128,5 +178,104 @@ extension MaestroTools {
         }
         let ok = await MacOSIntegration.openURL(url)
         return ok ? jsonString(["status": "opened", "url": url]) : errorJSON("could not open '\(url)'")
+    }
+
+    static func searchContactsTool(_ call: ToolCall) async -> String {
+        let a = decodeArgs(call, as: SearchContactsArgs.self)
+        do {
+            let contacts = try await sharedContactsService.searchContacts(
+                query: a?.query,
+                limit: a?.limit ?? 50
+            )
+            guard !contacts.isEmpty else { return "No contacts found." }
+            let list: [[String: Any]] = contacts.map { c in
+                [
+                    "id": c.id ?? "",
+                    "name": c.displayName,
+                    "organization": c.organizationName,
+                    "phones": c.phoneNumbers.map(\.value),
+                    "emails": c.emailAddresses.map(\.value),
+                    "urls": c.urls.map(\.value),
+                ]
+            }
+            return jsonString(["count": contacts.count, "contacts": list])
+        } catch { return errorJSON(error.localizedDescription) }
+    }
+
+    static func createContactTool(_ call: ToolCall) async -> String {
+        guard let a = decodeArgs(call, as: ContactWriteArgs.self),
+              let givenName = a.given_name?.trimmingCharacters(in: .whitespaces), !givenName.isEmpty else {
+            return errorJSON("create_contact requires 'given_name'")
+        }
+        let contact = Contact(
+            givenName: givenName,
+            familyName: a.family_name ?? "",
+            organizationName: a.organization ?? "",
+            phoneNumbers: a.phone.map { [.init(label: nil, value: $0)] } ?? [],
+            emailAddresses: a.email.map { [.init(label: nil, value: $0)] } ?? []
+        )
+        do {
+            let id = try await sharedContactsService.createContact(contact)
+            return jsonString(["status": "created", "id": id])
+        } catch { return errorJSON(error.localizedDescription) }
+    }
+
+    static func updateContactTool(_ call: ToolCall) async -> String {
+        guard let a = decodeArgs(call, as: ContactWriteArgs.self),
+              let id = a.id?.trimmingCharacters(in: .whitespaces), !id.isEmpty,
+              let givenName = a.given_name?.trimmingCharacters(in: .whitespaces), !givenName.isEmpty else {
+            return errorJSON("update_contact requires 'id' and 'given_name'")
+        }
+        do {
+            guard let existing = try await sharedContactsService.contact(withIdentifier: id) else {
+                return errorJSON("contact not found")
+            }
+            let updated = Contact(
+                id: id,
+                givenName: givenName,
+                familyName: a.family_name ?? existing.familyName,
+                organizationName: a.organization ?? existing.organizationName,
+                phoneNumbers: a.phone.map { [.init(label: nil, value: $0)] } ?? existing.phoneNumbers,
+                emailAddresses: a.email.map { [.init(label: nil, value: $0)] } ?? existing.emailAddresses
+            )
+            try await sharedContactsService.updateContact(updated)
+            return jsonString(["status": "updated", "id": id])
+        } catch { return errorJSON(error.localizedDescription) }
+    }
+
+    static func deleteContactTool(_ call: ToolCall) async -> String {
+        guard let a = decodeArgs(call, as: DeleteContactArgs.self),
+              let id = a.id?.trimmingCharacters(in: .whitespaces), !id.isEmpty else {
+            return errorJSON("delete_contact requires 'id'")
+        }
+        do {
+            try await sharedContactsService.deleteContact(identifier: id)
+            return jsonString(["status": "deleted", "id": id])
+        } catch { return errorJSON(error.localizedDescription) }
+    }
+
+    static func readProjectRulesTool(_ call: ToolCall) -> String {
+        guard let wd = MaestroTools.workingDirectory, !wd.isEmpty else {
+            return errorJSON("No working directory is set for this agent. "
+                + "Set a working directory before reading project rules.")
+        }
+        let rules = ProjectRuleService.shared.refreshRules(forWorkingDirectory: wd)
+        guard !rules.isEmpty else {
+            return jsonString([
+                "rules": [],
+                "count": 0,
+                "message": "No project rule files found in \(wd). "
+                    + "Expected: AGENTS.md, README.md, .ai-context/README.md",
+            ])
+        }
+        let list: [[String: Any]] = rules.map { rule in
+            [
+                "source": rule.source.displayName,
+                "path": rule.path,
+                "size": rule.content.count,
+                "content": rule.content,
+            ]
+        }
+        return jsonString(["rules": list, "count": list.count])
     }
 }
