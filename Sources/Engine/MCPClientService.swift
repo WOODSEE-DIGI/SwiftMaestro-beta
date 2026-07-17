@@ -122,11 +122,25 @@ actor MCPClientService {
         let client = Client(name: "SwiftMaestro", version: "1.0.0")
 
         // Bound handshake + discovery so a misbehaving server can't hang startup.
+        // IMPORTANT: `process` is already spawned at this point but isn't in
+        // `connections` yet, so if the handshake throws (timeout, broken pipe,
+        // protocol error - e.g. a server whose own backend dependency isn't
+        // running), it must be explicitly terminated here. Otherwise it leaks
+        // as an orphaned OS process forever: nothing else references it, so
+        // even `shutdown()` on app quit would never find it to clean it up.
+        // (This is exactly how whatsapp-mcp-server leaked 189 processes over
+        // 9 days while its Go bridge dependency wasn't running.)
         let timeout = max(entry.timeout, 4)
-        let tools = try await withTimeout(seconds: timeout) {
-            try await client.connect(transport: transport)
-            let (tools, _) = try await client.listTools()
-            return tools
+        let tools: [MCP.Tool]
+        do {
+            tools = try await withTimeout(seconds: timeout) {
+                try await client.connect(transport: transport)
+                let (tools, _) = try await client.listTools()
+                return tools
+            }
+        } catch {
+            process.terminate()
+            throw error
         }
 
         let connection = MCPConnection(

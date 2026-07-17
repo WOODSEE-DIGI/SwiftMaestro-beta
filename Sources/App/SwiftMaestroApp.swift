@@ -25,8 +25,23 @@ enum SwiftMaestroDefaultsMigration {
     }
 }
 
+/// Ensures spawned MCP server subprocesses are terminated when the app quits.
+/// Without this, every successfully-connected MCP server subprocess is an
+/// orphan the moment the app exits — nothing else references it once it's
+/// no longer needed. (Servers that fail to connect in the first place are a
+/// separate leak, fixed at the source in `MCPClientService.connect(to:)`.)
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    var mcpService: MCPClientService?
+
+    func applicationWillTerminate(_ notification: Notification) {
+        guard let mcpService else { return }
+        Task { await mcpService.shutdown() }
+    }
+}
+
 @main
 struct SwiftMaestroApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var engine = MLXInferenceEngine()
     @State private var catalog = ModelCatalog()
     @State private var workspace = WorkspaceStore()
@@ -65,6 +80,7 @@ struct SwiftMaestroApp: App {
                 .environment(kanbanStore)
                 .environment(numbersService)
                 .task {
+                    appDelegate.mcpService = mcpService
                     // Restore user settings from the external JSON backup if the
                     // UserDefaults plist has been reset or deleted. This must run
                     // before the observable stores read their initial values.
