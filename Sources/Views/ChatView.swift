@@ -40,7 +40,6 @@ struct ChatView: View {
             // plan scopes are primed too so the top-bar Plans count is accurate.
             _ = todoStore.todos(for: vm.agent.id)
             _ = planStore.plans(in: .agent(vm.agent.id))
-            
             for project in planScopeProjects { _ = planStore.plans(in: .project(project)) }
             _ = messageStore.inbox(for: vm.agent.id)
         }
