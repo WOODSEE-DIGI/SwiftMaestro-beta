@@ -35,6 +35,26 @@ enum MaestroTools {
     /// Cleared at the start of each top-level run so stale roots don't leak.
     nonisolated(unsafe) static var inheritedRoots: [String] = []
 
+    /// The calling agent's enabled tool categories for the run currently being
+    /// dispatched, set by each call site right alongside where it builds
+    /// `toolSpecs` (mirrors `inheritedRoots`'s "set immediately before use"
+    /// convention). `nil` means unrestricted (matches `schemas(enabledCategories:)`'s
+    /// `nil` = "no filtering"). Read by `search_tools`/`call_tool` (Compact Tool
+    /// Mode) to scope results to categories the agent actually has enabled,
+    /// since those meta-tools are static dispatchers with no other way to see
+    /// per-call agent context. Like `inheritedRoots`, this is a simple global
+    /// and not safe against fully concurrent overlapping runs — acceptable
+    /// given the existing pattern already accepts that tradeoff.
+    nonisolated(unsafe) static var currentEnabledCategories: Set<ToolCategory>?
+
+    /// Companion to `currentEnabledCategories`: whether the run currently
+    /// being dispatched belongs to the Navigator (vs. a project agent).
+    /// `search_tools` needs this to reconstruct the same candidate tool list
+    /// `schemas(navigator:)` would have built for this specific agent kind
+    /// (navigator and project agents get slightly different tool sets even
+    /// within the same deferrable categories, e.g. OCR vs. SQLite).
+    nonisolated(unsafe) static var currentIsNavigator: Bool = false
+
     /// Working directories of agents that have been delegated to during the
     /// current run. The parent agent can read/write files under these paths so
     /// it can verify or continue work a sub-agent created under its own project
@@ -106,10 +126,17 @@ enum MaestroTools {
     ///   - enabledCategories: If provided, only tools whose category is in this
     ///     set are returned. This overrides the old automatic lite-mode reduction
     ///     and lets the user control the tool surface per agent.
+    ///   - compactMode: When `true`, categories where `ToolCategory.isDeferrable`
+    ///     is true are NOT advertised as full schemas — instead they're replaced
+    ///     by the `search_tools`/`call_tool` meta-tool pair, which the agent uses
+    ///     to discover and invoke them on demand. Always-on control categories
+    ///     (workspace/memory/rules/time) are unaffected. Defaults to `false` so
+    ///     existing behavior is completely unchanged unless explicitly opted in.
     static func schemas(
         navigator: Bool,
         liteMode: Bool = false,
-        enabledCategories: Set<ToolCategory>? = nil
+        enabledCategories: Set<ToolCategory>? = nil,
+        compactMode: Bool = false
     ) -> [ToolSpec] {
         let baseSpecs: [ToolSpec]
         if liteMode {
@@ -131,16 +158,36 @@ enum MaestroTools {
             baseSpecs = specs
         }
 
-        guard let enabledCategories else { return baseSpecs }
-        return baseSpecs.filter { spec in
-            guard let name = toolName(from: spec) else { return false }
-            guard let category = ToolCategory.category(for: name) else { return false }
-            return enabledCategories.contains(category)
+        var filtered = baseSpecs
+        if let enabledCategories {
+            filtered = baseSpecs.filter { spec in
+                guard let name = toolName(from: spec) else { return false }
+                guard let category = ToolCategory.category(for: name) else { return false }
+                return enabledCategories.contains(category)
+            }
         }
+
+        guard compactMode else { return filtered }
+
+        // Split into always-on specs and specs belonging to a deferrable
+        // category; the latter are replaced by the two meta-tool schemas.
+        let alwaysOn = filtered.filter { spec in
+            guard let name = toolName(from: spec),
+                  let category = ToolCategory.category(for: name)
+            else { return true } // uncategorized (e.g. get_current_time) stays on
+            return !category.isDeferrable
+        }
+        let anyDeferred = filtered.contains { spec in
+            guard let name = toolName(from: spec),
+                  let category = ToolCategory.category(for: name)
+            else { return false }
+            return category.isDeferrable
+        }
+        return anyDeferred ? alwaysOn + metaToolSpecs : alwaysOn
     }
 
     /// Extract the function name from a tool spec dictionary.
-    private static func toolName(from spec: ToolSpec) -> String? {
+    static func toolName(from spec: ToolSpec) -> String? {
         (spec["function"] as? [String: any Sendable])?["name"] as? String
     }
 
@@ -380,7 +427,7 @@ enum MaestroTools {
             || systemToolNames.contains(name) || indexToolNames.contains(name)
             || sqliteToolNames.contains(name)
             || shellToolNames.contains(name) || serverToolNames.contains(name)
-            || appsToolNames.contains(name) { return true }
+            || appsToolNames.contains(name) || metaToolNames.contains(name) { return true }
         return schemas.contains { spec in
             (spec["function"] as? [String: any Sendable])?["name"] as? String == name
         }
@@ -546,6 +593,10 @@ enum MaestroTools {
             return await writeNumbersCell(call)
         case "export_numbers_document":
             return await exportNumbersDocument(call)
+        case "search_tools":
+            return await searchToolsMeta(call)
+        case "call_tool":
+            return await callToolMeta(call)
         default:
             return errorJSON("unknown tool: \(call.function.name)")
         }

@@ -23,6 +23,31 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
 
     var id: String { rawValue }
 
+    /// Whether this category's tools can be deferred behind the
+    /// `search_tools`/`call_tool` meta-tool pair in "Compact Tool Mode"
+    /// instead of always advertising full schemas. Small, frequently-needed
+    /// control categories (workspace/memory/rules/time) stay always-on since
+    /// deferring them would just add a search hop to things every turn
+    /// already needs; the larger, less-constantly-used domain/app categories
+    /// are the ones actually worth deferring to save prompt tokens.
+    ///
+    /// `.mcp` is excluded even though it's a "large/less-constant" category:
+    /// MCP tool schemas come from a live `MCPClientService` instance passed
+    /// in per-call at each call site, not from `MaestroTools.schemas()`'s own
+    /// static tool tables, so `search_tools`/`call_tool` (which only know
+    /// about the static native registry) can't see or dispatch them yet.
+    /// Deferring MCP would need call_tool to hold a reference to the live MCP
+    /// service too — a reasonable follow-up, not done here.
+    var isDeferrable: Bool {
+        switch self {
+        case .workspace, .memory, .rules, .time, .mcp:
+            return false
+        case .file, .shell, .server, .index, .system, .sqlite,
+             .notes, .kanban, .canvas, .numbers:
+            return true
+        }
+    }
+
     var displayName: String {
         switch self {
         case .file: return "Files"

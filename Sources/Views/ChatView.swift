@@ -289,8 +289,45 @@ struct ChatView: View {
                 .buttonStyle(.plain)
                 .help("Add more tool categories")
             }
+
+            Divider().frame(height: 18)
+
+            Button {
+                workspace.setCompactToolMode(!compactToolMode, for: vm.agent.id)
+            } label: {
+                VStack(spacing: 1) {
+                    Image(systemName: "arrow.down.right.and.arrow.up.left")
+                        .symbolVariant(compactToolMode ? .fill : .none)
+                        .foregroundStyle(compactToolMode ? theme.accent : .secondary)
+                        .frame(height: 14)
+                    Text("Compact")
+                        .font(.system(size: 8, weight: compactToolMode ? .semibold : .medium))
+                        .foregroundStyle(compactToolMode ? theme.accent : .secondary)
+                        .lineLimit(1)
+                }
+                .frame(minWidth: 34)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 2)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(compactToolMode ? theme.accent.opacity(0.12) : Color.clear)
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(
+                "Compact Tool Mode: \(compactToolMode ? "on" : "off"). When on, "
+                + "the enabled categories above (except Workspace/Memory/Rules/Time) are "
+                + "hidden from the prompt and reachable instead via search_tools/call_tool "
+                + "— saves prompt tokens once several categories are enabled."
+            )
         }
         .padding(.horizontal, 6)
+    }
+
+    /// Whether Compact Tool Mode is on for this agent.
+    private var compactToolMode: Bool {
+        workspace.compactToolMode(for: vm.agent.id)
     }
 
     /// Categories always shown for this agent kind.

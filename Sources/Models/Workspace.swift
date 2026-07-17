@@ -35,9 +35,15 @@ struct AgentRecord: Identifiable, Codable, Hashable {
     /// Per-agent enabled tool categories. `nil` means use the defaults for the
     /// agent kind. Stored as raw strings so older decoders ignore unknown values.
     var enabledToolCategories: [String]?
+    /// Per-agent Compact Tool Mode: defers deferrable-category tools behind
+    /// the search_tools/call_tool meta-tools instead of advertising full
+    /// schemas for them. `nil`/`false` (the default) means unchanged legacy
+    /// behavior — this is opt-in. Optional so existing `workspace.json`
+    /// (written before this field) still decodes.
+    var compactToolMode: Bool?
     init(id: UUID = UUID(), name: String, kind: AgentKind, projectId: UUID? = nil,
          modelID: String? = nil, workingDirectory: String? = nil,
-         enabledToolCategories: [String]? = nil) {
+         enabledToolCategories: [String]? = nil, compactToolMode: Bool? = nil) {
         self.id = id
         self.name = name
         self.kind = kind
@@ -45,6 +51,7 @@ struct AgentRecord: Identifiable, Codable, Hashable {
         self.modelID = modelID
         self.workingDirectory = workingDirectory
         self.enabledToolCategories = enabledToolCategories
+        self.compactToolMode = compactToolMode
     }
 }
 
@@ -193,6 +200,19 @@ final class WorkspaceStore {
     func setEnabledToolCategories(_ categories: Set<ToolCategory>, for agentID: UUID) {
         guard let i = agents.firstIndex(where: { $0.id == agentID }) else { return }
         agents[i].enabledToolCategories = Array(categories.map(\.rawValue))
+        save()
+    }
+
+    /// Whether Compact Tool Mode is enabled for an agent. Defaults to `false`
+    /// (legacy behavior) when never set.
+    func compactToolMode(for agentID: UUID) -> Bool {
+        agent(id: agentID)?.compactToolMode ?? false
+    }
+
+    /// Set Compact Tool Mode for an agent and persist.
+    func setCompactToolMode(_ enabled: Bool, for agentID: UUID) {
+        guard let i = agents.firstIndex(where: { $0.id == agentID }) else { return }
+        agents[i].compactToolMode = enabled
         save()
     }
 

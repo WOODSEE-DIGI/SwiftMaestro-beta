@@ -160,6 +160,128 @@ final class MaestroToolsTests: XCTestCase {
         XCTAssertTrue(result.contains("error"))
     }
 
+    // MARK: - Compact Tool Mode: schemas(compactMode:)
+
+    func testSchemasCompactModeDefaultOffIsUnchanged() {
+        // compactMode defaults to false — a deferrable tool (read_file, .file
+        // category) stays directly advertised, and the meta-tools are absent.
+        let names = MaestroTools.schemas(navigator: false).compactMap {
+            ($0["function"] as? [String: Any])?["name"] as? String
+        }
+        XCTAssertTrue(names.contains("read_file"))
+        XCTAssertFalse(names.contains("search_tools"))
+        XCTAssertFalse(names.contains("call_tool"))
+    }
+
+    func testSchemasCompactModeHidesDeferrableCategoriesOnly() {
+        let names = MaestroTools.schemas(
+            navigator: false,
+            enabledCategories: [.file, .memory],
+            compactMode: true
+        ).compactMap {
+            ($0["function"] as? [String: Any])?["name"] as? String
+        }
+        // .file is deferrable and enabled -> hidden, replaced by meta-tools.
+        XCTAssertFalse(names.contains("read_file"))
+        XCTAssertTrue(names.contains("search_tools"))
+        XCTAssertTrue(names.contains("call_tool"))
+        // .memory is NOT deferrable -> stays directly advertised even in compact mode.
+        XCTAssertTrue(names.contains("memory_write"))
+    }
+
+    func testSchemasCompactModeOmitsMetaToolsWhenNothingIsDeferred() {
+        // Only non-deferrable categories enabled -> nothing to defer -> no
+        // meta-tools added (they'd be pure overhead with nothing to search).
+        let names = MaestroTools.schemas(
+            navigator: false,
+            enabledCategories: [.memory, .rules],
+            compactMode: true
+        ).compactMap {
+            ($0["function"] as? [String: Any])?["name"] as? String
+        }
+        XCTAssertFalse(names.contains("search_tools"))
+        XCTAssertFalse(names.contains("call_tool"))
+    }
+
+    // MARK: - Compact Tool Mode: search_tools / call_tool
+
+    func testSearchToolsFindsDeferredToolByKeyword() async {
+        MaestroTools.currentIsNavigator = false
+        MaestroTools.currentEnabledCategories = [.file]
+        defer { MaestroTools.currentEnabledCategories = nil }
+
+        let call = ToolCall(function: .init(name: "search_tools", arguments: ["query": .string("read")]))
+        let result = await MaestroTools.searchToolsMeta(call)
+
+        XCTAssertTrue(result.contains("read_file"))
+    }
+
+    func testSearchToolsScopesToEnabledCategoriesOnly() async {
+        MaestroTools.currentIsNavigator = false
+        MaestroTools.currentEnabledCategories = [.file] // deliberately no .kanban
+        defer { MaestroTools.currentEnabledCategories = nil }
+
+        let call = ToolCall(function: .init(name: "search_tools", arguments: ["query": .string("kanban")]))
+        let result = await MaestroTools.searchToolsMeta(call)
+
+        XCTAssertFalse(result.contains("list_kanban_boards"))
+    }
+
+    func testSearchToolsBrowseModeListsGroupedCategories() async {
+        MaestroTools.currentIsNavigator = false
+        MaestroTools.currentEnabledCategories = [.file, .kanban]
+        defer { MaestroTools.currentEnabledCategories = nil }
+
+        let call = ToolCall(function: .init(name: "search_tools", arguments: [:]))
+        let result = await MaestroTools.searchToolsMeta(call)
+
+        XCTAssertTrue(result.contains("Files"))
+        XCTAssertTrue(result.contains("Kanban"))
+    }
+
+    func testCallToolDispatchesToUnderlyingTool() async {
+        MaestroTools.currentIsNavigator = false
+        MaestroTools.currentEnabledCategories = [.kanban]
+        defer { MaestroTools.currentEnabledCategories = nil }
+
+        let direct = await MaestroTools.execute(
+            ToolCall(function: .init(name: "list_kanban_boards", arguments: [:])))
+        let viaMeta = await MaestroTools.callToolMeta(
+            ToolCall(function: .init(name: "call_tool", arguments: ["name": .string("list_kanban_boards")])))
+
+        XCTAssertEqual(direct, viaMeta)
+    }
+
+    func testCallToolRejectsOutOfScopeCategory() async {
+        MaestroTools.currentIsNavigator = false
+        MaestroTools.currentEnabledCategories = [.memory] // deliberately excludes .kanban
+        defer { MaestroTools.currentEnabledCategories = nil }
+
+        let call = ToolCall(function: .init(name: "call_tool", arguments: ["name": .string("list_kanban_boards")]))
+        let result = await MaestroTools.callToolMeta(call)
+
+        XCTAssertTrue(result.contains("error"))
+        XCTAssertTrue(result.contains("isn't enabled"))
+    }
+
+    func testCallToolRejectsUnknownName() async {
+        MaestroTools.currentEnabledCategories = nil
+        let call = ToolCall(function: .init(name: "call_tool", arguments: ["name": .string("totally_made_up_tool")]))
+        let result = await MaestroTools.callToolMeta(call)
+
+        XCTAssertTrue(result.contains("error"))
+    }
+
+    func testCallToolRejectsNonDeferrableTool() async {
+        // get_current_time has no ToolCategory at all — call_tool must not
+        // become a backdoor around always-on tools that were never hidden.
+        MaestroTools.currentEnabledCategories = nil
+        let call = ToolCall(function: .init(name: "call_tool", arguments: ["name": .string("get_current_time")]))
+        let result = await MaestroTools.callToolMeta(call)
+
+        XCTAssertTrue(result.contains("error"))
+    }
+
     // MARK: - errorJSON
 
     func testErrorJSON() {

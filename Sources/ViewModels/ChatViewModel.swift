@@ -188,9 +188,14 @@ class ChatViewModel: ObservableObject {
         var toolSpecs: [ToolSpec] = []
         if model.advertisesTools {
             let enabledCategories = MaestroTools.workspace?.enabledToolCategories(for: agent.id)
+            let compactMode = MaestroTools.workspace?.compactToolMode(for: agent.id) ?? false
+            // Set immediately before use (mirrors MaestroTools.inheritedRoots)
+            // so search_tools/call_tool can see this agent's actual scope.
+            MaestroTools.currentEnabledCategories = enabledCategories
+            MaestroTools.currentIsNavigator = isNavigator
             toolSpecs = MaestroTools.schemas(
                 navigator: isNavigator, liteMode: model.isLiteModel,
-                enabledCategories: enabledCategories)
+                enabledCategories: enabledCategories, compactMode: compactMode)
             if let mcp = engine.mcpService {
                 // Navigator gets NO MCP tools — it delegates everything.
                 // Only project agents get MCP tools (read_note, list_dir, etc.).
@@ -698,6 +703,22 @@ class ChatViewModel: ObservableObject {
         Only use list_dir for single-directory-level checks.
         """
 
+    /// Only injected when Compact Tool Mode is on for this agent (see
+    /// `WorkspaceStore.compactToolMode`). Explains the search_tools/call_tool
+    /// indirection, since without this the model has no idea those tools are
+    /// hiding an entire category of functionality behind them.
+    private static let compactToolModeGuidance = """
+        COMPACT TOOL MODE:
+        - Your tool menu above only shows a small always-on set. Many more tools \
+        (files, shell, indexing, SQLite, Notes.md, Kanban, Canvas, Numbers, and other \
+        app integrations) exist but aren't listed to keep this menu small.
+        - Use search_tools with a keyword (e.g. "spreadsheet", "kanban", "file") to find \
+        the exact name of a tool you need. Call it with no query to browse everything available.
+        - Once you have the exact name from search_tools, call it via call_tool with \
+        `name` and an `arguments` object shaped exactly like that tool's own parameters.
+        - Do NOT guess tool names for call_tool — always search_tools first.
+        """
+
     /// Exact XML tool-call format for models whose chat template uses XML function
     /// calls (e.g. Qwen 3 Coder). Reinforces the schema so small models don't emit
     /// empty/malformed parameters.
@@ -953,6 +974,9 @@ class ChatViewModel: ObservableObject {
                 """
         }
         var content = base + "\n\n" + Self.toolDiscipline
+        if MaestroTools.workspace?.compactToolMode(for: agent.id) == true {
+            content += "\n\n" + Self.compactToolModeGuidance
+        }
         if agent.kind != .navigator && usesXMLTools {
             content += "\n\n" + Self.xmlToolFormatGuidance
         }

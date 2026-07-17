@@ -990,9 +990,14 @@ final class AgentExecutor: Sendable {
         let enabledCategories = await MainActor.run {
             MaestroTools.workspace?.enabledToolCategories(for: target.id)
         }
+        let compactMode = await MainActor.run {
+            MaestroTools.workspace?.compactToolMode(for: target.id) ?? false
+        }
+        MaestroTools.currentEnabledCategories = enabledCategories
+        MaestroTools.currentIsNavigator = false
         var specs = MaestroTools.schemas(
             navigator: false, liteMode: subIsLite,
-            enabledCategories: enabledCategories)
+            enabledCategories: enabledCategories, compactMode: compactMode)
         if let mcp {
             let mcpSchemas = await mcp.currentSchemas(audience: .delegate)
             if let enabledCategories {
@@ -1106,7 +1111,13 @@ final class AgentExecutor: Sendable {
         let enabledCategories = await MainActor.run {
             MaestroTools.workspace?.enabledToolCategories(for: target.id)
         }
-        var specs = MaestroTools.schemas(navigator: false, enabledCategories: enabledCategories)
+        let compactMode = await MainActor.run {
+            MaestroTools.workspace?.compactToolMode(for: target.id) ?? false
+        }
+        MaestroTools.currentEnabledCategories = enabledCategories
+        MaestroTools.currentIsNavigator = false
+        var specs = MaestroTools.schemas(
+            navigator: false, enabledCategories: enabledCategories, compactMode: compactMode)
         if let mcp {
             let mcpSchemas = await mcp.currentSchemas(audience: .delegate)
             if let enabledCategories {
