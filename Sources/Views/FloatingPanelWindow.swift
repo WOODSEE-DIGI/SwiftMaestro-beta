@@ -56,8 +56,6 @@ struct FloatingPanelWindowView: View {
             switch panelType {
             case .tasks:
                 floatingTasksContent
-            case .terminal:
-                TerminalView()
             case .plans:
                 floatingPlansContent
             default:

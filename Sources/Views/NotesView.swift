@@ -14,15 +14,30 @@ struct NotesView: View {
     @State private var renameText = ""
     @State private var showingNewNoteSheet = false
     @State private var showingNewFolderSheet = false
+    /// Drag-resizable note-tree width, persisted like `AppleNotesView`'s
+    /// folder list — a single view-local divider, so `@AppStorage` is enough.
+    @AppStorage("notes.treeWidth") private var treeWidth = 220.0
 
     var body: some View {
-        NavigationSplitView {
-            sidebar
-                .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 280)
-        } detail: {
-            detailPane
-        }
-        .frame(minWidth: 700, minHeight: 420)
+        ResizablePanelHost(panes: [
+            ResizablePane(
+                id: "tree",
+                length: Binding(get: { CGFloat(treeWidth) }, set: { treeWidth = Double($0) }),
+                minLength: 180,
+                maxLength: 360
+            ) {
+                sidebar
+            },
+            ResizablePane(id: "detail", length: nil) {
+                detailPane
+            },
+        ])
+        // No hardcoded minWidth/minHeight here — NotesView is now hosted in
+        // several different contexts (a full docked screen, a workspace grid
+        // column, or a small floating window), each of which already owns an
+        // appropriate minimum size for its own context. A fixed 700pt minimum
+        // dating from when this was always the whole window fought the
+        // smaller floating window's own sizing, producing a corrupted layout.
         .task {
             await viewModel.load()
         }
@@ -76,6 +91,11 @@ struct NotesView: View {
 
     private var sidebar: some View {
         VStack(spacing: 0) {
+            sidebarHeader
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(theme.secondaryBackground)
+            Divider()
             searchBar
             Divider()
             List(viewModel.rootItems, children: \.children, selection: .init(
@@ -106,16 +126,22 @@ struct NotesView: View {
             Divider()
             sidebarFooter
         }
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    Button("New Note") { showingNewNoteSheet = true }
-                    Button("New Folder") { showingNewFolderSheet = true }
-                } label: {
-                    Label("Add", systemImage: "plus")
-                }
-                .help("Add a note or folder")
+    }
+
+    private var sidebarHeader: some View {
+        HStack {
+            Text("Notes")
+                .font(.headline)
+            Spacer()
+            Menu {
+                Button("New Note") { showingNewNoteSheet = true }
+                Button("New Folder") { showingNewFolderSheet = true }
+            } label: {
+                Label("Add", systemImage: "plus")
             }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Add a note or folder")
         }
     }
 

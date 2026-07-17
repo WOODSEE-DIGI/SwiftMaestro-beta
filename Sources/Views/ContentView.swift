@@ -12,18 +12,15 @@ struct ContentView: View {
     @Environment(KanbanStore.self) private var kanbanStore
     @Environment(ContactsService.self) private var contactsService
     @Environment(\.openWindow) private var openWindow
-    /// Sidebar selection can be an agent chat, an Apple app, or a SwiftMaestro app.
-    private enum SidebarItem: Hashable {
-        case agent(UUID)
-        case notesMD
-        case appleNotes
-        case calendar
-        case reminders
-        case contacts
-        case canvas
-        case kanban
-    }
-    @State private var selectedItem: SidebarItem?
+    /// The multi-panel workspace: the sidebar is a *launcher* onto this — an
+    /// agent chat, Notes.md, Apple Notes, Contacts, etc. can all be open side
+    /// by side at once instead of one screen replacing another.
+    @State private var workspaceLayout = WorkspaceLayoutState.shared
+    /// Which sidebar row is currently highlighted. Decoupled from what's
+    /// actually open in `workspaceLayout` — selecting a row opens/focuses
+    /// that panel, but closing a panel via its own × doesn't have to change
+    /// this highlight.
+    @State private var focusedKind: WorkspacePanelKind?
     /// Per-agent chat view-models, kept alive so switching agents preserves the
     /// in-flight view state (history itself is persisted by ChatHistoryStore).
     @State private var chatCache = ChatViewModelCache()
@@ -99,8 +96,26 @@ struct ContentView: View {
                 NotesOnboardingSheet(onDone: { activeSheet = nil })
             }
         }
+        .onChange(of: focusedKind) { _, newValue in
+            guard let newValue else { return }
+            openPanel(newValue)
+        }
         .onAppear {
-            if selectedItem == nil { selectedItem = .agent(workspace.navigator.id) }
+            if workspaceLayout.rows.isEmpty && workspaceLayout.floatingPanels.isEmpty {
+                openPanel(.agentChat(workspace.navigator.id))
+            }
+            // Explicitly (re)present every panel that was floating when the
+            // app last quit, rather than relying on macOS to automatically
+            // restore data-driven WindowGroup windows — that restoration
+            // isn't guaranteed, and when it doesn't happen the persisted
+            // state and reality silently disagree: the sidebar shows a panel
+            // as "open" with no window to show for it, and clicking it does
+            // nothing (`open(_:)` no-ops on an already-open kind). Doing this
+            // explicitly keeps state and reality in sync unconditionally.
+            for kind in workspaceLayout.floatingPanels {
+                openWindow(id: "workspace-panel-window", value: WorkspacePanelWindowID(kind: kind))
+            }
+            if focusedKind == nil { focusedKind = workspaceLayout.allOpenPanels.first }
             // Set shared instance for delegate streaming.
             ChatViewModelCache.shared = chatCache
             chatCache.setVisionProxyService(visionProxyService)
@@ -178,20 +193,20 @@ struct ContentView: View {
     }
 
     private var agentsSidebar: some View {
-        List(selection: $selectedItem) {
+        List(selection: $focusedKind) {
             Section("Agents") {
                 agentRow(
                     title: workspace.navigator.name,
                     systemImage: "point.3.connected.trianglepath.dotted",
                     id: workspace.navigator.id
                 )
-                .tag(SidebarItem.agent(workspace.navigator.id))
+                .tag(WorkspacePanelKind.agentChat(workspace.navigator.id))
             }
             ForEach(workspace.projects) { project in
                 Section(project.name) {
                     ForEach(workspace.projectAgents(in: project.id)) { agent in
                         agentRow(title: agent.name, systemImage: nil, id: agent.id)
-                            .tag(SidebarItem.agent(agent.id))
+                            .tag(WorkspacePanelKind.agentChat(agent.id))
                             .contextMenu {
                                 Button("Clear Chat") {
                                     chatCache.viewModel(for: agent, projectName: project.name)
@@ -211,29 +226,39 @@ struct ContentView: View {
     }
 
     private var appsSidebar: some View {
-        List(selection: $selectedItem) {
+        List(selection: $focusedKind) {
             Section("Apple Apps") {
-                Label("Apple Notes", systemImage: "note.text")
-                    .tag(SidebarItem.appleNotes)
-                Label("Calendar", systemImage: "calendar")
-                    .tag(SidebarItem.calendar)
-                Label("Reminders", systemImage: "checklist")
-                    .tag(SidebarItem.reminders)
-                Label("Contacts", systemImage: "person.2")
-                    .tag(SidebarItem.contacts)
+                sidebarRow("Apple Notes", kind: .appleNotes)
+                sidebarRow("Calendar", kind: .calendar)
+                sidebarRow("Reminders", kind: .reminders)
+                sidebarRow("Contacts", kind: .contacts)
             }
             Section("Swift Apps") {
-                Label("Notes.md", systemImage: "doc.text")
-                    .tag(SidebarItem.notesMD)
-                Label("Canvas", systemImage: "rectangle.3.group")
-                    .tag(SidebarItem.canvas)
-                Label("Kanban", systemImage: "rectangle.split.3x1")
-                    .tag(SidebarItem.kanban)
+                sidebarRow("Notes.md", kind: .notesMD)
+                sidebarRow("Canvas", kind: .canvas)
+                sidebarRow("Kanban", kind: .kanban)
+                sidebarRow("Terminal", kind: .terminal)
             }
         }
         .listStyle(.sidebar)
         .scrollContentBackground(theme.sidebarOverridden ? .hidden : .automatic)
         .background(theme.sidebarOverridden ? theme.sidebarBackground : Color.clear)
+    }
+
+    /// A non-agent sidebar row. Shows a small filled dot when the panel is
+    /// currently open in the workspace, since with multiple panels open at
+    /// once the row highlight alone no longer tells you what's visible.
+    private func sidebarRow(_ title: String, kind: WorkspacePanelKind) -> some View {
+        HStack {
+            Label(title, systemImage: kind.icon)
+            Spacer()
+            if workspaceLayout.isOpen(kind) {
+                Circle()
+                    .fill(theme.accent)
+                    .frame(width: 6, height: 6)
+            }
+        }
+        .tag(kind)
     }
 
     private var loadedAgentsPanel: some View {
@@ -253,7 +278,8 @@ struct ContentView: View {
     /// A sidebar agent row showing its name plus a red unread-message badge.
     @ViewBuilder
     private func agentRow(title: String, systemImage: String?, id: UUID) -> some View {
-        let isSelected = selectedItem == .agent(id)
+        let isSelected = focusedKind == .agentChat(id)
+        let isOpen = workspaceLayout.isOpen(.agentChat(id))
         HStack {
             Group {
                 if let systemImage {
@@ -274,64 +300,88 @@ struct ContentView: View {
                     .foregroundStyle(.white)
                     .padding(.horizontal, 6).padding(.vertical, 1)
                     .background(Capsule().fill(.red))
+            } else if isOpen {
+                Circle()
+                    .fill(theme.accent)
+                    .frame(width: 6, height: 6)
             }
         }
     }
 
+    // MARK: - Workspace (multi-panel, multi-row detail area)
+
     @ViewBuilder
     private var detail: some View {
-        switch selectedItem {
-        case .notesMD:
-            NotesView(viewModel: notesViewModel)
-        case .appleNotes:
-            AppleNotesView()
-        case .calendar:
-            CalendarView()
-        case .reminders:
-            RemindersView()
-        case .contacts:
-            ContactsView()
-        case .canvas:
-            if #available(macOS 26.0, *) {
-                CanvasView()
-            } else {
-                CanvasFallbackView()
-            }
-        case .kanban:
-            KanbanView()
-        case .agent(let id):
-            if let agent = workspace.agent(id: id) {
-                ChatView(vm: chatCache.viewModel(
-                    for: agent,
-                    projectName: workspace.projectName(for: agent)))
-                    .id(agent.id)
-                    .toolbar {
-                        ToolbarItem(placement: .destructiveAction) {
-                            Button {
-                                chatCache.viewModel(
-                                    for: agent,
-                                    projectName: workspace.projectName(for: agent)
-                                ).clearChat()
-                            } label: {
-                                Label("Clear Chat", systemImage: "eraser")
-                            }
-                            .help("Clear this chat (keeps project memory)")
-                        }
-                    }
-            } else {
-                ContentUnavailableView(
-                    "Agent Not Found",
-                    systemImage: "bubble.left.and.text.bubble.right",
-                    description: Text("The selected agent no longer exists")
-                )
-            }
-        case .none:
+        if workspaceLayout.rows.isEmpty {
             ContentUnavailableView(
                 "Select an Item",
                 systemImage: "bubble.left.and.text.bubble.right",
-                description: Text("Choose an agent or app from the sidebar")
+                description: Text("Choose an agent or app from the sidebar to open it")
             )
+        } else {
+            // A vertical host of rows, each row itself a horizontal host of
+            // columns — a genuine 2-D tiling grid ("quadrants") rather than a
+            // single endlessly-shrinking horizontal strip. Track the measured
+            // width so `WorkspaceLayoutState.open(_:)` can Tetris-place new
+            // panels into the current row only when they'd actually fit.
+            GeometryReader { proxy in
+                ResizablePanelHost(axis: .vertical, panes: rowPanes)
+                    .onAppear { workspaceLayout.updateAvailableWidth(proxy.size.width) }
+                    .onChange(of: proxy.size.width) { _, newValue in
+                        workspaceLayout.updateAvailableWidth(newValue)
+                    }
+            }
         }
+    }
+
+    /// One resizable (vertical) pane per row. Every row is drag-resizable
+    /// except the last, which is always flexible and fills remaining height.
+    private var rowPanes: [ResizablePane] {
+        let rows = workspaceLayout.rows
+        return rows.enumerated().map { index, row in
+            let isLast = index == rows.count - 1
+            return ResizablePane(
+                id: row.id,
+                length: isLast ? nil : workspaceLayout.heightBinding(for: row),
+                minLength: 200,
+                maxLength: 1_400
+            ) {
+                ResizablePanelHost(axis: .horizontal, panes: columnPanes(for: row))
+            }
+        }
+    }
+
+    /// One resizable (horizontal) pane per panel within a single row. Every
+    /// column is drag-resizable except the last, which is always flexible —
+    /// matching `ResizablePanelHost`'s "fixed panes + one trailing flexible
+    /// pane" contract.
+    private func columnPanes(for row: WorkspaceRow) -> [ResizablePane] {
+        row.panels.enumerated().map { index, kind in
+            let isLast = index == row.panels.count - 1
+            return ResizablePane(
+                id: kind,
+                length: isLast ? nil : workspaceLayout.widthBinding(for: kind),
+                minLength: kind.minColumnWidth,
+                maxLength: 1_400
+            ) {
+                WorkspacePanelContainer(kind: kind, title: title(for: kind), content: {
+                    panelContent(for: kind)
+                }, onFloat: { kind in
+                    openWindow(id: "workspace-panel-window", value: WorkspacePanelWindowID(kind: kind))
+                })
+            }
+        }
+    }
+
+    private func title(for kind: WorkspacePanelKind) -> String {
+        if case .agentChat(let id) = kind {
+            return workspace.agent(id: id)?.name ?? "Agent"
+        }
+        return kind.staticDisplayName ?? "Panel"
+    }
+
+    private func panelContent(for kind: WorkspacePanelKind) -> some View {
+        WorkspacePanelContentView(kind: kind)
     }
 
     // MARK: - New project agent sheet
@@ -360,12 +410,38 @@ struct ContentView: View {
         .frame(width: 420)
     }
 
+    /// Opens a panel via `workspaceLayout`, and — if it opened as a floating
+    /// window rather than docking directly — actually presents that window.
+    /// The single call site every "open this panel" action should go through.
+    private func openPanel(_ kind: WorkspacePanelKind) {
+        let result = workspaceLayout.open(kind)
+        switch result {
+        case .floated:
+            openWindow(id: "workspace-panel-window", value: WorkspacePanelWindowID(kind: kind))
+        case .alreadyOpen:
+            // Self-healing: if state says this panel is floating but its
+            // window somehow doesn't actually exist anymore (e.g. state
+            // restoration didn't recreate it, or a previous crash left things
+            // out of sync), re-clicking it in the sidebar should still work
+            // instead of silently doing nothing. `openWindow` is safe to call
+            // even when a matching window already exists — it just brings
+            // that window forward rather than duplicating it.
+            if workspaceLayout.isFloating(kind) {
+                openWindow(id: "workspace-panel-window", value: WorkspacePanelWindowID(kind: kind))
+            }
+        case .dockedDirectly:
+            break
+        }
+    }
+
     private func createAgent() {
         let created = workspace.createProjectAgent(
             projectName: newProjectName.trimmingCharacters(in: .whitespaces),
             agentName: newAgentName.trimmingCharacters(in: .whitespaces)
         )
-        selectedItem = .agent(created.id)
+        let kind = WorkspacePanelKind.agentChat(created.id)
+        openPanel(kind)
+        focusedKind = kind
         resetNewAgent()
     }
 
@@ -376,10 +452,16 @@ struct ContentView: View {
     }
 
     private func removeAgent(_ agent: AgentRecord) {
-        let wasSelected = selectedItem == .agent(agent.id)
+        let kind = WorkspacePanelKind.agentChat(agent.id)
         workspace.archiveAgent(id: agent.id)
         chatCache.drop(agent.id)
-        if wasSelected { selectedItem = .agent(workspace.navigator.id) }
+        workspaceLayout.close(kind)
+        // Never leave the workspace fully empty — land back on Navigator.
+        if workspaceLayout.rows.isEmpty && workspaceLayout.floatingPanels.isEmpty {
+            let navigatorKind = WorkspacePanelKind.agentChat(workspace.navigator.id)
+            openPanel(navigatorKind)
+            focusedKind = navigatorKind
+        }
     }
 }
 

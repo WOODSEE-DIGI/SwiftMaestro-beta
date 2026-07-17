@@ -40,7 +40,9 @@ enum KeychainService {
     /// process-wide, then restore the previous (default: enabled) state.
     // Access to the depth counter is protected by uiLock; marking unsafe avoids
     // Swift 6 strict-concurrency warnings for process-wide keychain UI state.
-    nonisolated(unsafe) private static let uiLock = NSLock()
+    // (`uiLock` itself needs no `nonisolated(unsafe)` — `NSLock` is already
+    // `Sendable`, so the qualifier there was redundant.)
+    private static let uiLock = NSLock()
     nonisolated(unsafe) private static var uiDisableDepth = 0
 
     private static func performWithoutKeychainUI<T>(_ action: () throws -> T) rethrows -> T {

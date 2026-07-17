@@ -13,11 +13,7 @@ struct ChatView: View {
     @Environment(WhisperKitService.self) private var whisper
     @Environment(\.openWindow) private var openWindow
     @ObservedObject var vm: ChatViewModel
-    @ObservedObject private var shellLogStore = ShellLogStore.shared
     @State private var layoutState = PanelLayoutState.shared
-    /// Per-agent terminal visibility — toggling in one agent's chat
-    /// does NOT affect other agents' chats.
-    @State private var showTerminal = false
     @State private var showingPlans = false
     @State private var showingMessages = false
     // Markdown export driven from the Plans panel's context menu.
@@ -36,17 +32,7 @@ struct ChatView: View {
     }
 
     var body: some View {
-        let panels = orderedPanels
-        HStack(spacing: 0) {
-            ForEach(Array(panels.enumerated()), id: \.element) { idx, panel in
-                if idx > 0 { Divider() }
-                if panel == .chat {
-                    chatBody
-                } else {
-                    panelContent(for: panel)
-                }
-            }
-        }
+        ResizablePanelHost(panes: resizablePanes)
         .navigationTitle(title ?? "Chat")
         .task(id: vm.agent.id) {
             // Prime the per-agent todo + plan lists from disk (cache-fill) outside
@@ -54,6 +40,7 @@ struct ChatView: View {
             // plan scopes are primed too so the top-bar Plans count is accurate.
             _ = todoStore.todos(for: vm.agent.id)
             _ = planStore.plans(in: .agent(vm.agent.id))
+            
             for project in planScopeProjects { _ = planStore.plans(in: .project(project)) }
             _ = messageStore.inbox(for: vm.agent.id)
         }
@@ -105,7 +92,7 @@ struct ChatView: View {
             handleProviders(providers)
         }
         .onPasteCommand(of: [.image, .fileURL]) { providers in
-            _ = handleProviders(providers)
+            handleProviders(providers)
         }
         .onChange(of: whisper.pendingTranscription) { _, newValue in
             if let text = newValue, !text.isEmpty {
@@ -140,23 +127,6 @@ struct ChatView: View {
                         }
                 }
                 .help("Inbox")
-            }
-            ToolbarItem {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        if layoutState.isFloating(.terminal) {
-                            layoutState.dock(.terminal)
-                        } else {
-                            layoutState.toggleVisibility(.terminal)
-                        }
-                    }
-                } label: {
-                    Label("Terminal", systemImage: "terminal")
-                        .symbolVariant(
-                            layoutState.isFloating(.terminal) || !layoutState.hiddenPanels.contains(.terminal)
-                            ? .fill : .none)
-                }
-                .help("Toggle Terminal panel")
             }
         }
         .sheet(isPresented: $showingPlans) {
@@ -486,6 +456,30 @@ struct ChatView: View {
         .background(theme.chatBackground)
     }
 
+    /// Builds the ordered pane list for `ResizablePanelHost`: fixed-width,
+    /// drag-resizable side panels (their width persisted per-panel via
+    /// `layoutState.widthBinding`) plus the flexible chat body, which always
+    /// fills whatever space remains and is always last since `.chat` never
+    /// leads `orderedPanels` reordering logic elsewhere assumes.
+    private var resizablePanes: [ResizablePane] {
+        orderedPanels.map { panel in
+            if panel == .chat {
+                return ResizablePane(id: panel, length: nil) {
+                    chatBody
+                }
+            }
+            return ResizablePane(
+                id: panel,
+                length: layoutState.widthBinding(for: panel),
+                minLength: panel.minWidth,
+                maxLength: panel.maxWidth
+            ) {
+                panelContent(for: panel)
+                    .onDrop(of: [.text], delegate: PanelDropDelegate(target: panel, state: layoutState))
+            }
+        }
+    }
+
     /// Returns the view content for a given panel type.
     @ViewBuilder
     private func panelContent(for panel: PanelType) -> some View {
@@ -497,8 +491,6 @@ struct ChatView: View {
                 openWindow(id: "floating-panel-window",
                            value: FloatingPanelWindowID(panelType: type.rawValue, agentID: vm.agent.id))
             })
-            .frame(width: 280)
-            .onDrop(of: [.text], delegate: PanelDropDelegate(target: .plans, state: layoutState))
         case .tasks:
             PanelContainer(panelType: .tasks, agentId: vm.agent.id, content: {
                 todoSidePanelContent
@@ -506,17 +498,6 @@ struct ChatView: View {
                 openWindow(id: "floating-panel-window",
                            value: FloatingPanelWindowID(panelType: type.rawValue, agentID: vm.agent.id))
             })
-            .frame(width: 280)
-            .onDrop(of: [.text], delegate: PanelDropDelegate(target: .tasks, state: layoutState))
-        case .terminal:
-            PanelContainer(panelType: .terminal, agentId: vm.agent.id, content: {
-                TerminalView()
-            }, onFloat: { type in
-                openWindow(id: "floating-panel-window",
-                           value: FloatingPanelWindowID(panelType: type.rawValue, agentID: vm.agent.id))
-            })
-            .frame(width: 280)
-            .onDrop(of: [.text], delegate: PanelDropDelegate(target: .terminal, state: layoutState))
         case .chat:
             EmptyView()
         }
@@ -573,7 +554,7 @@ struct ChatView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .frame(width: 280)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.tasksPanel)
     }
 
@@ -865,7 +846,11 @@ struct ChatView: View {
     }
 
     /// Normalize an NSImage to PNG bytes so the data URI's declared type is honest.
-    private static func pngData(from image: NSImage) -> Data? {
+    /// `nonisolated`: pure data transformation touching no actor-isolated state,
+    /// so it's genuinely safe to call from the background contexts it's
+    /// actually invoked from (the NSEvent paste monitor and NSItemProvider's
+    /// asynchronous load completion handlers, neither of which is MainActor).
+    private static nonisolated func pngData(from image: NSImage) -> Data? {
         guard let tiff = image.tiffRepresentation,
               let rep = NSBitmapImageRep(data: tiff),
               let png = rep.representation(using: .png, properties: [:])
@@ -874,7 +859,7 @@ struct ChatView: View {
     }
 
     /// Load a file URL as PNG bytes (re-encoding via NSImage), falling back to raw.
-    private static func pngData(fromFileURL url: URL) -> Data? {
+    private static nonisolated func pngData(fromFileURL url: URL) -> Data? {
         if let image = NSImage(contentsOf: url), let png = pngData(from: image) {
             return png
         }
@@ -891,16 +876,23 @@ struct PanelDropDelegate: DropDelegate {
 
     func performDrop(info: DropInfo) -> Bool {
         guard let item = info.itemProviders(for: [.text]).first else { return false }
-        var didConsumeItem = false
+        // `loadObject`'s completion runs asynchronously (potentially off the
+        // main thread), so the actual move must happen inside it — this
+        // method can't wait for that result. Returning `true` here just tells
+        // SwiftUI "yes, a compatible item was present and we're handling it,"
+        // which is the correct/only honest thing to report synchronously.
+        // (A previous version mutated a captured `var` from the completion
+        // handler and returned it immediately, which the Swift 6 compiler
+        // correctly flags as a data race — that var was read here before the
+        // async handler could ever have set it.)
         _ = item.loadObject(ofClass: NSString.self) { item, _ in
             guard let panelID = item as? String,
                   let draggedType = PanelType(rawValue: panelID) else { return }
-            didConsumeItem = true
             DispatchQueue.main.async {
                 state.movePanel(draggedType, to: state.mainSlots.firstIndex(where: { $0.type == target }) ?? 0)
             }
         }
-        return didConsumeItem
+        return true
     }
 
     func dropUpdated(info: DropInfo, proposal: DropProposal) -> DropProposal? {

@@ -297,37 +297,38 @@ struct CodeBlockView: View {
         language.isEmpty ? "code" : language
     }
 
+    // Visual language matches TerminalView/opencode's BlockTool: one continuous
+    // surface accented by a single left border, rather than a fully boxed card
+    // with its own contrasting header bar.
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Header bar
             headerBar
 
             if expanded {
-                // Code content
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(alignment: .top, spacing: 0) {
-                        // Line numbers
                         lineNumbers
                             .padding(.trailing, 8)
-                            .padding(.leading, 12)
-                            .padding(.vertical, 10)
+                            .padding(.vertical, 6)
 
                         Divider()
 
-                        // Code with syntax highlighting
                         highlightedCode
                             .padding(.horizontal, 12)
-                            .padding(.vertical, 10)
+                            .padding(.vertical, 6)
                     }
                 }
-                .background(Color(nsColor: NSColor(red: 0.11, green: 0.11, blue: 0.12, alpha: 1.0)))
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.1), lineWidth: 1)
-        )
+        .padding(.leading, 10)
+        .padding(.trailing, 4)
+        .padding(.vertical, 6)
+        .background(Color(nsColor: NSColor(red: 0.11, green: 0.11, blue: 0.12, alpha: 1.0)))
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(Color.white.opacity(0.2))
+                .frame(width: 2)
+        }
         .padding(.horizontal, 12)
         .padding(.vertical, 4)
     }
@@ -336,10 +337,6 @@ struct CodeBlockView: View {
 
     private var headerBar: some View {
         HStack(spacing: 6) {
-            Image(systemName: "doc.text")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-
             Text(displayLanguage)
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
@@ -368,6 +365,7 @@ struct CodeBlockView: View {
                     .font(.caption2)
             }
             .buttonStyle(.plain)
+            .foregroundStyle(.tertiary)
 
             Button {
                 NSPasteboard.general.clearContents()
@@ -381,11 +379,11 @@ struct CodeBlockView: View {
                     .font(.caption2)
             }
             .buttonStyle(.plain)
+            .foregroundStyle(.tertiary)
             .help("Copy code")
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(Color(nsColor: NSColor(red: 0.16, green: 0.16, blue: 0.18, alpha: 1.0)))
+        .padding(.trailing, 6)
+        .padding(.vertical, 4)
     }
 
     // MARK: - Line Numbers

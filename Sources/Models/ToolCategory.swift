@@ -16,6 +16,9 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     case workspace
     case rules
     case time
+    case notes
+    case kanban
+    case canvas
 
     var id: String { rawValue }
 
@@ -32,6 +35,9 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .workspace: return "Workspace"
         case .rules: return "Rules"
         case .time: return "Time"
+        case .notes: return "Notes"
+        case .kanban: return "Kanban"
+        case .canvas: return "Canvas"
         }
     }
 
@@ -48,6 +54,9 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .workspace: return "person.3"
         case .rules: return "list.bullet.rectangle"
         case .time: return "clock"
+        case .notes: return "note.text"
+        case .kanban: return "rectangle.split.3x1"
+        case .canvas: return "rectangle.3.group"
         }
     }
 
@@ -75,8 +84,9 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             ]
         case .system:
             return [
-                "create_reminder", "list_reminders", "create_calendar_event",
-                "create_note", "open_url", "list_shortcuts", "run_shortcut", "create_shortcut",
+                "create_reminder", "list_reminders", "create_calendar_event", "list_calendar_events",
+                "open_url", "list_shortcuts", "run_shortcut", "create_shortcut",
+                "search_contacts", "create_contact", "update_contact", "delete_contact",
             ]
         case .sqlite:
             return ["execute_sqlite"]
@@ -89,6 +99,18 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             return ["list_rules", "set_rule", "read_project_rules"]
         case .time:
             return ["get_current_time"]
+        case .notes:
+            return [
+                "create_note", "list_notes", "read_note", "write_note", "search_notes",
+                "list_apple_note_folders", "list_apple_notes", "read_apple_note",
+            ]
+        case .kanban:
+            return [
+                "list_kanban_boards", "create_kanban_board", "list_kanban_cards",
+                "create_kanban_card", "move_kanban_card", "update_kanban_card", "delete_kanban_card",
+            ]
+        case .canvas:
+            return ["list_canvas_boards", "create_canvas_board", "delete_canvas_board"]
         case .mcp:
             return []
         }
@@ -98,9 +120,12 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     static func visible(for kind: AgentKind) -> [ToolCategory] {
         switch kind {
         case .navigator:
-            return [.workspace, .memory, .system, .rules, .time]
+            return [.workspace, .memory, .system, .rules, .time, .notes, .kanban, .canvas]
         case .project:
-            return [.file, .shell, .server, .index, .memory, .system, .mcp, .sqlite]
+            return [
+                .file, .shell, .server, .index, .memory, .system, .mcp, .sqlite,
+                .notes, .kanban, .canvas,
+            ]
         }
     }
 

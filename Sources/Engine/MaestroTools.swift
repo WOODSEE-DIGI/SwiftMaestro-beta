@@ -122,10 +122,11 @@ enum MaestroTools {
             if navigator {
                 specs += navigatorToolSpecs + navigatorOCRSpec + memoryToolSpecs
                     + fileToolSpecs + indexToolSpecs + shellToolSpecs + serverToolSpecs
+                    + systemToolSpecs + appsToolSpecs
             } else {
                 specs += memoryToolSpecs + fileToolSpecs + systemToolSpecs
                 specs += messagingToolSpecs + indexToolSpecs + sqliteToolSpecs
-                    + shellToolSpecs + serverToolSpecs
+                    + shellToolSpecs + serverToolSpecs + appsToolSpecs
             }
             baseSpecs = specs
         }
@@ -378,7 +379,8 @@ enum MaestroTools {
             || memoryToolNames.contains(name) || fileToolNames.contains(name)
             || systemToolNames.contains(name) || indexToolNames.contains(name)
             || sqliteToolNames.contains(name)
-            || shellToolNames.contains(name) || serverToolNames.contains(name) { return true }
+            || shellToolNames.contains(name) || serverToolNames.contains(name)
+            || appsToolNames.contains(name) { return true }
         return schemas.contains { spec in
             (spec["function"] as? [String: any Sendable])?["name"] as? String == name
         }
@@ -492,6 +494,42 @@ enum MaestroTools {
             return await stopStaticServer(call)
         case "list_servers":
             return await listStaticServers()
+        case "list_notes":
+            return await listNotes(call)
+        case "read_note":
+            return await readNote(call)
+        case "write_note":
+            return await writeNote(call)
+        case "search_notes":
+            return await searchNotes(call)
+        case "list_kanban_boards":
+            return await listKanbanBoards()
+        case "create_kanban_board":
+            return await createKanbanBoard(call)
+        case "list_kanban_cards":
+            return await listKanbanCards(call)
+        case "create_kanban_card":
+            return await createKanbanCard(call)
+        case "move_kanban_card":
+            return await moveKanbanCard(call)
+        case "update_kanban_card":
+            return await updateKanbanCard(call)
+        case "delete_kanban_card":
+            return await deleteKanbanCard(call)
+        case "list_canvas_boards":
+            return await listCanvasBoards()
+        case "create_canvas_board":
+            return await createCanvasBoard(call)
+        case "delete_canvas_board":
+            return await deleteCanvasBoard(call)
+        case "list_apple_note_folders":
+            return await listAppleNoteFolders()
+        case "list_apple_notes":
+            return await listAppleNotes(call)
+        case "read_apple_note":
+            return await readAppleNote(call)
+        case "list_calendar_events":
+            return await listCalendarEventsTool(call)
         default:
             return errorJSON("unknown tool: \(call.function.name)")
         }

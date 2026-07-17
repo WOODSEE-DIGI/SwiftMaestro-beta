@@ -52,7 +52,10 @@ final class NotesViewModel {
 
     private var service: NotesService
 
-    private nonisolated static let vaultPathKey = "notes.vaultPath"
+    /// Exposed so other stores (e.g. `ChatCompaction`, which archives superseded
+    /// summaries into the vault) can resolve the current vault path without
+    /// needing a `NotesViewModel` instance injected.
+    nonisolated static let vaultPathKey = "notes.vaultPath"
     private nonisolated static let defaultVaultName = "notes"
 
     init() {

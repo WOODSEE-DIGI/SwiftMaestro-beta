@@ -84,11 +84,20 @@ final class MaestroToolsTests: XCTestCase {
         XCTAssertTrue(names.contains("ask_project_agent"))
         XCTAssertTrue(names.contains("ask_project_agents"))
 
-        // Navigator does NOT get messaging or system tools — it must delegate that work.
+        // Navigator does NOT get inter-agent messaging — it must delegate that work
+        // via ask_project_agent/ask_project_agents instead of messaging directly.
         XCTAssertFalse(names.contains("send_agent_message"))
         XCTAssertFalse(names.contains("read_agent_messages"))
-        XCTAssertFalse(names.contains("create_reminder"))
-        XCTAssertFalse(names.contains("open_url"))
+
+        // Navigator DOES get system tools (Calendar/Reminders/Contacts/Shortcuts)
+        // and app tools (Notes.md/Kanban/Canvas/Apple Notes) — the user wants
+        // Navigator to reach as many tools as possible directly, not only
+        // through delegation.
+        XCTAssertTrue(names.contains("create_reminder"))
+        XCTAssertTrue(names.contains("open_url"))
+        XCTAssertTrue(names.contains("list_notes"))
+        XCTAssertTrue(names.contains("list_kanban_boards"))
+        XCTAssertTrue(names.contains("list_canvas_boards"))
     }
 
     func testProjectAgentSchemasExcludesWorkspaceTools() {

@@ -1108,6 +1108,7 @@ class ChatViewModel: ObservableObject {
                 contextLength: model.tunedContextLength,
                 outputTokens: model.tunedMaxTokens,
                 agentID: agent.id.uuidString,
+                agentName: agent.name,
                 summaryModel: summaryModel) {
                 output = [systemMessage, compacted.checkpoint] + compacted.recentMessages
                 compactionSummary = compacted.summary
@@ -1168,6 +1169,7 @@ class ChatViewModel: ObservableObject {
             contextLength: model.tunedContextLength,
             outputTokens: model.tunedMaxTokens,
             agentID: agent.id.uuidString,
+            agentName: agent.name,
             summaryModel: summaryModel,
             force: true)
         currentActivity = nil

@@ -203,23 +203,46 @@ private struct KanbanBoardView: View {
     let onEditCard: (KanbanCard, UUID) -> Void
     let onAddCard: (UUID) -> Void
 
+    private static let idealColumnWidth: CGFloat = 280
+    private static let minColumnWidth: CGFloat = 160
+    private static let columnSpacing: CGFloat = 16
+    private static let horizontalPadding: CGFloat = 32 // .padding() on both edges
+
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: true) {
-            HStack(alignment: .top, spacing: 16) {
-                ForEach(board.columns) { column in
-                    KanbanColumnView(
-                        boardId: board.id,
-                        column: column,
-                        searchQuery: searchQuery,
-                        onEditCard: onEditCard,
-                        onAddCard: onAddCard
-                    )
+        GeometryReader { proxy in
+            ScrollView(.horizontal, showsIndicators: true) {
+                HStack(alignment: .top, spacing: Self.columnSpacing) {
+                    ForEach(board.columns) { column in
+                        KanbanColumnView(
+                            boardId: board.id,
+                            column: column,
+                            width: columnWidth(availableWidth: proxy.size.width),
+                            searchQuery: searchQuery,
+                            onEditCard: onEditCard,
+                            onAddCard: onAddCard
+                        )
+                    }
                 }
+                .padding()
+                .frame(minWidth: proxy.size.width, minHeight: 400, alignment: .leading)
             }
-            .padding()
-            .frame(minHeight: 400)
         }
         .background(theme.chatBackground)
+    }
+
+    /// All columns at their ideal width when they comfortably fit; otherwise
+    /// scale every column down together (like thumbnails) so the whole board
+    /// stays visible without horizontal scrolling, down to a reasonable
+    /// minimum — only beyond that minimum does scrolling kick back in.
+    private func columnWidth(availableWidth: CGFloat) -> CGFloat {
+        let count = max(board.columns.count, 1)
+        let spacingAndPadding = CGFloat(max(count - 1, 0)) * Self.columnSpacing + Self.horizontalPadding
+        let availableForColumns = availableWidth - spacingAndPadding
+        let idealTotalWidth = CGFloat(count) * Self.idealColumnWidth
+        guard idealTotalWidth > availableForColumns, availableForColumns > 0 else {
+            return Self.idealColumnWidth
+        }
+        return max(Self.minColumnWidth, availableForColumns / CGFloat(count))
     }
 }
 
@@ -230,6 +253,7 @@ private struct KanbanColumnView: View {
     @Environment(ThemeStore.self) private var theme
     let boardId: UUID
     let column: KanbanColumn
+    let width: CGFloat
     let searchQuery: String
     let onEditCard: (KanbanCard, UUID) -> Void
     let onAddCard: (UUID) -> Void
@@ -274,7 +298,7 @@ private struct KanbanColumnView: View {
             .buttonStyle(.plain)
             .padding(8)
         }
-        .frame(width: 280)
+        .frame(width: width)
         .background(theme.secondaryBackground.opacity(0.6))
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay(

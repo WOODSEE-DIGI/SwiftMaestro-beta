@@ -18,6 +18,9 @@ packages:
   GRDB:
     url: https://github.com/groue/GRDB.swift
     majorVersion: 7.0.0
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm
+    majorVersion: 1.14.0
 
 groups:
   - Sources
@@ -93,6 +96,8 @@ targets:
         product: WhisperKit
       - package: GRDB
         product: GRDB
+      - package: SwiftTerm
+        product: SwiftTerm
       - sdk: PDFKit.framework
       - sdk: EventKit.framework
       - sdk: Contacts.framework

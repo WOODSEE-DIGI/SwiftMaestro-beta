@@ -164,6 +164,35 @@ struct SwiftMaestroApp: App {
         .defaultSize(width: 380, height: 520)
         .windowResizability(.contentMinSize)
 
+        // Floating window for any top-level workspace panel (agent chat,
+        // Notes.md, Apple Notes, Calendar, Reminders, Contacts, Canvas,
+        // Kanban). Every panel after the first one the user opens defaults to
+        // floating like this — they drag it wherever they like (including a
+        // second monitor) and dock it back into the main window via its own
+        // "Dock" button whenever they want.
+        WindowGroup("Panel", id: "workspace-panel-window", for: WorkspacePanelWindowID.self) { $target in
+            if let target {
+                WorkspacePanelWindowView(target: target)
+                    .environment(engine)
+                    .environment(catalog)
+                    .environment(visionProxyService)
+                    .environment(workspace)
+                    .environment(todoStore)
+                    .environment(planStore)
+                    .environment(messageStore)
+                    .environment(theme)
+                    .environment(whisperService)
+                    .environment(notesViewModel)
+                    .environment(eventKitStore)
+                    .environment(appleNotesService)
+                    .environment(contactsService)
+                    .environment(canvasStore)
+                    .environment(kanbanStore)
+            }
+        }
+        .defaultSize(width: 500, height: 700)
+        .windowResizability(.contentMinSize)
+
         #if os(macOS)
         Settings {
             SettingsView()

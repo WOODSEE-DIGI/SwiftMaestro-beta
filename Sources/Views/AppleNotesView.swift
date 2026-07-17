@@ -11,14 +11,26 @@ struct AppleNotesView: View {
     @State private var newNoteTitle = ""
     @State private var newNoteBody = ""
     @State private var error: String?
+    /// Drag-resizable folder list width, persisted like any other docked pane.
+    /// Backed by `@AppStorage` (a `Double`) since this is a single view-local
+    /// divider, not a multi-panel-type layout — no need to route it through
+    /// `PanelLayoutState` for just one width.
+    @AppStorage("appleNotes.folderListWidth") private var folderListWidth = 220.0
 
     var body: some View {
-        NavigationSplitView {
-            folderList
-                .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 260)
-        } detail: {
-            detailStack
-        }
+        ResizablePanelHost(panes: [
+            ResizablePane(
+                id: "folders",
+                length: Binding(get: { CGFloat(folderListWidth) }, set: { folderListWidth = Double($0) }),
+                minLength: 180,
+                maxLength: 340
+            ) {
+                folderList
+            },
+            ResizablePane(id: "detail", length: nil) {
+                detailStack
+            },
+        ])
         .task {
             await service.loadIfPreviouslyAuthorized()
         }
@@ -40,33 +52,26 @@ struct AppleNotesView: View {
     // MARK: - Folder list
 
     private var folderList: some View {
-        List(selection: $selectedFolderID) {
-            Section("Folders") {
-                if service.folders.isEmpty {
-                    Text(service.status == .authorized ? "No folders" : "Grant access")
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                } else {
-                    ForEach(service.folders) { folder in
-                        Text(folder.name)
-                            .tag(folder.id)
+        VStack(spacing: 0) {
+            folderListHeader
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(theme.secondaryBackground)
+
+            Divider()
+
+            List(selection: $selectedFolderID) {
+                Section("Folders") {
+                    if service.folders.isEmpty {
+                        Text(service.status == .authorized ? "No folders" : "Grant access")
+                            .foregroundStyle(.secondary)
                             .lineLimit(1)
-                    }
-                }
-            }
-        }
-        .navigationTitle("Apple Notes")
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                if service.status != .authorized {
-                    Button("Authorize") {
-                        Task { await service.requestAuthorization() }
-                    }
-                } else {
-                    Button {
-                        Task { await service.loadFolders() }
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
+                    } else {
+                        ForEach(service.folders) { folder in
+                            Text(folder.name)
+                                .tag(folder.id)
+                                .lineLimit(1)
+                        }
                     }
                 }
             }
@@ -77,6 +82,27 @@ struct AppleNotesView: View {
                 return
             }
             Task { await service.loadNotes(in: id) }
+        }
+    }
+
+    private var folderListHeader: some View {
+        HStack {
+            Text("Apple Notes")
+                .font(.headline)
+            Spacer()
+            if service.status != .authorized {
+                Button("Authorize") {
+                    Task { await service.requestAuthorization() }
+                }
+            } else {
+                Button {
+                    Task { await service.loadFolders() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.plain)
+                .help("Refresh folders")
+            }
         }
     }
 

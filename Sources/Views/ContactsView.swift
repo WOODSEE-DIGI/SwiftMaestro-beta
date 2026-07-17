@@ -52,7 +52,7 @@ struct ContactsView: View {
                     .padding(.horizontal)
             }
 
-            if let selectedContact, isEditing {
+            if selectedContact != nil, isEditing {
                 contactEditor
                     .padding()
             } else if let selectedContact {
