@@ -19,6 +19,7 @@ struct WorkspacePanelWindowView: View {
     let target: WorkspacePanelWindowID
 
     @Environment(WorkspaceStore.self) private var workspace
+    @Environment(PluginService.self) private var pluginService
     @Environment(\.dismiss) private var dismiss
     @State private var layout = WorkspaceLayoutState.shared
     /// Set right before we dismiss the window ourselves (via "Dock"), so the
@@ -58,6 +59,9 @@ struct WorkspacePanelWindowView: View {
     private var title: String {
         if case .agentChat(let id) = target.kind {
             return workspace.agent(id: id)?.name ?? "Agent"
+        }
+        if case .plugin(let id) = target.kind {
+            return pluginService.manifest(id: id)?.name ?? "Plugin"
         }
         return target.kind.staticDisplayName ?? "Panel"
     }

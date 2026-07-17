@@ -58,6 +58,7 @@ struct SwiftMaestroApp: App {
     @State private var canvasStore = CanvasStore()
     @State private var kanbanStore = KanbanStore()
     @State private var numbersService = NumbersService()
+    @State private var pluginService = PluginService()
     private let mcpService = MCPClientService()
 
     var body: some Scene {
@@ -79,8 +80,10 @@ struct SwiftMaestroApp: App {
                 .environment(canvasStore)
                 .environment(kanbanStore)
                 .environment(numbersService)
+                .environment(pluginService)
                 .task {
                     appDelegate.mcpService = mcpService
+                    pluginService.loadPlugins()
                     // Restore user settings from the external JSON backup if the
                     // UserDefaults plist has been reset or deleted. This must run
                     // before the observable stores read their initial values.
@@ -207,6 +210,7 @@ struct SwiftMaestroApp: App {
                     .environment(canvasStore)
                     .environment(kanbanStore)
                     .environment(numbersService)
+                    .environment(pluginService)
             }
         }
         .defaultSize(width: 500, height: 700)

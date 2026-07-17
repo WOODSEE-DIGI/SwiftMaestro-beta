@@ -18,6 +18,15 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
     case canvas
     case kanban
     case numbers
+    /// A WKWebView UI plugin, identified by its manifest id (see
+    /// `PluginManifest`/`PluginService`). Unlike the other cases, this one is
+    /// data-driven — there's no fixed enum case per plugin. `icon` returns a
+    /// generic fallback and `staticDisplayName` returns nil (same pattern as
+    /// `.agentChat`) since resolving the real name/icon needs `PluginService`,
+    /// which this enum has no access to; callers that have it (ContentView's
+    /// `title(for:)`, `WorkspacePanelWindowView`'s `title`) special-case this
+    /// exactly like they already special-case `.agentChat`.
+    case plugin(String)
     /// Shell command execution log. Used to live inside a single agent's chat
     /// as a `PanelType` sub-panel; moved here so it's a normal top-level
     /// "Swift Apps" item instead — one Terminal, independent of any agent.
@@ -34,6 +43,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .canvas: return "rectangle.3.group"
         case .kanban: return "rectangle.split.3x1"
         case .numbers: return "tablecells"
+        case .plugin: return "puzzlepiece.extension"
         case .terminal: return "terminal"
         }
     }
@@ -52,6 +62,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .canvas: return "Canvas"
         case .kanban: return "Kanban"
         case .numbers: return "Numbers"
+        case .plugin: return nil
         case .terminal: return "Terminal"
         }
     }
@@ -82,6 +93,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .canvas: return "canvas"
         case .kanban: return "kanban"
         case .numbers: return "numbers"
+        case .plugin(let id): return "plugin:\(id)"
         case .terminal: return "terminal"
         }
     }

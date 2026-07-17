@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="setup" class="setup hidden">
+    <h1>Connect Mastodon</h1>
+    <p class="hint">
+      Paste your instance URL and an access token. Generate a token under
+      <strong>Settings → Development → New Application</strong> on your instance
+      (grant at least <code>read</code> and <code>write:statuses</code> scopes),
+      then copy the "Your access token" value here.
+    </p>
+    <label>Instance URL</label>
+    <input id="instanceInput" type="text" placeholder="https://mastodon.social" autocorrect="off" autocapitalize="off">
+    <label>Access Token</label>
+    <input id="tokenInput" type="password" placeholder="paste token here" autocorrect="off" autocapitalize="off">
+    <button id="connectButton">Connect</button>
+    <p id="setupError" class="error hidden"></p>
+  </div>
+
+  <div id="app" class="app hidden">
+    <header>
+      <span id="accountLabel" class="account"></span>
+      <span class="spacer"></span>
+      <button id="refreshButton" title="Refresh now">⟳</button>
+      <button id="disconnectButton" title="Disconnect">⎋</button>
+    </header>
+
+    <div class="compose">
+      <textarea id="composeText" placeholder="What's on your mind?" maxlength="500"></textarea>
+      <div class="compose-row">
+        <span id="composeCount" class="count">500</span>
+        <button id="postButton">Post</button>
+      </div>
+    </div>
+
+    <p id="timelineError" class="error hidden"></p>
+    <div id="timeline" class="timeline"></div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

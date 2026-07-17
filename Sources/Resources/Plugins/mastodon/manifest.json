@@ -1,0 +1,8 @@
+{
+  "id": "mastodon",
+  "name": "Mastodon",
+  "icon": "bubble.left.and.text.bubble.right",
+  "entry": "index.html",
+  "version": "1.0.0",
+  "capabilities": ["network", "secrets"]
+}

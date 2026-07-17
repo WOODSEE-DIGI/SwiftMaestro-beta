@@ -55,6 +55,10 @@ targets:
       - path: Sources/Models
       - path: Sources/Memory
       - path: Sources/Engine
+      # Folder reference (preserves internal structure, e.g. plugin-id/index.html
+      # + its own relative css/js) rather than individual flattened file refs.
+      - path: Sources/Resources/Plugins
+        type: folder
     settings:
       base:
         DEFINES_MODULE: YES

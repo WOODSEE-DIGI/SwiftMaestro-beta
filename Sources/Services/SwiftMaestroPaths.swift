@@ -52,6 +52,16 @@ enum SwiftMaestroPaths {
         appSupportDir.appendingPathComponent("secrets-index.json")
     }
 
+    /// `~/Library/Application Support/SwiftMaestro/plugins/` — user-installed WKWebView UI
+    /// plugins (each a subfolder with its own `manifest.json`). Bundled plugins ship inside
+    /// the app itself (`Bundle.main.resourceURL/Plugins/`) and don't live here; see
+    /// `PluginService` for how both sources are merged.
+    static var pluginsDir: URL {
+        let dir = appSupportDir.appendingPathComponent("plugins", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
     // MARK: - Migration
 
     /// One-time migration from the old flat layout (where chats/plans/todos/workspace lived

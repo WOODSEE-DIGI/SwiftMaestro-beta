@@ -11,6 +11,7 @@ struct ContentView: View {
     @Environment(NotesViewModel.self) private var notesViewModel
     @Environment(KanbanStore.self) private var kanbanStore
     @Environment(ContactsService.self) private var contactsService
+    @Environment(PluginService.self) private var pluginService
     @Environment(\.openWindow) private var openWindow
     /// The multi-panel workspace: the sidebar is a *launcher* onto this — an
     /// agent chat, Notes.md, Apple Notes, Contacts, etc. can all be open side
@@ -116,8 +117,9 @@ struct ContentView: View {
                 openWindow(id: "workspace-panel-window", value: WorkspacePanelWindowID(kind: kind))
             }
             if focusedKind == nil { focusedKind = workspaceLayout.allOpenPanels.first }
-            // Set shared instance for delegate streaming.
-            ChatViewModelCache.shared = chatCache
+            // ChatViewModelCache.shared is set by its own init() now (see that
+            // type's doc comment) — it must be valid before this view's very
+            // first body evaluation, which is earlier than .onAppear ever runs.
             chatCache.setVisionProxyService(visionProxyService)
             // When a delegation starts, open/front a floating chat window for the
             // sub-agent so the user can watch Navigator and Scribe side-by-side.
@@ -240,6 +242,13 @@ struct ContentView: View {
                 sidebarRow("Kanban", kind: .kanban)
                 sidebarRow("Terminal", kind: .terminal)
             }
+            if !pluginService.plugins.isEmpty {
+                Section("Plugins") {
+                    ForEach(pluginService.plugins) { manifest in
+                        sidebarRow(manifest.name, kind: .plugin(manifest.id), icon: manifest.icon)
+                    }
+                }
+            }
         }
         .listStyle(.sidebar)
         .scrollContentBackground(theme.sidebarOverridden ? .hidden : .automatic)
@@ -249,9 +258,11 @@ struct ContentView: View {
     /// A non-agent sidebar row. Shows a small filled dot when the panel is
     /// currently open in the workspace, since with multiple panels open at
     /// once the row highlight alone no longer tells you what's visible.
-    private func sidebarRow(_ title: String, kind: WorkspacePanelKind) -> some View {
+    /// `icon` defaults to `kind.icon`; data-driven kinds like `.plugin` pass
+    /// their own real icon since the enum itself only knows a generic fallback.
+    private func sidebarRow(_ title: String, kind: WorkspacePanelKind, icon: String? = nil) -> some View {
         HStack {
-            Label(title, systemImage: kind.icon)
+            Label(title, systemImage: icon ?? kind.icon)
             Spacer()
             if workspaceLayout.isOpen(kind) {
                 Circle()
@@ -377,6 +388,9 @@ struct ContentView: View {
     private func title(for kind: WorkspacePanelKind) -> String {
         if case .agentChat(let id) = kind {
             return workspace.agent(id: id)?.name ?? "Agent"
+        }
+        if case .plugin(let id) = kind {
+            return pluginService.manifest(id: id)?.name ?? "Plugin"
         }
         return kind.staticDisplayName ?? "Panel"
     }
@@ -548,6 +562,30 @@ final class ChatViewModelCache {
     /// Called on the main actor when a delegation to `agentID` begins, so the UI
     /// can open or front a floating chat window for that sub-agent.
     var onOpenAgentWindow: ((UUID) -> Void)?
+
+    /// Self-registers on construction rather than relying on a caller to set
+    /// `shared` later (previously done in ContentView's `.onAppear`). That was
+    /// a real race: any `.agentChat` panel already persisted/docked from a
+    /// prior session renders as part of ContentView's very FIRST body
+    /// evaluation, which unavoidably happens before `.onAppear` fires —
+    /// `WorkspacePanelContentView` would see `shared == nil` on that first
+    /// paint and permanently show "Agent Not Found" for the rest of the
+    /// session, since mutating a plain static var later never triggers
+    /// SwiftUI to re-render the already-mounted view (it isn't
+    /// `@Observable`-tracked). Floating panel windows opened via a fresh
+    /// `openWindow(...)` call happened to dodge this because constructing a
+    /// new window scene takes measurably longer than the few CPU cycles
+    /// between `@State private var chatCache = ChatViewModelCache()`'s
+    /// construction and `.onAppear` firing — enough of a head start that
+    /// `shared` was usually already set by the time THAT content rendered,
+    /// which is why the bug was intermittent (docked panels: broken;
+    /// floating windows: usually fine) rather than 100% reproducible.
+    /// Self-registering in `init` removes the timing dependency entirely:
+    /// `shared` is valid the instant the object exists, before ANY view
+    /// (docked or floating) gets a chance to render.
+    init() {
+        Self.shared = self
+    }
 
     func setVisionProxyService(_ service: VisionProxyService) {
         self.visionProxyService = service

@@ -9,6 +9,7 @@ struct WorkspacePanelContentView: View {
 
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(NotesViewModel.self) private var notesViewModel
+    @Environment(PluginService.self) private var pluginService
 
     var body: some View {
         switch kind {
@@ -32,6 +33,16 @@ struct WorkspacePanelContentView: View {
             KanbanView()
         case .numbers:
             NumbersView()
+        case .plugin(let id):
+            if let manifest = pluginService.manifest(id: id) {
+                PluginPanelView(manifest: manifest)
+            } else {
+                ContentUnavailableView(
+                    "Plugin Not Found",
+                    systemImage: "puzzlepiece.extension",
+                    description: Text("No plugin with id \"\(id)\" is currently installed.")
+                )
+            }
         case .terminal:
             TerminalView()
         case .agentChat(let id):
