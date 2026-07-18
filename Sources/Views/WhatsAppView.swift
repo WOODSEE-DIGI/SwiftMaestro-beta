@@ -172,6 +172,20 @@ struct WhatsAppView: View {
             Divider()
             detail
         }
+        // Covers the WHOLE window (sidebar + message thread + compose bar),
+        // not just the compose bar's small strip, and adapts automatically
+        // to whatever size the window is currently at since it's on the
+        // full-size container rather than a fixed-height child. Only takes
+        // effect once a chat is actually selected — with none selected
+        // there's nowhere to attach a dropped image to.
+        .onDrop(of: [.image, .fileURL], isTargeted: nil) { providers in
+            guard selectedChatID != nil else { return false }
+            return handleAttachmentProviders(providers)
+        }
+        .onPasteCommand(of: [.image, .fileURL]) { providers in
+            guard selectedChatID != nil else { return }
+            handleAttachmentProviders(providers)
+        }
     }
 
     private var chatList: some View {
@@ -198,6 +212,14 @@ struct WhatsAppView: View {
                     }
                 }
             }
+            // The default (sidebar-inferred) list style computes its
+            // leading inset from window/toolbar traits that aren't settled
+            // yet the instant this floating panel first appears, producing
+            // a transient negative-looking left margin that self-corrects a
+            // moment later once those traits catch up. `.plain` has no such
+            // trait-dependent inset to begin with, so there's nothing to
+            // settle into — the layout is correct on the very first frame.
+            .listStyle(.plain)
         }
     }
 
@@ -352,14 +374,8 @@ struct WhatsAppView: View {
             }
         }
         .padding(10)
-        // Matches ChatView's image-intake pattern (drop + Cmd+V paste), but
-        // resolves to a FILE PATH rather than PNG bytes, since the bridge's
-        // `/api/send` `media_path` field uploads directly from a path on
-        // disk — this is also why drag-and-drop a screenshot/image never
-        // worked here at all before: there was no drop handler, no
-        // attachment button, and no media_path plumbing anywhere in the view.
-        .onDrop(of: [.image, .fileURL], isTargeted: nil) { handleAttachmentProviders($0) }
-        .onPasteCommand(of: [.image, .fileURL]) { handleAttachmentProviders($0) }
+        // Drop/paste handling lives on `connectedView` (the whole window),
+        // not here — see its comment for why.
     }
 
     private func attachmentPreview(_ url: URL) -> some View {
@@ -449,6 +465,16 @@ struct WhatsAppView: View {
     }
 
     private func send(chatJID: String) async {
+        // Re-entrancy guard: pressing Return triggered TWO overlapping sends
+        // of the same text+attachment (confirmed live — a screenshot showed
+        // up twice with the same caption). `.onSubmit` on a multi-line
+        // `axis: .vertical` TextField can fire more than once per Return
+        // press on macOS; `isSending` was only ever used to DISABLE the send
+        // button, not to actually stop a second call already in flight
+        // before that disabled state re-renders. Checking it FIRST, before
+        // touching anything else, makes a second concurrent call to this
+        // same function a guaranteed no-op regardless of why it happened.
+        guard !isSending else { return }
         let text = composeText.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachmentURL = pendingAttachmentURL
         guard !text.isEmpty || attachmentURL != nil else { return }
