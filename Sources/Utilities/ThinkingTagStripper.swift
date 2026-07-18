@@ -8,10 +8,13 @@ import Foundation
 /// - bracket style: `[channel]`, `[/channel]`, `[thought]`, `[/thought]`
 /// - plain angle style: `<channel>`, `</channel>`, `<channel/>`, `<channel >`
 /// - pipe style: `<|channel>`, `</|channel>`, `<|channel|>`, `</|channel|>`
+/// - trailing-pipe style: `<channel|>` (Gemma 4 close-of-thinking marker)
 /// - combined tokens: `<channel>thought`, `<channel><channel>thought`, `</channel>thought`
 /// - bare reasoning markers: `thought`, `|thought`, `[thought]`
 ///
-/// The function strips all of these and collapses the resulting whitespace.
+/// The function strips all of these and collapses excessive blank lines.
+/// NOTE: Leading/trailing whitespace is intentionally NOT trimmed here so that
+/// streaming chunks preserve inter-word spaces. Display callers can trim if needed.
 enum ThinkingTagStripper {
     static func strip(_ text: String) -> String {
         var result = text
@@ -22,6 +25,10 @@ enum ThinkingTagStripper {
         let blockPatterns: [(String, String)] = [
             // Gemma 4 <channel>...</channel> (handles repeated opening tags)
             (#"(?i)<\s*channel(?:\s*>\s*)+.*?<\s*/\s*channel\s*>"#, ""),
+            // Gemma 4 trailing-pipe: <|channel>...<channel|>
+            (#"(?i)<\s*\|\s*channel(?:\s*>\s*)+.*?<\s*channel\s*\|\s*>"#, ""),
+            // Gemma 4 trailing-pipe with both pipes: <|channel|>...<channel|>
+            (#"(?i)<\s*\|\s*channel\s*\|(?:\s*>\s*)+.*?<\s*channel\s*\|\s*>"#, ""),
             // Qwen / pipe <|channel|>...</|channel|>
             (#"(?i)<\s*\|\s*channel\s*\|(?:\s*>\s*)+.*?<\s*/\s*\|\s*channel\s*\|\s*>"#, ""),
             (#"(?i)<\s*\|\s*channel(?:\s*>\s*)+.*?<\s*/\s*\|\s*channel\s*>"#, ""),
@@ -41,6 +48,8 @@ enum ThinkingTagStripper {
         //    unclosed markers and repeated tags like `<channel><channel>` that
         //    were not part of a complete block.
         let tagPatterns: [String] = [
+            // Gemma 4 trailing-pipe style: <channel|> (close-of-thinking)
+            #"(?i)<\s*channel\s*\|\s*>"#,
             #"(?i)<\s*channel\s*/?>"#,
             #"(?i)</\s*channel\s*>"#,
             #"(?i)<\s*\|\s*channel\s*\|\s*/?>"#,
@@ -73,10 +82,12 @@ enum ThinkingTagStripper {
         }
         result = cleaned.joined(separator: "\n")
 
-        // 4. Collapse excessive blank lines and trim.
+        // 4. Collapse excessive blank lines and trim leading/trailing newlines.
+        //    Preserve leading/trailing spaces so streaming chunks don't lose
+        //    inter-word spacing when small pieces are appended together.
         while result.contains("\n\n\n") {
             result = result.replacingOccurrences(of: "\n\n\n", with: "\n\n")
         }
-        return result.trimmingCharacters(in: .whitespacesAndNewlines)
+        return result.trimmingCharacters(in: .newlines)
     }
 }

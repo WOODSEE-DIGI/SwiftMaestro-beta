@@ -448,6 +448,7 @@ class ChatViewModel: ObservableObject {
 
     private static let qwenCloseTag = "</think>"
     private static let gemmaCloseTag = "</channel>"
+    private static let gemmaPipeCloseTag = "<channel|>"
     private static let toolCallOpen = "<tool_call>"
     private static let toolCallClose = "</tool_call>"
     /// Route one streamed chunk into reasoning (while `inReasoning`) or the answer
@@ -514,8 +515,19 @@ class ChatViewModel: ObservableObject {
             if !after.isEmpty { appendAnswer(after) }
             return
         }
+        // Gemma 4 trailing-pipe: model emits <channel|> as end-of-thinking.
+        if let r = streamBuffer.range(of: Self.gemmaPipeCloseTag) {
+            let reasoning = ThinkingTagStripper.strip(String(streamBuffer[..<r.lowerBound]))
+            appendReasoning(reasoning)
+            markReasoningClosed()
+            let after = ThinkingTagStripper.strip(String(streamBuffer[r.upperBound...]))
+            streamBuffer = ""
+            inReasoning = false
+            if !after.isEmpty { appendAnswer(after) }
+            return
+        }
         // No close tag yet: flush all but a tail that might hold a partial tag.
-        let keep = max(Self.qwenCloseTag.count, Self.gemmaCloseTag.count) - 1
+        let keep = max(Self.qwenCloseTag.count, Self.gemmaCloseTag.count, Self.gemmaPipeCloseTag.count) - 1
         if streamBuffer.count > keep {
             let split = streamBuffer.index(streamBuffer.endIndex, offsetBy: -keep)
             let chunk = ThinkingTagStripper.strip(String(streamBuffer[..<split]))
@@ -565,7 +577,7 @@ class ChatViewModel: ObservableObject {
         inReasoning = true
     }
 
-    /// Flush the tail at end of stream. If no `</think>`/`</channel>` ever arrived
+    /// Flush the tail at end of stream. If no `</think>`/`</channel>`/`<channel|>` ever arrived
     /// (a model that doesn't emit thinking tags), treat the accumulated reasoning
     /// as the answer after stripping any residual markers.
     private func finishStreamParsing() {

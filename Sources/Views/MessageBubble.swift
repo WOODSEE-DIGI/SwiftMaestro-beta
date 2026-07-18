@@ -132,7 +132,7 @@ struct MessageBubble: View {
         if let r = message.reasoning { raw = r }
         else if let p = parsed.reasoning { raw = p }
         else { return nil }
-        let cleaned = ThinkingTagStripper.strip(raw)
+        let cleaned = ThinkingTagStripper.strip(raw).trimmingCharacters(in: .whitespacesAndNewlines)
         return cleaned.isEmpty ? nil : cleaned
     }
 
@@ -142,7 +142,7 @@ struct MessageBubble: View {
     /// tags that slipped through streaming-time stripping.
     private var displayAnswer: String {
         let raw = message.reasoning != nil ? message.content : parsed.answer
-        return ThinkingTagStripper.strip(raw)
+        return ThinkingTagStripper.strip(raw).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// "Thinking…" while this message is live and still reasoning (no answer yet),
