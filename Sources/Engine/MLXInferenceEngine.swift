@@ -314,6 +314,13 @@ final class MLXInferenceEngine {
         state = .downloading("Downloading \(model.displayName)…")
         NSLog("[DOWNLOAD] state set to downloading")
 
+        // Fetch total weight bytes from HuggingFace's index.json so the
+        // observation loop can derive percentage from on-disk bytes.
+        let totalExpectedBytes: Int64 = await Self.fetchTotalWeightBytes(
+            repoID: model.huggingFaceID
+        )
+        NSLog("[DOWNLOAD] totalExpectedBytes: %lld", totalExpectedBytes)
+
         let destinationURL = destination
         let progress = Progress(totalUnitCount: 100)
         downloadProgress = progress
@@ -325,11 +332,8 @@ final class MLXInferenceEngine {
             var lastReported: Double = 0
             while !Task.isCancelled {
                 let bytesOnDisk = Self.directorySize(destinationURL, fm: fm)
-                // Prefer total from the Python helper's stdout (stored by
-                // handleProgressLine). Fall back to computing from disk.
-                let total = HuggingFaceDownloadService.shared.totalBytes(forDestination: destinationURL.path)
-                if total > 0 {
-                    let fraction = min(Double(bytesOnDisk) / Double(total), 1.0)
+                if totalExpectedBytes > 0 {
+                    let fraction = min(Double(bytesOnDisk) / Double(totalExpectedBytes), 1.0)
                     if fraction != lastReported {
                         progress.completedUnitCount = Int64(fraction * 100)
                         modelDownloadProgress[model.id] = fraction
@@ -397,6 +401,23 @@ final class MLXInferenceEngine {
             }
         }
         return total
+    }
+
+    /// Fetch total weight bytes from a HuggingFace repo's index.json.
+    /// The `metadata.total_size` field gives the combined size of all
+    /// safetensors weight files — exactly what we need for progress.
+    private nonisolated static func fetchTotalWeightBytes(repoID: String) async -> Int64 {
+        let urlString = "https://huggingface.co/\(repoID)/resolve/main/model.safetensors.index.json"
+        guard let url = URL(string: urlString) else { return 0 }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let metadata = json["metadata"] as? [String: Any],
+                  let totalSize = metadata["total_size"] as? Int64 else { return 0 }
+            return totalSize
+        } catch {
+            return 0
+        }
     }
 
     // MARK: - Model Loading
