@@ -20,6 +20,7 @@ struct WorkspacePanelWindowView: View {
 
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(PluginService.self) private var pluginService
+    @Environment(ThemeStore.self) private var theme
     @Environment(\.dismiss) private var dismiss
     @State private var layout = WorkspaceLayoutState.shared
     /// Set right before we dismiss the window ourselves (via "Dock"), so the
@@ -36,6 +37,7 @@ struct WorkspacePanelWindowView: View {
             Divider()
             WorkspacePanelContentView(kind: target.kind)
         }
+        .background(theme.background)
         .frame(minWidth: 420, minHeight: 360)
         // Overrides the WindowGroup's static "Panel" title with the actual
         // panel name (e.g. "Contacts", "Calendar") — same pattern as
@@ -73,7 +75,7 @@ struct WorkspacePanelWindowView: View {
         HStack(spacing: 6) {
             Image(systemName: target.kind.icon)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(theme.accent)
 
             Text(title)
                 .font(.caption.weight(.semibold))
@@ -109,7 +111,7 @@ struct WorkspacePanelWindowView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .background(Color(nsColor: NSColor(red: 0.16, green: 0.16, blue: 0.18, alpha: 1.0)))
+        .background(theme.secondaryBackground)
     }
 }
 

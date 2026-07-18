@@ -29,7 +29,7 @@ struct FloatingPanelWindowView: View {
             HStack(spacing: 6) {
                 Image(systemName: panelType?.icon ?? "rectangle")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(theme.accent)
 
                 Text(panelType?.displayName ?? "Panel")
                     .font(.caption.weight(.semibold))
@@ -64,7 +64,7 @@ struct FloatingPanelWindowView: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
-            .background(Color(nsColor: NSColor(red: 0.16, green: 0.16, blue: 0.18, alpha: 1.0)))
+            .background(theme.secondaryBackground)
 
             Divider()
 
@@ -80,7 +80,7 @@ struct FloatingPanelWindowView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .background(Color(nsColor: NSColor(red: 0.12, green: 0.12, blue: 0.13, alpha: 1.0)))
+        .background(theme.background)
         #if os(macOS)
         .background(WindowPinConfigurator(isPinned: isPinnedToFront))
         #endif

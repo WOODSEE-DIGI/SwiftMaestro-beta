@@ -44,6 +44,7 @@ struct MarkdownDocument: FileDocument {
 /// inner `ScrollView` handles plans taller than what fits.
 struct PlanWindowView: View {
     @Environment(PlanStore.self) private var planStore
+    @Environment(ThemeStore.self) private var theme
     /// The plan to show, or `nil` when SwiftUI opens the group without a value
     /// (e.g. File ▸ New Window) or the plan was deleted.
     let target: PlanWindowID?
@@ -118,6 +119,7 @@ struct PlanWindowView: View {
                 .padding(40)
             }
         }
+        .background(theme.background)
         #if os(macOS)
         .background(WindowPinConfigurator(isPinned: isPinnedToFront))
         #endif
