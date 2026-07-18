@@ -73,6 +73,19 @@ actor MCPClientService {
     }
 
     private func connect(to entry: MCPServerEntry) async throws {
+        // `shutdown()` (wired to `applicationWillTerminate` in AppDelegate)
+        // only runs on a GRACEFUL quit. A hard-kill via Xcode's Stop button
+        // during development, a force-quit, or a crash bypasses it entirely
+        // - so a server whose handshake DID succeed last launch still leaks
+        // one orphaned process per such termination, same as the
+        // handshake-failure case cb35cd7 already fixed. Left unchecked this
+        // is exactly how whatsapp-mcp-server accumulated 189+ orphans over
+        // days of repeated rebuild/relaunch cycles. Reap anything matching
+        // THIS entry from a previous, uncleanly-terminated launch before
+        // spawning a fresh instance, so orphans never survive past the next
+        // launch instead of accumulating indefinitely.
+        Self.reapStaleInstances(of: entry)
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: entry.command)
         // Prefer the explicit arg vector (supports subcommands like `cli.js mcp`);
@@ -156,6 +169,83 @@ actor MCPClientService {
             routing[tool.name] = connection
         }
         NSLog("[MCP] Connected to \(entry.name): \(tools.count) tool(s) — \(tools.map { $0.name }.joined(separator: ", "))")
+    }
+
+    /// Best-effort kill of any process left over from a PREVIOUS, uncleanly
+    /// terminated launch that belongs to this entry. Static/`internal` (not
+    /// actor-isolated) so it's usable before any connection state exists and
+    /// directly testable. Never throws: missing tools or a permission error
+    /// just mean no cleanup happens this launch, no worse than before.
+    ///
+    /// Uses TWO complementary matching strategies, because one alone missed
+    /// half of the live whatsapp-mcp-server leak:
+    ///  1. `pgrep -f` against the script path / working directory — catches
+    ///     a wrapper process whose own argv contains that path (e.g. the
+    ///     `uv --directory <path> run main.py` process itself).
+    ///  2. `lsof +D <workingDir>` — catches a process whose CURRENT WORKING
+    ///     DIRECTORY is inside the server's folder even when its argv does
+    ///     NOT mention the path at all. This is exactly what whatsapp-mcp
+    ///     needed: `uv run` spawns a detached CPython child (visible in `ps`
+    ///     only as a generic "Python main.py" with no distinguishing path in
+    ///     its argv) that (1) alone never matches — confirmed live: killing
+    ///     only the `uv` parents left 45 of these Python children behind,
+    ///     still running, still orphaned.
+    static func reapStaleInstances(of entry: MCPServerEntry) {
+        var pids = Set(pgrepPIDs(matching: entry.scriptPath.isEmpty ? entry.workingDir : entry.scriptPath))
+        if !entry.workingDir.isEmpty {
+            pids.formUnion(lsofPIDs(workingDirectory: entry.workingDir))
+        }
+        guard !pids.isEmpty else { return }
+        for pid in pids {
+            // SIGKILL, not terminate(): these are orphans already reparented
+            // to launchd from a launch this process never ran, so there's no
+            // graceful-shutdown handshake to attempt with them.
+            kill(pid, SIGKILL)
+        }
+        NSLog("[MCP] Reaped \(pids.count) stale process(es) for \(entry.name) from a previous launch")
+    }
+
+    private static func pgrepPIDs(matching pattern: String) -> [pid_t] {
+        guard !pattern.isEmpty else { return [] }
+        let pgrep = Process()
+        pgrep.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        pgrep.arguments = ["-f", pattern]
+        let outputPipe = Pipe()
+        pgrep.standardOutput = outputPipe
+        pgrep.standardError = Pipe()  // discard: "no matches" isn't an error worth logging
+        do {
+            try pgrep.run()
+            pgrep.waitUntilExit()
+        } catch {
+            return []  // pgrep unavailable - skip, not fatal.
+        }
+        let output = String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return output.split(separator: "\n").compactMap { pid_t($0) }
+    }
+
+    /// PIDs of every process with an open file (including its cwd) rooted
+    /// under `directory` — `lsof`'s `+D` flag. This is how a detached
+    /// interpreter child is found even though its own argv gives no hint of
+    /// which server it belongs to.
+    private static func lsofPIDs(workingDirectory directory: String) -> [pid_t] {
+        let lsof = Process()
+        lsof.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        lsof.arguments = ["+D", directory, "-Fp"]
+        let outputPipe = Pipe()
+        lsof.standardOutput = outputPipe
+        lsof.standardError = Pipe()
+        do {
+            try lsof.run()
+            lsof.waitUntilExit()
+        } catch {
+            return []  // lsof unavailable - skip, not fatal.
+        }
+        let output = String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        // `-Fp` output is one PID per line, each prefixed with "p".
+        return output.split(separator: "\n").compactMap { line in
+            guard line.hasPrefix("p") else { return nil }
+            return pid_t(line.dropFirst())
+        }
     }
 
     /// Terminate all spawned servers.
