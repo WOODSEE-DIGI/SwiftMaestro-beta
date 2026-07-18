@@ -267,14 +267,15 @@ final class WhatsAppService {
             let rows = try await db.read { db in
                 try Row.fetchAll(db, sql: """
                     SELECT jid, name, last_message_time FROM chats
-                    ORDER BY last_message_time DESC LIMIT 100
+                    ORDER BY last_message_time DESC LIMIT 300
                     """)
             }
-            chats = rows.map {
+            let rawChats = rows.map {
                 WhatsAppChat(
                     jid: $0["jid"], name: $0["name"],
                     lastMessageTime: $0["last_message_time"])
             }
+            chats = Self.mergeLIDDuplicates(rawChats, lidMap: await loadLIDMap())
             error = nil
         } catch {
             self.error = error.localizedDescription
@@ -289,19 +290,49 @@ final class WhatsAppService {
             var config = GRDB.Configuration()
             config.readonly = true
             let db = try DatabaseQueue(path: dbPath, configuration: config)
+
+            // WhatsApp's multi-device protocol increasingly addresses a
+            // contact by a privacy-preserving LID (Linked ID) instead of
+            // their phone-number JID, and the bridge stores whichever raw
+            // form a given event arrived with as `chat_jid` — it doesn't
+            // reconcile the two. That means the SAME real conversation can
+            // silently split into two different chat_jid rows the moment
+            // WhatsApp's servers switch which form they tag it with. This is
+            // exactly what happened live: outgoing sends kept working (the
+            // recipient JID is resolved server-side either way), but every
+            // incoming reply started arriving tagged with the contact's LID
+            // — invisible to a query scoped only to the phone-number JID, no
+            // matter how often it's re-polled. Resolve every JID that refers
+            // to this same contact via the bridge's OWN whatsmeow_lid_map
+            // table (in its separate whatsapp.db session store, which it
+            // already maintains for protocol reasons) and query across all
+            // of them, so both "halves" of the split conversation merge back
+            // into one thread — no bridge changes required.
+            var jids: Set<String> = [chatJID]
+            if let counterpart = await loadLIDMap()[chatJID] {
+                jids.insert(counterpart)
+            }
+            let allJIDs = Array(jids)
+
+            let placeholders = allJIDs.map { _ in "?" }.joined(separator: ", ")
+            var arguments: [DatabaseValueConvertible?] = allJIDs
+            arguments.append(limit)
             let rows = try await db.read { db in
                 try Row.fetchAll(db, sql: """
                     SELECT id, chat_jid, sender, content, timestamp, is_from_me, media_type
-                    FROM messages WHERE chat_jid = ?
+                    FROM messages WHERE chat_jid IN (\(placeholders))
                     ORDER BY timestamp DESC LIMIT ?
-                    """, arguments: [chatJID, limit])
+                    """, arguments: StatementArguments(arguments))
             }
+            // Normalize every row to the caller's chatJID regardless of
+            // which underlying raw chat_jid it actually came from, so the
+            // merge logic below (and the UI) treats this as one conversation.
             let loaded = rows.map {
                 WhatsAppMessage(
-                    id: $0["id"], chatJID: $0["chat_jid"], sender: $0["sender"],
+                    id: $0["id"], chatJID: chatJID, sender: $0["sender"],
                     content: $0["content"], timestamp: $0["timestamp"],
                     isFromMe: $0["is_from_me"], mediaType: $0["media_type"])
-            }.reversed()
+            }.sorted { ($0.timestamp ?? .distantPast) < ($1.timestamp ?? .distantPast) }
 
             // The bridge's `/api/send` handler never writes the message it
             // just sent back into its own SQLite database, and whatsmeow
@@ -320,12 +351,86 @@ final class WhatsAppService {
                     && message.id.hasPrefix(Self.localMessageIDPrefix)
                     && !loaded.contains { $0.isFromMe && $0.content == message.content }
             }
-            messages = (Array(loaded) + stillPendingLocalOnly)
+            messages = (loaded + stillPendingLocalOnly)
                 .sorted { ($0.timestamp ?? .distantPast) < ($1.timestamp ?? .distantPast) }
             error = nil
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    /// Loads the bridge's LID (Linked ID) <-> phone-number JID mapping from
+    /// its whatsmeow session store (`whatsapp.db`, separate from
+    /// `messages.db`). Returns a bidirectional lookup keyed by both the bare
+    /// number and the full JID form (`<number>@lid` / `<number>@s.whatsapp.net`)
+    /// so a lookup with either succeeds. Returns an empty map (not an error)
+    /// if the file or table is missing, so this degrades gracefully to the
+    /// pre-LID-reconciliation behavior rather than failing a load.
+    private func loadLIDMap() async -> [String: String] {
+        guard let dbDir = databaseDirectory else { return [:] }
+        let dbPath = dbDir.appendingPathComponent("whatsapp.db").path
+        guard FileManager.default.fileExists(atPath: dbPath) else { return [:] }
+        do {
+            var config = GRDB.Configuration()
+            config.readonly = true
+            let db = try DatabaseQueue(path: dbPath, configuration: config)
+            let rows = try await db.read { db in
+                try Row.fetchAll(db, sql: "SELECT lid, pn FROM whatsmeow_lid_map")
+            }
+            var map: [String: String] = [:]
+            for row in rows {
+                guard let lid: String = row["lid"], let pn: String = row["pn"] else { continue }
+                map[lid] = pn
+                map[pn] = lid
+                map["\(lid)@lid"] = "\(pn)@s.whatsapp.net"
+                map["\(pn)@s.whatsapp.net"] = "\(lid)@lid"
+            }
+            return map
+        } catch {
+            return [:]
+        }
+    }
+
+    /// Merges chat rows that represent the same real contact under
+    /// WhatsApp's LID/phone-number dual addressing (see `loadMessages`'s doc
+    /// comment) into a single entry: keeps the most human-readable name and
+    /// the most recent last-message time, and canonicalizes on the
+    /// phone-number-style JID when both forms are known (that's already the
+    /// form used for sending).
+    static func mergeLIDDuplicates(_ rawChats: [WhatsAppChat], lidMap: [String: String]) -> [WhatsAppChat] {
+        func canonical(for jid: String) -> String {
+            if jid.hasSuffix("@lid"), let pn = lidMap[jid] { return pn }
+            return jid
+        }
+
+        var merged: [String: WhatsAppChat] = [:]
+        for chat in rawChats {
+            let key = canonical(for: chat.jid)
+            if let existing = merged[key] {
+                let name = Self.preferredName(existing.name, chat.name)
+                let time = [existing.lastMessageTime, chat.lastMessageTime].compactMap { $0 }.max()
+                merged[key] = WhatsAppChat(jid: key, name: name, lastMessageTime: time)
+            } else {
+                merged[key] = WhatsAppChat(jid: key, name: chat.name, lastMessageTime: chat.lastMessageTime)
+            }
+        }
+        return merged.values.sorted {
+            ($0.lastMessageTime ?? .distantPast) > ($1.lastMessageTime ?? .distantPast)
+        }
+    }
+
+    /// A LID-only chat's stored "name" is often just the raw numeric LID —
+    /// the bridge can't always resolve a friendly contact name for a bare
+    /// LID the same way it can for a phone-number JID with saved contact
+    /// info — so prefer whichever candidate isn't purely numeric.
+    private static func preferredName(_ a: String?, _ b: String?) -> String? {
+        func looksLikeRawID(_ name: String?) -> Bool {
+            guard let name, !name.isEmpty else { return true }
+            return name.allSatisfy(\.isNumber)
+        }
+        if !looksLikeRawID(a) { return a }
+        if !looksLikeRawID(b) { return b }
+        return a ?? b
     }
 
     private static let localMessageIDPrefix = "local-pending-"

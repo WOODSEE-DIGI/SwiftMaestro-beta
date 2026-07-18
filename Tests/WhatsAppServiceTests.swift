@@ -313,4 +313,130 @@ final class WhatsAppServiceTests: XCTestCase {
             "once the DB has a real row with matching content, the local placeholder must not duplicate it"
         )
     }
+
+    // MARK: - LID/phone-number conversation reconciliation
+    //
+    // WhatsApp increasingly addresses a contact via a privacy-preserving LID
+    // (Linked ID) instead of their phone-number JID, and the bridge stores
+    // whichever raw form a given event arrives with as `chat_jid` — it
+    // doesn't reconcile the two. The SAME real conversation can therefore
+    // silently split into two different chat_jid rows the moment WhatsApp's
+    // servers switch forms. Live testing showed exactly this: sent messages
+    // kept working (recipient JIDs resolve server-side either way), but
+    // every incoming reply started arriving tagged with the contact's LID —
+    // invisible to a query scoped to the phone-number JID, no matter how
+    // often it was re-polled (confirmed directly in the bridge's own SQLite
+    // files: the "Brock McFadzean" chat's messages just stopped, while an
+    // unrelated-looking chat named "210414809956389" silently accumulated
+    // every message in the conversation from that point on). These tests
+    // pin the fix, which reconciles the two forms using the bridge's own
+    // whatsmeow_lid_map table (in its whatsapp.db session store).
+
+    func testMergeLIDDuplicatesCombinesSameContactUnderCanonicalPNJid() throws {
+        let lidMap = ["246007237447707@lid": "61434035561@s.whatsapp.net"]
+        let raw = [
+            WhatsAppChat(
+                jid: "61434035561@s.whatsapp.net", name: "Brock McFadzean",
+                lastMessageTime: Date(timeIntervalSince1970: 1_000)),
+            WhatsAppChat(
+                jid: "246007237447707@lid", name: "210414809956389",
+                lastMessageTime: Date(timeIntervalSince1970: 2_000)),
+        ]
+        let merged = WhatsAppService.mergeLIDDuplicates(raw, lidMap: lidMap)
+
+        XCTAssertEqual(merged.count, 1, "the two rows must merge into a single chat")
+        let chat = try XCTUnwrap(merged.first)
+        XCTAssertEqual(chat.jid, "61434035561@s.whatsapp.net", "must canonicalize on the phone-number JID")
+        XCTAssertEqual(chat.name, "Brock McFadzean", "must prefer the real name over the raw numeric LID name")
+        XCTAssertEqual(
+            chat.lastMessageTime, Date(timeIntervalSince1970: 2_000),
+            "must keep the most recent last-message time across both halves"
+        )
+    }
+
+    func testMergeLIDDuplicatesLeavesUnrelatedChatsAlone() {
+        let raw = [
+            WhatsAppChat(jid: "111@s.whatsapp.net", name: "Alice", lastMessageTime: Date()),
+            WhatsAppChat(jid: "222@s.whatsapp.net", name: "Bob", lastMessageTime: Date()),
+        ]
+        let merged = WhatsAppService.mergeLIDDuplicates(raw, lidMap: [:])
+        XCTAssertEqual(merged.count, 2, "chats with no LID/PN counterpart must be left untouched")
+    }
+
+    func testLoadChatsAndLoadMessagesReconcileALiveLIDSplitConversation() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WhatsAppServiceTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: tempDir.appendingPathComponent("store", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+            WhatsAppService.setBridgeDirectoryOverride(nil)
+        }
+        WhatsAppService.setBridgeDirectoryOverride(tempDir.path)
+
+        // messages.db: two chat rows and messages under BOTH forms for the
+        // same real contact, matching what was found in the live bridge DB.
+        let messagesDBPath = tempDir.appendingPathComponent("store/messages.db").path
+        let messagesDB = try DatabaseQueue(path: messagesDBPath)
+        try await messagesDB.write { db in
+            try db.execute(sql: """
+                CREATE TABLE chats (
+                    jid TEXT PRIMARY KEY, name TEXT, last_message_time TIMESTAMP
+                )
+                """)
+            try db.execute(sql: """
+                CREATE TABLE messages (
+                    id TEXT, chat_jid TEXT, sender TEXT, content TEXT,
+                    timestamp TIMESTAMP, is_from_me BOOLEAN, media_type TEXT,
+                    PRIMARY KEY (id, chat_jid)
+                )
+                """)
+            try db.execute(sql: """
+                INSERT INTO chats (jid, name, last_message_time)
+                VALUES ('61434035561@s.whatsapp.net', 'Brock McFadzean', ?)
+                """, arguments: [Date(timeIntervalSince1970: 1_000)])
+            try db.execute(sql: """
+                INSERT INTO chats (jid, name, last_message_time)
+                VALUES ('246007237447707@lid', '210414809956389', ?)
+                """, arguments: [Date(timeIntervalSince1970: 2_000)])
+            try db.execute(sql: """
+                INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me)
+                VALUES ('old-1', '61434035561@s.whatsapp.net', '61434035561', 'an older message', ?, 0)
+                """, arguments: [Date(timeIntervalSince1970: 500)])
+            try db.execute(sql: """
+                INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me)
+                VALUES ('new-lid-1', '246007237447707@lid', '246007237447707', 'a newer reply via LID', ?, 0)
+                """, arguments: [Date(timeIntervalSince1970: 2_000)])
+        }
+
+        // whatsapp.db: the whatsmeow session store's own LID<->PN mapping,
+        // exactly as the real bridge maintains it in whatsmeow_lid_map.
+        let whatsappDBPath = tempDir.appendingPathComponent("store/whatsapp.db").path
+        let whatsappDB = try DatabaseQueue(path: whatsappDBPath)
+        try await whatsappDB.write { db in
+            try db.execute(sql: "CREATE TABLE whatsmeow_lid_map (lid TEXT PRIMARY KEY, pn TEXT UNIQUE NOT NULL)")
+            try db.execute(sql: "INSERT INTO whatsmeow_lid_map (lid, pn) VALUES ('246007237447707', '61434035561')")
+        }
+
+        let service = WhatsAppService()
+        await service.loadChats()
+        XCTAssertEqual(service.chats.count, 1, "the two chat rows for the same contact must merge into one")
+        let chat = try XCTUnwrap(service.chats.first)
+        XCTAssertEqual(chat.jid, "61434035561@s.whatsapp.net")
+        XCTAssertEqual(chat.name, "Brock McFadzean")
+
+        await service.loadMessages(chatJID: "61434035561@s.whatsapp.net")
+        XCTAssertEqual(
+            service.messages.count, 2,
+            "messages from both the phone-number and LID chat_jid rows must appear in one thread"
+        )
+        XCTAssertTrue(service.messages.contains { $0.content == "an older message" })
+        XCTAssertTrue(
+            service.messages.contains { $0.content == "a newer reply via LID" },
+            "a reply stored under the contact's LID chat_jid must surface even though the UI "
+                + "is scoped to the phone-number JID"
+        )
+    }
 }
