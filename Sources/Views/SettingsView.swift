@@ -651,7 +651,7 @@ struct ModelsSettingsTab: View {
     @Environment(MLXInferenceEngine.self) private var engine
     @AppStorage("models.localRoot") private var modelsRoot: String = ""
     @State private var hubModelID: String = ""
-    @State private var downloadingModelID: String? = nil
+    @State private var downloadingModelIDs: Set<String> = []
     @State private var loadingModelID: String? = nil
     private let sampler = ModelActivitySampler.shared
 
@@ -771,7 +771,7 @@ struct ModelsSettingsTab: View {
     private func modelStatus(model: MaestroModel) -> some View {
         let isResident = engine.residentModelsReadout.contains { $0.id == model.id }
 
-        if downloadingModelID == model.id {
+        if downloadingModelIDs.contains(model.id) {
             HStack(spacing: 6) {
                 if let progress = engine.downloadProgress {
                     ProgressView(value: progress.fractionCompleted)
@@ -829,10 +829,10 @@ struct ModelsSettingsTab: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Button {
-                    downloadingModelID = model.id
+                    downloadingModelIDs.insert(model.id)
                     Task {
                         try? await engine.downloadModel(model, repair: true)
-                        downloadingModelID = nil
+                        downloadingModelIDs.remove(model.id)
                         catalog.refreshLocalPaths()
                     }
                 } label: {
@@ -871,10 +871,10 @@ struct ModelsSettingsTab: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Button {
-                        downloadingModelID = model.id
+                        downloadingModelIDs.insert(model.id)
                         Task {
                             try? await engine.downloadModel(model, repair: false)
-                            downloadingModelID = nil
+                            downloadingModelIDs.remove(model.id)
                             catalog.refreshLocalPaths()
                         }
                     } label: {
@@ -889,10 +889,10 @@ struct ModelsSettingsTab: View {
         } else {
             let isRepair = model.localPath != nil
             Button {
-                downloadingModelID = model.id
+                downloadingModelIDs.insert(model.id)
                 Task {
                     try? await engine.downloadModel(model, repair: isRepair)
-                    downloadingModelID = nil
+                    downloadingModelIDs.remove(model.id)
                     catalog.refreshLocalPaths()
                 }
             } label: {

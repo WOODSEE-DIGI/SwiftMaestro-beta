@@ -193,6 +193,16 @@ final class MLXInferenceEngine {
     private let hubDownloader = HFHubDownloader()
     private var generateTask: Task<Void, any Error>?
 
+    /// Serializes model downloads so only one runs at a time. Concurrent
+    /// downloads cause two Python hf_download_helper processes to fight over
+    /// the shared HuggingFace cache (~/.cache/huggingface) and the Python
+    /// venv, corrupting each other's file transfers. Queuing ensures the
+    /// first download completes before the second begins.
+    private var downloadChain: Task<Void, any Error>?
+    /// Mutex protecting `downloadChain` so concurrent callers of
+    /// `downloadModel` don't race on the read-modify-write of the chain.
+    private let downloadMutex = NSLock()
+
     /// Client-side MCP tool source. Set during app launch. When present (and the
     /// model supports tools), discovered MCP tools join the same agentic loop as
     /// the native tools.
@@ -250,6 +260,28 @@ final class MLXInferenceEngine {
     ///   so incomplete/corrupt downloads can be fixed.
     func downloadModel(_ model: MaestroModel, repair: Bool = false) async throws {
         NSLog("[DOWNLOAD] downloadModel called: %@ (repair=%d)", model.huggingFaceID, repair)
+
+        // Serialize: wait for any in-flight download to finish before starting
+        // a new one. Two concurrent Python downloads corrupt each other via the
+        // shared HuggingFace cache and venv. The mutex protects the
+        // read-modify-write of `downloadChain` from concurrent callers.
+        let myChain: Task<Void, any Error> = downloadMutex.withLock {
+            let previous = downloadChain
+            let chain = Task { [weak self] in
+                if let previous { _ = await previous.result }
+                guard let self else { return }
+                try await self.performDownload(model, repair: repair)
+            }
+            downloadChain = chain
+            return chain
+        }
+        try await myChain.value
+    }
+
+    /// The actual download work, called only after the previous download has
+    /// completed (or if there was none). Separated from `downloadModel` so the
+    /// serial-chain logic stays clean.
+    private func performDownload(_ model: MaestroModel, repair: Bool) async throws {
         let repoName = model.huggingFaceID.components(separatedBy: "/").last ?? model.huggingFaceID
         let destination = URL(fileURLWithPath: ModelCatalog.modelsRoot)
             .appendingPathComponent("swiftmaestro-models/\(repoName)", isDirectory: true)
@@ -262,8 +294,6 @@ final class MLXInferenceEngine {
 
         let metadataOnly: Bool
         if FileManager.default.fileExists(atPath: destination.path) {
-            // If weights are already present, this is a metadata repair run.
-            // Skip the weight files and only pull missing templates/configs.
             guard !ModelFileHealthService.isMetadataComplete(for: model) else {
                 NSLog("[DOWNLOAD] metadata already complete, skipping")
                 return
@@ -277,22 +307,6 @@ final class MLXInferenceEngine {
         state = .downloading("Downloading \(model.displayName)…")
         NSLog("[DOWNLOAD] state set to downloading")
 
-        // Observe THIS download's progress specifically, keyed by its own
-        // destination path — not a shared scalar. Multiple models can
-        // download concurrently (HuggingFaceDownloadService tracks progress
-        // per-destination), so this must not read/react to a DIFFERENT
-        // concurrent download's state. An earlier version of this observation
-        // loop read a single shared `.progress`/`.isRunning` pair, so a
-        // second download starting (or finishing) while this one was still
-        // running would incorrectly reset or end-of-loop this one's tracking.
-        //
-        // Known residual limitation: `downloadProgress` itself is still a
-        // single property on this shared engine instance, so the Settings UI
-        // showing more than one model downloading at once will only reflect
-        // whichever download last touched it. The download itself is no
-        // longer affected by concurrency (verified via the per-destination
-        // key below) — only this coarse progress-bar display is imprecise
-        // under concurrent downloads.
         let observed = HuggingFaceDownloadService.shared
         let destinationKey = destination.path
         let progress = Progress(totalUnitCount: 100)
@@ -310,8 +324,6 @@ final class MLXInferenceEngine {
         }
         defer { observation.cancel(); downloadProgress = nil }
 
-        // Pull the HuggingFace token from the project keychain if the user has stored one.
-        // Unauthenticated downloads are rate-limited and can hang on large Xet-hosted files.
         let token = SecretsStore.resolveValue(name: "HUGGINGFACE_TOKEN", currentProject: "SwiftMaestro")
 
         let allowPatterns: [String]
