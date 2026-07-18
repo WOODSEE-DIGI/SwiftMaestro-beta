@@ -228,14 +228,32 @@ def _file_matches(path, patterns):
     return any(fnmatch.fnmatch(path, p) for p in patterns)
 
 
-def _download_with_curl(url, dest, headers):
+def _download_with_curl(url, dest, headers, progress_cb=None):
+    \"\"\"Download a file with curl, calling progress_cb(bytes_downloaded) periodically.\"\"\"
     cmd = ["curl", "-L", "-C", "-", "--fail", "--silent", "--show-error"]
     for k, v in headers.items():
         cmd.extend(["-H", f"{k}: {v}"])
     cmd.extend(["-o", str(dest), url])
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"curl failed ({result.returncode}): {result.stderr}")
+    proc = subprocess.Popen(cmd, stderr=subprocess.PIPE)
+    try:
+        while proc.poll() is None:
+            try:
+                size = dest.stat().st_size if dest.exists() else 0
+                if progress_cb:
+                    progress_cb(size)
+            except OSError:
+                pass
+            time.sleep(1)
+        if proc.returncode != 0:
+            stderr_out = proc.stderr.read().decode(errors="replace") if proc.stderr else ""
+            raise RuntimeError(f"curl failed ({proc.returncode}): {stderr_out}")
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            proc.wait()
+    # Final size report
+    if progress_cb and dest.exists():
+        progress_cb(dest.stat().st_size)
 
 
 def _download_with_hf_hub(repo_id, filename, dest, token, revision):
@@ -296,19 +314,33 @@ def download(req: dict):
         dest = local_dir / name
         dest.parent.mkdir(parents=True, exist_ok=True)
 
-        if dest.exists() and dest.stat().st_size == file["size"] and file["size"] > 0:
+        # Skip files that are already fully downloaded.
+        existing_size = dest.stat().st_size if dest.exists() else 0
+        if existing_size == file["size"] and file["size"] > 0:
             downloaded += file["size"]
             _print_json({"type": "progress", "file": name, "completed": downloaded, "total": total_size})
             continue
 
-        _print_json({"type": "file_start", "file": name, "index": idx + 1, "total_files": len(files)})
+        _print_json({"type": "file_start", "file": name, "index": idx + 1, "total_files": len(files),
+                      "file_size": file["size"], "offset": existing_size})
+
+        # Progress callback: emits byte-level updates during the transfer so
+        # the UI shows a smoothly-advancing bar instead of jumping at file
+        # boundaries.  Reports at most once per second (controlled by the
+        # 1-second sleep in _download_with_curl).
+        bytes_at_file_start = downloaded + existing_size
+        def _progress(size_on_disk, _total=total_size, _base=bytes_at_file_start):
+            _print_json({"type": "progress", "file": name,
+                          "completed": _base + size_on_disk, "total": _total})
 
         url = f"https://huggingface.co/{repo_id}/resolve/{revision}/{name}"
         try:
             if use_curl:
-                _download_with_curl(url, dest, headers)
+                _download_with_curl(url, dest, headers, progress_cb=_progress)
             else:
                 _download_with_hf_hub(repo_id, name, dest, token, revision)
+                if dest.exists():
+                    _progress(dest.stat().st_size)
         except Exception as e:
             _print_json({"type": "error", "message": f"Failed to download {name}: {e}"})
             sys.exit(1)

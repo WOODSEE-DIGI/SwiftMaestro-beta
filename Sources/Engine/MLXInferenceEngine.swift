@@ -157,6 +157,8 @@ final class MLXInferenceEngine {
     // MARK: - Published state
 
     private(set) var state: EngineState = .idle
+    /// Legacy single-download progress. Kept for OnboardingView; Settings
+    /// uses ``downloadProgressForModel`` for per-model accuracy.
     private(set) var downloadProgress: Progress?
     private(set) var tokensPerSecond: Double = 0
 
@@ -347,6 +349,17 @@ final class MLXInferenceEngine {
             token: token
         )
         state = .idle
+    }
+
+    /// Per-model download progress (0...1), or `nil` if that model is not
+    /// currently downloading. Reads directly from the per-destination-key
+    /// tracking in `HuggingFaceDownloadService`, so each queued/downloading
+    /// model gets its own independent value.
+    func downloadProgressForModel(_ model: MaestroModel) -> Double? {
+        let repoName = model.huggingFaceID.components(separatedBy: "/").last ?? model.huggingFaceID
+        let dest = URL(fileURLWithPath: ModelCatalog.modelsRoot)
+            .appendingPathComponent("swiftmaestro-models/\(repoName)").path
+        return HuggingFaceDownloadService.shared.progress(forDestination: dest)
     }
 
     // MARK: - Model Loading

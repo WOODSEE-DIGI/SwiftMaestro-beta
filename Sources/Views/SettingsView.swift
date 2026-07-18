@@ -772,17 +772,22 @@ struct ModelsSettingsTab: View {
         let isResident = engine.residentModelsReadout.contains { $0.id == model.id }
 
         if downloadingModelIDs.contains(model.id) {
+            let progress = engine.downloadProgressForModel(model)
             HStack(spacing: 6) {
-                if let progress = engine.downloadProgress {
-                    ProgressView(value: progress.fractionCompleted)
+                if let progress {
+                    ProgressView(value: progress)
                         .frame(width: 60)
+                    Text("\(Int(progress * 100))%")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 32, alignment: .trailing)
                 } else {
                     ProgressView()
                         .frame(width: 16)
+                    Text("Queued…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                Text("Downloading…")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
         } else if loadingModelID == model.id {
             HStack(spacing: 6) {
