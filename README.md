@@ -37,7 +37,7 @@ A native macOS AI assistant that runs large language models **fully on-device** 
 On first launch a guided onboarding walks you through picking and downloading a language model. A separate one-time setup dialog installs the speech recognition model (~3 GB) when you first use the microphone.
 
 ## Models
-Models download on first use from Hugging Face and are cached locally. Pick one in **Settings → Models**. You can also point to an existing local collection or fall back to a local LM Studio / Ollama / vLLM endpoint.
+Models download on first use from Hugging Face and are cached locally. Pick one in **Settings → Models**.
 
 ### Verified core models
 These models are the supported focus for SwiftMaestro and have verified tool support:
