@@ -68,21 +68,32 @@ final class ModelFileHealthServiceTests: XCTestCase {
         XCTAssertEqual(ModelFileHealthService.missingWeightShards(for: model), ["model-00002-of-00003.safetensors"])
     }
 
-    func testMissingIndexFallsBackLeniently() throws {
-        // The exact real-world failure: index.json itself is ALSO missing
-        // (download died before it was ever written), leaving only 2 loose
-        // shard files with nothing to validate against structurally. This
-        // can't be detected as "missing a specific shard" without the index,
-        // so this documents the known lenient-fallback behavior rather than
-        // asserting a false failure.
+    func testMissingIndexStillCatchesMissingShardViaSelfDescribingFilenames() throws {
+        // The EXACT real-world failure that caused the crash: index.json
+        // itself is ALSO missing (the download died before it was ever
+        // written), leaving only shards 1 and 3 of 3 present. HuggingFace's
+        // sharded-safetensors filenames are self-describing
+        // (model-00001-of-00003.safetensors declares "3 total shards" right
+        // in the name), so this must be caught even with no index to read.
+        // An earlier version of this fix fell back to "at least one
+        // .safetensors exists" here and wrongly reported this as complete -
+        // this test guards against regressing that.
         try writeFile("model-00001-of-00003.safetensors")
+        // model-00002-of-00003.safetensors intentionally NOT written.
         try writeFile("model-00003-of-00003.safetensors")
 
         let model = makeModel()
-        // No index to validate shard names against, but at least one
-        // .safetensors file exists -> lenient fallback treats this as
-        // "complete" (can't prove otherwise without the index). This is a
-        // known limitation, documented rather than silently assumed.
+        XCTAssertFalse(ModelFileHealthService.weightsAreComplete(for: model))
+        XCTAssertEqual(ModelFileHealthService.missingWeightShards(for: model), ["model-00002-of-00003.safetensors"])
+    }
+
+    func testCompleteShardSetWithNoIndexPasses() throws {
+        // No index.json at all, but all 3 self-describing shard files present.
+        try writeFile("model-00001-of-00003.safetensors")
+        try writeFile("model-00002-of-00003.safetensors")
+        try writeFile("model-00003-of-00003.safetensors")
+
+        let model = makeModel()
         XCTAssertTrue(ModelFileHealthService.weightsAreComplete(for: model))
     }
 

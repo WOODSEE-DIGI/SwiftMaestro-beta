@@ -112,13 +112,21 @@ enum ModelFileHealthService {
         missingWeightShards(for: model).isEmpty
     }
 
-    /// The shard filenames (relative to the model directory) that
-    /// `model.safetensors.index.json` declares but that are missing or
-    /// zero-length on disk. Empty when the checkpoint is a single-file
-    /// (`model.safetensors` / `model-00001-of-00001.safetensors`) model, or
-    /// when there's no index to validate against and at least one
-    /// `.safetensors` file is present (an unrecognized-but-plausible layout —
-    /// treated leniently rather than as a false failure).
+    /// The shard filenames (relative to the model directory) that this
+    /// checkpoint needs but that are missing or zero-length on disk. Empty
+    /// when the checkpoint is a single-file (`model.safetensors` /
+    /// `model-00001-of-00001.safetensors`) model.
+    ///
+    /// Prefers `model.safetensors.index.json`'s `weight_map` when present
+    /// (the authoritative source), but does NOT require it: an interrupted
+    /// download can die before the index file itself is ever written, and
+    /// that's exactly the real-world case that caused a crash — 2 of 3 shards
+    /// present, index.json missing entirely, and the OLD fallback here (just
+    /// checking "does at least one .safetensors file exist") wrongly reported
+    /// that as complete. HuggingFace's sharded-safetensors filenames are
+    /// self-describing (`model-00002-of-00003.safetensors`), so when the
+    /// index is missing this parses the total shard count directly out of
+    /// whatever shard filenames ARE present and checks all of them exist.
     static func missingWeightShards(for model: MaestroModel) -> [String] {
         guard let localPath = model.localPath else { return ["(no local path)"] }
         let directory = URL(fileURLWithPath: localPath)
@@ -141,18 +149,53 @@ enum ModelFileHealthService {
             return []
         }
 
-        // No index and no recognized single-shard name: fall back to the old
-        // lenient check (at least one .safetensors file anywhere) rather than
-        // flagging an unfamiliar-but-valid layout as broken.
+        // No index, but the directory may still contain multi-shard files
+        // named `model-XXXXX-of-YYYYY.safetensors` — that pattern is
+        // self-describing, so derive the expected shard set from it directly
+        // rather than trusting the (possibly also-missing) index file.
         guard let enumerator = fm.enumerator(
             at: directory,
             includingPropertiesForKeys: [.isRegularFileKey],
             options: [.skipsHiddenFiles, .skipsPackageDescendants])
         else { return ["(could not enumerate directory)"] }
+
+        var anyShardFound = false
         for case let fileURL as URL in enumerator where fileURL.pathExtension == "safetensors" {
-            return []
+            anyShardFound = true
+            if let (_, total, digits) = parseShardName(fileURL.lastPathComponent) {
+                return (1...total)
+                    .map { shardFilename(index: $0, total: total, digits: digits) }
+                    .filter { !fileExists($0, in: directory) }
+                    .sorted()
+            }
         }
-        return ["(no .safetensors files found)"]
+
+        // At least one .safetensors file exists but it doesn't match the
+        // recognized sharded-naming pattern (an unfamiliar-but-plausible
+        // layout) — treat leniently rather than flagging it as broken.
+        return anyShardFound ? [] : ["(no .safetensors files found)"]
+    }
+
+    /// Parses `model-00002-of-00003.safetensors` (any prefix before the shard
+    /// numbers, any zero-padding width) into (index: 2, total: 3, digits: 5).
+    private static func parseShardName(_ filename: String) -> (index: Int, total: Int, digits: Int)? {
+        guard let regex = try? NSRegularExpression(pattern: #"-(\d+)-of-(\d+)\.safetensors$"#) else { return nil }
+        let range = NSRange(filename.startIndex..., in: filename)
+        guard let match = regex.firstMatch(in: filename, range: range),
+              let indexRange = Range(match.range(at: 1), in: filename),
+              let totalRange = Range(match.range(at: 2), in: filename),
+              let index = Int(filename[indexRange]),
+              let total = Int(filename[totalRange])
+        else { return nil }
+        return (index, total, filename[indexRange].count)
+    }
+
+    /// Rebuilds a shard filename matching the naming convention of the file
+    /// `parseShardName` was derived from (`model-`, zero-padding width, `-of-`).
+    private static func shardFilename(index: Int, total: Int, digits: Int) -> String {
+        let indexStr = String(format: "%0\(digits)d", index)
+        let totalStr = String(format: "%0\(digits)d", total)
+        return "model-\(indexStr)-of-\(totalStr).safetensors"
     }
 
     /// Download any missing metadata files from the model's Hugging Face repo.
