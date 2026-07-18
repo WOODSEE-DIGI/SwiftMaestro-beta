@@ -189,36 +189,43 @@ struct WhatsAppView: View {
     }
 
     private var chatList: some View {
-        VStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Chats")
+                .font(.headline)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+                .padding(.top, 8)
+                .padding(.bottom, 4)
+            // `.listStyle(.plain)` alone didn't fix it: the extra leading
+            // margin was actually coming from `Section`, not the list style
+            // — macOS List/NSOutlineView reserves indentation for a
+            // Section's (nonexistent, since there's only ever one) disclosure
+            // hierarchy, and only stops reserving it once a row is selected
+            // and the outline view recomputes its indent level around the
+            // selection. Removing the Section entirely (moving its title to
+            // a plain header row above the List instead) removes the
+            // indentation reservation altogether, so there's nothing to
+            // "correct" once you click a row.
             List(selection: $selectedChatID) {
-                Section("Chats") {
-                    if service.chats.isEmpty {
-                        Text("No chats")
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    } else {
-                        ForEach(service.chats) { chat in
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(chat.name ?? chat.jid)
-                                    .lineLimit(1)
-                                if let time = chat.lastMessageTime {
-                                    Text(time, style: .relative)
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
+                if service.chats.isEmpty {
+                    Text("No chats")
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                } else {
+                    ForEach(service.chats) { chat in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(chat.name ?? chat.jid)
+                                .lineLimit(1)
+                            if let time = chat.lastMessageTime {
+                                Text(time, style: .relative)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
                             }
-                            .tag(chat.jid)
                         }
+                        .tag(chat.jid)
                     }
                 }
             }
-            // The default (sidebar-inferred) list style computes its
-            // leading inset from window/toolbar traits that aren't settled
-            // yet the instant this floating panel first appears, producing
-            // a transient negative-looking left margin that self-corrects a
-            // moment later once those traits catch up. `.plain` has no such
-            // trait-dependent inset to begin with, so there's nothing to
-            // settle into — the layout is correct on the very first frame.
             .listStyle(.plain)
         }
     }
