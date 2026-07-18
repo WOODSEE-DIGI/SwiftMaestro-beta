@@ -143,13 +143,24 @@ struct WhatsAppView: View {
             Text("WhatsApp on your phone → Linked Devices → Link a Device")
                 .font(.callout)
                 .foregroundStyle(.secondary)
+            // Render QR at fixed monospace size — never stretch on resize.
+            let lines = qrText.components(separatedBy: "\n").filter { !$0.isEmpty }
+            let cols = lines.map(\.count).max() ?? 1
+            let rowCount = lines.count
             Text(qrText)
                 .font(.system(size: 6, weight: .regular, design: .monospaced))
                 .lineSpacing(0)
+                .tracking(0)
                 .foregroundStyle(.black)
                 .padding(12)
                 .background(.white)
                 .cornerRadius(8)
+                .frame(
+                    width: CGFloat(cols) * 4.2,
+                    height: CGFloat(rowCount) * 6.0,
+                    alignment: .center
+                )
+                .clipped()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding()
