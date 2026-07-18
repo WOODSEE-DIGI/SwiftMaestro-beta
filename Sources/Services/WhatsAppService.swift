@@ -48,6 +48,12 @@ final class WhatsAppService {
     private var stdoutPipe: Pipe?
     private var isCapturingQR = false
     private var qrLines: [String] = []
+    /// Holds a trailing, not-yet-newline-terminated fragment of stdout
+    /// across separate `consumeOutput` calls. See the doc comment on
+    /// `consumeOutput` for why this is required (the bridge's QR renderer
+    /// writes one syscall per column, so lines routinely arrive split across
+    /// multiple pipe reads).
+    private var pendingLine = ""
 
     private static let bridgeOverrideKey = "whatsapp.bridgeDirectoryOverride"
     private static let sendPort = 8080
@@ -109,6 +115,7 @@ final class WhatsAppService {
         status = .starting
         isCapturingQR = false
         qrLines = []
+        pendingLine = ""
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binaryPath)
@@ -151,6 +158,7 @@ final class WhatsAppService {
         process = nil
         stdoutPipe = nil
         status = .stopped
+        pendingLine = ""
     }
 
     /// Parses stdout incrementally: captures the QR code (consecutive lines
@@ -159,43 +167,74 @@ final class WhatsAppService {
     /// connected/error markers the bridge prints as plain text. Internal (not
     /// private) so tests can feed it sample bridge output directly, without
     /// needing a real running bridge process.
+    ///
+    /// IMPORTANT: `qrterminal.GenerateHalfBlock` (the Go bridge's QR
+    /// renderer) writes to `os.Stdout` with one `Write()` syscall PER
+    /// COLUMN — a single ~60-character QR line can arrive as dozens of
+    /// separate `Pipe.availableData` reads, each with no trailing newline.
+    /// Without buffering, each of those fragments "looks like a QR line"
+    /// (it's built entirely from block-drawing characters) and gets appended
+    /// to `qrLines` as its own line, exploding a ~27-line QR code into
+    /// ~150-200 fragmented "lines" of wildly inconsistent width — which is
+    /// exactly what rendered as a thin, non-square strip. `pendingLine`
+    /// carries any newline-less trailing fragment forward to the next call
+    /// so a logical line is only ever processed once it's actually complete.
     func consumeOutput(_ chunk: String) {
-        for rawLine in chunk.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = String(rawLine)
-            let stripped = Self.stripANSI(line)
+        let combined = pendingLine + chunk
+        let endsWithNewline = combined.hasSuffix("\n")
+        var pieces = combined
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
 
-            if stripped.contains("Scan this QR code with your WhatsApp app:") {
-                isCapturingQR = true
-                qrLines = []
-                continue
-            }
-            if isCapturingQR {
-                if Self.looksLikeQRLine(stripped) {
-                    qrLines.append(stripped)
-                    continue
-                } else if !stripped.trimmingCharacters(in: .whitespaces).isEmpty {
-                    // First non-QR, non-blank line ends the QR block.
-                    isCapturingQR = false
-                    status = .awaitingQRScan(qrLines.joined(separator: "\n"))
-                }
-            }
-            if stripped.contains("Successfully connected and authenticated!")
-                || stripped.contains("Connected to WhatsApp! Type 'help' for commands.") {
-                isCapturingQR = false
-                status = .connected
-                Task { await self.loadChats() }
-            } else if stripped.contains("Failed to establish stable connection")
-                || stripped.contains("Timeout waiting for QR code scan")
-                || stripped.contains("Failed to connect") {
-                isCapturingQR = false
-                status = .error(stripped.trimmingCharacters(in: .whitespacesAndNewlines))
-            }
+        if endsWithNewline {
+            pendingLine = ""
+        } else {
+            // The last piece has no terminating newline yet — it's an
+            // incomplete line (or line fragment); hold it for the next read
+            // instead of processing it prematurely.
+            pendingLine = pieces.isEmpty ? "" : pieces.removeLast()
         }
+
+        for line in pieces {
+            processLine(line)
+        }
+
         // If the QR block was still being captured when this chunk ended
         // (common — the block often arrives as one big write), surface it
         // now rather than waiting for a line that never comes.
         if isCapturingQR, !qrLines.isEmpty {
             status = .awaitingQRScan(qrLines.joined(separator: "\n"))
+        }
+    }
+
+    private func processLine(_ rawLine: String) {
+        let stripped = Self.stripANSI(rawLine)
+
+        if stripped.contains("Scan this QR code with your WhatsApp app:") {
+            isCapturingQR = true
+            qrLines = []
+            return
+        }
+        if isCapturingQR {
+            if Self.looksLikeQRLine(stripped) {
+                qrLines.append(stripped)
+                return
+            } else if !stripped.trimmingCharacters(in: .whitespaces).isEmpty {
+                // First non-QR, non-blank line ends the QR block.
+                isCapturingQR = false
+                status = .awaitingQRScan(qrLines.joined(separator: "\n"))
+            }
+        }
+        if stripped.contains("Successfully connected and authenticated!")
+            || stripped.contains("Connected to WhatsApp! Type 'help' for commands.") {
+            isCapturingQR = false
+            status = .connected
+            Task { await self.loadChats() }
+        } else if stripped.contains("Failed to establish stable connection")
+            || stripped.contains("Timeout waiting for QR code scan")
+            || stripped.contains("Failed to connect") {
+            isCapturingQR = false
+            status = .error(stripped.trimmingCharacters(in: .whitespacesAndNewlines))
         }
     }
 
