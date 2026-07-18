@@ -249,11 +249,14 @@ final class MLXInferenceEngine {
     /// - Parameter repair: When true, remove any existing local directory first
     ///   so incomplete/corrupt downloads can be fixed.
     func downloadModel(_ model: MaestroModel, repair: Bool = false) async throws {
+        NSLog("[DOWNLOAD] downloadModel called: %@ (repair=%d)", model.huggingFaceID, repair)
         let repoName = model.huggingFaceID.components(separatedBy: "/").last ?? model.huggingFaceID
         let destination = URL(fileURLWithPath: ModelCatalog.modelsRoot)
             .appendingPathComponent("swiftmaestro-models/\(repoName)", isDirectory: true)
+        NSLog("[DOWNLOAD] destination: %@", destination.path)
 
         if repair, FileManager.default.fileExists(atPath: destination.path) {
+            NSLog("[DOWNLOAD] removing existing directory for repair")
             try FileManager.default.removeItem(at: destination)
         }
 
@@ -261,13 +264,18 @@ final class MLXInferenceEngine {
         if FileManager.default.fileExists(atPath: destination.path) {
             // If weights are already present, this is a metadata repair run.
             // Skip the weight files and only pull missing templates/configs.
-            guard !ModelFileHealthService.isMetadataComplete(for: model) else { return }
+            guard !ModelFileHealthService.isMetadataComplete(for: model) else {
+                NSLog("[DOWNLOAD] metadata already complete, skipping")
+                return
+            }
             metadataOnly = true
         } else {
             metadataOnly = false
         }
+        NSLog("[DOWNLOAD] metadataOnly=%d", metadataOnly)
 
         state = .downloading("Downloading \(model.displayName)…")
+        NSLog("[DOWNLOAD] state set to downloading")
 
         // Observe THIS download's progress specifically, keyed by its own
         // destination path — not a shared scalar. Multiple models can

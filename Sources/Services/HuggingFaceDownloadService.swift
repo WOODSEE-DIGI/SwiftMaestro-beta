@@ -48,6 +48,7 @@ final class HuggingFaceDownloadService: ObservableObject {
             destination = root.appendingPathComponent(repoName, isDirectory: true)
         }
         let key = destination.path
+        NSLog("[HF DOWNLOAD] starting download: %@ -> %@", repoID, key)
 
         let fm = FileManager.default
         try? fm.createDirectory(at: destination, withIntermediateDirectories: true)
@@ -64,7 +65,9 @@ final class HuggingFaceDownloadService: ObservableObject {
         activeDownloads[key] = 0
         defer { activeDownloads[key] = nil }
 
+        NSLog("[HF DOWNLOAD] preparing helper...")
         let (scriptPath, pythonExecutable) = try await prepareHelper()
+        NSLog("[HF DOWNLOAD] helper ready: python=%@ script=%@", pythonExecutable, scriptPath)
 
         return try await withCheckedThrowingContinuation { continuation in
             let process = Process()
@@ -96,8 +99,10 @@ final class HuggingFaceDownloadService: ObservableObject {
             }
 
             do {
+                NSLog("[HF DOWNLOAD] launching python process...")
                 try process.run()
                 self.processes[key] = process
+                NSLog("[HF DOWNLOAD] python process launched (pid=%d)", process.processIdentifier)
                 // Feed the request JSON to stdin and close it.
                 let data = try JSONSerialization.data(withJSONObject: request, options: [.sortedKeys])
                 stdinPipe.fileHandleForWriting.write(data)

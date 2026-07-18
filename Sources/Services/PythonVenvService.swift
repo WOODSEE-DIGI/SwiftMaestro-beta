@@ -121,11 +121,16 @@ final class PythonVenvService {
     /// result instead of launching a second concurrent `pip install` against
     /// the same venv.
     func ensureVisionDependencies() async throws {
-        if visionDependenciesEnsured { return }
+        if visionDependenciesEnsured {
+            NSLog("[VENV] vision dependencies already ensured, skipping")
+            return
+        }
         if let existingTask = visionDependenciesTask {
+            NSLog("[VENV] awaiting existing vision dependencies task")
             try await existingTask.value
             return
         }
+        NSLog("[VENV] installing vision dependencies...")
         let task = Task {
             try await ensurePackages([
                 "mlx_vlm",
@@ -143,8 +148,10 @@ final class PythonVenvService {
             try await task.value
             visionDependenciesEnsured = true
             visionDependenciesTask = nil
+            NSLog("[VENV] vision dependencies installed successfully")
         } catch {
             visionDependenciesTask = nil
+            NSLog("[VENV] vision dependencies install failed: %@", error.localizedDescription)
             throw error
         }
     }
