@@ -237,18 +237,15 @@ extension MaestroTools {
         do {
             let lists = try await MacOSIntegration.fetchReminderLists()
             guard !lists.isEmpty else { return "No reminder lists found." }
-            let mapped: [[String: Any]] = lists.map { list in
-                [
-                    "id": list.id,
-                    "title": list.title,
-                    "is_default": list.isDefault,
-                ]
+            let lines = lists.map { list in
+                let defaultMark = list.isDefault ? " (Default)" : ""
+                return "- \(list.title)\(defaultMark)"
             }
-            return jsonString([
-                "count": lists.count,
-                "lists": mapped,
-                "note": "Use the 'title' of a list as the 'list' argument for create_reminder and list_reminders.",
-            ])
+            return (
+                "You have \(lists.count) reminder list(s):\n"
+                + lines.joined(separator: "\n")
+                + "\n\nUse the exact list name as the 'list' argument for create_reminder and list_reminders."
+            )
         } catch { return errorJSON(error.localizedDescription) }
     }
 

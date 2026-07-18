@@ -25,6 +25,9 @@ final class EventKitStore {
     private(set) var reminders: [MacOSIntegration.ReminderItem] = []
     private(set) var reminderLists: [MacOSIntegration.ReminderList] = []
 
+    /// The currently selected list for the Reminders panel. `nil` means "All lists".
+    var selectedReminderList: String? = nil
+
     var calendarError: String?
     var remindersError: String?
 
@@ -117,6 +120,12 @@ final class EventKitStore {
         } catch {
             remindersError = error.localizedDescription
         }
+    }
+
+    /// Load both the list catalog and the reminders for the currently selected list.
+    func refreshReminders() async {
+        await loadReminderLists()
+        await loadReminders(listName: selectedReminderList)
     }
 
     // MARK: - Create

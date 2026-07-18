@@ -2,7 +2,7 @@ import SwiftUI
 
 // MARK: - Reminders view
 
-/// Native Apple Reminders reader with a minimal form to add new reminders.
+/// Native Apple Reminders reader with a list picker and a minimal form to add new reminders.
 struct RemindersView: View {
     @Environment(EventKitStore.self) private var store
     @Environment(ThemeStore.self) private var theme
@@ -11,6 +11,7 @@ struct RemindersView: View {
     @State private var newDue = Date()
     @State private var hasDue = false
     @State private var newNotes = ""
+    @State private var newList: String? = nil
     @State private var isAdding = false
 
     var body: some View {
@@ -44,7 +45,7 @@ struct RemindersView: View {
             }
         }
         .task {
-            await store.loadReminders()
+            await store.refreshReminders()
         }
     }
 
@@ -52,8 +53,11 @@ struct RemindersView: View {
 
     private var header: some View {
         HStack {
-            Text("Reminders")
-                .font(.headline)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Reminders")
+                    .font(.headline)
+                listPicker
+            }
             Spacer()
             Button {
                 isAdding.toggle()
@@ -61,10 +65,28 @@ struct RemindersView: View {
                 Label("Add", systemImage: "plus")
             }
             Button {
-                Task { await store.loadReminders() }
+                Task { await store.refreshReminders() }
             } label: {
                 Label("Refresh", systemImage: "arrow.clockwise")
             }
+        }
+    }
+
+    /// Compact list selector: "All lists" or a single list name.
+    private var listPicker: some View {
+        Picker("List", selection: Bindable(store).selectedReminderList) {
+            Text("All lists")
+                .tag(String?.none)
+            ForEach(store.reminderLists, id: \.id) { list in
+                Text(list.title)
+                    .tag(String?.some(list.title))
+            }
+        }
+        .pickerStyle(.menu)
+        .labelsHidden()
+        .frame(maxWidth: 220)
+        .onChange(of: store.selectedReminderList) { _, _ in
+            Task { await store.loadReminders(listName: store.selectedReminderList) }
         }
     }
 
@@ -83,10 +105,12 @@ struct RemindersView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    Text(reminder.listTitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    if store.selectedReminderList == nil {
+                        Text(reminder.listTitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
                 if let notes = reminder.notes, !notes.isEmpty {
                     Text(notes)
@@ -106,6 +130,15 @@ struct RemindersView: View {
             Text("New Reminder")
                 .font(.headline)
             TextField("Title", text: $newTitle)
+            Picker("List", selection: $newList) {
+                Text("Default list")
+                    .tag(String?.none)
+                ForEach(store.reminderLists, id: \.id) { list in
+                    Text(list.isDefault ? "\(list.title) (default)" : list.title)
+                        .tag(String?.some(list.title))
+                }
+            }
+            .pickerStyle(.menu)
             Toggle("Due date", isOn: $hasDue)
             if hasDue {
                 DatePicker("Due", selection: $newDue)
@@ -151,11 +184,13 @@ struct RemindersView: View {
             try await store.createReminder(
                 title: newTitle.trimmingCharacters(in: .whitespaces),
                 due: hasDue ? newDue : nil,
-                notes: newNotes.isEmpty ? nil : newNotes
+                notes: newNotes.isEmpty ? nil : newNotes,
+                list: newList
             )
             newTitle = ""
             newNotes = ""
             hasDue = false
+            newList = nil
             isAdding = false
         } catch {
             store.remindersError = error.localizedDescription
