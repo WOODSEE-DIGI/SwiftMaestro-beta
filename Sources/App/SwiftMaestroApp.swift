@@ -242,6 +242,7 @@ struct SwiftMaestroApp: App {
                 .environment(messageStore)
                 .environment(theme)
                 .environment(whisperService)
+                .environment(\.mcpClientService, mcpService)
         }
         .defaultSize(width: 900, height: 960)
         // Settings scenes default to `.contentSize`, which pins the window to the

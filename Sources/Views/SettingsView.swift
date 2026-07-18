@@ -1299,10 +1299,29 @@ struct MCPSettingsTab: View {
     }
 }
 
+/// `MCPClientService` is a plain `actor`, not `@Observable`, so it can't use
+/// the newer `@Environment(Type.self)` sugar (that requires Observable
+/// conformance). A classic `EnvironmentKey` works for any reference type.
+private struct MCPClientServiceKey: EnvironmentKey {
+    static let defaultValue: MCPClientService? = nil
+}
+
+extension EnvironmentValues {
+    var mcpClientService: MCPClientService? {
+        get { self[MCPClientServiceKey.self] }
+        set { self[MCPClientServiceKey.self] = newValue }
+    }
+}
+
 struct MCPServerRow: View {
     @Binding var server: MCPServerEntry
     var onDelete: () -> Void
-    @State private var showFields: Bool = true
+    @Environment(\.mcpClientService) private var mcpService
+
+    private enum ViewMode: String, CaseIterable { case summary = "Summary", fields = "Fields", snippet = "Snippet" }
+    @State private var mode: ViewMode = .summary
+    @State private var liveTools: [String] = []
+    @State private var liveConnected = false
 
     var body: some View {
         GroupBox {
@@ -1337,33 +1356,105 @@ struct MCPServerRow: View {
                     + "the prompt for that audience. Fewer advertised tools = smaller "
                     + "prompt = faster prefill. Applies from the next message.")
                 HStack {
-                    Button("Fields") { showFields = true }
-                        .buttonStyle(.bordered)
-                        .tint(showFields ? .blue : .gray)
-                    Button("Snippet") { showFields = false }
-                        .buttonStyle(.bordered)
-                        .tint(!showFields ? .blue : .gray)
+                    ForEach(ViewMode.allCases, id: \.self) { m in
+                        Button(m.rawValue) { mode = m }
+                            .buttonStyle(.bordered)
+                            .tint(mode == m ? .blue : .gray)
+                    }
                 }
-                if showFields {
-                    TextField("Command", text: $server.command).textFieldStyle(.roundedBorder)
-                    TextField("Script path", text: $server.scriptPath).textFieldStyle(.roundedBorder)
-                    TextField("Arguments (one per line; overrides script path)", text: Binding(
-                        get: { (server.args ?? []).joined(separator: "\n") },
-                        set: { newValue in
-                            let parts = newValue
-                                .split(separator: "\n", omittingEmptySubsequences: true)
-                                .map(String.init)
-                            server.args = parts.isEmpty ? nil : parts
-                        }
-                    ), axis: .vertical)
-                        .textFieldStyle(.roundedBorder)
-                        .lineLimit(1...5)
-                    TextField("Env", text: $server.env).textFieldStyle(.roundedBorder)
-                    TextField("Working directory", text: $server.workingDir).textFieldStyle(.roundedBorder)
+                switch mode {
+                case .summary: summary
+                case .fields: fields
+                case .snippet: snippet
                 }
             }
             .padding(6)
         }
+        .task(id: server.name) {
+            guard let mcpService else { return }
+            liveConnected = await mcpService.isConnected(serverName: server.name)
+            liveTools = await mcpService.toolNames(forServer: server.name)
+        }
+    }
+
+    // MARK: - Summary
+
+    private var summary: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: liveConnected ? "checkmark.circle.fill" : "circle.dashed")
+                    .foregroundStyle(liveConnected ? .green : .secondary)
+                Text(liveConnected
+                    ? "Connected — \(liveTools.count) tool\(liveTools.count == 1 ? "" : "s") discovered at last launch"
+                    : (server.enabled
+                        ? "Enabled, but not connected this launch (check the script path, or restart the app)"
+                        : "Disabled"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if !liveTools.isEmpty {
+                Text(liveTools.joined(separator: ", "))
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Divider()
+            Text("What does this server do?").font(.caption.weight(.semibold))
+            TextField(
+                "e.g. \"Web search + page scraping via Firecrawl\" — your own note, for your reference only",
+                text: Binding(get: { server.notes ?? "" }, set: { server.notes = $0.isEmpty ? nil : $0 }),
+                axis: .vertical
+            )
+            .textFieldStyle(.roundedBorder)
+            .lineLimit(1...4)
+        }
+    }
+
+    // MARK: - Fields
+
+    private var fields: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField("Command", text: $server.command).textFieldStyle(.roundedBorder)
+            TextField("Script path", text: $server.scriptPath).textFieldStyle(.roundedBorder)
+            TextField("Arguments (one per line; overrides script path)", text: Binding(
+                get: { (server.args ?? []).joined(separator: "\n") },
+                set: { newValue in
+                    let parts = newValue
+                        .split(separator: "\n", omittingEmptySubsequences: true)
+                        .map(String.init)
+                    server.args = parts.isEmpty ? nil : parts
+                }
+            ), axis: .vertical)
+                .textFieldStyle(.roundedBorder)
+                .lineLimit(1...5)
+            TextField("Env", text: $server.env).textFieldStyle(.roundedBorder)
+            TextField("Working directory", text: $server.workingDir).textFieldStyle(.roundedBorder)
+        }
+    }
+
+    // MARK: - Snippet
+
+    /// Read-only, copyable rendering of this server's launch command — handy
+    /// for comparing/copying definitions when reorganizing a large MCP
+    /// server collection.
+    private var snippet: some View {
+        let argv = ([server.command] + (server.args ?? (server.scriptPath.isEmpty ? [] : [server.scriptPath])))
+            .joined(separator: " ")
+        let envLines = server.env
+            .split(separator: ";")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        var lines = [argv]
+        lines += envLines
+        if !server.workingDir.isEmpty { lines.append("cwd: \(server.workingDir)") }
+        return Text(lines.joined(separator: "\n"))
+            .font(.caption.monospaced())
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
     }
 }
 
@@ -1432,6 +1523,11 @@ struct MCPServerEntry: Identifiable, Codable {
     /// Same as `advertise`, but for DELEGATED sub-agent runs (ask_project_agent/s).
     /// Sub-agents usually need memory/plan tools, not the full tool surface.
     var advertiseToSubAgents: Bool? = nil
+    /// User-written free-text note on what this server actually does, shown in
+    /// the Summary tab. Purely a label for the user's own reference — nothing
+    /// else reads it. Optional (nil = not yet written) so older persisted
+    /// configs still decode.
+    var notes: String? = nil
 
     var advertisesToAgents: Bool { advertise ?? true }
     var advertisesToDelegates: Bool { advertiseToSubAgents ?? true }

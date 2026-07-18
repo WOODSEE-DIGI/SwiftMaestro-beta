@@ -203,6 +203,22 @@ actor MCPClientService {
         routing[name] != nil
     }
 
+    // MARK: - Introspection (Settings "Summary" view)
+
+    /// Whether this server is currently connected (i.e. it was enabled and
+    /// its handshake succeeded at the last time `startEnabledServers()` ran —
+    /// normally app launch). A server the user just enabled won't show as
+    /// connected until the app restarts and reconnects.
+    func isConnected(serverName: String) -> Bool {
+        connections.contains { $0.serverName == serverName }
+    }
+
+    /// The tool names this server actually advertised at connect time, sorted
+    /// for stable display. Empty if the server isn't currently connected.
+    func toolNames(forServer serverName: String) -> [String] {
+        connections.first { $0.serverName == serverName }?.tools.map(\.name).sorted() ?? []
+    }
+
     /// Execute an MCP tool call and return a string result to feed back to the model.
     func execute(_ call: ToolCall) async -> String {
         let name = call.function.name
