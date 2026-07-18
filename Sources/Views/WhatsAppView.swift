@@ -102,23 +102,36 @@ struct WhatsAppView: View {
     // MARK: - QR scan
 
     private func qrScanView(_ qrText: String) -> some View {
-        VStack(spacing: 16) {
-            Text("Scan with WhatsApp")
-                .font(.title3.bold())
-            Text("WhatsApp on your phone → Linked Devices → Link a Device")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+        GeometryReader { geometry in
+            VStack(spacing: 16) {
+                Text("Scan with WhatsApp")
+                    .font(.title3.bold())
+                Text("WhatsApp on your phone → Linked Devices → Link a Device")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
 
-            QRCodeBitmapRenderer(qrText: qrText)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .aspectRatio(1, contentMode: .fit)
-                .background(.white)
-                .cornerRadius(8)
-                .shadow(radius: 4)
-                .padding(.horizontal, 24)
+                // Measure the actual square area available for the QR code so
+                // the bitmap is generated at the exact display size, not scaled
+                // by a nested GeometryReader's interpretation of aspectRatio.
+                let maxQRWidth = geometry.size.width - 48 // subtract horizontal padding
+                let maxQRHeight = geometry.size.height - 120 // reserve space for text
+                let targetSize = min(maxQRWidth, maxQRHeight)
+
+                QRCodeBitmapRenderer(qrText: qrText, targetSize: targetSize)
+                    .frame(width: targetSize, height: targetSize)
+                    .background(.white)
+                    .cornerRadius(8)
+                    .shadow(radius: 4)
+
+                Text(QRCodeBitmapRenderer.diagnostic(for: qrText))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .monospaced()
+            }
+            .padding(.vertical, 24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .padding(.vertical, 24)
     }
 
     // MARK: - Connected
@@ -257,91 +270,129 @@ struct WhatsAppView: View {
 // MARK: - QR bitmap renderer
 
 /// Renders the Unicode half-block QR art produced by `qrterminal` into a
-/// pixel-perfect NSImage. The image is generated at the exact display size
-/// (rounded to integer module pixels) so the QR code is always square, sharp,
-/// and scannable, without relying on SwiftUI text layout or Canvas sizing.
+/// pixel-perfect square `CGImage`. Each text character encodes two vertical
+/// QR modules, so the output matrix is always padded to a square with a white
+/// quiet zone around the decoded modules.
 private struct QRCodeBitmapRenderer: View {
     let qrText: String
+    let targetSize: CGFloat
 
     var body: some View {
-        GeometryReader { geometry in
-            let square = min(geometry.size.width, geometry.size.height)
-            if let image = Self.render(qrText: qrText, targetSize: square) {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-            } else {
-                Color.clear
-            }
+        if let cgImage = Self.render(qrText: qrText, targetSize: targetSize) {
+            Image(decorative: cgImage, scale: 1, orientation: .up)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+        } else {
+            Color.clear
         }
     }
 
-    static func render(qrText: String, targetSize: CGFloat) -> NSImage? {
+    /// Returns a human-readable diagnostic string for the captured QR art.
+    /// Helpful when the bridge output does not arrive in the expected square
+    /// half-block shape.
+    static func diagnostic(for qrText: String) -> String {
         let lines = qrText
             .split(separator: "\n", omittingEmptySubsequences: false)
-            .map { String($0).replacingOccurrences(of: "\t", with: " ") }
+            .map { String($0).replacingOccurrences(of: "\t", with: "    ") }
+        let nonEmpty = lines.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        let counts = nonEmpty.map(\.count)
+        let minWidth = counts.min() ?? 0
+        let maxWidth = counts.max() ?? 0
+        let textRows = nonEmpty.count * 2
+        return "QR: \(nonEmpty.count) lines, \(minWidth)/\(maxWidth) cols, ~\(textRows) modules"
+    }
+
+    static func render(qrText: String, targetSize: CGFloat) -> CGImage? {
+        // Normalize line endings and tabs.
+        let normalized = qrText
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        var lines = normalized
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { String($0).replacingOccurrences(of: "\t", with: "    ") }
+
+        // Drop leading and trailing blank lines.
+        while lines.first?.trimmingCharacters(in: .whitespaces).isEmpty == true {
+            lines.removeFirst()
+        }
+        while lines.last?.trimmingCharacters(in: .whitespaces).isEmpty == true {
+            lines.removeLast()
+        }
         guard !lines.isEmpty else { return nil }
 
-        let columns = lines.map(\.count).max() ?? 0
-        // qrterminal GenerateHalfBlock encodes two vertical modules per character,
-        // so the rendered grid is twice as tall as the text line count.
-        let rows = lines.count * 2
+        // The bridge may occasionally inject blank lines in the middle of the
+        // QR block; keep only the lines that actually contain modules.
+        let qrLines = lines.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        guard !qrLines.isEmpty else { return nil }
+
+        let columns = qrLines.map(\.count).max() ?? 0
+        // qrterminal GenerateHalfBlock encodes two vertical modules per character.
+        let rows = qrLines.count * 2
         guard columns > 0, rows > 0 else { return nil }
 
-        let maxDimension = max(columns, rows)
-        let moduleSize = max(1, Int(floor(targetSize / CGFloat(maxDimension))))
-        let pixelWidth = columns * moduleSize
-        let pixelHeight = rows * moduleSize
-        guard pixelWidth > 0, pixelHeight > 0 else { return nil }
+        // QR codes are square symbols (per ISO/IEC 18004). Pad the bitmap to a
+        // square so that non-square captured text (e.g. width/height mismatch
+        // from terminal wrapping) still renders as a square image.
+        let squareDimension = max(columns, rows)
+        let moduleSize = max(1, Int(floor(targetSize / CGFloat(squareDimension))))
+        let pixelSize = squareDimension * moduleSize
+        guard pixelSize > 0 else { return nil }
 
-        let image = NSImage(size: NSSize(width: pixelWidth, height: pixelHeight))
-        image.lockFocus()
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let bytesPerPixel = 4
+        let bytesPerRow = bytesPerPixel * pixelSize
+        guard let context = CGContext(
+            data: nil,
+            width: pixelSize,
+            height: pixelSize,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
 
-        // Light background first.
-        NSColor.white.setFill()
-        NSBezierPath(rect: NSRect(x: 0, y: 0, width: pixelWidth, height: pixelHeight)).fill()
+        // White background (quiet zone + padding).
+        context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: pixelSize, height: pixelSize))
 
-        for (lineIndex, line) in lines.enumerated() {
-            // Convert from top-down text line to bottom-up NSImage coordinates.
-            let blockBaseY = (rows - (lineIndex + 1) * 2) * moduleSize
+        // Black modules.
+        context.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
 
+        let xOffset = (squareDimension - columns) / 2
+        let yOffset = (squareDimension - rows) / 2
+
+        for (lineIndex, line) in qrLines.enumerated() {
+            // Text lines are top-down; QR matrix coordinates are bottom-up.
+            let baseRow = yOffset + (rows - (lineIndex + 1) * 2)
             for (columnIndex, character) in line.enumerated() {
-                let x = columnIndex * moduleSize
+                let x = (xOffset + columnIndex) * moduleSize
+                // CGImage coordinates are bottom-up; lowerY is the bottom of
+                // the two-row block, upperY is the top of the lower row.
+                let lowerY = baseRow * moduleSize
+                let upperY = lowerY + moduleSize
 
                 switch character {
                 case "█":
-                    // Both rows light — already background.
+                    // White-White (both light): background, nothing to draw.
                     break
                 case " ":
-                    // Both rows dark.
-                    NSColor.black.setFill()
-                    NSBezierPath(rect: NSRect(
-                        x: x, y: blockBaseY,
-                        width: moduleSize, height: moduleSize * 2
-                    )).fill()
+                    // Black-Black (both dark): fill both vertical modules.
+                    context.fill(CGRect(x: x, y: lowerY, width: moduleSize, height: moduleSize * 2))
                 case "▀":
-                    // UPPER HALF BLOCK: top row light, bottom row dark.
-                    NSColor.black.setFill()
-                    NSBezierPath(rect: NSRect(
-                        x: x, y: blockBaseY,
-                        width: moduleSize, height: moduleSize
-                    )).fill()
+                    // White-Black (top light, bottom dark): fill bottom module.
+                    context.fill(CGRect(x: x, y: lowerY, width: moduleSize, height: moduleSize))
                 case "▄":
-                    // LOWER HALF BLOCK: top row dark, bottom row light.
-                    NSColor.black.setFill()
-                    NSBezierPath(rect: NSRect(
-                        x: x, y: blockBaseY + moduleSize,
-                        width: moduleSize, height: moduleSize
-                    )).fill()
+                    // Black-White (top dark, bottom light): fill top module.
+                    context.fill(CGRect(x: x, y: upperY, width: moduleSize, height: moduleSize))
                 default:
-                    // Unknown character: treat as light to avoid phantom modules.
+                    // Any unexpected character is treated as light to avoid
+                    // adding phantom dark modules.
                     break
                 }
             }
         }
 
-        image.unlockFocus()
-        return image
+        return context.makeImage()
     }
 }
 
