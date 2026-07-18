@@ -64,7 +64,7 @@ struct FloatingPanelWindowView: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
-            .background(theme.secondaryBackground)
+            .background(theme.accent.opacity(0.2))
 
             Divider()
 
