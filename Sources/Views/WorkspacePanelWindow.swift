@@ -75,7 +75,7 @@ struct WorkspacePanelWindowView: View {
         HStack(spacing: 6) {
             Image(systemName: target.kind.icon)
                 .font(.caption)
-                .foregroundStyle(theme.accent)
+                .foregroundStyle(theme.panelAccent(for: target.kind))
 
             Text(title)
                 .font(.caption.weight(.semibold))
@@ -111,7 +111,7 @@ struct WorkspacePanelWindowView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .background(theme.accent.opacity(0.2))
+        .background(theme.panelAccent(for: target.kind).opacity(0.2))
     }
 }
 

@@ -33,7 +33,7 @@ struct WorkspacePanelContainer<Content: View>: View {
         HStack(spacing: 6) {
             Image(systemName: kind.icon)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(theme.panelAccent(for: kind))
 
             Text(title)
                 .font(.caption.weight(.semibold))
@@ -69,7 +69,7 @@ struct WorkspacePanelContainer<Content: View>: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .background(Color(nsColor: NSColor(red: 0.16, green: 0.16, blue: 0.18, alpha: 1.0)))
+        .background(theme.panelAccent(for: kind).opacity(0.2))
     }
 
     // MARK: - Context menu

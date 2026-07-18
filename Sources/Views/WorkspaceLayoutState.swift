@@ -50,6 +50,28 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         }
     }
 
+    /// Stable identifier for per-panel-kind persisted state (e.g. a custom
+    /// color in `ThemeStore`) that isn't tied to any one instance. All panels
+    /// of the same kind share one key — individual agent chats and plugin
+    /// instances are NOT distinguished here (that granularity isn't needed
+    /// for panel theming and would blow up the color-picker list).
+    var themeStorageKey: String {
+        switch self {
+        case .agentChat: return "agentChat"
+        case .notesMD: return "notesMD"
+        case .appleNotes: return "appleNotes"
+        case .calendar: return "calendar"
+        case .reminders: return "reminders"
+        case .contacts: return "contacts"
+        case .canvas: return "canvas"
+        case .kanban: return "kanban"
+        case .numbers: return "numbers"
+        case .whatsapp: return "whatsapp"
+        case .plugin: return "plugin"
+        case .terminal: return "terminal"
+        }
+    }
+
     /// Static display name for non-agent panels. Agent chat panels resolve
     /// their name from `WorkspaceStore` at the view layer instead, since the
     /// name can change (rename) independently of this identity.

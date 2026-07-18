@@ -44,6 +44,13 @@ final class ThemeStore {
     static let tasksTextKey = "theme.tasksTextHex"
     static let backgroundKey = "theme.backgroundHex"
     static let secondaryBackgroundKey = "theme.secondaryBackgroundHex"
+    /// Per-panel-kind color overrides (Calendar, Reminders, Contacts, ...),
+    /// keyed by `WorkspacePanelKind.themeStorageKey`. Stored as a single JSON
+    /// blob (`[storageKey: hex]`) rather than one UserDefaults key per panel —
+    /// the panel list grows over time (new Apple app integrations, plugins),
+    /// and a fixed set of named properties (like the sidebar/plans/chat/tasks
+    /// overrides above) doesn't scale to that.
+    static let panelAccentsKey = "theme.panelAccentsJSON"
 
     /// Subtle neutral tint used by the side panels unless the user overrides them.
     static let defaultPanelTint = Color.secondary.opacity(0.04)
@@ -70,6 +77,10 @@ final class ThemeStore {
     private var tasksTextOverride: Color?
     private var backgroundOverride: Color?
     private var secondaryBackgroundOverride: Color?
+    /// Per-panel-kind overrides, keyed by `WorkspacePanelKind.themeStorageKey`.
+    /// Absent key => that panel uses the shared `accent` color (see
+    /// `panelAccent(for:)`).
+    private var panelAccentOverrides: [String: Color] = [:]
 
     init() {
         let defaults = UserDefaults.standard
@@ -87,6 +98,7 @@ final class ThemeStore {
         tasksTextOverride = defaults.string(forKey: Self.tasksTextKey).flatMap(Color.init(hex:))
         backgroundOverride = defaults.string(forKey: Self.backgroundKey).flatMap(Color.init(hex:))
         secondaryBackgroundOverride = defaults.string(forKey: Self.secondaryBackgroundKey).flatMap(Color.init(hex:))
+        panelAccentOverrides = Self.loadPanelAccents(from: defaults)
     }
 
     /// Re-read all persisted theme values. Used after a settings restore so the
@@ -107,6 +119,14 @@ final class ThemeStore {
         tasksTextOverride = defaults.string(forKey: Self.tasksTextKey).flatMap(Color.init(hex:))
         backgroundOverride = defaults.string(forKey: Self.backgroundKey).flatMap(Color.init(hex:))
         secondaryBackgroundOverride = defaults.string(forKey: Self.secondaryBackgroundKey).flatMap(Color.init(hex:))
+        panelAccentOverrides = Self.loadPanelAccents(from: defaults)
+    }
+
+    private static func loadPanelAccents(from defaults: UserDefaults) -> [String: Color] {
+        guard let data = defaults.data(forKey: panelAccentsKey),
+              let hexByKey = try? JSONDecoder().decode([String: String].self, from: data)
+        else { return [:] }
+        return hexByKey.compactMapValues(Color.init(hex:))
     }
 
     // MARK: - Effective colors (override, else the app default)
@@ -146,6 +166,21 @@ final class ThemeStore {
     /// the system control background for subtle contrast.
     var secondaryBackground: Color { secondaryBackgroundOverride ?? Color(nsColor: .controlBackgroundColor) }
 
+    /// The tint a floating panel's header bar should use: that panel kind's
+    /// own override if the user set one, else the shared `accent`. Every
+    /// panel kind defaults to the SAME color (accent) until individually
+    /// customized, matching how the other sections here default to a shared
+    /// system color until overridden.
+    func panelAccent(for kind: WorkspacePanelKind) -> Color {
+        panelAccentOverrides[kind.themeStorageKey] ?? accent
+    }
+
+    /// The raw override for a panel kind, or `nil` if it's following the
+    /// shared accent. Used by Settings to show "not yet customized" state.
+    func panelAccentOverride(for kind: WorkspacePanelKind) -> Color? {
+        panelAccentOverrides[kind.themeStorageKey]
+    }
+
     /// True when any color has been customized (drives the Reset button).
     var hasColorOverrides: Bool {
         accentOverride != nil || userBubbleOverride != nil || userBubbleTextOverride != nil
@@ -153,6 +188,7 @@ final class ThemeStore {
             || plansPanelOverride != nil || plansTextOverride != nil
             || tasksPanelOverride != nil || tasksTextOverride != nil
             || backgroundOverride != nil || secondaryBackgroundOverride != nil
+            || !panelAccentOverrides.isEmpty
     }
 
     // MARK: - ColorPicker bindings
@@ -188,6 +224,16 @@ final class ThemeStore {
         Binding(get: { self.tasksText }, set: { self.setTasksText($0) })
     }
 
+    /// Two-way binding for a single panel kind's header color, for use
+    /// directly in a `ColorPicker`. Reads/writes through `panelAccent(for:)`/
+    /// `setPanelAccent(_:for:)`, so it always shows *some* concrete color
+    /// (the shared accent until overridden) rather than needing an optional.
+    func panelAccentBinding(for kind: WorkspacePanelKind) -> Binding<Color> {
+        Binding(
+            get: { self.panelAccent(for: kind) },
+            set: { self.setPanelAccent($0, for: kind) })
+    }
+
     func setAccent(_ color: Color) { accentOverride = color; persist(Self.accentKey, color) }
     func setUserBubble(_ color: Color) { userBubbleOverride = color; persist(Self.userBubbleKey, color) }
     func setUserBubbleText(_ color: Color) { userBubbleTextOverride = color; persist(Self.userBubbleTextKey, color) }
@@ -200,6 +246,19 @@ final class ThemeStore {
     func setTasksText(_ color: Color) { tasksTextOverride = color; persist(Self.tasksTextKey, color) }
     func setBackground(_ color: Color) { backgroundOverride = color; persist(Self.backgroundKey, color) }
     func setSecondaryBackground(_ color: Color) { secondaryBackgroundOverride = color; persist(Self.secondaryBackgroundKey, color) }
+
+    /// Set (or clear, by passing `nil`) a single panel kind's color override.
+    func setPanelAccent(_ color: Color?, for kind: WorkspacePanelKind) {
+        panelAccentOverrides[kind.themeStorageKey] = color
+        persistPanelAccents()
+    }
+
+    private func persistPanelAccents() {
+        let hexByKey = panelAccentOverrides.compactMapValues(\.hexRGBA)
+        if let data = try? JSONEncoder().encode(hexByKey) {
+            UserDefaults.standard.set(data, forKey: Self.panelAccentsKey)
+        }
+    }
 
     /// Clear all color overrides (back to the system accent / white text).
     func resetColors() {
@@ -215,11 +274,12 @@ final class ThemeStore {
         tasksTextOverride = nil
         backgroundOverride = nil
         secondaryBackgroundOverride = nil
+        panelAccentOverrides = [:]
         for key in [
             Self.accentKey, Self.userBubbleKey, Self.userBubbleTextKey,
             Self.chatBackgroundKey, Self.sidebarKey, Self.sidebarTextKey,
             Self.plansPanelKey, Self.plansTextKey, Self.tasksPanelKey, Self.tasksTextKey,
-            Self.backgroundKey, Self.secondaryBackgroundKey,
+            Self.backgroundKey, Self.secondaryBackgroundKey, Self.panelAccentsKey,
         ] {
             UserDefaults.standard.removeObject(forKey: key)
         }

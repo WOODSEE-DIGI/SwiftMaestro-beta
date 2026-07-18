@@ -165,16 +165,60 @@ struct SettingsView: View {
 
 /// Lets the user tailor UI colors (accent + chat bubble) and force light/dark.
 /// Changes apply live app-wide via `ThemeStore` and persist across launches.
+/// Card-like chrome for a top-level `DisclosureGroup` section in the
+/// Appearance tab: padding, a subtle background, and a rounded border — so
+/// collapsed/expanded sections still read as distinct blocks the way the
+/// previous `GroupBox`-based layout did.
+private struct AppearanceSectionStyle: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .padding(10)
+            .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Color.secondary.opacity(0.15)))
+    }
+}
+
+private extension View {
+    /// Applies `AppearanceSectionStyle`. Used on every collapsible section in
+    /// `AppearanceSettingsTab` so `DisclosureGroup`s (which have no built-in
+    /// card chrome the way `GroupBox` does) still look like distinct blocks.
+    func appearanceSectionStyle() -> some View {
+        modifier(AppearanceSectionStyle())
+    }
+}
+
 struct AppearanceSettingsTab: View {
     @Environment(ThemeStore.self) private var theme
+
+    /// Panel kinds that get their own customizable header color. Excludes
+    /// `.agentChat` (already covered by the "Chat" section's colors) and
+    /// `.plugin` (data-driven, unbounded count — plugin panels just follow
+    /// the shared accent for now).
+    static let customizablePanels: [WorkspacePanelKind] = [
+        .notesMD, .appleNotes, .calendar, .reminders, .contacts,
+        .canvas, .kanban, .numbers, .whatsapp, .terminal,
+    ]
+
+    // Collapsible section state. "Appearance" and "App Panels" open by
+    // default (most commonly touched); the rest start collapsed so the tab
+    // fits on one screen instead of requiring a long scroll.
+    @State private var appearanceExpanded = true
+    @State private var sidebarExpanded = false
+    @State private var plansExpanded = false
+    @State private var chatExpanded = false
+    @State private var tasksExpanded = false
+    @State private var panelsExpanded = true
+    @State private var previewExpanded = false
 
     var body: some View {
         @Bindable var theme = theme
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 12) {
                 // Global appearance: window light/dark plus the accent that tints
                 // buttons, selections, and plan cards across the whole app.
-                GroupBox("Appearance") {
+                DisclosureGroup("Appearance", isExpanded: $appearanceExpanded) {
                     VStack(alignment: .leading, spacing: 10) {
                         Picker("Theme", selection: $theme.appearance) {
                             ForEach(ThemeStore.Appearance.allCases) { mode in
@@ -187,32 +231,38 @@ struct AppearanceSettingsTab: View {
                             .font(.caption).foregroundStyle(.secondary)
                         Divider()
                         ColorPicker("Accent color", selection: theme.accentBinding, supportsOpacity: false)
-                        Text("Tints buttons, selections, links, and plan cards app-wide.")
+                        Text("Tints buttons, selections, links, and plan cards app-wide. Also the "
+                            + "default header color for any panel below that hasn't been customized.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                    .padding(8)
+                    .padding(.top, 8)
                 }
+                .appearanceSectionStyle()
 
                 // Panel-by-panel colors, ordered to match the window left-to-right:
                 // sidebar, then the Plans panel, the chat in the middle, then Tasks.
                 // Each panel groups its background with its text color.
-                GroupBox("Sidebar") {
+                DisclosureGroup("Sidebar", isExpanded: $sidebarExpanded) {
                     VStack(alignment: .leading, spacing: 12) {
                         ColorPicker("Background", selection: theme.sidebarBinding, supportsOpacity: false)
                         ColorPicker("Text", selection: theme.sidebarTextBinding, supportsOpacity: false)
                         Text("Agent list on the left. Leave the background unset to follow the system.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                    .padding(8)
+                    .padding(.top, 8)
                 }
-                GroupBox("Plans panel") {
+                .appearanceSectionStyle()
+
+                DisclosureGroup("Plans panel", isExpanded: $plansExpanded) {
                     VStack(alignment: .leading, spacing: 12) {
                         ColorPicker("Background", selection: theme.plansPanelBinding, supportsOpacity: false)
                         ColorPicker("Card text", selection: theme.plansTextBinding, supportsOpacity: false)
                     }
-                    .padding(8)
+                    .padding(.top, 8)
                 }
-                GroupBox("Chat") {
+                .appearanceSectionStyle()
+
+                DisclosureGroup("Chat", isExpanded: $chatExpanded) {
                     VStack(alignment: .leading, spacing: 12) {
                         ColorPicker("Background", selection: theme.chatBackgroundBinding, supportsOpacity: false)
                         ColorPicker("Your message bubble", selection: theme.userBubbleBinding, supportsOpacity: false)
@@ -220,19 +270,41 @@ struct AppearanceSettingsTab: View {
                         Text("Leave the background unset to follow the system.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                    .padding(8)
+                    .padding(.top, 8)
                 }
-                GroupBox("Tasks panel") {
+                .appearanceSectionStyle()
+
+                DisclosureGroup("Tasks panel", isExpanded: $tasksExpanded) {
                     VStack(alignment: .leading, spacing: 12) {
                         ColorPicker("Background", selection: theme.tasksPanelBinding, supportsOpacity: false)
                         ColorPicker("Text", selection: theme.tasksTextBinding, supportsOpacity: false)
                     }
-                    .padding(8)
+                    .padding(.top, 8)
                 }
+                .appearanceSectionStyle()
 
-                GroupBox("Preview") {
-                    preview.padding(8)
+                // Per-panel header colors for every "app panel" (Calendar,
+                // Reminders, Contacts, ...), docked or floating — both use the
+                // same ThemeStore.panelAccent(for:) lookup.
+                DisclosureGroup("App Panels", isExpanded: $panelsExpanded) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Each panel's header tint. Defaults to the accent color above until "
+                            + "you pick one here.")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .padding(.bottom, 4)
+                        ForEach(Self.customizablePanels, id: \.self) { kind in
+                            panelColorRow(for: kind)
+                        }
+                    }
+                    .padding(.top, 8)
                 }
+                .appearanceSectionStyle()
+
+                DisclosureGroup("Preview", isExpanded: $previewExpanded) {
+                    preview.padding(.top, 8)
+                }
+                .appearanceSectionStyle()
+
                 HStack {
                     Spacer()
                     Button("Reset to defaults") { theme.resetColors() }
@@ -249,6 +321,29 @@ struct AppearanceSettingsTab: View {
             // slider to match our opaque pickers.
             NSColorPanel.shared.mode = .wheel
             NSColorPanel.shared.showsAlpha = false
+        }
+    }
+
+    private func panelColorRow(for kind: WorkspacePanelKind) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: kind.icon)
+                .frame(width: 18)
+                .foregroundStyle(theme.panelAccent(for: kind))
+            Text(kind.staticDisplayName ?? kind.themeStorageKey)
+                .font(.callout)
+            Spacer()
+            ColorPicker("", selection: theme.panelAccentBinding(for: kind), supportsOpacity: false)
+                .labelsHidden()
+            if theme.panelAccentOverride(for: kind) != nil {
+                Button {
+                    theme.setPanelAccent(nil, for: kind)
+                } label: {
+                    Image(systemName: "arrow.uturn.backward.circle")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Reset \(kind.staticDisplayName ?? "this panel") to the accent color")
+            }
         }
     }
 
