@@ -296,16 +296,53 @@ final class WhatsAppService {
                     ORDER BY timestamp DESC LIMIT ?
                     """, arguments: [chatJID, limit])
             }
-            messages = rows.map {
+            let loaded = rows.map {
                 WhatsAppMessage(
                     id: $0["id"], chatJID: $0["chat_jid"], sender: $0["sender"],
                     content: $0["content"], timestamp: $0["timestamp"],
                     isFromMe: $0["is_from_me"], mediaType: $0["media_type"])
             }.reversed()
+
+            // The bridge's `/api/send` handler never writes the message it
+            // just sent back into its own SQLite database, and whatsmeow
+            // doesn't deliver a self-echo `events.Message` for a send made by
+            // THIS client instance (only messages arriving from elsewhere —
+            // the phone, another linked device — get persisted that way). So
+            // a message you just sent would never appear in a DB reload even
+            // though WhatsApp itself confirms delivery. Keep any locally
+            // appended "sent" placeholders (see `appendSentMessage`) that the
+            // DB doesn't know about yet, and drop one only once a real row
+            // with matching content shows up (e.g. from a future history
+            // sync), so the outgoing message never visually disappears and
+            // never duplicates.
+            let stillPendingLocalOnly = messages.filter { message in
+                message.chatJID == chatJID
+                    && message.id.hasPrefix(Self.localMessageIDPrefix)
+                    && !loaded.contains { $0.isFromMe && $0.content == message.content }
+            }
+            messages = (Array(loaded) + stillPendingLocalOnly)
+                .sorted { ($0.timestamp ?? .distantPast) < ($1.timestamp ?? .distantPast) }
             error = nil
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    private static let localMessageIDPrefix = "local-pending-"
+
+    /// Optimistically appends a message you just sent so it appears
+    /// immediately, without waiting for (or depending on) the bridge ever
+    /// persisting it — see the comment in `loadMessages` for why it doesn't.
+    func appendSentMessage(chatJID: String, text: String) {
+        messages.append(WhatsAppMessage(
+            id: Self.localMessageIDPrefix + UUID().uuidString,
+            chatJID: chatJID,
+            sender: nil,
+            content: text,
+            timestamp: Date(),
+            isFromMe: true,
+            mediaType: nil
+        ))
     }
 
     // MARK: - Sending (via the bridge's local REST API — it owns the live connection)

@@ -259,6 +259,11 @@ struct WhatsAppView: View {
         do {
             try await service.sendMessage(to: chatJID, text: text)
             composeText = ""
+            // Show it immediately — the bridge doesn't persist messages it
+            // sends via its own REST API back into its SQLite database (see
+            // WhatsAppService.loadMessages), so without this the message
+            // would send successfully but never appear here.
+            service.appendSentMessage(chatJID: chatJID, text: text)
             await service.loadMessages(chatJID: chatJID)
         } catch {
             // Errors surface via the bridge's own status/error state elsewhere;

@@ -1,4 +1,5 @@
 import XCTest
+import GRDB
 @testable import SwiftMaestro
 
 @MainActor
@@ -189,6 +190,127 @@ final class WhatsAppServiceTests: XCTestCase {
         XCTAssertEqual(
             stillFirstText, firstText,
             "an incomplete, newline-less fragment must stay buffered rather than appear in the QR text early"
+        )
+    }
+
+    // MARK: - Sent-message visibility
+    //
+    // The bridge's `/api/send` handler only calls `client.SendMessage` and
+    // returns success/failure - it never writes the outgoing message into
+    // its own SQLite database. whatsmeow also doesn't deliver a self-echo
+    // `events.Message` for a send made by THIS client instance (only
+    // messages arriving from elsewhere, e.g. the phone or another linked
+    // device, get persisted that way). So a message you just sent would
+    // send successfully (confirmed on the phone) but never appear in
+    // SwiftMaestro, because `loadMessages` only ever reads from that same
+    // SQLite database. These tests pin the client-side optimistic-append
+    // fix and its DB-reload-safe merge behavior.
+
+    func testAppendSentMessageShowsImmediatelyWithoutWaitingForTheBridgeDB() {
+        let service = WhatsAppService()
+        service.appendSentMessage(chatJID: "123@s.whatsapp.net", text: "hello there")
+
+        XCTAssertEqual(service.messages.count, 1)
+        XCTAssertEqual(service.messages.first?.content, "hello there")
+        XCTAssertEqual(service.messages.first?.chatJID, "123@s.whatsapp.net")
+        XCTAssertTrue(service.messages.first?.isFromMe ?? false)
+    }
+
+    func testLoadMessagesPreservesLocallyAppendedSentMessageTheDBDoesNotHaveYet() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WhatsAppServiceTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: tempDir.appendingPathComponent("store", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+            WhatsAppService.setBridgeDirectoryOverride(nil)
+        }
+        WhatsAppService.setBridgeDirectoryOverride(tempDir.path)
+
+        // Seed a bridge-style messages.db with one *incoming* message, the
+        // way the real bridge would after `handleMessage` fires - but
+        // deliberately with no row for an outgoing send, matching the real
+        // bridge's actual (buggy) behavior.
+        let dbPath = tempDir.appendingPathComponent("store/messages.db").path
+        let setupDB = try DatabaseQueue(path: dbPath)
+        try await setupDB.write { db in
+            try db.execute(sql: """
+                CREATE TABLE chats (
+                    jid TEXT PRIMARY KEY, name TEXT, last_message_time TIMESTAMP
+                )
+                """)
+            try db.execute(sql: """
+                CREATE TABLE messages (
+                    id TEXT, chat_jid TEXT, sender TEXT, content TEXT,
+                    timestamp TIMESTAMP, is_from_me BOOLEAN, media_type TEXT,
+                    PRIMARY KEY (id, chat_jid)
+                )
+                """)
+            try db.execute(sql: """
+                INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me)
+                VALUES ('incoming-1', '123@s.whatsapp.net', '123', 'hi there', ?, 0)
+                """, arguments: [Date(timeIntervalSince1970: 1_000_000)])
+        }
+
+        let service = WhatsAppService()
+        service.appendSentMessage(chatJID: "123@s.whatsapp.net", text: "my reply")
+        await service.loadMessages(chatJID: "123@s.whatsapp.net")
+
+        XCTAssertEqual(
+            service.messages.count, 2,
+            "the locally-appended sent message must survive a DB reload, not disappear"
+        )
+        XCTAssertTrue(service.messages.contains { $0.content == "hi there" && !$0.isFromMe })
+        XCTAssertTrue(service.messages.contains { $0.content == "my reply" && $0.isFromMe })
+    }
+
+    func testLoadMessagesDropsLocalPlaceholderOnceDBHasAMatchingRealRow() async throws {
+        // If the bridge (or a future fix) ever does persist the sent
+        // message, the local placeholder should be replaced rather than
+        // shown as a duplicate.
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WhatsAppServiceTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: tempDir.appendingPathComponent("store", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+            WhatsAppService.setBridgeDirectoryOverride(nil)
+        }
+        WhatsAppService.setBridgeDirectoryOverride(tempDir.path)
+
+        let dbPath = tempDir.appendingPathComponent("store/messages.db").path
+        let setupDB = try DatabaseQueue(path: dbPath)
+        try await setupDB.write { db in
+            try db.execute(sql: """
+                CREATE TABLE chats (
+                    jid TEXT PRIMARY KEY, name TEXT, last_message_time TIMESTAMP
+                )
+                """)
+            try db.execute(sql: """
+                CREATE TABLE messages (
+                    id TEXT, chat_jid TEXT, sender TEXT, content TEXT,
+                    timestamp TIMESTAMP, is_from_me BOOLEAN, media_type TEXT,
+                    PRIMARY KEY (id, chat_jid)
+                )
+                """)
+            try db.execute(sql: """
+                INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me)
+                VALUES ('outgoing-real-1', '123@s.whatsapp.net', 'me', 'my reply', ?, 1)
+                """, arguments: [Date()])
+        }
+
+        let service = WhatsAppService()
+        service.appendSentMessage(chatJID: "123@s.whatsapp.net", text: "my reply")
+        await service.loadMessages(chatJID: "123@s.whatsapp.net")
+
+        let matches = service.messages.filter { $0.content == "my reply" && $0.isFromMe }
+        XCTAssertEqual(
+            matches.count, 1,
+            "once the DB has a real row with matching content, the local placeholder must not duplicate it"
         )
     }
 }
