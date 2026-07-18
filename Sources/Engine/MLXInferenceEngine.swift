@@ -19,6 +19,23 @@ enum EngineState: Equatable {
     case error(String)
 }
 
+enum EngineError: LocalizedError {
+    /// The model's local directory is missing one or more weight shards
+    /// declared in its `model.safetensors.index.json` (an interrupted or
+    /// partial download). Loading it would otherwise crash the whole app via
+    /// mlx-swift-lm's internal `Module.update(modules:)` `try!`.
+    case incompleteWeights(model: String, missingShards: [String])
+
+    var errorDescription: String? {
+        switch self {
+        case .incompleteWeights(let model, let missingShards):
+            return "\(model)'s download is incomplete — missing \(missingShards.count) "
+                + "weight file(s): \(missingShards.prefix(3).joined(separator: ", "))"
+                + (missingShards.count > 3 ? ", …" : "") + ". Re-download it in Settings → Models."
+        }
+    }
+}
+
 // MARK: - Generation Output
 
 enum GenerationOutput: Sendable {
@@ -314,6 +331,19 @@ final class MLXInferenceEngine {
         // chat template can cause cryptic loader errors.
         if model.hasLocalWeights {
             await ModelFileHealthService.repairMetadataIfNeeded(for: model)
+        }
+
+        // Verify every weight shard is actually present BEFORE attempting to
+        // load. An interrupted/partial download can leave some shards missing
+        // while others are present; mlx-swift-lm's Module.update(modules:)
+        // hits an internal `try!` on a partial weight set and crashes the
+        // whole app with UpdateError.mismatchedContainers rather than
+        // throwing something catchable. Failing here instead turns that into
+        // a normal, recoverable error the UI can show.
+        let missingShards = ModelFileHealthService.missingWeightShards(for: model)
+        guard missingShards.isEmpty else {
+            state = .error("\(model.displayName): incomplete download (missing \(missingShards.count) weight shard(s))")
+            throw EngineError.incompleteWeights(model: model.displayName, missingShards: missingShards)
         }
 
         // Budget-aware residency: evict the least-recently-used model(s) only if

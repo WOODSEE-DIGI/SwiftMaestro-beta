@@ -78,6 +78,12 @@ struct MaestroModel: Identifiable, Hashable {
     /// True when the model's local directory actually contains at least one
     /// `.safetensors` weight file. A directory with only JSON/tokenizer files
     /// is considered incomplete and should not be treated as downloaded.
+    ///
+    /// This is intentionally lenient (presence, not completeness) — it's used
+    /// as a cheap first gate before the real check. Use
+    /// `hasCompleteLocalWeights` (or `ModelFileHealthService.weightsAreComplete`
+    /// directly) to also verify every shard `model.safetensors.index.json`
+    /// declares is actually present, which this property does NOT check.
     var hasLocalWeights: Bool {
         guard let localPath else { return false }
         let url = URL(fileURLWithPath: localPath)
@@ -90,6 +96,15 @@ struct MaestroModel: Identifiable, Hashable {
             if fileURL.pathExtension == "safetensors" { return true }
         }
         return false
+    }
+
+    /// True when `hasLocalWeights` AND every weight shard the checkpoint
+    /// actually needs (per `model.safetensors.index.json`) is present on
+    /// disk. This is the check that should gate "safe to load" and "show as
+    /// fully downloaded" — an interrupted download can leave some shards
+    /// present and others missing, which `hasLocalWeights` alone can't catch.
+    var hasCompleteLocalWeights: Bool {
+        hasLocalWeights && ModelFileHealthService.weightsAreComplete(for: self)
     }
 
     func hash(into hasher: inout Hasher) { hasher.combine(id) }

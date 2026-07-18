@@ -139,7 +139,7 @@ struct SwiftMaestroApp: App {
                     // downloads or OOM crashes: only auto-load models that are already
                     // present and fit comfortably within half of the installed RAM.
                     if let model = catalog.selectedModel,
-                       model.hasLocalWeights {
+                       model.hasCompleteLocalWeights {
                         let physicalGB = Int(ProcessInfo.processInfo.physicalMemory / 1_073_741_824)
                         let safeAutoLoadGB = max(32, physicalGB / 2)
                         if model.estimatedMemoryGB <= safeAutoLoadGB {

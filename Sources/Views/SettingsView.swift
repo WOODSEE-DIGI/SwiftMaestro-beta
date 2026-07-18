@@ -815,6 +815,34 @@ struct ModelsSettingsTab: View {
                 .foregroundStyle(.secondary)
                 .help("Unload \(model.displayName) from memory")
             }
+        } else if model.hasLocalWeights, !model.hasCompleteLocalWeights {
+            // Weights are present but at least one shard from
+            // model.safetensors.index.json is missing — an interrupted or
+            // partial download. Distinct from "missing metadata": this needs
+            // a real re-download of weight bytes, not just a small config
+            // file repair, and loading it as-is would crash the app.
+            let missingCount = ModelFileHealthService.missingWeightShards(for: model).count
+            HStack(spacing: 4) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                Text("Incomplete download (\(missingCount) shard\(missingCount == 1 ? "" : "s") missing)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button {
+                    downloadingModelID = model.id
+                    Task {
+                        try? await engine.downloadModel(model, repair: true)
+                        downloadingModelID = nil
+                        catalog.refreshLocalPaths()
+                    }
+                } label: {
+                    Image(systemName: "arrow.clockwise.circle")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.blue)
+                .help("Re-download \(model.displayName) — the existing partial download will be removed first")
+            }
+            .help("Some weight files are missing on disk; this model cannot be loaded until re-downloaded")
         } else if model.hasLocalWeights {
             let metadataComplete = ModelFileHealthService.isMetadataComplete(for: model)
             HStack(spacing: 4) {

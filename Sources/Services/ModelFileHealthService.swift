@@ -92,6 +92,69 @@ enum ModelFileHealthService {
         missingFiles(for: model, includeOptional: false).isEmpty
     }
 
+    // MARK: - Weight shard completeness
+
+    /// True when every weight shard this model actually needs is present on
+    /// disk with a non-zero size.
+    ///
+    /// A multi-shard checkpoint's `model.safetensors.index.json` names every
+    /// shard file in its `weight_map`; this is the authoritative list to
+    /// check against — "at least one `.safetensors` file exists somewhere in
+    /// the directory" (the old `MaestroModel.hasLocalWeights` check) is not
+    /// enough. An interrupted download can leave some shards present and
+    /// others missing; loading that partial weight set doesn't throw a
+    /// catchable Swift error — mlx-swift-lm's `Module.update(modules:)` hits
+    /// an internal `try!` and crashes the whole app with
+    /// `UpdateError.mismatchedContainers`. This is checked BEFORE attempting
+    /// to load, so an incomplete download surfaces as a normal error/UI state
+    /// instead of a fatal crash.
+    static func weightsAreComplete(for model: MaestroModel) -> Bool {
+        missingWeightShards(for: model).isEmpty
+    }
+
+    /// The shard filenames (relative to the model directory) that
+    /// `model.safetensors.index.json` declares but that are missing or
+    /// zero-length on disk. Empty when the checkpoint is a single-file
+    /// (`model.safetensors` / `model-00001-of-00001.safetensors`) model, or
+    /// when there's no index to validate against and at least one
+    /// `.safetensors` file is present (an unrecognized-but-plausible layout —
+    /// treated leniently rather than as a false failure).
+    static func missingWeightShards(for model: MaestroModel) -> [String] {
+        guard let localPath = model.localPath else { return ["(no local path)"] }
+        let directory = URL(fileURLWithPath: localPath)
+        let fm = FileManager.default
+
+        let indexURL = directory.appendingPathComponent("model.safetensors.index.json")
+        if fm.fileExists(atPath: indexURL.path),
+           let data = try? Data(contentsOf: indexURL),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let weightMap = json["weight_map"] as? [String: String] {
+            let shardNames = Set(weightMap.values)
+            return shardNames
+                .filter { !fileExists($0, in: directory) }
+                .sorted()
+        }
+
+        // No index — single-shard checkpoints are common (small models).
+        if fileExists("model.safetensors", in: directory)
+            || fileExists("model-00001-of-00001.safetensors", in: directory) {
+            return []
+        }
+
+        // No index and no recognized single-shard name: fall back to the old
+        // lenient check (at least one .safetensors file anywhere) rather than
+        // flagging an unfamiliar-but-valid layout as broken.
+        guard let enumerator = fm.enumerator(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants])
+        else { return ["(could not enumerate directory)"] }
+        for case let fileURL as URL in enumerator where fileURL.pathExtension == "safetensors" {
+            return []
+        }
+        return ["(no .safetensors files found)"]
+    }
+
     /// Download any missing metadata files from the model's Hugging Face repo.
     /// Weight files are never downloaded by this repair path; use
     /// `MLXInferenceEngine.downloadModel` for a full weight download.
