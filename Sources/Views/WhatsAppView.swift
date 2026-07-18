@@ -26,9 +26,29 @@ struct WhatsAppView: View {
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .onChange(of: selectedChatID) { _, newValue in
-            guard let newValue else { return }
-            Task { await service.loadMessages(chatJID: newValue) }
+        .task(id: selectedChatID) {
+            // Loads immediately when a chat is opened, then keeps polling
+            // while it stays open. The bridge has no push mechanism for
+            // incoming messages — SwiftMaestro only ever reads its local
+            // SQLite DB — so an already-open thread needs to re-poll to
+            // pick up replies from the other person; without this, a reply
+            // that arrives while the thread is open never appears until the
+            // user closes and reopens the chat. `.task(id:)` automatically
+            // cancels and restarts this loop when the selected chat changes,
+            // and cancels it entirely when the view disappears.
+            guard let selectedChatID else { return }
+            while !Task.isCancelled {
+                await service.loadMessages(chatJID: selectedChatID)
+                try? await Task.sleep(for: .seconds(3))
+            }
+        }
+        .task {
+            // Keeps the sidebar chat list (names, last-message ordering)
+            // fresh for the same reason. Runs for the view's lifetime.
+            while !Task.isCancelled {
+                await service.loadChats()
+                try? await Task.sleep(for: .seconds(5))
+            }
         }
     }
 
@@ -49,12 +69,17 @@ struct WhatsAppView: View {
                 ProgressView().controlSize(.small)
             case .connected:
                 Button {
-                    Task { await service.loadChats() }
+                    Task {
+                        await service.loadChats()
+                        if let selectedChatID {
+                            await service.loadMessages(chatJID: selectedChatID)
+                        }
+                    }
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
                 .buttonStyle(.plain)
-                .help("Refresh chats")
+                .help("Refresh chats and current thread")
                 Button("Stop") { service.stop() }
                     .buttonStyle(.plain)
                     .foregroundStyle(.red)
