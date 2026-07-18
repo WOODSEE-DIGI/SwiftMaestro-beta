@@ -16,6 +16,7 @@ struct ChatView: View {
     @State private var layoutState = PanelLayoutState.shared
     @State private var showingPlans = false
     @State private var showingMessages = false
+    @State private var showingClearChatConfirm = false
     // Markdown export driven from the Plans panel's context menu.
     @State private var exporting = false
     @State private var exportDocument: MarkdownDocument?
@@ -127,6 +128,22 @@ struct ChatView: View {
                 }
                 .help("Inbox")
             }
+            ToolbarItem {
+                Button(role: .destructive) { showingClearChatConfirm = true } label: {
+                    Label("Clear Chat", systemImage: "trash")
+                }
+                .help("Clear this agent's conversation and start fresh")
+            }
+        }
+        .confirmationDialog(
+            "Clear this conversation?",
+            isPresented: $showingClearChatConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Clear Chat", role: .destructive) { vm.clearChat() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes \(vm.agent.name)'s chat history. Project memory, plans, and tasks are untouched.")
         }
         .sheet(isPresented: $showingPlans) {
             PlansSheet(
