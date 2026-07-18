@@ -185,10 +185,9 @@ final class ModelCatalog {
     }
 
     static let selectedModelKey = "models.selectedModelID"
-    /// Launch default when no selection has been persisted yet. The fast MoE
-    /// (not the 65 GB 122B) so a fresh, self-contained install never preloads or
-    /// auto-downloads a huge model on first use.
-    nonisolated static let defaultModelID = "local-qwen3.6-35b-a3b"
+    /// Launch default when no selection has been persisted yet. The 8-bit
+    /// Gemma 4 navigator — good quality at 26GB, fits 64GB M1 minimum spec.
+    nonisolated static let defaultModelID = "local-gemma4-26b"
 
     var selectedModel: MaestroModel? {
         guard let id = selectedModelID else { return models.first }
@@ -318,7 +317,7 @@ final class ModelCatalog {
         // Loaded in-process from the swiftmaestro-models scan dir.
         MaestroModel(
             id: "local-qwen3.6-35b-a3b",
-            displayName: "Qwen 3.6 35B-A3B (default)",
+            displayName: "Qwen 3.6 35B-A3B",
             huggingFaceID: "lmstudio-community/Qwen3.6-35B-A3B-MLX-4bit",
             isVision: false,
             localPath: localIfPresent("swiftmaestro-models/Qwen3.6-35B-A3B-MLX-4bit"),
@@ -346,7 +345,7 @@ final class ModelCatalog {
         ),
         MaestroModel(
             id: "local-gemma4-26b",
-            displayName: "Gemma 4 26B-A4B (Vision+Text, 8-bit)",
+            displayName: "Gemma 4 26B-A4B (Vision+Text, 8-bit, default)",
             huggingFaceID: "lmstudio-community/gemma-4-26B-A4B-it-MLX-8bit",
             isVision: true,
             localPath: localIfPresent("swiftmaestro-models/gemma-4-26B-A4B-it-MLX-8bit"),
