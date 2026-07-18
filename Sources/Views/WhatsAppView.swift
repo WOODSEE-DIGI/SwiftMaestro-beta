@@ -172,20 +172,16 @@ struct WhatsAppView: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
 
-                GeometryReader { geometry in
-                    QRBlockCodeRenderer(
-                        qrText: qrText,
-                        darkColor: .black,
-                        lightColor: .white
-                    )
-                    .frame(width: min(geometry.size.width, geometry.size.height),
-                           height: min(geometry.size.width, geometry.size.height))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(.white)
-                    .cornerRadius(8)
-                    .shadow(radius: 4)
-                }
-                .frame(minHeight: 200)
+                QRBlockCodeRenderer(
+                    qrText: qrText,
+                    darkColor: .black,
+                    lightColor: .white
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .aspectRatio(1, contentMode: .fit)
+                .background(.white)
+                .cornerRadius(8)
+                .shadow(radius: 4)
                 .padding(.horizontal, 24)
             }
             .padding(.vertical, 24)
@@ -305,12 +301,14 @@ private struct QRBlockCodeRenderer: View {
 
             let cellWidth = size.width / CGFloat(columns)
             let cellHeight = size.height / CGFloat(rows)
-            let cellSize = min(cellWidth, cellHeight)
+            // Round down to an integer point size so every module is drawn on
+            // exact pixel boundaries without anti-aliasing blur.
+            let cellSize = max(1, floor(min(cellWidth, cellHeight)))
 
             let drawWidth = cellSize * CGFloat(columns)
             let drawHeight = cellSize * CGFloat(rows)
-            let offsetX = (size.width - drawWidth) / 2
-            let offsetY = (size.height - drawHeight) / 2
+            let offsetX = floor((size.width - drawWidth) / 2)
+            let offsetY = floor((size.height - drawHeight) / 2)
 
             for (lineIndex, line) in lines.enumerated() {
                 for (columnIndex, character) in line.enumerated() {
@@ -325,13 +323,13 @@ private struct QRBlockCodeRenderer: View {
                         // Both rows dark.
                         fillCell(context: context, x: x, y: y, size: cellSize, heightMultiplier: 2, color: darkColor)
                     case "▀":
-                        // Top row dark, bottom row light.
-                        fillCell(context: context, x: x, y: y, size: cellSize, heightMultiplier: 1, color: darkColor)
-                        fillCell(context: context, x: x, y: y + cellSize, size: cellSize, heightMultiplier: 1, color: lightColor)
-                    case "▄":
-                        // Top row light, bottom row dark.
+                        // UPPER HALF BLOCK: top row light, bottom row dark.
                         fillCell(context: context, x: x, y: y, size: cellSize, heightMultiplier: 1, color: lightColor)
                         fillCell(context: context, x: x, y: y + cellSize, size: cellSize, heightMultiplier: 1, color: darkColor)
+                    case "▄":
+                        // LOWER HALF BLOCK: top row dark, bottom row light.
+                        fillCell(context: context, x: x, y: y, size: cellSize, heightMultiplier: 1, color: darkColor)
+                        fillCell(context: context, x: x, y: y + cellSize, size: cellSize, heightMultiplier: 1, color: lightColor)
                     default:
                         // Unknown block character: render as light so it does
                         // not create phantom dark modules.
