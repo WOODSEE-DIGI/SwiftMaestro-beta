@@ -92,6 +92,16 @@ The assistant has native, in-process tools — no configuration required:
 
 See [`docs/MCP-SERVERS.md`](docs/MCP-SERVERS.md) for how the MCP integration works and what makes a server SwiftMaestro-friendly, and [`docs/mcp-template/`](docs/mcp-template/) for a minimal, verified-working example server.
 
+## Project Status
+
+| Phase | Status | Description |
+| --- | --- | --- |
+| 1 | ✅ Complete | Native macOS app — multi-agent chat, streaming, secure storage, model picker, notarised DMG |
+| 2 | ✅ Complete | On-device tools — memory, file I/O, document indexing, Reminders/Calendar/Notes/Contacts, Apple Shortcuts, speech-to-text, image input, vision proxy |
+| 3 | ✅ Complete | Per-agent model overrides, mid-generation steering, thinking display, multi-model residency, SQLite, shell, WhatsApp bridge |
+| 4 | 🚧 In Progress | Advanced memory — context store, fact graph, learning engine, knowledge promotion |
+| 5 | 📋 Planned | Personalised on-device fine-tuning (LoRA) |
+
 ## Build from source
 Requires Xcode 16+ and [`xcodegen`](https://github.com/yonaskolb/XcodeGen).
 
