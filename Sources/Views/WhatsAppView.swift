@@ -7,40 +7,14 @@ struct WhatsAppView: View {
     @State private var selectedChatID: String?
     @State private var composeText = ""
     @State private var isSending = false
-    @AppStorage("whatsapp.chatListWidth") private var chatListWidth = 240.0
+    @AppStorage("whatsapp.chatListWidth") private var chatListWidth = 260.0
 
     var body: some View {
-        // Show the QR code as a full single-pane view while we are waiting for
-        // the phone to scan. A split-pane layout squishes the block-art code and
-        // breaks the required 1:1 module aspect ratio, so we must give it the
-        // entire available area (matching the way other plugin panels like
-        // Mastodon open as one focused pane).
-        if case .awaitingQRScan(let qrText) = service.status {
-            qrScanView(qrText)
-        } else {
-            ResizablePanelHost(panes: [
-                ResizablePane(
-                    id: "chats",
-                    length: Binding(get: { CGFloat(chatListWidth) }, set: { chatListWidth = Double($0) }),
-                    minLength: 200,
-                    maxLength: 360
-                ) {
-                    chatList
-                },
-                ResizablePane(id: "detail", length: nil) {
-                    detail
-                },
-            ])
-            .onChange(of: selectedChatID) { _, newValue in
-                guard let newValue else { return }
-                Task { await service.loadMessages(chatJID: newValue) }
-            }
-        }
-    }
-
-    // MARK: - Chat list
-
-    private var chatList: some View {
+        // WhatsApp is always a single-pane window. The previous split-pane
+        // layout (ResizablePanelHost) forced a centre divider that squeezed the
+        // QR code and confused the initial view. Every state now fills one
+        // unified pane; only the connected state adds a non-resizable sidebar
+        // for the chat list.
         VStack(spacing: 0) {
             statusHeader
                 .padding(.horizontal, 12)
@@ -49,30 +23,16 @@ struct WhatsAppView: View {
 
             Divider()
 
-            List(selection: $selectedChatID) {
-                Section("Chats") {
-                    if service.chats.isEmpty {
-                        Text(service.status == .connected ? "No chats" : "Not connected")
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    } else {
-                        ForEach(service.chats) { chat in
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(chat.name ?? chat.jid)
-                                    .lineLimit(1)
-                                if let time = chat.lastMessageTime {
-                                    Text(time, style: .relative)
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            .tag(chat.jid)
-                        }
-                    }
-                }
-            }
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .onChange(of: selectedChatID) { _, newValue in
+            guard let newValue else { return }
+            Task { await service.loadMessages(chatJID: newValue) }
         }
     }
+
+    // MARK: - Header
 
     private var statusHeader: some View {
         HStack {
@@ -112,10 +72,10 @@ struct WhatsAppView: View {
         }
     }
 
-    // MARK: - Detail
+    // MARK: - Content
 
     @ViewBuilder
-    private var detail: some View {
+    private var content: some View {
         switch service.status {
         case .awaitingQRScan(let qrText):
             qrScanView(qrText)
@@ -123,8 +83,8 @@ struct WhatsAppView: View {
             ContentUnavailableView(
                 "WhatsApp Bridge Stopped",
                 systemImage: "message",
-                description: Text("Click Start to connect. If your session needs re-linking, "
-                    + "a QR code will appear here to scan with your phone.")
+                description: Text("Click Start in the header to connect. "
+                    + "If your session needs re-linking, a QR code will appear here to scan with your phone.")
             )
         case .starting:
             ContentUnavailableView(
@@ -135,60 +95,82 @@ struct WhatsAppView: View {
                 "WhatsApp Error", systemImage: "exclamationmark.triangle",
                 description: Text(message))
         case .connected:
-            if let selectedChatID {
-                messageThread(chatJID: selectedChatID)
-            } else {
-                ContentUnavailableView(
-                    "Select a Chat", systemImage: "message",
-                    description: Text("Choose a chat from the list to view messages."))
-            }
+            connectedView
         }
     }
 
+    // MARK: - QR scan
+
     private func qrScanView(_ qrText: String) -> some View {
-        VStack(spacing: 0) {
-            HStack {
-                Circle()
-                    .fill(statusColor)
-                    .frame(width: 8, height: 8)
-                Text("WhatsApp")
-                    .font(.headline)
-                Spacer()
-                Button("Stop") { service.stop() }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.red)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(theme.secondaryBackground)
+        VStack(spacing: 16) {
+            Text("Scan with WhatsApp")
+                .font(.title3.bold())
+            Text("WhatsApp on your phone → Linked Devices → Link a Device")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
 
-            Divider()
-
-            VStack(spacing: 16) {
-                Text("Scan with WhatsApp")
-                    .font(.title3.bold())
-                Text("WhatsApp on your phone → Linked Devices → Link a Device")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-
-                QRBlockCodeRenderer(
-                    qrText: qrText,
-                    darkColor: .black,
-                    lightColor: .white
-                )
+            QRCodeBitmapRenderer(qrText: qrText)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .aspectRatio(1, contentMode: .fit)
                 .background(.white)
                 .cornerRadius(8)
                 .shadow(radius: 4)
                 .padding(.horizontal, 24)
-            }
-            .padding(.vertical, 24)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.vertical, 24)
     }
+
+    // MARK: - Connected
+
+    private var connectedView: some View {
+        HStack(spacing: 0) {
+            chatList
+                .frame(width: CGFloat(chatListWidth))
+            Divider()
+            detail
+        }
+    }
+
+    private var chatList: some View {
+        VStack(spacing: 0) {
+            List(selection: $selectedChatID) {
+                Section("Chats") {
+                    if service.chats.isEmpty {
+                        Text("No chats")
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    } else {
+                        ForEach(service.chats) { chat in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(chat.name ?? chat.jid)
+                                    .lineLimit(1)
+                                if let time = chat.lastMessageTime {
+                                    Text(time, style: .relative)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .tag(chat.jid)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var detail: some View {
+        if let selectedChatID {
+            messageThread(chatJID: selectedChatID)
+        } else {
+            ContentUnavailableView(
+                "Select a Chat", systemImage: "message",
+                description: Text("Choose a chat from the list to view messages."))
+        }
+    }
+
+    // MARK: - Message thread
 
     private func messageThread(chatJID: String) -> some View {
         let chatName = service.chats.first { $0.jid == chatJID }?.name ?? chatJID
@@ -272,84 +254,94 @@ struct WhatsAppView: View {
     }
 }
 
-// MARK: - QR block-art renderer
+// MARK: - QR bitmap renderer
 
 /// Renders the Unicode half-block QR art produced by `qrterminal` into a
-/// square, scannable image. Each text character encodes two vertical modules,
-/// so the canvas draws them as stacked rectangles with a guaranteed 1:1 aspect
-/// ratio. This avoids the distortion that text layout introduces in narrow or
-/// resizable panels.
-private struct QRBlockCodeRenderer: View {
+/// pixel-perfect NSImage. The image is generated at the exact display size
+/// (rounded to integer module pixels) so the QR code is always square, sharp,
+/// and scannable, without relying on SwiftUI text layout or Canvas sizing.
+private struct QRCodeBitmapRenderer: View {
     let qrText: String
-    let darkColor: Color
-    let lightColor: Color
 
     var body: some View {
-        Canvas { context, size in
-            let lines = qrText
-                .split(separator: "\n", omittingEmptySubsequences: false)
-                .map { line -> String in
-                    // Tabs should not appear in qrterminal output, but treat
-                    // them as single spaces so they cannot misalign the code.
-                    String(line).replacingOccurrences(of: "\t", with: " ")
-                }
-            guard !lines.isEmpty else { return }
-
-            let columns = lines.map(\.count).max() ?? 0
-            let rows = lines.count * 2
-            guard columns > 0, rows > 0 else { return }
-
-            let cellWidth = size.width / CGFloat(columns)
-            let cellHeight = size.height / CGFloat(rows)
-            // Round down to an integer point size so every module is drawn on
-            // exact pixel boundaries without anti-aliasing blur.
-            let cellSize = max(1, floor(min(cellWidth, cellHeight)))
-
-            let drawWidth = cellSize * CGFloat(columns)
-            let drawHeight = cellSize * CGFloat(rows)
-            let offsetX = floor((size.width - drawWidth) / 2)
-            let offsetY = floor((size.height - drawHeight) / 2)
-
-            for (lineIndex, line) in lines.enumerated() {
-                for (columnIndex, character) in line.enumerated() {
-                    let x = offsetX + CGFloat(columnIndex) * cellSize
-                    let y = offsetY + CGFloat(lineIndex * 2) * cellSize
-
-                    switch character {
-                    case "█":
-                        // Both rows light.
-                        fillCell(context: context, x: x, y: y, size: cellSize, heightMultiplier: 2, color: lightColor)
-                    case " ":
-                        // Both rows dark.
-                        fillCell(context: context, x: x, y: y, size: cellSize, heightMultiplier: 2, color: darkColor)
-                    case "▀":
-                        // UPPER HALF BLOCK: top row light, bottom row dark.
-                        fillCell(context: context, x: x, y: y, size: cellSize, heightMultiplier: 1, color: lightColor)
-                        fillCell(context: context, x: x, y: y + cellSize, size: cellSize, heightMultiplier: 1, color: darkColor)
-                    case "▄":
-                        // LOWER HALF BLOCK: top row dark, bottom row light.
-                        fillCell(context: context, x: x, y: y, size: cellSize, heightMultiplier: 1, color: darkColor)
-                        fillCell(context: context, x: x, y: y + cellSize, size: cellSize, heightMultiplier: 1, color: lightColor)
-                    default:
-                        // Unknown block character: render as light so it does
-                        // not create phantom dark modules.
-                        fillCell(context: context, x: x, y: y, size: cellSize, heightMultiplier: 2, color: lightColor)
-                    }
-                }
+        GeometryReader { geometry in
+            let square = min(geometry.size.width, geometry.size.height)
+            if let image = Self.render(qrText: qrText, targetSize: square) {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+            } else {
+                Color.clear
             }
         }
     }
 
-    private func fillCell(
-        context: GraphicsContext,
-        x: CGFloat,
-        y: CGFloat,
-        size: CGFloat,
-        heightMultiplier: CGFloat,
-        color: Color
-    ) {
-        let rect = CGRect(x: x, y: y, width: size, height: size * heightMultiplier)
-        context.fill(Path(rect), with: .color(color))
+    static func render(qrText: String, targetSize: CGFloat) -> NSImage? {
+        let lines = qrText
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { String($0).replacingOccurrences(of: "\t", with: " ") }
+        guard !lines.isEmpty else { return nil }
+
+        let columns = lines.map(\.count).max() ?? 0
+        // qrterminal GenerateHalfBlock encodes two vertical modules per character,
+        // so the rendered grid is twice as tall as the text line count.
+        let rows = lines.count * 2
+        guard columns > 0, rows > 0 else { return nil }
+
+        let maxDimension = max(columns, rows)
+        let moduleSize = max(1, Int(floor(targetSize / CGFloat(maxDimension))))
+        let pixelWidth = columns * moduleSize
+        let pixelHeight = rows * moduleSize
+        guard pixelWidth > 0, pixelHeight > 0 else { return nil }
+
+        let image = NSImage(size: NSSize(width: pixelWidth, height: pixelHeight))
+        image.lockFocus()
+
+        // Light background first.
+        NSColor.white.setFill()
+        NSBezierPath(rect: NSRect(x: 0, y: 0, width: pixelWidth, height: pixelHeight)).fill()
+
+        for (lineIndex, line) in lines.enumerated() {
+            // Convert from top-down text line to bottom-up NSImage coordinates.
+            let blockBaseY = (rows - (lineIndex + 1) * 2) * moduleSize
+
+            for (columnIndex, character) in line.enumerated() {
+                let x = columnIndex * moduleSize
+
+                switch character {
+                case "█":
+                    // Both rows light — already background.
+                    break
+                case " ":
+                    // Both rows dark.
+                    NSColor.black.setFill()
+                    NSBezierPath(rect: NSRect(
+                        x: x, y: blockBaseY,
+                        width: moduleSize, height: moduleSize * 2
+                    )).fill()
+                case "▀":
+                    // UPPER HALF BLOCK: top row light, bottom row dark.
+                    NSColor.black.setFill()
+                    NSBezierPath(rect: NSRect(
+                        x: x, y: blockBaseY,
+                        width: moduleSize, height: moduleSize
+                    )).fill()
+                case "▄":
+                    // LOWER HALF BLOCK: top row dark, bottom row light.
+                    NSColor.black.setFill()
+                    NSBezierPath(rect: NSRect(
+                        x: x, y: blockBaseY + moduleSize,
+                        width: moduleSize, height: moduleSize
+                    )).fill()
+                default:
+                    // Unknown character: treat as light to avoid phantom modules.
+                    break
+                }
+            }
+        }
+
+        image.unlockFocus()
+        return image
     }
 }
 
