@@ -269,20 +269,34 @@ final class MLXInferenceEngine {
 
         state = .downloading("Downloading \(model.displayName)…")
 
-        // Observe the shared download service's progress and mirror it into the
-        // engine's `downloadProgress` so the UI can stay on its existing Progress.
+        // Observe THIS download's progress specifically, keyed by its own
+        // destination path — not a shared scalar. Multiple models can
+        // download concurrently (HuggingFaceDownloadService tracks progress
+        // per-destination), so this must not read/react to a DIFFERENT
+        // concurrent download's state. An earlier version of this observation
+        // loop read a single shared `.progress`/`.isRunning` pair, so a
+        // second download starting (or finishing) while this one was still
+        // running would incorrectly reset or end-of-loop this one's tracking.
+        //
+        // Known residual limitation: `downloadProgress` itself is still a
+        // single property on this shared engine instance, so the Settings UI
+        // showing more than one model downloading at once will only reflect
+        // whichever download last touched it. The download itself is no
+        // longer affected by concurrency (verified via the per-destination
+        // key below) — only this coarse progress-bar display is imprecise
+        // under concurrent downloads.
         let observed = HuggingFaceDownloadService.shared
+        let destinationKey = destination.path
         let progress = Progress(totalUnitCount: 100)
         downloadProgress = progress
         let observation = Task {
             var last: Double = 0
             while !Task.isCancelled {
-                let current = observed.progress
+                guard let current = observed.progress(forDestination: destinationKey) else { break }
                 if current != last {
                     progress.completedUnitCount = Int64(current * 100)
                     last = current
                 }
-                if !observed.isRunning { break }
                 try? await Task.sleep(nanoseconds: 100_000_000)
             }
         }

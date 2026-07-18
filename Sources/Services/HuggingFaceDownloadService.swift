@@ -10,15 +10,23 @@ final class HuggingFaceDownloadService: ObservableObject {
 
     static let shared = HuggingFaceDownloadService()
 
-    /// Live progress for the active download, 0...1.
-    @Published private(set) var progress: Double = 0
-    @Published private(set) var isRunning: Bool = false
-    @Published private(set) var currentRepo: String?
-
-    private var task: Task<Void, Never>?
-    private var process: Process?
+    /// Per-download state, keyed by destination directory path. A dictionary
+    /// (not scalar `progress`/`isRunning`/`currentRepo` properties) so
+    /// multiple models can download concurrently without one download's
+    /// state overwriting another's — a real bug found in testing: starting a
+    /// second model's download while the first was still running caused the
+    /// first to appear to stop, because both were tracked through the same
+    /// single set of published properties.
+    @Published private(set) var activeDownloads: [String: Double] = [:]
+    private var processes: [String: Process] = [:]
 
     private init() {}
+
+    /// Live progress (0...1) for a specific destination directory, or `nil`
+    /// if nothing is downloading there right now.
+    func progress(forDestination path: String) -> Double? {
+        activeDownloads[path]
+    }
 
     /// Download a repo to a local directory. If `localDir` is omitted, the repo is
     /// placed under the current model root (`ModelCatalog.modelsRoot`) using the repo
@@ -39,6 +47,7 @@ final class HuggingFaceDownloadService: ObservableObject {
             let repoName = repoID.components(separatedBy: "/").last ?? repoID
             destination = root.appendingPathComponent(repoName, isDirectory: true)
         }
+        let key = destination.path
 
         let fm = FileManager.default
         try? fm.createDirectory(at: destination, withIntermediateDirectories: true)
@@ -52,14 +61,8 @@ final class HuggingFaceDownloadService: ObservableObject {
             "hf_token": token as Any,
         ]
 
-        isRunning = true
-        currentRepo = repoID
-        progress = 0
-        defer {
-            isRunning = false
-            currentRepo = nil
-            progress = 0
-        }
+        activeDownloads[key] = 0
+        defer { activeDownloads[key] = nil }
 
         let (scriptPath, pythonExecutable) = try await prepareHelper()
 
@@ -82,6 +85,7 @@ final class HuggingFaceDownloadService: ObservableObject {
 
             process.terminationHandler = { proc in
                 Task { @MainActor in
+                    self.processes[key] = nil
                     if proc.terminationStatus != 0 {
                         let err = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "unknown"
                         continuation.resume(throwing: DownloadError.failed(status: Int(proc.terminationStatus), stderr: err))
@@ -93,7 +97,7 @@ final class HuggingFaceDownloadService: ObservableObject {
 
             do {
                 try process.run()
-                self.process = process
+                self.processes[key] = process
                 // Feed the request JSON to stdin and close it.
                 let data = try JSONSerialization.data(withJSONObject: request, options: [.sortedKeys])
                 stdinPipe.fileHandleForWriting.write(data)
@@ -104,7 +108,7 @@ final class HuggingFaceDownloadService: ObservableObject {
                     let handle = stdoutPipe.fileHandleForReading
                     while let line = await handle.readLine() {
                         await MainActor.run {
-                            self.handleProgressLine(line)
+                            self.handleProgressLine(line, key: key)
                         }
                     }
                 }
@@ -114,13 +118,14 @@ final class HuggingFaceDownloadService: ObservableObject {
         }
     }
 
-    func cancel() {
-        task?.cancel()
-        task = nil
-        if let process, process.isRunning {
+    /// Cancel the download writing to `destination`, if any. No-op if
+    /// nothing is currently downloading there.
+    func cancel(destination path: String) {
+        if let process = processes[path], process.isRunning {
             process.terminate()
         }
-        process = nil
+        processes[path] = nil
+        activeDownloads[path] = nil
     }
 
     // MARK: - Helper script
@@ -139,7 +144,7 @@ final class HuggingFaceDownloadService: ObservableObject {
         return (scriptPath, pythonExecutable)
     }
 
-    private func handleProgressLine(_ line: String) {
+    private func handleProgressLine(_ line: String, key: String) {
         guard let data = line.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return }
@@ -149,11 +154,10 @@ final class HuggingFaceDownloadService: ObservableObject {
             if let completed = obj["completed"] as? Double,
                let total = obj["total"] as? Double,
                total > 0 {
-                progress = completed / total
+                activeDownloads[key] = completed / total
             }
         case "complete":
-            progress = 1
-            currentRepo = nil
+            activeDownloads[key] = 1
         case "error":
             let msg = obj["message"] as? String ?? "download error"
             NSLog("[HF DOWNLOAD] error: \(msg)")
