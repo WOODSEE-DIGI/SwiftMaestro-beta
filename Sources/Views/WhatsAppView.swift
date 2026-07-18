@@ -266,6 +266,9 @@ struct WhatsAppView: View {
             TextField("Message…", text: $composeText, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(1...4)
+                // Return sends (matching ChatView's compose bar); Shift+Return
+                // inserts a newline as usual for a multi-line message.
+                .onSubmit { Task { await send(chatJID: chatJID) } }
             Button {
                 Task { await send(chatJID: chatJID) }
             } label: {
