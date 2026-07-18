@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct WhatsAppView: View {
     @Environment(WhatsAppService.self) private var service
@@ -7,6 +8,9 @@ struct WhatsAppView: View {
     @State private var selectedChatID: String?
     @State private var composeText = ""
     @State private var isSending = false
+    /// A picked/dropped/pasted image queued to send as the next message's
+    /// attachment. Cleared once the send actually goes out (or fails).
+    @State private var pendingAttachmentURL: URL?
     @AppStorage("whatsapp.chatListWidth") private var chatListWidth = 260.0
 
     var body: some View {
@@ -238,13 +242,24 @@ struct WhatsAppView: View {
     private func messageBubble(_ message: WhatsAppMessage) -> some View {
         HStack {
             if message.isFromMe { Spacer(minLength: 40) }
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 4) {
                 if !message.isFromMe, let sender = message.sender {
-                    Text(sender)
+                    // `sender` is often just a bare phone/LID number (e.g.
+                    // "61410906593") - resolve it the same way the chat list
+                    // does, using contact data the bridge already has but
+                    // wasn't using (see WhatsAppService.loadContactDisplayNames).
+                    Text(service.contactDisplayNames[sender] ?? sender)
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
                 }
-                Text(message.content ?? message.mediaType.map { "[\($0)]" } ?? "")
+                if message.mediaType == "image" {
+                    imageAttachment(for: message)
+                }
+                if let content = message.content, !content.isEmpty {
+                    Text(content)
+                } else if let mediaType = message.mediaType, mediaType != "image" {
+                    Text("[\(mediaType)]")
+                }
                 if let time = message.timestamp {
                     Text(time, style: .time)
                         .font(.caption2)
@@ -261,41 +276,203 @@ struct WhatsAppView: View {
         }
     }
 
-    private func composeBar(chatJID: String) -> some View {
-        HStack {
-            TextField("Message…", text: $composeText, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(1...4)
-                // Return sends (matching ChatView's compose bar); Shift+Return
-                // inserts a newline as usual for a multi-line message.
-                .onSubmit { Task { await send(chatJID: chatJID) } }
+    /// Renders a message's image attachment from its resolved local path
+    /// (see `WhatsAppService.resolveMediaPath`/`resolvedMediaPaths`) — for
+    /// a RECEIVED image this is a bridge download (`/api/download`, which
+    /// decrypts and saves it, returning an absolute local path); for one
+    /// SwiftMaestro just sent, it's the original local file, registered
+    /// immediately by `appendSentMessage` with no round-trip needed. Falls
+    /// back to a manual "Load image" retry button if the automatic
+    /// first attempt (in `.task`) doesn't resolve a path (e.g. the bridge
+    /// couldn't download it), rather than spinning forever.
+    @ViewBuilder
+    private func imageAttachment(for message: WhatsAppMessage) -> some View {
+        if let path = service.resolvedMediaPaths[message.id], let nsImage = NSImage(contentsOfFile: path) {
+            Image(nsImage: nsImage)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(maxWidth: 240, maxHeight: 240)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .onTapGesture {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: path))
+                }
+        } else {
             Button {
-                Task { await send(chatJID: chatJID) }
+                Task { await service.resolveMediaPath(messageID: message.id, chatJID: message.chatJID) }
             } label: {
-                Image(systemName: "arrow.up.circle.fill")
+                VStack(spacing: 4) {
+                    Image(systemName: "photo")
+                        .font(.title2)
+                    Text("Load image")
+                        .font(.caption2)
+                }
+                .frame(width: 120, height: 120)
+                .background(Color.black.opacity(0.15), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
-            .disabled(composeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending)
+            .buttonStyle(.plain)
+            .task {
+                // Attempt automatically once so most images just appear
+                // without requiring a manual tap; the button above is the
+                // fallback if this first attempt fails.
+                await service.resolveMediaPath(messageID: message.id, chatJID: message.chatJID)
+            }
+        }
+    }
+
+    private func composeBar(chatJID: String) -> some View {
+        VStack(spacing: 8) {
+            if let pendingAttachmentURL {
+                attachmentPreview(pendingAttachmentURL)
+            }
+            HStack {
+                Button {
+                    pickImageAttachment()
+                } label: {
+                    Image(systemName: "paperclip")
+                }
+                .buttonStyle(.plain)
+                .help("Attach an image")
+
+                TextField("Message…", text: $composeText, axis: .vertical)
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(1...4)
+                    // Return sends (matching ChatView's compose bar); Shift+Return
+                    // inserts a newline as usual for a multi-line message.
+                    .onSubmit { Task { await send(chatJID: chatJID) } }
+                Button {
+                    Task { await send(chatJID: chatJID) }
+                } label: {
+                    Image(systemName: "arrow.up.circle.fill")
+                }
+                .disabled(
+                    (composeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        && pendingAttachmentURL == nil)
+                        || isSending
+                )
+            }
         }
         .padding(10)
+        // Matches ChatView's image-intake pattern (drop + Cmd+V paste), but
+        // resolves to a FILE PATH rather than PNG bytes, since the bridge's
+        // `/api/send` `media_path` field uploads directly from a path on
+        // disk — this is also why drag-and-drop a screenshot/image never
+        // worked here at all before: there was no drop handler, no
+        // attachment button, and no media_path plumbing anywhere in the view.
+        .onDrop(of: [.image, .fileURL], isTargeted: nil) { handleAttachmentProviders($0) }
+        .onPasteCommand(of: [.image, .fileURL]) { handleAttachmentProviders($0) }
+    }
+
+    private func attachmentPreview(_ url: URL) -> some View {
+        HStack(spacing: 8) {
+            if let nsImage = NSImage(contentsOf: url) {
+                Image(nsImage: nsImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 44, height: 44)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            } else {
+                Image(systemName: "doc.fill")
+                    .frame(width: 44, height: 44)
+            }
+            Text(url.lastPathComponent)
+                .font(.caption)
+                .lineLimit(1)
+            Spacer()
+            Button {
+                pendingAttachmentURL = nil
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+            }
+            .buttonStyle(.plain)
+            .help("Remove attachment")
+        }
+        .padding(6)
+        .background(Color.gray.opacity(0.15), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    /// Open a file picker for a single image to attach, matching ChatView's
+    /// `pickImages()` pattern.
+    private func pickImageAttachment() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.image]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        pendingAttachmentURL = url
+    }
+
+    /// Loads a dropped/pasted image (or file) into `pendingAttachmentURL`.
+    /// Mirrors ChatView's `handleProviders`, but resolves to a real FILE PATH
+    /// rather than in-memory PNG bytes: a dropped item with a backing file
+    /// (`.fileURL`) is used directly so the original format (JPEG/HEIC/etc,
+    /// which the bridge's own mimetype detection already handles) is
+    /// preserved; an image with no backing file at all (e.g. straight from
+    /// the clipboard, like a screenshot preview) is written to a temp PNG
+    /// first, since the bridge can only upload from a path on disk.
+    @discardableResult
+    private func handleAttachmentProviders(_ providers: [NSItemProvider]) -> Bool {
+        var handled = false
+        for provider in providers {
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                handled = true
+                _ = provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
+                    var url: URL?
+                    if let u = item as? URL { url = u }
+                    else if let d = item as? Data { url = URL(dataRepresentation: d, relativeTo: nil) }
+                    guard let url else { return }
+                    Task { @MainActor in pendingAttachmentURL = url }
+                }
+            } else if provider.canLoadObject(ofClass: NSImage.self) {
+                handled = true
+                _ = provider.loadObject(ofClass: NSImage.self) { object, _ in
+                    guard let image = object as? NSImage,
+                          let tempURL = Self.writeTempPNG(image) else { return }
+                    Task { @MainActor in pendingAttachmentURL = tempURL }
+                }
+            }
+        }
+        return handled
+    }
+
+    /// `nonisolated`: pure data transformation touching no actor-isolated
+    /// state, called from NSItemProvider's asynchronous (non-MainActor)
+    /// load-completion handler — matches ChatView's `pngData` helpers.
+    private static nonisolated func writeTempPNG(_ image: NSImage) -> URL? {
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:])
+        else { return nil }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("swiftmaestro-whatsapp-\(UUID().uuidString).png")
+        guard (try? png.write(to: url)) != nil else { return nil }
+        return url
     }
 
     private func send(chatJID: String) async {
         let text = composeText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        let attachmentURL = pendingAttachmentURL
+        guard !text.isEmpty || attachmentURL != nil else { return }
         isSending = true
         defer { isSending = false }
         do {
-            try await service.sendMessage(to: chatJID, text: text)
+            try await service.sendMessage(to: chatJID, text: text, mediaPath: attachmentURL?.path)
             composeText = ""
+            pendingAttachmentURL = nil
             // Show it immediately — the bridge doesn't persist messages it
             // sends via its own REST API back into its SQLite database (see
             // WhatsAppService.loadMessages), so without this the message
-            // would send successfully but never appear here.
-            service.appendSentMessage(chatJID: chatJID, text: text)
+            // would send successfully but never appear here. For an
+            // attachment, register the LOCAL file directly (no download
+            // round-trip needed for our own outgoing image).
+            service.appendSentMessage(
+                chatJID: chatJID, text: text,
+                mediaType: attachmentURL != nil ? "image" : nil,
+                localMediaPath: attachmentURL?.path
+            )
             await service.loadMessages(chatJID: chatJID)
         } catch {
             // Errors surface via the bridge's own status/error state elsewhere;
-            // a failed send just leaves the compose text in place to retry.
+            // a failed send just leaves the compose text/attachment in place to retry.
         }
     }
 }

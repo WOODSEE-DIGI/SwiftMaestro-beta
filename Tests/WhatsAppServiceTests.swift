@@ -439,4 +439,159 @@ final class WhatsAppServiceTests: XCTestCase {
                 + "is scoped to the phone-number JID"
         )
     }
+
+    // MARK: - Contact name resolution
+    //
+    // The bridge's own GetChatName only ever checked contact.FullName (which
+    // comes from the LOCAL phone's address-book sync) before falling back to
+    // the raw phone/LID number - it never checked PushName (the OTHER
+    // person's own WhatsApp display name, present for almost every contact
+    // who's ever messaged us). Confirmed directly in the live bridge's own
+    // whatsmeow_contacts table: contacts like "George Li" and "Carissa
+    // Anderson" had push_name populated but full_name/first_name empty, and
+    // were showing as raw numbers ("61410906593", "93278217216209") in both
+    // the chat list and as the sender label on their messages. These tests
+    // pin the client-side resolution that fixes this for chats ALREADY
+    // stored with a bad name (the bridge-side GetChatName fix only helps
+    // chats created from now on).
+
+    func testLooksLikeRawIDDetectsBareNumbersAndTreatsRealNamesAsNotRaw() {
+        XCTAssertTrue(WhatsAppService.looksLikeRawID("61410906593"))
+        XCTAssertTrue(WhatsAppService.looksLikeRawID("210414809956389"))
+        XCTAssertTrue(WhatsAppService.looksLikeRawID(""))
+        XCTAssertTrue(WhatsAppService.looksLikeRawID(nil))
+        XCTAssertFalse(WhatsAppService.looksLikeRawID("George Li"))
+        XCTAssertFalse(WhatsAppService.looksLikeRawID("Brock McFadzean"))
+    }
+
+    func testLoadChatsResolvesRawNumberNameFromWhatsmeowContactsPushName() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WhatsAppServiceTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: tempDir.appendingPathComponent("store", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+            WhatsAppService.setBridgeDirectoryOverride(nil)
+        }
+        WhatsAppService.setBridgeDirectoryOverride(tempDir.path)
+
+        let messagesDBPath = tempDir.appendingPathComponent("store/messages.db").path
+        let messagesDB = try DatabaseQueue(path: messagesDBPath)
+        try await messagesDB.write { db in
+            try db.execute(sql: """
+                CREATE TABLE chats (
+                    jid TEXT PRIMARY KEY, name TEXT, last_message_time TIMESTAMP
+                )
+                """)
+            try db.execute(sql: """
+                CREATE TABLE messages (
+                    id TEXT, chat_jid TEXT, sender TEXT, content TEXT,
+                    timestamp TIMESTAMP, is_from_me BOOLEAN, media_type TEXT,
+                    PRIMARY KEY (id, chat_jid)
+                )
+                """)
+            // Stored exactly as the bridge left it: the raw number as the name.
+            try db.execute(sql: """
+                INSERT INTO chats (jid, name, last_message_time)
+                VALUES ('61410906593@s.whatsapp.net', '61410906593', ?)
+                """, arguments: [Date()])
+        }
+
+        let whatsappDBPath = tempDir.appendingPathComponent("store/whatsapp.db").path
+        let whatsappDB = try DatabaseQueue(path: whatsappDBPath)
+        try await whatsappDB.write { db in
+            try db.execute(sql: "CREATE TABLE whatsmeow_lid_map (lid TEXT PRIMARY KEY, pn TEXT UNIQUE NOT NULL)")
+            try db.execute(sql: """
+                CREATE TABLE whatsmeow_contacts (
+                    our_jid TEXT, their_jid TEXT, first_name TEXT, full_name TEXT,
+                    push_name TEXT, business_name TEXT, redacted_phone TEXT,
+                    PRIMARY KEY (our_jid, their_jid)
+                )
+                """)
+            // Matches the live data exactly: only push_name is populated.
+            try db.execute(sql: """
+                INSERT INTO whatsmeow_contacts (our_jid, their_jid, first_name, full_name, push_name)
+                VALUES ('me', '61410906593@s.whatsapp.net', '', '', 'George Li')
+                """)
+        }
+
+        let service = WhatsAppService()
+        await service.loadChats()
+
+        let chat = try XCTUnwrap(service.chats.first)
+        XCTAssertEqual(
+            chat.name, "George Li",
+            "a chat stored with a raw number as its name must be resolved from push_name"
+        )
+    }
+
+    func testContactDisplayNamesIsKeyedByBareNumberForSenderLabelLookups() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WhatsAppServiceTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: tempDir.appendingPathComponent("store", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+            WhatsAppService.setBridgeDirectoryOverride(nil)
+        }
+        WhatsAppService.setBridgeDirectoryOverride(tempDir.path)
+
+        let messagesDBPath = tempDir.appendingPathComponent("store/messages.db").path
+        let messagesDB = try DatabaseQueue(path: messagesDBPath)
+        try await messagesDB.write { db in
+            try db.execute(sql: "CREATE TABLE chats (jid TEXT PRIMARY KEY, name TEXT, last_message_time TIMESTAMP)")
+            try db.execute(sql: """
+                CREATE TABLE messages (
+                    id TEXT, chat_jid TEXT, sender TEXT, content TEXT,
+                    timestamp TIMESTAMP, is_from_me BOOLEAN, media_type TEXT,
+                    PRIMARY KEY (id, chat_jid)
+                )
+                """)
+        }
+        let whatsappDBPath = tempDir.appendingPathComponent("store/whatsapp.db").path
+        let whatsappDB = try DatabaseQueue(path: whatsappDBPath)
+        try await whatsappDB.write { db in
+            try db.execute(sql: "CREATE TABLE whatsmeow_lid_map (lid TEXT PRIMARY KEY, pn TEXT UNIQUE NOT NULL)")
+            try db.execute(sql: """
+                CREATE TABLE whatsmeow_contacts (
+                    our_jid TEXT, their_jid TEXT, first_name TEXT, full_name TEXT,
+                    push_name TEXT, business_name TEXT, redacted_phone TEXT,
+                    PRIMARY KEY (our_jid, their_jid)
+                )
+                """)
+            try db.execute(sql: """
+                INSERT INTO whatsmeow_contacts (our_jid, their_jid, first_name, full_name, push_name)
+                VALUES ('me', '93278217216209@lid', '', '', 'Carissa Anderson')
+                """)
+        }
+
+        let service = WhatsAppService()
+        await service.loadChats()
+
+        // `messages.sender` stores the BARE number, not the full JID -
+        // the lookup must succeed with either form.
+        XCTAssertEqual(service.contactDisplayNames["93278217216209"], "Carissa Anderson")
+        XCTAssertEqual(service.contactDisplayNames["93278217216209@lid"], "Carissa Anderson")
+    }
+
+    // MARK: - Media attachments
+
+    func testAppendSentMessageWithMediaRegistersLocalPreviewPathImmediately() {
+        let service = WhatsAppService()
+        service.appendSentMessage(
+            chatJID: "123@s.whatsapp.net", text: "check this out",
+            mediaType: "image", localMediaPath: "/tmp/some-screenshot.png"
+        )
+
+        let message = try? XCTUnwrap(service.messages.first)
+        XCTAssertEqual(message?.mediaType, "image")
+        XCTAssertEqual(
+            service.resolvedMediaPaths[message?.id ?? ""], "/tmp/some-screenshot.png",
+            "a sent image's local path must be registered immediately, with no download round-trip needed"
+        )
+    }
 }

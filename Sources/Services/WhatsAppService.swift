@@ -43,6 +43,18 @@ final class WhatsAppService {
     private(set) var chats: [WhatsAppChat] = []
     private(set) var messages: [WhatsAppMessage] = []
     private(set) var error: String?
+    /// Best-available display name per contact, keyed by BOTH the bare
+    /// number and the full JID form (see `loadContactDisplayNames`). Public
+    /// so the view can resolve a message's raw `sender` number (e.g.
+    /// "61410906593") to a real name (e.g. "George Li") the same way
+    /// `loadChats` already does for the chat list itself.
+    private(set) var contactDisplayNames: [String: String] = [:]
+    /// Local filesystem path for a message's downloaded (or, for a message
+    /// this app just sent, not-yet-uploaded) media attachment, keyed by
+    /// message id. Populated by `resolveMediaPath` for received media and by
+    /// `appendSentMessage` for outgoing media, so the view never re-requests
+    /// a download it already has.
+    private(set) var resolvedMediaPaths: [String: String] = [:]
 
     private var process: Process?
     private var stdoutPipe: Pipe?
@@ -275,7 +287,29 @@ final class WhatsAppService {
                     jid: $0["jid"], name: $0["name"],
                     lastMessageTime: $0["last_message_time"])
             }
-            chats = Self.mergeLIDDuplicates(rawChats, lidMap: await loadLIDMap())
+
+            // The bridge's own GetChatName only ever checked contact.FullName
+            // (which comes from the LOCAL phone's address book sync) before
+            // falling back to the raw phone/LID number - it never checked
+            // PushName (the name the OTHER person set for their own WhatsApp
+            // profile, which is present for essentially every contact who's
+            // ever messaged us, address-book entry or not). That's why chats
+            // like "61410906593" and "93278217216209" showed raw numbers
+            // instead of names, even though whatsmeow_contacts already had
+            // "George Li" / "Carissa Anderson" recorded as push_name. Fixed
+            // at the source in the Go bridge for NEW chats going forward;
+            // this resolves it client-side for every chat ALREADY stored
+            // with a bad name, using the same already-collected data, so it
+            // takes effect immediately without needing the bridge to
+            // rewrite anything.
+            contactDisplayNames = await loadContactDisplayNames()
+            let resolvedChats = rawChats.map { chat -> WhatsAppChat in
+                guard Self.looksLikeRawID(chat.name), let resolved = contactDisplayNames[chat.jid] else {
+                    return chat
+                }
+                return WhatsAppChat(jid: chat.jid, name: resolved, lastMessageTime: chat.lastMessageTime)
+            }
+            chats = Self.mergeLIDDuplicates(resolvedChats, lidMap: await loadLIDMap())
             error = nil
         } catch {
             self.error = error.localizedDescription
@@ -349,7 +383,9 @@ final class WhatsAppService {
             let stillPendingLocalOnly = messages.filter { message in
                 message.chatJID == chatJID
                     && message.id.hasPrefix(Self.localMessageIDPrefix)
-                    && !loaded.contains { $0.isFromMe && $0.content == message.content }
+                    && !loaded.contains {
+                        $0.isFromMe && $0.content == message.content && $0.mediaType == message.mediaType
+                    }
             }
             messages = (loaded + stillPendingLocalOnly)
                 .sorted { ($0.timestamp ?? .distantPast) < ($1.timestamp ?? .distantPast) }
@@ -424,40 +460,104 @@ final class WhatsAppService {
     /// LID the same way it can for a phone-number JID with saved contact
     /// info — so prefer whichever candidate isn't purely numeric.
     private static func preferredName(_ a: String?, _ b: String?) -> String? {
-        func looksLikeRawID(_ name: String?) -> Bool {
-            guard let name, !name.isEmpty else { return true }
-            return name.allSatisfy(\.isNumber)
-        }
         if !looksLikeRawID(a) { return a }
         if !looksLikeRawID(b) { return b }
         return a ?? b
     }
 
+    /// True for nil, empty, or a name that's purely digits — i.e. a raw
+    /// phone number or LID with no real display name resolved, whether it's
+    /// a chat's stored `name` or a message's `sender`.
+    static func looksLikeRawID(_ name: String?) -> Bool {
+        guard let name, !name.isEmpty else { return true }
+        return name.allSatisfy(\.isNumber)
+    }
+
+    /// Loads best-available display names from the bridge's own whatsmeow
+    /// contact-sync data (`whatsmeow_contacts`, in the SAME `whatsapp.db`
+    /// session store `loadLIDMap` already reads). Preference order: FullName
+    /// (usually from the local phone's address-book sync) > FirstName >
+    /// PushName (the OTHER person's own WhatsApp display name — present for
+    /// almost every contact who's ever messaged us, even with zero
+    /// address-book entry, which is exactly the gap this closes) >
+    /// BusinessName. Keyed by BOTH the full JID and the bare number (e.g.
+    /// both "61410906593@s.whatsapp.net" and "61410906593"), since
+    /// `chats.jid` stores full JIDs but `messages.sender` stores bare
+    /// numbers. Returns an empty map (not an error) if the file/table is
+    /// missing, so this degrades gracefully.
+    private func loadContactDisplayNames() async -> [String: String] {
+        guard let dbDir = databaseDirectory else { return [:] }
+        let dbPath = dbDir.appendingPathComponent("whatsapp.db").path
+        guard FileManager.default.fileExists(atPath: dbPath) else { return [:] }
+        do {
+            var config = GRDB.Configuration()
+            config.readonly = true
+            let db = try DatabaseQueue(path: dbPath, configuration: config)
+            let rows = try await db.read { db in
+                try Row.fetchAll(db, sql: """
+                    SELECT their_jid, first_name, full_name, push_name, business_name
+                    FROM whatsmeow_contacts
+                    """)
+            }
+            var names: [String: String] = [:]
+            for row in rows {
+                guard let jid: String = row["their_jid"] else { continue }
+                let candidates: [String?] = [
+                    row["full_name"], row["first_name"], row["push_name"], row["business_name"],
+                ]
+                guard let resolved = candidates.compactMap({ $0 }).first(where: { !$0.isEmpty }) else { continue }
+                names[jid] = resolved
+                if let atIndex = jid.firstIndex(of: "@") {
+                    names[String(jid[jid.startIndex..<atIndex])] = resolved
+                }
+            }
+            return names
+        } catch {
+            return [:]
+        }
+    }
+
     private static let localMessageIDPrefix = "local-pending-"
 
-    /// Optimistically appends a message you just sent so it appears
-    /// immediately, without waiting for (or depending on) the bridge ever
-    /// persisting it — see the comment in `loadMessages` for why it doesn't.
-    func appendSentMessage(chatJID: String, text: String) {
+    /// Optimistically appends a message (optionally with a media attachment)
+    /// you just sent so it appears immediately, without waiting for (or
+    /// depending on) the bridge ever persisting it — see the comment in
+    /// `loadMessages` for why it doesn't. When `localMediaPath` is provided
+    /// (the file about to be/just uploaded), it's registered directly in
+    /// `resolvedMediaPaths` so the sent image renders immediately from the
+    /// local copy already on disk — no round-trip download needed for your
+    /// own outgoing attachment.
+    func appendSentMessage(chatJID: String, text: String, mediaType: String? = nil, localMediaPath: String? = nil) {
+        let id = Self.localMessageIDPrefix + UUID().uuidString
         messages.append(WhatsAppMessage(
-            id: Self.localMessageIDPrefix + UUID().uuidString,
+            id: id,
             chatJID: chatJID,
             sender: nil,
             content: text,
             timestamp: Date(),
             isFromMe: true,
-            mediaType: nil
+            mediaType: mediaType
         ))
+        if let localMediaPath {
+            resolvedMediaPaths[id] = localMediaPath
+        }
     }
 
     // MARK: - Sending (via the bridge's local REST API — it owns the live connection)
 
-    func sendMessage(to recipient: String, text: String) async throws {
+    /// - Parameter mediaPath: absolute local filesystem path to an image (or
+    ///   other media) to send as an attachment, with `text` used as the
+    ///   caption. The bridge already supports this via `/api/send`'s
+    ///   `media_path` field (it uploads the file to WhatsApp itself) — this
+    ///   was simply never exposed anywhere in SwiftMaestro's UI.
+    func sendMessage(to recipient: String, text: String, mediaPath: String? = nil) async throws {
         let url = URL(string: "http://localhost:\(Self.sendPort)/api/send")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(["recipient": recipient, "message": text])
+        var body: [String: String] = ["recipient": recipient, "message": text]
+        if let mediaPath { body["media_path"] = mediaPath }
+        request.httpBody = try JSONEncoder().encode(body)
 
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else {
@@ -468,6 +568,36 @@ final class WhatsAppService {
         guard http.statusCode == 200, decoded?.success == true else {
             throw WhatsAppError.sendFailed(decoded?.message ?? "HTTP \(http.statusCode)")
         }
+    }
+
+    // MARK: - Media
+
+    /// Downloads (or reuses an already-downloaded copy of) a received
+    /// message's media attachment via the bridge's `/api/download` endpoint,
+    /// which uploads/decrypts it from WhatsApp's servers and returns an
+    /// ABSOLUTE LOCAL FILE PATH (both SwiftMaestro and the bridge run on the
+    /// same machine, so no base64/streaming round-trip is needed). Caches
+    /// the resolved path in `resolvedMediaPaths` so repeat calls (e.g. from
+    /// the periodic message-list polling) are a no-op once resolved.
+    /// Best-effort: failures just leave the message unresolved so the view
+    /// can show a placeholder rather than propagating an error.
+    func resolveMediaPath(messageID: String, chatJID: String) async {
+        guard resolvedMediaPaths[messageID] == nil else { return }
+        let url = URL(string: "http://localhost:\(Self.sendPort)/api/download")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        guard let body = try? JSONEncoder().encode(["message_id": messageID, "chat_jid": chatJID]) else { return }
+        request.httpBody = body
+
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse, http.statusCode == 200
+        else { return }
+        struct DownloadResponse: Decodable { let success: Bool; let path: String? }
+        guard let decoded = try? JSONDecoder().decode(DownloadResponse.self, from: data),
+              decoded.success, let path = decoded.path
+        else { return }
+        resolvedMediaPaths[messageID] = path
     }
 }
 
