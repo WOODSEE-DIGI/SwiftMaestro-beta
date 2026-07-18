@@ -12,7 +12,7 @@ These are mandatory working agreements for this repo. Follow them every session.
 3. **Protect the Mac with large models.** Never trigger a second large in-process model load (the 122B is ~65GB resident). Confirm no other large model is loaded before loading another.
 4. **Scan downloads.** Any downloaded file gets a two-stage malware scan: quick scan, then deep scan, before use.
 5. **Before any public push.** Deep-scrub for PII that could be used maliciously. The name `woodsee` may remain.
-6. **Git discipline.** Commit only when explicitly asked. Every commit message must include `Co-Authored-By: Oz <oz-agent@warp.dev>`.
+6. **Git discipline.** Commit only when explicitly asked.
 7. **Conventions.** Use 24-hour time `HH:mm:ss` with an AM/PM indicator. Name plans for Warp rules and AI-context rules as `YY.MM.DD-Plan name`.
 8. **Backup before destructive operations.** Never delete, overwrite, or reset user data, preferences, keychain items, model files, or project configuration without first making a recoverable backup (e.g., copy the file/directory, export the plist, snapshot the keychain item) and confirming the backup succeeded. This applies to `~/Library/Preferences/`, `~/Library/Application Support/SwiftMaestro/`, `~/.ai-context/`, and any user-created files.
 
@@ -20,7 +20,7 @@ These are mandatory working agreements for this repo. Follow them every session.
 
 ## Project Identity
 
-- **App:** SwiftMaestro — native macOS SwiftUI AI assistant powered by local Qwen models running fully in-process on Apple MLX (mlx-swift-lm)
+- **App:** SwiftMaestro — native macOS SwiftUI AI assistant powered by local models running fully in-process on Apple MLX (mlx-swift-lm)
 - **Bundle ID:** `com.woodseedigi.swiftmaestro`
 - **Repo path:** `~/GitHub/AI-ML-Agents/SwiftMaestro`
 - **Distribution:** GitHub + .dmg (no App Store — no sandbox restrictions)
@@ -41,7 +41,7 @@ SwiftMaestro reads and writes to the shared memory store at `~/.ai-context/memor
 - `maestro://context/*` → `~/.ai-context/memory/context/*`
 - `maestro://skill/*` → `~/.ai-context/memory/skills/*`
 
-**Other tools using the same store:** Warp (Oz), Qwen Code CLI, LM Studio, Claude Code — all via the `ai-context-bridge` MCP server.
+**Other tools using the same store:** Warp, Qwen Code CLI, Claude Code — all via the `ai-context-bridge` MCP server.
 
 ---
 
@@ -64,7 +64,7 @@ Run `~/.ai-context/scripts/sync-mcp.sh` to push config to all tools.
 | **MLXInferenceEngine** | `Sources/Engine/MLXInferenceEngine.swift` | Primary native MLX inference path |
 | **InProcessMLXBackend** | `Sources/Adapters/InProcessMLXBackend.swift` | The sole generation backend (in-process MLX) |
 | **OMLXAgentExecutor** | `Sources/Adapters/OMLXAgentExecutor.swift` | Backend-agnostic agentic loop (name retained; not oMLX) |
-| **SettingsView** | `Sources/Views/SettingsView.swift` | Settings tabs: Models, Tuning, Rules, Context, MCP, Secrets |
+| **SettingsView** | `Sources/Views/SettingsView.swift` | Settings tabs: Models, Tuning, Vision Proxy, Appearance, Rules, Context, MCP, Storage, Secrets, Whisper, Shell |
 | **WindowSizeConfigurator** | `Sources/Views/WindowSizeConfigurator.swift` | AppKit bridge enforcing min/default window sizes |
 | **SimpleMemoryStore** | `Sources/Memory/SimpleMemoryStore.swift` | File-based shared memory (→ `~/.ai-context/memory/`) |
 | **MaestroURI** | `Sources/MaestroURI.swift` | Memory URI scheme |
@@ -76,10 +76,15 @@ Run `~/.ai-context/scripts/sync-mcp.sh` to push config to all tools.
 
 ## Models
 
-- **Qwen 35B** (`Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit`) — fast, general use
-- **Qwen 122B** (`Qwen3.5-122B-A10B-4bit`) — deep reasoning, complex tasks
+Verified core models:
+- **Gemma 4 26B-A4B 8-bit** (default) — vision + text, general navigator
+- **Qwen 3.5 122B (A10B)** — deep reasoning, complex tasks
+- **Qwen 3.5 27B (Opus Distilled)** — balanced performance
+- **Qwen 3 Coder 30B-A3B** — coding tasks, sub-agents
 
-Models stored at: `~/Ai-models/`
+Experimental models (tool support may be limited): Qwen 3.6, DeepSeek R1, Hermes 4, Magistral, Nemotron, Hub models.
+
+Models stored at: `~/Library/Application Support/SwiftMaestro/models` by default; configurable in **Settings → Models**.
 
 ---
 
@@ -115,7 +120,7 @@ xcodebuild -project SwiftMaestro.xcodeproj -scheme SwiftMaestro -configuration D
 Auth tokens / API keys are stored in the macOS **Keychain** (service `com.woodseedigi.SwiftMaestro`), never in source, JSON config, UserDefaults, logs, or `~/.ai-context/memory/`.
 
 - **Add/manage:** Settings → **Secrets** tab. Each secret has a scope — **Permanent** (`secret.global.<name>`) or **This project only** (`secret.project.<projectId>.<name>`, persists until purged) — and an optional **iCloud Keychain sync** toggle (on by default for Permanent) so the same token works across all signed-in Macs (end-to-end encrypted).
-- **Reference, never inline:** anywhere a token is needed, use `secret://<name>`. It is resolved from the Keychain only at the HTTP boundary (`RemoteLMStudioClient`); the raw value never enters the prompt, chat history, or memory store.
+- **Reference, never inline:** anywhere a token is needed, use `secret://<name>`. It is resolved from the Keychain only at the HTTP boundary; the raw value never enters the prompt, chat history, or memory store.
 - **Redaction:** `SecretRedactor` strips any known secret value from content before it is written to the shared memory store.
 - **Storage detail:** values live in the Keychain; non-secret descriptors live in machine-local `~/Library/Application Support/SwiftMaestro/secrets-index.json` (only Keychain values sync via iCloud). We stay on the legacy login keychain so the `security` CLI can read the same items.
 - **Cross-agent (ai-context-bridge):** `list_secrets` (names + scope only), `use_secret` (injects the secret into a request header server-side and returns only the response — never the raw value), and `set_secret` (creates a machine-local secret; use the app for iCloud-synced ones). A raw `get_secret` is intentionally omitted.
