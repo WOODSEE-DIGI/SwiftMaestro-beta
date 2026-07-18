@@ -39,12 +39,70 @@ enum MacOSIntegration {
         let notes: String?
     }
 
-    static func fetchReminders(limit: Int = 50) async throws -> [ReminderItem] {
+    struct ReminderList: Sendable {
+        let id: String
+        let title: String
+        let isDefault: Bool
+    }
+
+    // Shared helper: request access once, return the store.
+    private static func reminderStore() async throws -> EKEventStore {
         let store = EKEventStore()
-        guard try await store.requestFullAccessToReminders() else {
+        let granted = try await store.requestFullAccessToReminders()
+        NSLog("[EventKit] requestFullAccessToReminders → \(granted)")
+        guard granted else {
             throw IntegrationError.accessDenied("Reminders")
         }
-        let predicate = store.predicateForReminders(in: nil)
+        return store
+    }
+
+    /// Resolve a calendar by title (case-insensitive prefix match).
+    /// Falls back to the default if no match or if `listName` is nil/empty.
+    private static func resolveCalendar(
+        from store: EKEventStore, named listName: String?
+    ) throws -> EKCalendar {
+        guard let listName, !listName.trimmingCharacters(in: .whitespaces).isEmpty else {
+            guard let def = store.defaultCalendarForNewReminders() else {
+                throw IntegrationError.noDefaultCalendar("Reminders list")
+            }
+            return def
+        }
+        let allCalendars = store.calendars(for: .reminder)
+        // Exact match first
+        if let match = allCalendars.first(where: {
+            $0.title.localizedCaseInsensitiveContains(listName)
+        }) {
+            return match
+        }
+        throw IntegrationError.noDefaultCalendar(
+            "No reminder list named \"\(listName)\". "
+            + "Available lists: \(allCalendars.map(\.title).joined(separator: ", "))")
+    }
+
+    /// List all available Reminder lists (calendars of type .reminder).
+    static func fetchReminderLists() async throws -> [ReminderList] {
+        let store = try await reminderStore()
+        let allCalendars = store.calendars(for: .reminder)
+        let defaultID = store.defaultCalendarForNewReminders()?.calendarIdentifier
+        return allCalendars.map { cal in
+            ReminderList(
+                id: cal.calendarIdentifier,
+                title: cal.title,
+                isDefault: cal.calendarIdentifier == defaultID
+            )
+        }
+    }
+
+    static func fetchReminders(limit: Int = 50, listName: String? = nil) async throws -> [ReminderItem] {
+        let store = try await reminderStore()
+        let calendar: EKCalendar?
+        if let listName, !listName.trimmingCharacters(in: .whitespaces).isEmpty {
+            calendar = try resolveCalendar(from: store, named: listName)
+        } else {
+            calendar = nil
+        }
+        let calendars = calendar.map { [$0] }
+        let predicate = store.predicateForReminders(in: calendars)
         return await withCheckedContinuation { (cont: CheckedContinuation<[ReminderItem], Never>) in
             store.fetchReminders(matching: predicate) { reminders in
                 let items = (reminders ?? []).prefix(limit).map { reminder -> ReminderItem in
@@ -64,14 +122,11 @@ enum MacOSIntegration {
         }
     }
 
-    static func createReminder(title: String, notes: String?, due: String?) async throws -> String {
-        let store = EKEventStore()
-        guard try await store.requestFullAccessToReminders() else {
-            throw IntegrationError.accessDenied("Reminders")
-        }
-        guard let calendar = store.defaultCalendarForNewReminders() else {
-            throw IntegrationError.noDefaultCalendar("Reminders list")
-        }
+    static func createReminder(
+        title: String, notes: String?, due: String?, list listName: String? = nil
+    ) async throws -> String {
+        let store = try await reminderStore()
+        let calendar = try resolveCalendar(from: store, named: listName)
         let reminder = EKReminder(eventStore: store)
         reminder.title = title
         reminder.notes = notes
@@ -82,15 +137,20 @@ enum MacOSIntegration {
                 [.year, .month, .day, .hour, .minute], from: date)
         }
         try store.save(reminder, commit: true)
-        return "Created reminder \"\(title)\" in \(calendar.title)."
+        NSLog("[EventKit] Saved reminder \"\(title)\" to list \"\(calendar.title)\"")
+        return "Created reminder \"\(title)\" in list \"\(calendar.title)\"."
     }
 
-    static func listReminders(limit: Int = 25) async throws -> [String] {
-        let store = EKEventStore()
-        guard try await store.requestFullAccessToReminders() else {
-            throw IntegrationError.accessDenied("Reminders")
+    static func listReminders(limit: Int = 25, listName: String? = nil) async throws -> [String] {
+        let store = try await reminderStore()
+        let calendar: EKCalendar?
+        if let listName, !listName.trimmingCharacters(in: .whitespaces).isEmpty {
+            calendar = try resolveCalendar(from: store, named: listName)
+        } else {
+            calendar = nil
         }
-        let predicate = store.predicateForReminders(in: nil)
+        let calendars = calendar.map { [$0] }
+        let predicate = store.predicateForReminders(in: calendars)
         // Map to plain strings INSIDE the completion so only a Sendable [String]
         // crosses the continuation (EKReminder is not Sendable).
         return await withCheckedContinuation { (cont: CheckedContinuation<[String], Never>) in

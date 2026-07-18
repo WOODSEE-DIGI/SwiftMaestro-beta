@@ -23,6 +23,7 @@ final class EventKitStore {
 
     private(set) var calendarEvents: [MacOSIntegration.CalendarEvent] = []
     private(set) var reminders: [MacOSIntegration.ReminderItem] = []
+    private(set) var reminderLists: [MacOSIntegration.ReminderList] = []
 
     var calendarError: String?
     var remindersError: String?
@@ -88,7 +89,7 @@ final class EventKitStore {
         }
     }
 
-    func loadReminders(limit: Int = 50) async {
+    func loadReminders(limit: Int = 50, listName: String? = nil) async {
         remindersError = nil
         refreshAuthorization()
         if remindersStatus == .notDetermined {
@@ -97,7 +98,22 @@ final class EventKitStore {
         guard remindersStatus == .granted else { return }
 
         do {
-            reminders = try await MacOSIntegration.fetchReminders(limit: limit)
+            reminders = try await MacOSIntegration.fetchReminders(limit: limit, listName: listName)
+        } catch {
+            remindersError = error.localizedDescription
+        }
+    }
+
+    func loadReminderLists() async {
+        remindersError = nil
+        refreshAuthorization()
+        if remindersStatus == .notDetermined {
+            await requestRemindersAccess()
+        }
+        guard remindersStatus == .granted else { return }
+
+        do {
+            reminderLists = try await MacOSIntegration.fetchReminderLists()
         } catch {
             remindersError = error.localizedDescription
         }
@@ -117,13 +133,14 @@ final class EventKitStore {
         await loadCalendarEvents()
     }
 
-    func createReminder(title: String, due: Date?, notes: String?) async throws {
+    func createReminder(title: String, due: Date?, notes: String?, list: String? = nil) async throws {
         let dueString = due.map { ISO8601DateFormatter().string(from: $0) }
         _ = try await MacOSIntegration.createReminder(
             title: title,
             notes: notes,
-            due: dueString
+            due: dueString,
+            list: list
         )
-        await loadReminders()
+        await loadReminders(listName: list)
     }
 }

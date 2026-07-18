@@ -16,6 +16,8 @@ build/
 
 # Artifacts
 *.dmg
+*.dmg.sparse.sparseimage
+*.sparseimage
 
 # Node (docs/mcp-template example server)
 node_modules/

@@ -119,7 +119,8 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             return ["send_agent_message", "read_agent_messages"]
         case .system:
             return [
-                "create_reminder", "list_reminders", "create_calendar_event", "list_calendar_events",
+                "create_reminder", "list_reminders", "list_reminder_lists",
+                "create_calendar_event", "list_calendar_events",
                 "open_url", "list_shortcuts", "run_shortcut", "create_shortcut",
                 "search_contacts", "create_contact", "update_contact", "delete_contact",
             ]

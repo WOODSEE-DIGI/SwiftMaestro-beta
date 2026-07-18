@@ -41,43 +41,47 @@ extension MaestroTools {
                 category: ToolCategory.system.rawValue,
                 handler: { call in await listRemindersTool(call) }),
             ToolDefinition(
-                name: "create_calendar_event", spec: systemToolSpecs[5],
+                name: "list_reminder_lists", spec: systemToolSpecs[5],
+                category: ToolCategory.system.rawValue,
+                handler: { _ in await listReminderListsTool() }),
+            ToolDefinition(
+                name: "create_calendar_event", spec: systemToolSpecs[6],
                 category: ToolCategory.system.rawValue,
                 handler: { call in await createCalendarEvent(call) }),
             ToolDefinition(
-                name: "create_note", spec: systemToolSpecs[6],
+                name: "create_note", spec: systemToolSpecs[7],
                 category: ToolCategory.notes.rawValue,
                 handler: { call in await createNoteTool(call) }),
             ToolDefinition(
-                name: "open_url", spec: systemToolSpecs[7],
+                name: "open_url", spec: systemToolSpecs[8],
                 category: ToolCategory.system.rawValue,
                 handler: { call in await openURLTool(call) }),
             ToolDefinition(
-                name: "search_contacts", spec: systemToolSpecs[8],
+                name: "search_contacts", spec: systemToolSpecs[9],
                 category: ToolCategory.system.rawValue,
                 handler: { call in await searchContactsTool(call) }),
             ToolDefinition(
-                name: "create_contact", spec: systemToolSpecs[9],
+                name: "create_contact", spec: systemToolSpecs[10],
                 category: ToolCategory.system.rawValue,
                 handler: { call in await createContactTool(call) }),
             ToolDefinition(
-                name: "update_contact", spec: systemToolSpecs[10],
+                name: "update_contact", spec: systemToolSpecs[11],
                 category: ToolCategory.system.rawValue,
                 handler: { call in await updateContactTool(call) }),
             ToolDefinition(
-                name: "delete_contact", spec: systemToolSpecs[11],
+                name: "delete_contact", spec: systemToolSpecs[12],
                 category: ToolCategory.system.rawValue,
                 handler: { call in await deleteContactTool(call) }),
             ToolDefinition(
-                name: "list_shortcuts", spec: systemToolSpecs[12],
+                name: "list_shortcuts", spec: systemToolSpecs[13],
                 category: ToolCategory.system.rawValue,
                 handler: { _ in await listShortcutsTool() }),
             ToolDefinition(
-                name: "run_shortcut", spec: systemToolSpecs[13],
+                name: "run_shortcut", spec: systemToolSpecs[14],
                 category: ToolCategory.system.rawValue,
                 handler: { call in await runShortcutTool(call) }),
             ToolDefinition(
-                name: "create_shortcut", spec: systemToolSpecs[14],
+                name: "create_shortcut", spec: systemToolSpecs[15],
                 category: ToolCategory.system.rawValue,
                 handler: { call in await createShortcutTool(call) }),
         ])
@@ -102,17 +106,22 @@ extension MaestroTools {
                 + "Use to verify which project rules are currently loaded.",
                 properties: [:], required: []),
             rawSpec("create_reminder",
-                "Create a reminder in the macOS Reminders app. Prompts for access on first use.",
+                "Create a reminder in the macOS Reminders app. Use 'list' to target a specific list (call list_reminder_lists first to see available names). Prompts for access on first use.",
                 properties: [
                     "title": ["type": "string", "description": "Reminder title."],
                     "notes": ["type": "string", "description": "Optional notes."],
                     "due": ["type": "string", "description": "Optional ISO-8601 due date/time, e.g. 2026-06-15T14:00:00Z."],
+                    "list": ["type": "string", "description": "Target list name (from list_reminder_lists). Omit for default list."],
                 ], required: ["title"]),
             rawSpec("list_reminders",
-                "List reminders from the macOS Reminders app.",
+                "List reminders from the macOS Reminders app. Optionally filter by list name.",
                 properties: [
                     "limit": ["type": "integer", "description": "Max reminders to return (default 25)."],
+                    "list": ["type": "string", "description": "Filter by list name (from list_reminder_lists). Omit for all lists."],
                 ], required: []),
+            rawSpec("list_reminder_lists",
+                "List all available reminder lists (calendars) in the macOS Reminders app. Shows list names and which is the default.",
+                properties: [:], required: []),
             rawSpec("create_calendar_event",
                 "Create an event in the macOS Calendar app. Prompts for access on first use.",
                 properties: [
@@ -180,8 +189,8 @@ extension MaestroTools {
         ]
     }
 
-    private struct ReminderArgs: Codable { let title: String?; let notes: String?; let due: String? }
-    private struct ListRemindersArgs: Codable { let limit: Int? }
+    private struct ReminderArgs: Codable { let title: String?; let notes: String?; let due: String?; let list: String? }
+    private struct ListRemindersArgs: Codable { let limit: Int?; let list: String? }
     private struct EventArgs: Codable { let title: String?; let start: String?; let end: String?; let notes: String? }
     private struct NoteArgs: Codable { let title: String?; let body: String? }
     private struct OpenURLArgs: Codable { let url: String? }
@@ -201,17 +210,45 @@ extension MaestroTools {
               let title = a.title?.trimmingCharacters(in: .whitespaces), !title.isEmpty else {
             return errorJSON("create_reminder requires 'title'")
         }
-        do { return try await MacOSIntegration.createReminder(title: title, notes: a.notes, due: a.due) }
-        catch { return errorJSON(error.localizedDescription) }
+        do {
+            return try await MacOSIntegration.createReminder(
+                title: title,
+                notes: a.notes,
+                due: a.due,
+                list: a.list
+            )
+        } catch { return errorJSON(error.localizedDescription) }
     }
 
     static func listRemindersTool(_ call: ToolCall) async -> String {
         let a = decodeArgs(call, as: ListRemindersArgs.self)
         do {
-            let items = try await MacOSIntegration.listReminders(limit: a?.limit ?? 25)
+            let items = try await MacOSIntegration.listReminders(
+                limit: a?.limit ?? 25,
+                listName: a?.list
+            )
             return items.isEmpty
                 ? "No reminders found."
                 : "Reminders (\(items.count)):\n" + items.joined(separator: "\n")
+        } catch { return errorJSON(error.localizedDescription) }
+    }
+
+    static func listReminderListsTool() async -> String {
+        do {
+            let lists = try await MacOSIntegration.fetchReminderLists()
+            guard !lists.isEmpty else { return "No reminder lists found." }
+            let mapped: [[String: Any]] = lists.map { list in
+                [
+                    "id": list.id,
+                    "title": list.title,
+                    "is_default": list.isDefault,
+                ]
+            }
+            return jsonString([
+                "count": lists.count,
+                "lists": mapped,
+                "note": "Use the 'title' of a list as the 'list' argument for create_reminder and list_reminders.",
+            ])
         } catch { return errorJSON(error.localizedDescription) }
     }
 
