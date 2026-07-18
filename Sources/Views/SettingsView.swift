@@ -772,7 +772,7 @@ struct ModelsSettingsTab: View {
         let isResident = engine.residentModelsReadout.contains { $0.id == model.id }
 
         if downloadingModelIDs.contains(model.id) {
-            let progress = engine.downloadProgressForModel(model)
+            let progress = engine.modelDownloadProgress[model.id]
             HStack(spacing: 6) {
                 if let progress {
                     ProgressView(value: progress)

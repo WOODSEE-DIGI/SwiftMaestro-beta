@@ -158,9 +158,14 @@ final class MLXInferenceEngine {
 
     private(set) var state: EngineState = .idle
     /// Legacy single-download progress. Kept for OnboardingView; Settings
-    /// uses ``downloadProgressForModel`` for per-model accuracy.
+    /// uses ``modelDownloadProgress`` for per-model accuracy.
     private(set) var downloadProgress: Progress?
     private(set) var tokensPerSecond: Double = 0
+
+    /// Per-model download progress (model.id → 0...1). Updated by the
+    /// observation loop inside ``performDownload``. SwiftUI observes this
+    /// via `@Observable`, so every tick triggers a view refresh.
+    var modelDownloadProgress: [String: Double] = [:]
 
     // MARK: - Private
 
@@ -321,10 +326,17 @@ final class MLXInferenceEngine {
                     progress.completedUnitCount = Int64(current * 100)
                     last = current
                 }
-                try? await Task.sleep(nanoseconds: 100_000_000)
+                // Mirror into the per-model dictionary so SwiftUI's @Observable
+                // triggers a view refresh on every tick.
+                modelDownloadProgress[model.id] = current
+                try? await Task.sleep(nanoseconds: 250_000_000)
             }
         }
-        defer { observation.cancel(); downloadProgress = nil }
+        defer {
+            observation.cancel()
+            downloadProgress = nil
+            modelDownloadProgress.removeValue(forKey: model.id)
+        }
 
         let token = SecretsStore.resolveValue(name: "HUGGINGFACE_TOKEN", currentProject: "SwiftMaestro")
 
@@ -349,17 +361,6 @@ final class MLXInferenceEngine {
             token: token
         )
         state = .idle
-    }
-
-    /// Per-model download progress (0...1), or `nil` if that model is not
-    /// currently downloading. Reads directly from the per-destination-key
-    /// tracking in `HuggingFaceDownloadService`, so each queued/downloading
-    /// model gets its own independent value.
-    func downloadProgressForModel(_ model: MaestroModel) -> Double? {
-        let repoName = model.huggingFaceID.components(separatedBy: "/").last ?? model.huggingFaceID
-        let dest = URL(fileURLWithPath: ModelCatalog.modelsRoot)
-            .appendingPathComponent("swiftmaestro-models/\(repoName)").path
-        return HuggingFaceDownloadService.shared.progress(forDestination: dest)
     }
 
     // MARK: - Model Loading
