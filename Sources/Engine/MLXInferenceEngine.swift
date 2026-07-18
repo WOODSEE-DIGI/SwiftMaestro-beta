@@ -314,22 +314,35 @@ final class MLXInferenceEngine {
         state = .downloading("Downloading \(model.displayName)…")
         NSLog("[DOWNLOAD] state set to downloading")
 
-        let observed = HuggingFaceDownloadService.shared
-        let destinationKey = destination.path
+        let destinationURL = destination
         let progress = Progress(totalUnitCount: 100)
         downloadProgress = progress
         let observation = Task {
-            var last: Double = 0
+            // Poll on-disk file sizes directly instead of relying on the
+            // Python stdout pipe (which is unreliable due to byte-by-byte
+            // FileHandle reading and MainActor hopping delays).
+            let fm = FileManager.default
+            var lastReported: Double = 0
             while !Task.isCancelled {
-                guard let current = observed.progress(forDestination: destinationKey) else { break }
-                if current != last {
-                    progress.completedUnitCount = Int64(current * 100)
-                    last = current
+                let bytesOnDisk = Self.directorySize(destinationURL, fm: fm)
+                // Prefer total from the Python helper's stdout (stored by
+                // handleProgressLine). Fall back to computing from disk.
+                let total = HuggingFaceDownloadService.shared.totalBytes(forDestination: destinationURL.path)
+                if total > 0 {
+                    let fraction = min(Double(bytesOnDisk) / Double(total), 1.0)
+                    if fraction != lastReported {
+                        progress.completedUnitCount = Int64(fraction * 100)
+                        modelDownloadProgress[model.id] = fraction
+                        lastReported = fraction
+                    }
+                } else if bytesOnDisk > 0 {
+                    // Total unknown — show indeterminate progress with bytes
+                    // downloaded. Use a dummy fraction so the bar animates.
+                    if lastReported == 0 {
+                        modelDownloadProgress[model.id] = nil  // triggers "Downloading..." text
+                    }
                 }
-                // Mirror into the per-model dictionary so SwiftUI's @Observable
-                // triggers a view refresh on every tick.
-                modelDownloadProgress[model.id] = current
-                try? await Task.sleep(nanoseconds: 250_000_000)
+                try? await Task.sleep(nanoseconds: 500_000_000)
             }
         }
         defer {
@@ -361,6 +374,29 @@ final class MLXInferenceEngine {
             token: token
         )
         state = .idle
+    }
+
+    /// Sum of file sizes in a directory (non-recursive). Used by the download
+    /// observation loop to derive progress from on-disk bytes instead of
+    /// relying on the Python stdout pipe.
+    private nonisolated static func directorySize(_ url: URL, fm: FileManager) -> Int64 {
+        guard let attrs = try? fm.attributesOfItem(atPath: url.path),
+              let fileType = attrs[.type] as? FileAttributeType else { return 0 }
+        if fileType == .typeRegular {
+            return (attrs[.size] as? Int64) ?? 0
+        }
+        guard let items = try? fm.contentsOfDirectory(at: url, includingPropertiesForKeys: [.fileSizeKey], options: .skipsHiddenFiles) else { return 0 }
+        var total: Int64 = 0
+        for item in items {
+            if let resourceValues = try? item.resourceValues(forKeys: [.fileSizeKey, .isDirectoryKey]) {
+                if resourceValues.isDirectory == true {
+                    total += directorySize(item, fm: fm)
+                } else {
+                    total += Int64(resourceValues.fileSize ?? 0)
+                }
+            }
+        }
+        return total
     }
 
     // MARK: - Model Loading

@@ -19,6 +19,10 @@ final class HuggingFaceDownloadService: ObservableObject {
     /// single set of published properties.
     @Published private(set) var activeDownloads: [String: Double] = [:]
     private var processes: [String: Process] = [:]
+    /// Total expected bytes per download, populated from the Python helper's
+    /// progress events so the engine's observation loop can compute percentage
+    /// from on-disk bytes without hitting the HuggingFace API.
+    private var totalBytesByDestination: [String: Int64] = [:]
 
     private init() {}
 
@@ -26,6 +30,12 @@ final class HuggingFaceDownloadService: ObservableObject {
     /// if nothing is downloading there right now.
     func progress(forDestination path: String) -> Double? {
         activeDownloads[path]
+    }
+
+    /// Total expected bytes for a download, or 0 if unknown. Populated from
+    /// the Python helper's first progress event.
+    func totalBytes(forDestination path: String) -> Int64 {
+        totalBytesByDestination[path] ?? 0
     }
 
     /// Download a repo to a local directory. If `localDir` is omitted, the repo is
@@ -63,7 +73,10 @@ final class HuggingFaceDownloadService: ObservableObject {
         ]
 
         activeDownloads[key] = 0
-        defer { activeDownloads[key] = nil }
+        defer {
+            activeDownloads[key] = nil
+            totalBytesByDestination.removeValue(forKey: key)
+        }
 
         NSLog("[HF DOWNLOAD] preparing helper...")
         let (scriptPath, pythonExecutable) = try await prepareHelper()
@@ -160,6 +173,9 @@ final class HuggingFaceDownloadService: ObservableObject {
                let total = obj["total"] as? Double,
                total > 0 {
                 activeDownloads[key] = completed / total
+                // Store total in Int64 so the engine can compute percentage
+                // from on-disk bytes without depending on this chain.
+                totalBytesByDestination[key] = Int64(total)
             }
         case "complete":
             activeDownloads[key] = 1
