@@ -3,23 +3,30 @@
 A native macOS AI assistant that runs large language models **fully on-device** on Apple Silicon via Apple [MLX](https://github.com/ml-explore/mlx) (`mlx-swift-lm`). No server, no account, no cloud — your conversations and files never leave your Mac.
 
 ## Highlights
-- **100% local inference** — models run in-process on the GPU through MLX. There is no external runtime or server to start or manage.
+- **100% local inference** — models run in-process on the Apple Silicon GPU through MLX. No external runtime or server to start or manage.
 - **Self-contained** — on first launch a guided onboarding walks you through picking, downloading, and loading a model. Nothing is hard-wired to a specific machine.
+- **Multi-Agent Workspace** — create named agents for different domains (coding, research, writing, operations). The Navigator delegates tasks and keeps project agents coordinated.
+- **Durable Memory** — native memory tools backed by SQLite + vector search, stored locally at `~/.ai-context/memory`.
+- **Files & Documents** — read and write files within authorised folders, with extraction for text, Markdown, DOCX, PDF, RTF, HTML, and arbitrary binary. Index documents into searchable chunks.
+- **Apple Integration** — create Reminders, Calendar events, and Notes; search and manage Contacts; run and create Apple Shortcuts; use Apple Notes, Numbers, and Calendar data in chat.
 - **Speech-to-text** — built-in WhisperKit integration lets you dictate messages via the microphone button. The speech model downloads on first use with a progress dialog.
-- **Built-in tools, no setup** — the assistant can use durable memory, read/write almost any file type, index large documents for retrieval, manage Reminders/Calendar/Notes, and open URLs — all in-process. MCP servers are an optional power-user extension.
-- **Multi-model agents** — assign different models to the Navigator and each sub-agent. Use a fast model for chat and a coding-focused model for project work. Six models ship with tool support enabled.
+- **Vision & Images** — attach images for multimodal conversations, or use the Vision Proxy to caption images locally with vision-capable models.
+- **Extensible Tools** — native in-process tools for SQLite, shell, local servers, Kanban boards, Canvas, and WhatsApp bridge. Add more via MCP servers.
+- **Per-agent models** — assign a different model to each agent. Fast for chat, coder for project work, reasoning for deep tasks.
 - **Mid-generation steering** — send a follow-up message while the agent is still generating to redirect it without cancelling the current run.
 - **Thinking display** — stream-split reasoning chain (collapsible) so you can see the model's thought process without cluttering the answer.
 - **Multi-model residency** — keep multiple models loaded in memory for instant switching between agents.
-- **Appearance settings** — themeable accent colors, light/dark mode, and per-panel background colors.
+- **Appearance settings** — themeable accent colours, light/dark mode, and per-panel background tints.
 - **Plans & task checklists** — docked panels, resizable plan windows, and Markdown export.
-- **Behavioral rules** — add custom rules that guide the agent's behavior, scoped globally or per-agent.
+- **Behavioral rules** — add custom rules that guide the agent's behaviour, scoped globally or per-agent.
 - **Private by design** — no telemetry, no analytics. Secrets live in the macOS Keychain and are never written to chat history or the memory store.
 - **Distributed as a notarized `.dmg`** — Developer ID signed and Apple-notarized, so it opens cleanly on any Apple Silicon Mac.
 
 ## Requirements
 - Apple Silicon Mac (M1 or later). Intel is not supported — MLX is Apple-Silicon-only.
 - macOS 14 (Sonoma) or later.
+- **Designed for:** M-series Pro/Max/Ultra with 64GB+ unified memory (128GB optimal for running multiple large models).
+- **Lighter runs:** any Apple Silicon Mac with 32GB+ unified memory; smaller Hub models work well.
 - Disk space and RAM scale with the model you choose (see [Models](#models)).
 
 ## Install (beta)
@@ -30,25 +37,26 @@ A native macOS AI assistant that runs large language models **fully on-device** 
 On first launch a guided onboarding walks you through picking and downloading a language model. A separate one-time setup dialog installs the speech recognition model (~3 GB) when you first use the microphone.
 
 ## Models
-Models download on first use from Hugging Face and are cached locally. Pick one in **Settings → Models**.
+Models download on first use from Hugging Face and are cached locally. Pick one in **Settings → Models**. You can also point to an existing local collection or fall back to a local LM Studio / Ollama / vLLM endpoint.
 
-### Tool-enabled models
-These models support SwiftMaestro's native tools (memory, files, reminders, etc.):
+### Verified core models
+These models are the supported focus for SwiftMaestro and have verified tool support:
 
 | Model | Approx. size / RAM | Best for | Tools |
 | --- | --- | --- | --- |
-| Qwen 3.6 35B-A3B (default) | ~20 GB | Fast, general use | ✅ verified |
-| Qwen 3 Coder 30B-A3B | ~17 GB | Coding tasks, sub-agents | ✅ |
-| Qwen 3.5 122B (A10B) | ~65 GB | Deepest reasoning | ✅ verified |
+| Gemma 4 26B-A4B 8-bit (default) | ~26 GB | Vision + text, general navigator | ✅ |
+| Gemma 4 26B-A4B 4-bit | ~16 GB | Lower memory, same checkpoint | ✅ |
+| Qwen 3.5 122B (A10B) | ~65 GB | Deepest reasoning | ✅ |
 | Qwen 3.5 27B (Opus Distilled) | ~14 GB | Balanced performance | ✅ |
-| DeepSeek R1 8B (Qwen3) | ~4 GB | Lightweight reasoning | ✅ |
-| Gemma 3n E4B | ~3 GB | Low memory, quick first run | ✅ |
+| Qwen 3 Coder 30B-A3B | ~17 GB | Coding tasks, sub-agents | ✅ |
 
-### Additional models
-These models work for chat but tools are not yet enabled:
+### Experimental models
+These models are available for exploration but are not part of the verified core:
 
 | Model | Approx. size / RAM | Best for |
 | --- | --- | --- |
+| Qwen 3.6 35B-A3B | ~20 GB | Fast, general use |
+| DeepSeek R1 8B (Qwen3) | ~4 GB | Lightweight reasoning |
 | Hermes 4 70B | ~56 GB | General purpose |
 | Magistral Small | ~13 GB | Fast inference |
 | Nemotron Cascade 30B | ~1 GB | Ultra-low memory |
@@ -56,9 +64,9 @@ These models work for chat but tools are not yet enabled:
 
 ### Per-agent model overrides
 Assign different models to different agents via the **"This agent"** picker in the chat toolbar. For example:
-- **Navigator** → Qwen 3.6 35B (fast chat)
+- **Navigator** → Gemma 4 26B-A4B (general chat + vision)
 - **Coder sub-agent** → Qwen 3 Coder 30B (coding focus)
-- **Reasoning sub-agent** → DeepSeek R1 8B (chain-of-thought)
+- **Reasoning sub-agent** → Qwen 3.5 122B (deep reasoning)
 
 Each agent runs its own model independently — no conflicts, no shared state.
 
@@ -66,6 +74,7 @@ By default models are stored under `~/Library/Application Support/SwiftMaestro/m
 
 ## What it can do out of the box
 The assistant has native, in-process tools — no configuration required:
+- **Multi-Agent Workspace** — create named agents for different domains, each with its own memory, rules, and model.
 - **Memory** — durable notes/knowledge in the shared `~/.ai-context/memory` store.
 - **Files** — read and write almost any file type within folders you authorize in **Settings → Context**:
   - Plain text, Markdown, CSV, JSON, code, etc.
@@ -73,19 +82,15 @@ The assistant has native, in-process tools — no configuration required:
   - Images: description + raw/base64 payload for multimodal models
   - Arbitrary binary: base64-encoded read/write
 - **Document indexing & retrieval** — index large files into searchable chunks and pull back the exact original text with `index_document`, `search_chunks`, and `read_chunk`. No summarization; the model sees verbatim source snippets.
-- **macOS** — create Reminders, Calendar events, and Notes; open URLs (prompts for permission on first use).
-- **Apple Shortcuts** — list, run, and *create* shortcuts. Describe what you want and the agent builds a `.shortcut` file you can import with a double-click.
+- **Apple Integration** — create Reminders, Calendar events, and Notes; search and manage Contacts; run and create Apple Shortcuts; use Apple Notes, Numbers, and Calendar data in chat.
 - **Plans, live task checklists, multi-agent messaging, and current time.**
-- **Behavioral rules** — `list_rules` and `set_rule` tools let the agent manage its own behavior rules.
+- **Behavioral rules** — `list_rules` and `set_rule` tools let the agent manage its own behaviour rules.
 - **Speech-to-text** — tap the microphone button to dictate; WhisperKit transcribes locally with no cloud API.
+- **Vision & Images** — attach images to your messages, or use the Vision Proxy to caption images locally for multimodal conversations.
 - **Mid-generation steering** — send a message while the agent is generating to redirect it on the fly.
-- **Image input** — attach images to your messages for multimodal conversations.
-- **Multi-agent delegation** — the Navigator can create project agents and delegate tasks to them, each running their own model.
+- **Extensible tools** — SQLite, shell, local servers, Kanban boards, Canvas, and WhatsApp bridge. Add more via MCP servers in **Settings → MCP**.
 
-Additional tools (web, shell, etc.) can be added by configuring MCP servers in **Settings → MCP**.
-See [`docs/MCP-SERVERS.md`](docs/MCP-SERVERS.md) for how the integration works and what makes a
-server SwiftMaestro-friendly, and [`docs/mcp-template/`](docs/mcp-template/) for a minimal,
-verified-working example server to start a new one from.
+See [`docs/MCP-SERVERS.md`](docs/MCP-SERVERS.md) for how the MCP integration works and what makes a server SwiftMaestro-friendly, and [`docs/mcp-template/`](docs/mcp-template/) for a minimal, verified-working example server.
 
 ## Build from source
 Requires Xcode 16+ and [`xcodegen`](https://github.com/yonaskolb/XcodeGen).
@@ -131,7 +136,7 @@ Then:
 | ModelCatalog | `Sources/Engine/ModelCatalog.swift` | Model list, default, local/Hub/remote resolution |
 | WhisperKitService | `Sources/Services/WhisperKitService.swift` | Speech-to-text: model lifecycle, recording, streaming transcription |
 | SimpleMemoryStore | `Sources/Memory/SimpleMemoryStore.swift` | Shared `~/.ai-context/memory` store |
-| SettingsView | `Sources/Views/SettingsView.swift` | Models, Tuning, Appearance, Rules, Context, MCP, Storage, Secrets, Whisper |
+| SettingsView | `Sources/Views/SettingsView.swift` | Models, Tuning, Vision Proxy, Appearance, Rules, Context, MCP, Storage, Secrets, Whisper, Shell |
 | KeychainService / SecretsStore | `Sources/Services/` | Keychain-backed secrets, `secret://` resolution |
 
 ## Privacy & distribution
