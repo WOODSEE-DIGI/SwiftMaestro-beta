@@ -10,22 +10,31 @@ struct WhatsAppView: View {
     @AppStorage("whatsapp.chatListWidth") private var chatListWidth = 240.0
 
     var body: some View {
-        ResizablePanelHost(panes: [
-            ResizablePane(
-                id: "chats",
-                length: Binding(get: { CGFloat(chatListWidth) }, set: { chatListWidth = Double($0) }),
-                minLength: 200,
-                maxLength: 360
-            ) {
-                chatList
-            },
-            ResizablePane(id: "detail", length: nil) {
-                detail
-            },
-        ])
-        .onChange(of: selectedChatID) { _, newValue in
-            guard let newValue else { return }
-            Task { await service.loadMessages(chatJID: newValue) }
+        // Show the QR code as a full single-pane view while we are waiting for
+        // the phone to scan. A split-pane layout squishes the block-art code and
+        // breaks the required 1:1 module aspect ratio, so we must give it the
+        // entire available area (matching the way other plugin panels like
+        // Mastodon open as one focused pane).
+        if case .awaitingQRScan(let qrText) = service.status {
+            qrScanView(qrText)
+        } else {
+            ResizablePanelHost(panes: [
+                ResizablePane(
+                    id: "chats",
+                    length: Binding(get: { CGFloat(chatListWidth) }, set: { chatListWidth = Double($0) }),
+                    minLength: 200,
+                    maxLength: 360
+                ) {
+                    chatList
+                },
+                ResizablePane(id: "detail", length: nil) {
+                    detail
+                },
+            ])
+            .onChange(of: selectedChatID) { _, newValue in
+                guard let newValue else { return }
+                Task { await service.loadMessages(chatJID: newValue) }
+            }
         }
     }
 
@@ -137,33 +146,52 @@ struct WhatsAppView: View {
     }
 
     private func qrScanView(_ qrText: String) -> some View {
-        VStack(spacing: 12) {
-            Text("Scan with WhatsApp")
-                .font(.title3.bold())
-            Text("WhatsApp on your phone → Linked Devices → Link a Device")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            // Render QR at fixed monospace size — never stretch on resize.
-            let lines = qrText.components(separatedBy: "\n").filter { !$0.isEmpty }
-            let cols = lines.map(\.count).max() ?? 1
-            let rowCount = lines.count
-            Text(qrText)
-                .font(.system(size: 6, weight: .regular, design: .monospaced))
-                .lineSpacing(0)
-                .tracking(0)
-                .foregroundStyle(.black)
-                .padding(12)
-                .background(.white)
-                .cornerRadius(8)
-                .frame(
-                    width: CGFloat(cols) * 4.2,
-                    height: CGFloat(rowCount) * 6.0,
-                    alignment: .center
-                )
-                .clipped()
+        VStack(spacing: 0) {
+            HStack {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 8, height: 8)
+                Text("WhatsApp")
+                    .font(.headline)
+                Spacer()
+                Button("Stop") { service.stop() }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.red)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(theme.secondaryBackground)
+
+            Divider()
+
+            VStack(spacing: 16) {
+                Text("Scan with WhatsApp")
+                    .font(.title3.bold())
+                Text("WhatsApp on your phone → Linked Devices → Link a Device")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+
+                GeometryReader { geometry in
+                    QRBlockCodeRenderer(
+                        qrText: qrText,
+                        darkColor: .black,
+                        lightColor: .white
+                    )
+                    .frame(width: min(geometry.size.width, geometry.size.height),
+                           height: min(geometry.size.width, geometry.size.height))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(.white)
+                    .cornerRadius(8)
+                    .shadow(radius: 4)
+                }
+                .frame(minHeight: 200)
+                .padding(.horizontal, 24)
+            }
+            .padding(.vertical, 24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding()
     }
 
     private func messageThread(chatJID: String) -> some View {
@@ -245,6 +273,85 @@ struct WhatsAppView: View {
             // Errors surface via the bridge's own status/error state elsewhere;
             // a failed send just leaves the compose text in place to retry.
         }
+    }
+}
+
+// MARK: - QR block-art renderer
+
+/// Renders the Unicode half-block QR art produced by `qrterminal` into a
+/// square, scannable image. Each text character encodes two vertical modules,
+/// so the canvas draws them as stacked rectangles with a guaranteed 1:1 aspect
+/// ratio. This avoids the distortion that text layout introduces in narrow or
+/// resizable panels.
+private struct QRBlockCodeRenderer: View {
+    let qrText: String
+    let darkColor: Color
+    let lightColor: Color
+
+    var body: some View {
+        Canvas { context, size in
+            let lines = qrText
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .map { line -> String in
+                    // Tabs should not appear in qrterminal output, but treat
+                    // them as single spaces so they cannot misalign the code.
+                    String(line).replacingOccurrences(of: "\t", with: " ")
+                }
+            guard !lines.isEmpty else { return }
+
+            let columns = lines.map(\.count).max() ?? 0
+            let rows = lines.count * 2
+            guard columns > 0, rows > 0 else { return }
+
+            let cellWidth = size.width / CGFloat(columns)
+            let cellHeight = size.height / CGFloat(rows)
+            let cellSize = min(cellWidth, cellHeight)
+
+            let drawWidth = cellSize * CGFloat(columns)
+            let drawHeight = cellSize * CGFloat(rows)
+            let offsetX = (size.width - drawWidth) / 2
+            let offsetY = (size.height - drawHeight) / 2
+
+            for (lineIndex, line) in lines.enumerated() {
+                for (columnIndex, character) in line.enumerated() {
+                    let x = offsetX + CGFloat(columnIndex) * cellSize
+                    let y = offsetY + CGFloat(lineIndex * 2) * cellSize
+
+                    switch character {
+                    case "█":
+                        // Both rows light.
+                        fillCell(context: context, x: x, y: y, size: cellSize, heightMultiplier: 2, color: lightColor)
+                    case " ":
+                        // Both rows dark.
+                        fillCell(context: context, x: x, y: y, size: cellSize, heightMultiplier: 2, color: darkColor)
+                    case "▀":
+                        // Top row dark, bottom row light.
+                        fillCell(context: context, x: x, y: y, size: cellSize, heightMultiplier: 1, color: darkColor)
+                        fillCell(context: context, x: x, y: y + cellSize, size: cellSize, heightMultiplier: 1, color: lightColor)
+                    case "▄":
+                        // Top row light, bottom row dark.
+                        fillCell(context: context, x: x, y: y, size: cellSize, heightMultiplier: 1, color: lightColor)
+                        fillCell(context: context, x: x, y: y + cellSize, size: cellSize, heightMultiplier: 1, color: darkColor)
+                    default:
+                        // Unknown block character: render as light so it does
+                        // not create phantom dark modules.
+                        fillCell(context: context, x: x, y: y, size: cellSize, heightMultiplier: 2, color: lightColor)
+                    }
+                }
+            }
+        }
+    }
+
+    private func fillCell(
+        context: GraphicsContext,
+        x: CGFloat,
+        y: CGFloat,
+        size: CGFloat,
+        heightMultiplier: CGFloat,
+        color: Color
+    ) {
+        let rect = CGRect(x: x, y: y, width: size, height: size * heightMultiplier)
+        context.fill(Path(rect), with: .color(color))
     }
 }
 
