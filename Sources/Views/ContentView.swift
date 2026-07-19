@@ -106,15 +106,32 @@ struct ContentView: View {
                 openPanel(.agentChat(workspace.navigator.id))
             }
             // Explicitly (re)present every panel that was floating when the
-            // app last quit, rather than relying on macOS to automatically
-            // restore data-driven WindowGroup windows — that restoration
-            // isn't guaranteed, and when it doesn't happen the persisted
-            // state and reality silently disagree: the sidebar shows a panel
-            // as "open" with no window to show for it, and clicking it does
-            // nothing (`open(_:)` no-ops on an already-open kind). Doing this
-            // explicitly keeps state and reality in sync unconditionally.
-            for kind in workspaceLayout.floatingPanels {
-                openWindow(id: "workspace-panel-window", value: WorkspacePanelWindowID(kind: kind))
+            // app last quit, rather than relying SOLELY on macOS to
+            // automatically restore data-driven WindowGroup windows — that
+            // restoration isn't guaranteed, and when it doesn't happen the
+            // persisted state and reality silently disagree: the sidebar
+            // shows a panel as "open" with no window to show for it, and
+            // clicking it does nothing (`open(_:)` no-ops on an already-open
+            // kind). Doing this explicitly keeps state and reality in sync
+            // unconditionally.
+            //
+            // BUT: firing this unconditionally in the SAME .onAppear pass
+            // (rather than after a short delay) raced macOS's own
+            // restoration — confirmed live: a panel macOS DID successfully
+            // restore (correct saved position, correct Space) ALSO got a
+            // second, brand-new window from this loop (default size,
+            // whatever Space happened to be active), because `openWindow`
+            // can only dedup against a window it already knows exists at the
+            // moment it's called, and system restoration hadn't finished
+            // registering its window yet. Window restoration is effectively
+            // instantaneous once it happens at all, so this delay is free
+            // for the case restoration doesn't apply, while avoiding the
+            // race for the case it does.
+            Task {
+                try? await Task.sleep(for: .seconds(1))
+                for kind in workspaceLayout.floatingPanels {
+                    openWindow(id: "workspace-panel-window", value: WorkspacePanelWindowID(kind: kind))
+                }
             }
             if focusedKind == nil { focusedKind = workspaceLayout.allOpenPanels.first }
             // ChatViewModelCache.shared is set by its own init() now (see that
