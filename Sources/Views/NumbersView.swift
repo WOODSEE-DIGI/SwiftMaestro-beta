@@ -8,6 +8,31 @@ struct NumbersView: View {
     @State private var selectedDocumentID: String?
     @State private var error: String?
     @AppStorage("numbers.documentListWidth") private var documentListWidth = 220.0
+    /// Owned explicitly here (rather than letting `NavigationStack` manage
+    /// its own implicit internal path) because tapping a sheet row was
+    /// reported to not navigate anywhere — confirmed live: the sheet list
+    /// stayed on screen showing the selected document's sheet with no way
+    /// to drill into its tables. `detailStack` is a *computed property*
+    /// returning a fresh `NavigationStack` value on every `NumbersView.body`
+    /// re-evaluation, then wrapped in `AnyView` by `ResizablePanelHost`'s
+    /// `ResizablePane` — an implicit, un-bound `NavigationStack`'s push
+    /// state lives entirely inside that value's own opaque internal
+    /// storage, which is exactly the kind of state type-erasure through
+    /// `AnyView` in a custom container is most likely to fail to carry
+    /// forward correctly. An explicit `NavigationPath` is real `@State`
+    /// owned directly by `NumbersView` itself (never erased), so pushes are
+    /// guaranteed to actually mutate visible, persistent state regardless
+    /// of how the destination view is hosted.
+    @State private var navigationPath = NavigationPath()
+    /// A browsable tree of `.numbers` files found on disk — distinct from
+    /// `service.documents`, which only lists documents CURRENTLY OPEN in
+    /// Numbers.app. Reported gap: the sidebar only ever showed that flat
+    /// "Open Documents" list, with no way to browse to a file that isn't
+    /// already open; the folder-icon button only opens a one-shot system
+    /// picker dialog, not a persistent in-panel browser. Built once (and on
+    /// manual refresh) by scanning known likely save locations.
+    @State private var fileTree: [NumbersFileNode] = []
+    @State private var isLoadingFileTree = false
 
     var body: some View {
         ResizablePanelHost(panes: [
@@ -26,10 +51,19 @@ struct NumbersView: View {
         .task {
             await service.loadIfPreviouslyAuthorized()
         }
+        .task {
+            await reloadFileTree()
+        }
         .onChange(of: service.status) { _, newValue in
             if newValue == .authorized {
                 Task { await service.loadDocuments() }
             }
+        }
+        // Switching documents while a sheet/table is pushed would otherwise
+        // leave that now-unrelated destination view on screen, referencing
+        // the PREVIOUS document's data — reset to the sheet list root.
+        .onChange(of: selectedDocumentID) { _, _ in
+            navigationPath = NavigationPath()
         }
         .alert("Numbers Error", isPresented: .constant(error != nil)) {
             Button("OK") { error = nil }
@@ -60,6 +94,22 @@ struct NumbersView: View {
                             Text(doc.name)
                                 .tag(doc.id)
                                 .lineLimit(1)
+                        }
+                    }
+                }
+
+                Section("Files") {
+                    if isLoadingFileTree {
+                        Text("Scanning…")
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    } else if fileTree.isEmpty {
+                        Text("No .numbers files found")
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    } else {
+                        ForEach(fileTree) { node in
+                            NumbersFileTreeRow(node: node, onOpenFile: openFile(at:))
                         }
                     }
                 }
@@ -94,7 +144,10 @@ struct NumbersView: View {
                 .help("Open existing .numbers file")
 
                 Button {
-                    Task { await service.loadDocuments() }
+                    Task {
+                        await service.loadDocuments()
+                        await reloadFileTree()
+                    }
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
@@ -107,7 +160,7 @@ struct NumbersView: View {
     // MARK: - Detail stack (document -> sheets -> tables -> cell grid)
 
     private var detailStack: some View {
-        NavigationStack {
+        NavigationStack(path: $navigationPath) {
             sheetList
                 .navigationTitle(selectedDocumentName)
                 .navigationDestination(for: NumbersSheet.self) { sheet in
@@ -129,14 +182,30 @@ struct NumbersView: View {
     }
 
     private var sheetList: some View {
-        SheetListView(documentID: selectedDocumentID, documentName: selectedDocumentName)
+        SheetListView(
+            documentID: selectedDocumentID, documentName: selectedDocumentName,
+            // Explicit push via the owning view's own `navigationPath`,
+            // rather than `NavigationLink(value:)`'s implicit value-matching
+            // against `.navigationDestination(for:)` — see the long comment
+            // on `navigationPath` for why: tapping a sheet was reported to
+            // not navigate anywhere, and this removes any dependency on
+            // that implicit machinery working correctly through a
+            // `ResizablePanelHost`/`AnyView`-hosted `NavigationStack`.
+            onSelect: { sheet in navigationPath.append(sheet) }
+        )
     }
 
     private func tableList(sheet: NumbersSheet) -> some View {
         TableListView(
             documentID: selectedDocumentID ?? "",
             documentName: selectedDocumentName,
-            sheet: sheet
+            sheet: sheet,
+            onSelect: { table in
+                navigationPath.append(NumbersTableRoute(
+                    documentID: selectedDocumentID ?? "", documentName: selectedDocumentName,
+                    sheetName: sheet.name, table: table
+                ))
+            }
         )
     }
 
@@ -166,6 +235,148 @@ struct NumbersView: View {
             }
         }
     }
+
+    /// Opens a `.numbers` file tapped in the sidebar's file tree — same
+    /// underlying JXA "open" call the folder-icon picker uses, just
+    /// triggered from a tree row instead of a one-shot system dialog.
+    private func openFile(at path: String) {
+        Task {
+            do {
+                let doc = try await service.openDocument(atPath: path)
+                selectedDocumentID = doc.id
+            } catch {
+                self.error = error.localizedDescription
+            }
+        }
+    }
+
+    /// Rebuilds the sidebar's `.numbers` file tree by scanning the two
+    /// locations Numbers documents actually end up in on this machine: the
+    /// user's `~/Documents` folder, and (if present) the iCloud Drive
+    /// container Numbers.app itself uses when a document is saved to
+    /// iCloud. Scanning happens off the main actor since it's real
+    /// synchronous disk I/O across a whole directory subtree.
+    private func reloadFileTree() async {
+        isLoadingFileTree = true
+        defer { isLoadingFileTree = false }
+        fileTree = await Task.detached(priority: .userInitiated) {
+            NumbersFileNode.scanKnownLocations()
+        }.value
+    }
+}
+
+// MARK: - File tree (sidebar .numbers browser)
+
+/// One entry in the sidebar's `.numbers` file browser — either a folder
+/// (with children already scanned in, since folders containing no
+/// `.numbers` files anywhere inside them are pruned entirely rather than
+/// shown as always-empty dead ends) or a leaf `.numbers` file.
+private struct NumbersFileNode: Identifiable {
+    let id: String // full filesystem path — always unique
+    let name: String
+    let path: String
+    let isDirectory: Bool
+    var children: [NumbersFileNode]
+
+    /// Scans `~/Documents` and, if it exists, the iCloud Drive container
+    /// Numbers.app saves into (`~/Library/Mobile Documents/com~apple~Numbers`),
+    /// each as its own top-level root node so the two are clearly
+    /// distinguished in the tree rather than silently merged.
+    static func scanKnownLocations() -> [NumbersFileNode] {
+        let fm = FileManager.default
+        var roots: [NumbersFileNode] = []
+
+        if let documentsURL = fm.urls(for: .documentDirectory, in: .userDomainMask).first {
+            let children = scan(directory: documentsURL, depth: 0)
+            if !children.isEmpty {
+                roots.append(NumbersFileNode(
+                    id: documentsURL.path, name: "Documents", path: documentsURL.path,
+                    isDirectory: true, children: children
+                ))
+            }
+        }
+
+        let iCloudNumbersURL = fm.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Mobile Documents/com~apple~Numbers/Documents")
+        if fm.fileExists(atPath: iCloudNumbersURL.path) {
+            let children = scan(directory: iCloudNumbersURL, depth: 0)
+            if !children.isEmpty {
+                roots.append(NumbersFileNode(
+                    id: iCloudNumbersURL.path, name: "iCloud Drive – Numbers", path: iCloudNumbersURL.path,
+                    isDirectory: true, children: children
+                ))
+            }
+        }
+
+        return roots
+    }
+
+    /// Recursively scans one directory. Non-`.numbers`, non-directory
+    /// entries are ignored entirely; directories with no `.numbers` file
+    /// anywhere in their subtree are pruned so the tree only ever shows a
+    /// path that actually leads somewhere useful. Capped at a sane depth so
+    /// a huge/symlink-looping Documents folder can't hang the scan.
+    private static func scan(directory: URL, depth: Int, maxDepth: Int = 8) -> [NumbersFileNode] {
+        guard depth <= maxDepth,
+              let entries = try? FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+              )
+        else { return [] }
+
+        var nodes: [NumbersFileNode] = []
+        for entry in entries.sorted(by: { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }) {
+            // A `.numbers` document can itself be a package/directory on
+            // disk depending on how it was created — treat anything with
+            // this extension as an opaque leaf file, never recurse into it.
+            if entry.pathExtension.lowercased() == "numbers" {
+                nodes.append(NumbersFileNode(
+                    id: entry.path, name: entry.deletingPathExtension().lastPathComponent,
+                    path: entry.path, isDirectory: false, children: []
+                ))
+                continue
+            }
+            let isDirectory = (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+            guard isDirectory else { continue }
+            let children = scan(directory: entry, depth: depth + 1, maxDepth: maxDepth)
+            guard !children.isEmpty else { continue }
+            nodes.append(NumbersFileNode(
+                id: entry.path, name: entry.lastPathComponent, path: entry.path,
+                isDirectory: true, children: children
+            ))
+        }
+        return nodes
+    }
+}
+
+/// Recursively renders one `NumbersFileNode` — a `DisclosureGroup` for a
+/// folder, a plain tappable row for a `.numbers` file.
+private struct NumbersFileTreeRow: View {
+    let node: NumbersFileNode
+    let onOpenFile: (String) -> Void
+
+    var body: some View {
+        if node.isDirectory {
+            DisclosureGroup {
+                ForEach(node.children) { child in
+                    NumbersFileTreeRow(node: child, onOpenFile: onOpenFile)
+                }
+            } label: {
+                Label(node.name, systemImage: "folder")
+                    .lineLimit(1)
+            }
+        } else {
+            Button {
+                onOpenFile(node.path)
+            } label: {
+                Label(node.name, systemImage: "tablecells")
+                    .lineLimit(1)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+    }
 }
 
 // MARK: - Sheet list (per selected document)
@@ -173,6 +384,7 @@ struct NumbersView: View {
 private struct SheetListView: View {
     let documentID: String?
     let documentName: String
+    let onSelect: (NumbersSheet) -> Void
 
     @Environment(NumbersService.self) private var service
     @State private var sheets: [NumbersSheet] = []
@@ -192,15 +404,25 @@ private struct SheetListView: View {
                         .lineLimit(1)
                 } else {
                     ForEach(sheets, id: \.name) { sheet in
-                        NavigationLink(value: sheet) {
+                        Button {
+                            onSelect(sheet)
+                        } label: {
                             HStack {
                                 Text(sheet.name)
                                 Spacer()
                                 Text("\(sheet.tableCount) table\(sheet.tableCount == 1 ? "" : "s")")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
                             }
+                            // Matches AppleNotesView's note row: without this,
+                            // the `Spacer()`'s empty area isn't part of the
+                            // tap target, only the text glyphs themselves are.
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -233,6 +455,7 @@ private struct TableListView: View {
     let documentID: String
     let documentName: String
     let sheet: NumbersSheet
+    let onSelect: (NumbersTable) -> Void
 
     @Environment(NumbersService.self) private var service
     @State private var tables: [NumbersTable] = []
@@ -248,18 +471,22 @@ private struct TableListView: View {
                         .lineLimit(1)
                 } else {
                     ForEach(tables, id: \.name) { table in
-                        NavigationLink(value: NumbersTableRoute(
-                            documentID: documentID, documentName: documentName,
-                            sheetName: sheet.name, table: table
-                        )) {
+                        Button {
+                            onSelect(table)
+                        } label: {
                             HStack {
                                 Text(table.name)
                                 Spacer()
                                 Text("\(table.rowCount)×\(table.columnCount)")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
                             }
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
                     }
                 }
             }

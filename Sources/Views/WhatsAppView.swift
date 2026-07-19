@@ -11,6 +11,10 @@ struct WhatsAppView: View {
     /// A picked/dropped/pasted image queued to send as the next message's
     /// attachment. Cleared once the send actually goes out (or fails).
     @State private var pendingAttachmentURL: URL?
+    /// Belt-and-suspenders duplicate-send guard — see the long comment in
+    /// `send(chatJID:)` for why `isSending` alone isn't sufficient.
+    @State private var lastSentSignature: String?
+    @State private var lastSentAt: Date?
     @AppStorage("whatsapp.chatListWidth") private var chatListWidth = 260.0
 
     var body: some View {
@@ -28,8 +32,29 @@ struct WhatsAppView: View {
             Divider()
 
             content
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // ROOT CAUSE FIX: Without `.topLeading`, SwiftUI defaults to
+                // `.center` alignment, which horizontally centres the
+                // connectedView HStack (chatList + detail) inside this
+                // frame. On the very first render that produces the
+                // connected state the centre-aligned content lands ~250 pt
+                // right of where it should be — the "left margin" glitch.
+                // Selecting a chat forces a state-driven re-layout that
+                // happens to use the correct geometry, which is why it
+                // self-corrects. Explicitly pinning to topLeading makes
+                // the first frame correct unconditionally.
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
+        // Belt-and-suspenders alongside `content`'s own `.frame` above: make
+        // the WHOLE root VStack explicitly claim all available space too,
+        // rather than relying on that inner modifier's width/height request
+        // propagating all the way up through this VStack and every
+        // ancestor (WorkspacePanelContentView -> WorkspacePanelWindowView's
+        // own VStack) to the hosting NSWindow. If that propagation was ever
+        // even slightly incomplete anywhere in the chain, the window could
+        // end up wider than this view's own ideal size, and SwiftUI centers
+        // undersized content in an oversized container by default — which
+        // would look exactly like an unexplained leading margin.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task(id: selectedChatID) {
             // Loads immediately when a chat is opened, then keeps polling
             // while it stays open. The bridge has no push mechanism for
@@ -166,18 +191,31 @@ struct WhatsAppView: View {
     // MARK: - Connected
 
     private var connectedView: some View {
+        // The leading-margin glitch — the chat list rendered ~250 pt right
+        // of the window's left edge on the very first appearance of the
+        // connected state, self-correcting the instant any state change
+        // forced a new layout pass — was rooted in `content`'s
+        // `.frame(maxWidth: .infinity, maxHeight: .infinity)` using the
+        // DEFAULT centre alignment, which horizontally centred the HStack
+        // (chatList + detail) inside the oversized frame. Adding
+        // `.topLeading` to that inner frame (see `content` above) pins
+        // the layout correctly on the very first frame. The ScrollView,
+        // WindowLayoutKicker, and connectedViewGeneration rebuilds from
+        // earlier fix rounds addressed symptoms, not this root cause, and
+        // are all removed now.
         HStack(spacing: 0) {
             chatList
                 .frame(width: CGFloat(chatListWidth))
             Divider()
             detail
         }
-        // Covers the WHOLE window (sidebar + message thread + compose bar),
-        // not just the compose bar's small strip, and adapts automatically
-        // to whatever size the window is currently at since it's on the
-        // full-size container rather than a fixed-height child. Only takes
-        // effect once a chat is actually selected — with none selected
-        // there's nowhere to attach a dropped image to.
+        // Covers the WHOLE window (sidebar + message thread + compose
+        // bar), not just the compose bar's small strip, and adapts
+        // automatically to whatever size the window is currently at
+        // since it's on the full-size container rather than a
+        // fixed-height child. Only takes effect once a chat is actually
+        // selected — with none selected there's nowhere to attach a
+        // dropped image to.
         .onDrop(of: [.image, .fileURL], isTargeted: nil) { providers in
             guard selectedChatID != nil else { return false }
             return handleAttachmentProviders(providers)
@@ -501,7 +539,26 @@ struct WhatsAppView: View {
         let text = composeText.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachmentURL = pendingAttachmentURL
         guard !text.isEmpty || attachmentURL != nil else { return }
+
+        // The `isSending` guard above only catches a second call that
+        // arrives WHILE the first one is still awaiting the network round
+        // trip. Confirmed still double-sending after that fix shipped: the
+        // duplicate `.onSubmit` fire isn't always concurrent with the
+        // first — sometimes it lands moments AFTER the first send has
+        // already fully completed (and `isSending` reset back to false via
+        // `defer`), so the in-flight check sees nothing in flight and lets
+        // an identical second send straight through. Reject an exact
+        // repeat of the same chat+text+attachment within a short window
+        // regardless of whether the two calls actually overlapped in time.
+        let signature = "\(chatJID)|\(text)|\(attachmentURL?.path ?? "")"
+        if signature == lastSentSignature,
+           let lastSentAt, Date().timeIntervalSince(lastSentAt) < 2 {
+            return
+        }
+
         isSending = true
+        lastSentSignature = signature
+        lastSentAt = Date()
         defer { isSending = false }
         do {
             try await service.sendMessage(to: chatJID, text: text, mediaPath: attachmentURL?.path)

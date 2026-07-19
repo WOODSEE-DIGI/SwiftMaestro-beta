@@ -92,6 +92,9 @@ enum MaestroTools {
     /// Shared inter-agent message store (per-agent inboxes). Set at app launch.
     @MainActor static weak var messageStore: AgentMessageStore?
 
+    /// Shared workspace layout state (panel grid). Set at app launch.
+    @MainActor static weak var workspaceLayout: WorkspaceLayoutState?
+
     /// Returns the real local date/time. Unambiguously verifiable: the model
     /// cannot know the true current time without calling this, so a correct
     /// answer proves the tool round-trip actually fired.
@@ -447,6 +450,18 @@ enum MaestroTools {
                 handler: { _ in
                     errorJSON("ask_project_agents must be intercepted by AgentExecutor, not dispatched directly.")
                 }),
+            ToolDefinition(
+                name: "set_agent_model", spec: navigatorToolSpecs[5],
+                category: ToolCategory.workspace.rawValue,
+                handler: { call in await setAgentModel(call) }),
+            ToolDefinition(
+                name: "list_models", spec: navigatorToolSpecs[6],
+                category: ToolCategory.workspace.rawValue,
+                handler: { _ in await listModels() }),
+            ToolDefinition(
+                name: "open_panel", spec: navigatorToolSpecs[7],
+                category: ToolCategory.workspace.rawValue,
+                handler: { call in await openPanelTool(call) }),
         ])
     }
 
@@ -519,6 +534,45 @@ enum MaestroTools {
                         ] as [String: any Sendable],
                     ] as [String: any Sendable],
                 ], required: ["requests"]),
+            functionSpec(
+                name: "set_agent_model",
+                description:
+                    "CHANGE the model used by an existing project agent. The agent must "
+                    + "already exist (use list_workspace to find it first). Pass 'model' with "
+                    + "a model id (e.g. 'local-qwen3.5-122b'), a shorthand like 'coding' for "
+                    + "the coding-specialist model, or 'default' to clear the override and "
+                    + "revert to the global default.",
+                properties: [
+                    "project": ["type": "string", "description": "Project name the agent belongs to."],
+                    "agent": ["type": "string", "description": "Name of the agent whose model to change."],
+                    "model": ["type": "string", "description": "New model id, shorthand ('coding'), or 'default' to clear the override."],
+                ],
+                required: ["project", "agent", "model"]
+            ),
+            functionSpec(
+                name: "list_models",
+                description:
+                    "LIST all available models in the catalog. Returns each model's id, "
+                    + "display name, estimated memory, whether it has local weights "
+                    + "(downloaded and ready to load), and which is the current global "
+                    + "default. Use the model id from this list when calling "
+                    + "set_agent_model or create_project_agent.",
+                properties: [:],
+                required: []
+            ),
+            functionSpec(
+                name: "open_panel",
+                description:
+                    "OPEN or bring to front a workspace panel inside SwiftMaestro. "
+                    + "This makes the panel visible in the workspace grid or its floating "
+                    + "window. Available panels: 'terminal', 'numbers', 'kanban', "
+                    + "'calendar', 'reminders', 'contacts', 'appleNotes', 'notesMD', "
+                    + "'canvas', 'whatsapp', or an agent name to open its chat panel.",
+                properties: [
+                    "panel": ["type": "string", "description": "Panel to open: 'terminal', 'numbers', 'kanban', 'calendar', 'reminders', 'contacts', 'appleNotes', 'notesMD', 'canvas', 'whatsapp', or an agent name."],
+                ],
+                required: ["panel"]
+            ),
         ]
     }
 
@@ -1024,7 +1078,9 @@ enum MaestroTools {
 
     /// Resolve a free-form model hint into a known `MaestroModel.id`.
     /// Supported: "coding"/"coder" → the local Qwen 3 Coder model; otherwise
-    /// the raw string is kept if it matches a known model id.
+    /// the raw string is kept if it matches a known model id. Also does a
+    /// case-insensitive display-name match so the model picker's visible
+    /// labels (e.g. "Qwen 3 Coder 30B-A3B (Instruct)") resolve correctly.
     @MainActor
     private static func resolveAgentModelID(
         _ hint: String?, agentName: String? = nil, catalog: ModelCatalog?
@@ -1041,6 +1097,17 @@ enum MaestroTools {
             // If the hint matches a known catalog id, use it verbatim.
             if let catalog = catalog, catalog.model(forID: resolvedHint) != nil {
                 return resolvedHint
+            }
+            // Try a case-insensitive display-name match (the model picker
+            // shows display names like "Qwen 3 Coder 30B-A3B (Instruct)").
+            if let catalog {
+                if let match = catalog.models.first(where: {
+                    $0.displayName.lowercased() == lower
+                        || $0.displayName.lowercased().contains(lower)
+                        || lower.contains($0.displayName.lowercased())
+                }) {
+                    return match.id
+                }
             }
             return resolvedHint
         }
@@ -1123,6 +1190,142 @@ enum MaestroTools {
             }
             ws.archiveAgent(id: target.id)
             return jsonString(["status": "archived", "project": args.project, "agent": args.agent])
+        }
+    }
+
+    private static func setAgentModel(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: ProjectAgentArgs.self),
+              !args.project.trimmingCharacters(in: .whitespaces).isEmpty,
+              !args.agent.trimmingCharacters(in: .whitespaces).isEmpty,
+              let modelHint = args.model?.trimmingCharacters(in: .whitespaces),
+              !modelHint.isEmpty
+        else { return errorJSON("set_agent_model requires 'project', 'agent', and 'model'") }
+
+        return await MainActor.run {
+            guard let ws = workspace else { return errorJSON("workspace unavailable") }
+            guard let target = ws.findAgent(projectName: args.project, agentName: args.agent) else {
+                return errorJSON("no agent '\(args.agent)' in project '\(args.project)'")
+            }
+            let catalog = ModelCatalog()
+            let newModelID: String?
+            if modelHint.lowercased() == "default" || modelHint.lowercased() == "reset" {
+                newModelID = nil
+            } else {
+                newModelID = resolveAgentModelID(modelHint, agentName: target.name, catalog: catalog)
+            }
+            ws.setModel(newModelID, for: target.id)
+            return jsonString([
+                "status": "updated",
+                "project": args.project,
+                "agent": target.name,
+                "modelID": newModelID ?? NSNull(),
+                "note": newModelID != nil
+                    ? "Model changed to '\(newModelID!)'. The agent will use this model on its next task."
+                    : "Model override cleared. The agent will use the global default model.",
+            ])
+        }
+    }
+
+    private static func listModels() async -> String {
+        let result: String = await MainActor.run {
+            let catalog = ModelCatalog()
+            let defaultID = catalog.selectedModelID
+            let items: [[String: Any]] = catalog.models.map { m in
+                var entry: [String: Any] = [
+                    "id": m.id,
+                    "displayName": m.displayName,
+                    "memoryGB": m.estimatedMemoryGB,
+                    "hasLocalWeights": m.hasLocalWeights,
+                    "isDefault": m.id == defaultID,
+                ]
+                if m.isVision { entry["vision"] = true }
+                if let active = m.activeParamsB { entry["activeParamsB"] = active }
+                return entry
+            }
+            return jsonString([
+                "models": items,
+                "defaultModelID": defaultID ?? NSNull(),
+            ])
+        }
+        return result
+    }
+
+    private struct OpenPanelArgs: Codable {
+        let panel: String
+
+        enum CodingKeys: String, CodingKey { case panel }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            panel = try c.decode(String.self, forKey: .panel)
+        }
+    }
+
+    /// Maps a free-form panel name (from the model) to a `WorkspacePanelKind`.
+    /// Agent names are resolved by fuzzy-matching against workspace agents.
+    @MainActor
+    private static func resolvePanelKind(_ name: String) -> WorkspacePanelKind? {
+        let lower = name.trimmingCharacters(in: .whitespaces).lowercased()
+        switch lower {
+        case "terminal", "shell", "term": return .terminal
+        case "numbers", "spreadsheet": return .numbers
+        case "kanban", "board": return .kanban
+        case "calendar", "cal": return .calendar
+        case "reminders", "todo", "tasks": return .reminders
+        case "contacts", "people": return .contacts
+        case "apple notes", "applenotes", "notes": return .appleNotes
+        case "notes.md", "notesmd", "md notes": return .notesMD
+        case "canvas", "draw": return .canvas
+        case "whatsapp", "wa": return .whatsapp
+        default:
+            // Try fuzzy-matching against agent names
+            guard let ws = workspace else { return nil }
+            if let match = ws.agents.first(where: {
+                $0.name.lowercased() == lower
+                    || $0.name.lowercased().contains(lower)
+                    || lower.contains($0.name.lowercased())
+            }) {
+                return .agentChat(match.id)
+            }
+            return nil
+        }
+    }
+
+    private static func openPanelTool(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: OpenPanelArgs.self),
+              !args.panel.trimmingCharacters(in: .whitespaces).isEmpty
+        else { return errorJSON("open_panel requires 'panel'") }
+
+        return await MainActor.run {
+            guard let layout = workspaceLayout else { return errorJSON("workspace layout unavailable") }
+            guard let kind = resolvePanelKind(args.panel) else {
+                return errorJSON("unknown panel '\(args.panel)'. Available: terminal, numbers, kanban, calendar, reminders, contacts, appleNotes, notesMD, canvas, whatsapp, or an agent name.")
+            }
+            let result = layout.open(kind)
+            switch result {
+            case .dockedDirectly:
+                return jsonString([
+                    "status": "opened",
+                    "panel": args.panel,
+                    "mode": "docked",
+                    "note": "Panel is now visible in the workspace.",
+                ])
+            case .floated:
+                // Force-dock into the workspace grid so the agent can see it
+                // without needing a separate openWindow() call.
+                layout.dock(kind)
+                return jsonString([
+                    "status": "opened",
+                    "panel": args.panel,
+                    "mode": "docked",
+                    "note": "Panel is now visible in the workspace.",
+                ])
+            case .alreadyOpen:
+                return jsonString([
+                    "status": "already_open",
+                    "panel": args.panel,
+                    "note": "Panel was already open.",
+                ])
+            }
         }
     }
 

@@ -126,6 +126,8 @@ struct SwiftMaestroApp: App {
                     MaestroTools.planStore = planStore
                     // Expose the inter-agent message store to the messaging tools.
                     MaestroTools.messageStore = messageStore
+                    // Expose the workspace layout so tools can open/focus panels.
+                    MaestroTools.workspaceLayout = WorkspaceLayoutState.shared
                     // Wire client-side MCP tools into the inference engine and
                     // spawn the user-enabled servers (permissioned by MCP flags).
                     engine.mcpService = mcpService
