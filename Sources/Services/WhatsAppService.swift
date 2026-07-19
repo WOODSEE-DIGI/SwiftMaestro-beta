@@ -618,6 +618,20 @@ struct WhatsAppChat: Identifiable, Hashable, Sendable {
     let jid: String
     let name: String?
     let lastMessageTime: Date?
+
+    /// `name`, falling back to `jid` for BOTH nil and empty string. The
+    /// bridge stores an unresolved chat's name as `''` (not NULL) — most
+    /// visibly, a one-time migration deliberately clears any chat name that
+    /// was just a raw phone/LID number back to `''` so it can be
+    /// re-resolved with better data later (see clearRawNumberChatNames in
+    /// the bridge). `name ?? jid` alone only catches nil, not that empty
+    /// string, and would otherwise render as a blank sidebar row for any
+    /// chat that hasn't been re-resolved (or has genuinely no name
+    /// anywhere) yet.
+    var displayName: String {
+        guard let name, !name.isEmpty else { return jid }
+        return name
+    }
 }
 
 struct WhatsAppMessage: Identifiable, Hashable, Sendable {

@@ -196,38 +196,54 @@ struct WhatsAppView: View {
                 .padding(.horizontal, 12)
                 .padding(.top, 8)
                 .padding(.bottom, 4)
-            // `.listStyle(.plain)` alone didn't fix it: the extra leading
-            // margin was actually coming from `Section`, not the list style
-            // — macOS List/NSOutlineView reserves indentation for a
-            // Section's (nonexistent, since there's only ever one) disclosure
-            // hierarchy, and only stops reserving it once a row is selected
-            // and the outline view recomputes its indent level around the
-            // selection. Removing the Section entirely (moving its title to
-            // a plain header row above the List instead) removes the
-            // indentation reservation altogether, so there's nothing to
-            // "correct" once you click a row.
-            List(selection: $selectedChatID) {
-                if service.chats.isEmpty {
-                    Text("No chats")
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                } else {
-                    ForEach(service.chats) { chat in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(chat.name ?? chat.jid)
-                                .lineLimit(1)
-                            if let time = chat.lastMessageTime {
-                                Text(time, style: .relative)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
+            // Two previous attempts at this used AppKit's `List` (first with
+            // the default style, then `.listStyle(.plain)`, then removing
+            // the `Section` wrapper) and the margin glitch on first
+            // appearance survived all of them — it's an NSTableView-backed
+            // List's OWN first-layout-pass timing quirk, not anything about
+            // Section/style specifically, and it only self-corrects once
+            // SOME layout-invalidating change (like a selection) forces a
+            // second pass. Rather than keep guessing at List-specific
+            // workarounds, this is a fully custom ScrollView + manually
+            // drawn rows: no AppKit List/NSTableView involved at all, so
+            // there's no such quirk to have in the first place — the layout
+            // is correct on the very first frame, unconditionally.
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    if service.chats.isEmpty {
+                        Text("No chats")
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                    } else {
+                        ForEach(service.chats) { chat in
+                            chatRow(chat)
                         }
-                        .tag(chat.jid)
                     }
                 }
             }
-            .listStyle(.plain)
         }
+    }
+
+    private func chatRow(_ chat: WhatsAppChat) -> some View {
+        let isSelected = selectedChatID == chat.jid
+        return VStack(alignment: .leading, spacing: 2) {
+            Text(chat.displayName)
+                .lineLimit(1)
+            if let time = chat.lastMessageTime {
+                Text(time, style: .relative)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(isSelected ? theme.accent.opacity(0.25) : Color.clear)
+        .foregroundStyle(isSelected ? theme.accent : .primary)
+        .contentShape(Rectangle())
+        .onTapGesture { selectedChatID = chat.jid }
     }
 
     @ViewBuilder
@@ -244,7 +260,7 @@ struct WhatsAppView: View {
     // MARK: - Message thread
 
     private func messageThread(chatJID: String) -> some View {
-        let chatName = service.chats.first { $0.jid == chatJID }?.name ?? chatJID
+        let chatName = service.chats.first { $0.jid == chatJID }?.displayName ?? chatJID
         return VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
