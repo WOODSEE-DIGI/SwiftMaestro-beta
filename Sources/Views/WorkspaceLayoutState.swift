@@ -32,6 +32,8 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
     /// as a `PanelType` sub-panel; moved here so it's a normal top-level
     /// "Swift Apps" item instead — one Terminal, independent of any agent.
     case terminal
+    /// Live view of the internal agent bus: topics, messages, and subscribers.
+    case busMonitor
 
     var icon: String {
         switch self {
@@ -47,6 +49,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .whatsapp: return "message"
         case .plugin: return "puzzlepiece.extension"
         case .terminal: return "terminal"
+        case .busMonitor: return "network"
         }
     }
 
@@ -69,6 +72,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .whatsapp: return "whatsapp"
         case .plugin: return "plugin"
         case .terminal: return "terminal"
+        case .busMonitor: return "busMonitor"
         }
     }
 
@@ -89,6 +93,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .whatsapp: return "WhatsApp"
         case .plugin: return nil
         case .terminal: return "Terminal"
+        case .busMonitor: return "Bus Monitor"
         }
     }
 
@@ -121,6 +126,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .whatsapp: return "whatsapp"
         case .plugin(let id): return "plugin:\(id)"
         case .terminal: return "terminal"
+        case .busMonitor: return "busMonitor"
         }
     }
 }

@@ -11,6 +11,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     case index
     case memory
     case messaging
+    case bus
     case system
     case mcp
     case sqlite
@@ -44,7 +45,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     /// service too — a reasonable follow-up, not done here.
     var isDeferrable: Bool {
         switch self {
-        case .workspace, .memory, .messaging, .rules, .time, .mcp:
+        case .workspace, .memory, .messaging, .bus, .rules, .time, .mcp:
             return false
         case .file, .shell, .server, .index, .system, .sqlite,
              .notes, .kanban, .canvas, .numbers, .whatsapp, .web, .vault:
@@ -60,6 +61,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .index: return "Index"
         case .memory: return "Memory"
         case .messaging: return "Messaging"
+        case .bus: return "Bus"
         case .system: return "System"
         case .mcp: return "MCP"
         case .sqlite: return "SQLite"
@@ -84,6 +86,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .index: return "magnifyingglass.circle"
         case .memory: return "brain"
         case .messaging: return "bubble.left.and.bubble.right"
+        case .bus: return "arrow.left.arrow.right.circle"
         case .system: return "gearshape.2"
         case .mcp: return "server.rack"
         case .sqlite: return "cylinder.split.1x2"
@@ -123,6 +126,11 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             ]
         case .messaging:
             return ["send_agent_message", "read_agent_messages"]
+        case .bus:
+            return [
+                "bus_publish", "bus_subscribe", "bus_read", "bus_request",
+                "bus_context_snapshot",
+            ]
         case .system:
             return [
                 "create_reminder", "list_reminders", "list_reminder_lists",
@@ -168,7 +176,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .web:
             return ["web_search", "fetch_url"]
         case .vault:
-            return ["search_vault", "read_note", "write_note", "list_vault"]
+            return ["obsidian_search_vault", "obsidian_read_note", "obsidian_write_note", "obsidian_list_vault"]
         case .mcp:
             return []
         }
@@ -179,12 +187,12 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         switch kind {
         case .navigator:
             return [
-                .workspace, .memory, .system, .rules, .time, .web, .vault,
+                .workspace, .memory, .bus, .system, .rules, .time, .web, .vault,
                 .notes, .kanban, .canvas, .numbers, .whatsapp,
             ]
         case .project:
             return [
-                .file, .shell, .server, .index, .memory, .messaging, .system, .mcp, .sqlite, .web, .vault,
+                .file, .shell, .server, .index, .memory, .messaging, .bus, .system, .mcp, .sqlite, .web, .vault,
                 .notes, .kanban, .canvas, .numbers, .whatsapp,
             ]
         }

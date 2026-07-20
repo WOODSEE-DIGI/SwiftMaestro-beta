@@ -226,8 +226,14 @@ class ChatViewModel: ObservableObject {
                           let targetModel = catalog.effectiveModel(for: agent) else { return nil }
 
                     func isCapable(_ m: MaestroModel) -> Bool {
+                        // Respect the user's explicit model choice for project agents.
+                        // A model is "capable" if it is present locally, advertises tools,
+                        // and is not Gemma 4 (whose tool-call format is currently unreliable
+                        // for delegated build work). We no longer reject MoE models just because
+                        // their active parameter count is small — Qwen 3 Coder 30B-A3B,
+                        // Qwen 3.6 35B-A3B, and Gemma 4 26B are the user's chosen models.
                         m.localPath != nil
-                            && !m.isLiteModel && m.advertisesTools
+                            && m.advertisesTools
                             && !m.huggingFaceID.lowercased().contains("gemma-4")
                     }
 
@@ -260,6 +266,30 @@ class ChatViewModel: ObservableObject {
                     modelID: model.huggingFaceID, backend: primaryBackend,
                     delegateBackendResolver: delegateResolver)
 
+                // Wire up real-time sub-agent streaming so delegated agents' chat
+                // windows update while the parent is still waiting for ask_project_agent.
+                // Without this, all delegate tokens are queued until the sub-agent
+                // finishes, so the sub-agent window stays blank until the parent stops.
+                let delegateHandler = DelegateStreamHandler()
+                let weakSelf = self
+                delegateHandler.onStart = { [weak weakSelf] agentID, modelDisplayName in
+                    guard let self = weakSelf else { return }
+                    let displayName = modelDisplayName
+                        ?? catalog.models.first { $0.huggingFaceID == agentID }?.displayName
+                        ?? agentID
+                    Self.effectiveDelegateModelNames[agentID] = displayName
+                    Task { await Self.streamToDelegate(agentID: agentID, token: "[START]") }
+                    self.currentActivity = "Delegating to sub-agent..."
+                }
+                delegateHandler.onToken = { agentID, token in
+                    Task { await Self.streamToDelegate(agentID: agentID, token: token) }
+                }
+                delegateHandler.onFinish = { [weak weakSelf] agentID in
+                    Task { await Self.streamToDelegate(agentID: agentID, token: "[FINISH]") }
+                    weakSelf?.currentActivity = nil
+                }
+                executor.delegateStreamHandler = delegateHandler
+
                 let stream = executor.run(
                     messages: requestMessages, toolSpecs: toolSpecs, mcp: engine.mcpService,
                     engine: engine, catalog: catalog,
@@ -275,7 +305,7 @@ class ChatViewModel: ObservableObject {
                     case .info(let tps): engine.reportExternalTokensPerSecond(tps)
                     case .turnBreak: beginSteeredTurn()
                     case .delegateStart(let agentID, let modelID):
-                        let displayName = catalog.models.first { $0.huggingFaceID == modelID }?.displayName ?? modelID
+                        let displayName = catalog.model(forID: modelID)?.displayName ?? modelID
                         Self.effectiveDelegateModelNames[agentID] = displayName
                         await Self.streamToDelegate(agentID: agentID, token: "[START]")
                         await MainActor.run {
@@ -663,7 +693,10 @@ class ChatViewModel: ObservableObject {
         let cache = ChatViewModelCache.shared
         NSLog("[STREAM] streamToDelegate agentID=\(agentID) token=\(token.prefix(30)) cache=\(cache != nil ? "exists" : "NIL")")
         if token == "[START]" {
-            cache?.beginDelegation(forAgentID: UUID(uuidString: agentID) ?? UUID())
+            let modelName = Self.effectiveDelegateModelNames[agentID]
+            cache?.beginDelegation(
+                forAgentID: UUID(uuidString: agentID) ?? UUID(),
+                modelName: modelName)
             return
         }
         if token == "[FINISH]" {
@@ -701,6 +734,13 @@ class ChatViewModel: ObservableObject {
         in chat as a code block — the tool writes the file; the chat is only for reasoning.
         - MAX 5 tool calls per message. If you need more, tell the user what you'd do next.
 
+        SHELL COMMAND RULES:
+        - The `command` parameter of execute_command MUST contain ONLY a valid shell command.
+        - NEVER put thinking tags, reasoning markers, or XML inside the command value.
+        - If the command would be `<channel>`, `</channel>`, `<channel|>`, `>`, ` thought`,
+        or any other marker, STOP and emit the real command instead.
+        - The shell runs /bin/zsh -lic. Standard zsh syntax, pipes, and redirections work.
+
         CRITICAL HONESTY RULES:
         - If you lack a tool for a task, say "I don't have a tool for that" NOW.
         - If a tool errors, report it: "Tool X failed: [error]". Do NOT retry silently.
@@ -721,13 +761,13 @@ class ChatViewModel: ObservableObject {
         - For quick lookups, web_search is enough. For deep reading, fetch the URL after searching.
         - MCP web tools (webclaw, firecrawl) provide richer scraping when enabled in Settings → MCP.
 
-        OBSIDIAN VAULT:
-        - The user's Obsidian vault lives under `~/Obsidian` and is exposed via the vault tools.
-        - Use search_vault for full-text search across notes; returns matching lines with file paths.
-        - Use read_note to read the full markdown of a specific note; `filepath` is relative to the vault root.
-        - Use list_vault to list notes and folders; optionally pass a subfolder.
-        - Use write_note to create, overwrite, or append to a note. Paths are relative to the vault root.
-        - For Apple Notes (not Obsidian), use the Notes.md / apple_notes tools instead.
+        NOTES APPS:
+        - SwiftMaestro Notes.md: the in-app Markdown vault (shown in the sidebar as "Notes.md"). \
+        Use list_notes, read_note, write_note, and search_notes for this vault. Paths are relative to the Notes.md vault root.
+        - Obsidian vault: the user's external vault under `~/Obsidian`. Use ONLY the obsidian_* tools: \
+        obsidian_search_vault, obsidian_read_note, obsidian_write_note, obsidian_list_vault. `filepath` is relative to the Obsidian vault root.
+        - Apple Notes (macOS Notes app): use create_note, list_apple_note_folders, list_apple_notes, read_apple_note.
+        - When the user says "Notes.md" without qualification, they mean the SwiftMaestro Notes.md vault, NOT Obsidian.
 
         TOOL RESULTS:
         - After you receive a tool result, you MUST say something useful to the user. \
@@ -807,6 +847,8 @@ class ChatViewModel: ObservableObject {
         - NEVER leave the `command` parameter empty. Put the exact shell command inside it.
         - NEVER leave the `path` parameter empty. Put the absolute file path inside it.
         - NEVER wrap tool calls in markdown code blocks (no ```xml around them).
+        - NEVER include thinking tags (e.g. <channel>, </channel>, <channel|>,  think,  思辨)
+        inside any parameter value. Only put the actual command/path/content there.
         """
 
     /// Guidance for the live task-checklist tools. Small local models tend to
@@ -843,6 +885,18 @@ class ChatViewModel: ObservableObject {
         read_agent_messages. Use these to hand off context or coordinate work.
         - To send a message you MUST call send_agent_message. NEVER say a message \
         was sent unless you actually called the tool and got a result back.
+
+        BUS:
+        - The agent bus is the fastest way to coordinate with other agents. Use \
+        bus_publish for fire-and-forget broadcasts, bus_subscribe to listen on a \
+        topic, and bus_request for synchronous question/answer coordination.
+        - Subscribe to topics you care about BEFORE reading them or expecting \
+        requests. Common topic patterns: "project:<ProjectName>", \
+        "agent:<AgentName>", or "task:<Name>".
+        - bus_request waits for a reply; if the recipient is busy, increase the \
+        timeout or fall back to ask_project_agent.
+        - To send a bus message you MUST call one of the bus tools. NEVER say a \
+        message was sent unless you actually called the tool and got a result back.
 
         CALENDAR:
         - Before creating a calendar event, ALWAYS call get_current_time first to \
@@ -1006,7 +1060,8 @@ class ChatViewModel: ObservableObject {
                 tool arguments, and responses must be in English.
                 """
         }
-        var content = base + "\n\n" + Self.toolDiscipline
+        var content = base + "\n\n" + Self.planContextPrompt(for: agent, projectName: projectName)
+        content += "\n\n" + Self.toolDiscipline
         if MaestroTools.workspace?.compactToolMode(for: agent.id) == true {
             content += "\n\n" + Self.compactToolModeGuidance
         }
@@ -1056,6 +1111,66 @@ class ChatViewModel: ObservableObject {
             content += "\n\nFollow these rules at all times:\n\(list)"
         }
         return Message(role: .system, content: content)
+    }
+
+    /// Build a prompt section that lists the plans visible to this agent.
+    /// Project agents see their own personal plans plus the project-shared plans.
+    /// The Navigator sees every project's shared plans so it can delegate plan
+    /// work accurately. If no plans exist, returns an empty string.
+    @MainActor
+    static func planContextPrompt(for agent: AgentRecord, projectName: String?) -> String {
+        guard let planStore = MaestroTools.planStore else { return "" }
+
+        var plans: [(scope: String, plan: Plan)] = []
+        var seenIDs = Set<UUID>()
+
+        // 1. Personal plans for this agent.
+        let personalScope = PlanScope.agent(agent.id)
+        for plan in planStore.plans(in: personalScope) {
+            plans.append(("personal", plan))
+            seenIDs.insert(plan.id)
+        }
+
+        // 2. Project-scoped plans for the agent's project.
+        if let projectName = projectName, !projectName.isEmpty {
+            let projectScope = PlanScope.project(projectName)
+            for plan in planStore.plans(in: projectScope) {
+                guard !seenIDs.contains(plan.id) else { continue }
+                plans.append(("project \"\(projectName)\"", plan))
+                seenIDs.insert(plan.id)
+            }
+        }
+
+        // 3. For the Navigator, expose all project plans so delegation requests
+        //    like "continue the Spotlight plan" can be routed with full context.
+        if agent.kind == .navigator, let workspace = MaestroTools.workspace {
+            for project in workspace.projects {
+                let projectScope = PlanScope.project(project.name)
+                for plan in planStore.plans(in: projectScope) {
+                    guard !seenIDs.contains(plan.id) else { continue }
+                    plans.append(("project \"\(project.name)\"", plan))
+                    seenIDs.insert(plan.id)
+                }
+            }
+        }
+
+        guard !plans.isEmpty else { return "" }
+
+        var lines: [String] = [
+            "═══ EXISTING PLANS — USE THESE WHEN THE USER MENTIONS A PLAN ═══"
+        ]
+        for (scope, plan) in plans {
+            lines.append("")
+            lines.append("# \(plan.title) [\(scope)]")
+            lines.append(plan.content)
+        }
+        lines.append("")
+        lines.append(
+            "When the user asks you to continue, resume, or work on a plan, "
+            + "use the plan content above as context. If the plan references "
+            + "files, read them to verify the current state before continuing."
+        )
+        return lines.joined(separator: "\n")
     }
 
     private func messagesForInference(

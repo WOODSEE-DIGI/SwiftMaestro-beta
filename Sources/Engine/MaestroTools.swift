@@ -148,6 +148,34 @@ enum MaestroTools {
     /// per-agent category toggles in practice.
     private static let liteModeCategories: Set<ToolCategory> = [.memory, .file, .shell, .server, .index, .sqlite]
 
+    /// Caches tool schema arrays per (navigator, categories, compactMode).
+    /// Tool definitions are static after app startup, so the cache is valid
+    /// until a new tool provider is registered dynamically.
+    private actor ToolSchemaCache {
+        struct Key: Hashable {
+            let navigator: Bool
+            let categories: Set<String>
+            let compactMode: Bool
+        }
+        private var cache: [Key: [ToolSpec]] = [:]
+
+        func schemas(for key: Key, build: () async -> [ToolSpec]) async -> [ToolSpec] {
+            if let cached = cache[key] { return cached }
+            let built = await build()
+            cache[key] = built
+            return built
+        }
+
+        func invalidate() { cache.removeAll() }
+    }
+    private static let toolSchemaCache = ToolSchemaCache()
+
+    /// Call after any dynamic tool registration (e.g., plugin load) to ensure
+    /// subsequent schema requests reflect the new tools.
+    static func invalidateToolSchemaCache() async {
+        await toolSchemaCache.invalidate()
+    }
+
     /// Tool schemas for an agent, sourced entirely from `ToolRegistry` (see
     /// that file's migration notes - this used to be a hand-built
     /// concatenation of per-file spec arrays plus a manual category filter;
@@ -190,34 +218,40 @@ enum MaestroTools {
             resolvedCategories = ToolCategory.unfilteredCategories(for: navigator ? .navigator : .project)
         }
         let categoryScope = Set(resolvedCategories.map(\.rawValue))
+        let key = ToolSchemaCache.Key(
+            navigator: navigator,
+            categories: categoryScope,
+            compactMode: compactMode)
 
-        let filtered = await ToolRegistry.shared.allDefinitions().filter { definition in
-            // search_tools/call_tool are never part of the normal listing —
-            // they're a discovery mechanism FOR hidden tools, added back
-            // explicitly below only when compactMode is on AND something is
-            // actually deferred. Registered with category: nil (like
-            // get_current_time) for a different reason (they have no
-            // meaningful category to gate them behind), which would
-            // otherwise make this same "uncategorized = always on" rule
-            // wrongly include them here too.
-            guard definition.name != "search_tools" && definition.name != "call_tool" else { return false }
-            guard let category = definition.category else { return true } // uncategorized always on
-            return categoryScope.contains(category)
-        }
+        return await toolSchemaCache.schemas(for: key) {
+            let filtered = await ToolRegistry.shared.allDefinitions().filter { definition in
+                // search_tools/call_tool are never part of the normal listing —
+                // they're a discovery mechanism FOR hidden tools, added back
+                // explicitly below only when compactMode is on AND something is
+                // actually deferred. Registered with category: nil (like
+                // get_current_time) for a different reason (they have no
+                // meaningful category to gate them behind), which would
+                // otherwise make this same "uncategorized = always on" rule
+                // wrongly include them here too.
+                guard definition.name != "search_tools" && definition.name != "call_tool" else { return false }
+                guard let category = definition.category else { return true } // uncategorized always on
+                return categoryScope.contains(category)
+            }
 
-        guard compactMode else { return filtered.map(\.spec) }
+            guard compactMode else { return filtered.map(\.spec) }
 
-        // Split into always-on specs and specs belonging to a deferrable
-        // category; the latter are replaced by the two meta-tool schemas.
-        let alwaysOn = filtered.filter { definition in
-            guard let category = definition.category.flatMap({ ToolCategory(rawValue: $0) }) else { return true }
-            return !category.isDeferrable
+            // Split into always-on specs and specs belonging to a deferrable
+            // category; the latter are replaced by the two meta-tool schemas.
+            let alwaysOn = filtered.filter { definition in
+                guard let category = definition.category.flatMap({ ToolCategory(rawValue: $0) }) else { return true }
+                return !category.isDeferrable
+            }
+            let anyDeferred = filtered.contains { definition in
+                guard let category = definition.category.flatMap({ ToolCategory(rawValue: $0) }) else { return false }
+                return category.isDeferrable
+            }
+            return anyDeferred ? alwaysOn.map(\.spec) + metaToolSpecs : alwaysOn.map(\.spec)
         }
-        let anyDeferred = filtered.contains { definition in
-            guard let category = definition.category.flatMap({ ToolCategory(rawValue: $0) }) else { return false }
-            return category.isDeferrable
-        }
-        return anyDeferred ? alwaysOn.map(\.spec) + metaToolSpecs : alwaysOn.map(\.spec)
     }
 
     /// Extract the function name from a tool spec dictionary.
@@ -1094,18 +1128,14 @@ enum MaestroTools {
             if lower == "coding" || lower == "coder" || lower == "code" {
                 return "local-qwen3-coder-30b-a3b"
             }
-            // If the hint matches a known catalog id, use it verbatim.
-            if let catalog = catalog, catalog.model(forID: resolvedHint) != nil {
-                return resolvedHint
-            }
-            // Try a case-insensitive display-name match (the model picker
-            // shows display names like "Qwen 3 Coder 30B-A3B (Instruct)").
+            // If the hint matches a known catalog id, display name, or HF id,
+            // return the canonical catalog id (so stored modelIDs are stable).
+            // When multiple models match (e.g. "qwen coder" matches both
+            // Qwen 3 Coder variants), prefer the one whose weights are actually
+            // installed on disk so the user isn't forced to download a model.
             if let catalog {
-                if let match = catalog.models.first(where: {
-                    $0.displayName.lowercased() == lower
-                        || $0.displayName.lowercased().contains(lower)
-                        || lower.contains($0.displayName.lowercased())
-                }) {
+                let candidates = catalog.matchingModels(for: resolvedHint)
+                if let match = candidates.first(where: { $0.hasLocalWeights }) ?? candidates.first {
                     return match.id
                 }
             }

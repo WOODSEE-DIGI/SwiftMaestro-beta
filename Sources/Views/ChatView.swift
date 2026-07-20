@@ -100,9 +100,6 @@ struct ChatView: View {
             }
         }
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                toolCategoryPicker
-            }
             ToolbarItem {
                 Button {
                     openWindow(id: "agent-chat-window", value: AgentChatWindowID(agentID: vm.agent.id))
@@ -237,14 +234,16 @@ struct ChatView: View {
         return (wd as NSString).lastPathComponent
     }
 
-    /// Always-visible per-agent tool category toggles in the title bar.
-    /// Each toggle shows an icon and a small text label so the user can tell
-    /// what each tool group is without hovering.
+    /// Per-agent tool category toggles. Each toggle shows an icon and a small
+    /// text label so the user can tell what each tool group is without hovering.
     ///
     /// The default set for the agent kind is always shown; additional categories
     /// can be added with the "+" menu and will appear while they are enabled.
+    ///
+    /// The picker is rendered with a wrapping flow layout so it stays usable
+    /// when the chat panel is narrow (e.g. half-screen or stacked panels).
     private var toolCategoryPicker: some View {
-        HStack(spacing: 8) {
+        FlowLayout(spacing: 8, rowSpacing: 6) {
             ForEach(toolbarCategories) { category in
                 let active = enabledCategories.contains(category)
                 Button {
@@ -306,7 +305,7 @@ struct ChatView: View {
                 .help("Add more tool categories")
             }
 
-            Divider().frame(height: 18)
+            Divider().frame(width: 1, height: 18)
 
             Button {
                 workspace.setCompactToolMode(!compactToolMode, for: vm.agent.id)
@@ -339,6 +338,7 @@ struct ChatView: View {
             )
         }
         .padding(.horizontal, 6)
+        .padding(.vertical, 4)
     }
 
     /// Whether Compact Tool Mode is on for this agent.
@@ -497,6 +497,7 @@ struct ChatView: View {
     private var chatBody: some View {
         VStack(spacing: 0) {
             workingDirBar
+            toolBar
             Divider()
             ShellApprovalBanner()
             messageList
@@ -507,6 +508,20 @@ struct ChatView: View {
             inputBar
         }
         .background(theme.chatBackground)
+    }
+
+    /// Always-visible per-agent tool category toggles rendered inside the chat
+    /// body instead of the title bar so they remain accessible and can wrap to
+    /// multiple rows when the window is narrow or the panel is half-width.
+    private var toolBar: some View {
+        HStack(spacing: 0) {
+            toolCategoryPicker
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(theme.secondaryBackground)
+        .overlay(Divider().frame(maxWidth: .infinity, maxHeight: 1), alignment: .bottom)
     }
 
     /// Builds the ordered pane list for `ResizablePanelHost`: fixed-width,

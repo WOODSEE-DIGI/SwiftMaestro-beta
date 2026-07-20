@@ -55,8 +55,15 @@ struct SwiftMaestroApp: App {
     @State private var todoStore = TodoStore()
     @State private var planStore = PlanStore()
     @State private var messageStore = AgentMessageStore()
-    @State private var theme = ThemeStore()
+    @State private var theme: ThemeStore
+    @State private var skinStore: SkinStore
     @State private var whisperService = WhisperKitService()
+
+    init() {
+        let theme = ThemeStore()
+        _theme = State(wrappedValue: theme)
+        _skinStore = State(wrappedValue: SkinStore(theme: theme))
+    }
     @State private var visionProxyService = VisionProxyService()
     @State private var notesViewModel = NotesViewModel()
     @State private var eventKitStore = EventKitStore()
@@ -80,6 +87,7 @@ struct SwiftMaestroApp: App {
                 .environment(planStore)
                 .environment(messageStore)
                 .environment(theme)
+                .environment(skinStore)
                 .environment(whisperService)
                 .environment(notesViewModel)
                 .environment(eventKitStore)
@@ -250,6 +258,7 @@ struct SwiftMaestroApp: App {
                 .environment(planStore)
                 .environment(messageStore)
                 .environment(theme)
+                .environment(skinStore)
                 .environment(whisperService)
                 .environment(\.mcpClientService, mcpService)
         }

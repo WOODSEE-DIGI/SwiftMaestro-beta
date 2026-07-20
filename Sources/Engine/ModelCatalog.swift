@@ -195,9 +195,43 @@ final class ModelCatalog {
     }
 
     /// Look up a model by its catalog id (e.g. `local-qwen3.5-122b`).
+    /// Also accepts unprefixed ids (`qwen3.5-122b`), display-name matches,
+    /// and HuggingFace repo ids, so model hints from the LLM resolve robustly.
+    /// Returns the first match; use `matchingModels(for:)` to inspect all
+    /// matches and pick one based on local-weights availability.
     func model(forID id: String?) -> MaestroModel? {
-        guard let id else { return nil }
-        return models.first { $0.id == id }
+        guard let id, !id.isEmpty else { return nil }
+        if let exact = models.first(where: { $0.id == id }) { return exact }
+        let target = Self.normalized(id)
+        return models.first {
+            Self.normalized($0.id) == target
+            || Self.normalized($0.displayName) == target
+            || $0.huggingFaceID.lowercased() == id.lowercased()
+        }
+    }
+
+    /// Return every model that matches the given id/name/hf-id hint. Used when
+    /// the hint is ambiguous (e.g. "qwen coder" matches several Qwen Coder
+    /// variants) so the caller can prefer the one with local weights installed.
+    func matchingModels(for id: String?) -> [MaestroModel] {
+        guard let id, !id.isEmpty else { return [] }
+        if let exact = models.first(where: { $0.id == id }) { return [exact] }
+        let target = Self.normalized(id)
+        return models.filter {
+            Self.normalized($0.id) == target
+            || Self.normalized($0.displayName) == target
+            || $0.huggingFaceID.lowercased() == id.lowercased()
+        }
+    }
+
+    /// Case- and punctuation-insensitive normalization for model id/name lookup.
+    private static func normalized(_ value: String) -> String {
+        value.lowercased()
+            .replacingOccurrences(of: "local-", with: "")
+            .replacingOccurrences(of: "mlx-community/", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "/", with: "")
     }
 
     /// The model an agent should run: its per-agent override if set and still
@@ -330,6 +364,23 @@ final class ModelCatalog {
             downloadURL: "https://huggingface.co/lmstudio-community/Qwen3.6-35B-A3B-MLX-4bit"
         ),
         MaestroModel(
+            id: "local-gemma4-12b",
+            displayName: "Gemma 4 12B (4-bit)",
+            huggingFaceID: "lmstudio-community/gemma-4-12B-it-MLX-4bit",
+            isVision: false,
+            localPath: localIfPresent([
+                "swiftmaestro-models/gemma-4-12B-it-MLX-4bit",
+                "lmstudio-community/gemma-4-12B-it-MLX-4bit",
+            ]),
+            estimatedMemoryGB: 11,
+            supportsTools: true,
+            toolCallFormat: .gemma4,
+            recTemperature: 0.7, recTopP: 0.9, recRepetitionPenalty: 1.1,
+            recContextLength: 128_000,
+            activeParamsB: 12,
+            downloadURL: "https://huggingface.co/lmstudio-community/gemma-4-12B-it-MLX-4bit"
+        ),
+        MaestroModel(
             id: "local-gemma4-26b-4bit",
             displayName: "Gemma 4 26B-A4B (Vision+Text, 4-bit)",
             huggingFaceID: "lmstudio-community/gemma-4-26B-A4B-it-MLX-4bit",
@@ -376,7 +427,10 @@ final class ModelCatalog {
             displayName: "Qwen 3 Coder 30B-A3B (Instruct)",
             huggingFaceID: "lmstudio-community/Qwen3-Coder-30B-A3B-Instruct-MLX-4bit",
             isVision: false,
-            localPath: localIfPresent("swiftmaestro-models/Qwen3-Coder-30B-A3B-Instruct-MLX-4bit"),
+            localPath: localIfPresent([
+                "swiftmaestro-models/Qwen3-Coder-30B-A3B-Instruct-MLX-4bit",
+                "lmstudio-community/Qwen3-Coder-30B-A3B-Instruct-MLX-4bit",
+            ]),
             estimatedMemoryGB: 17,
             // Same XML <function>/<parameter> format as Qwen 3.6/3.5 family.
             // Tools enabled — the coder model is a strong choice for sub-agents.
@@ -392,7 +446,10 @@ final class ModelCatalog {
             displayName: "Qwen 3.5 27B (Opus Distilled)",
             huggingFaceID: "mlx-community/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit",
             isVision: false,
-            localPath: localIfPresent("swiftmaestro-models/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit"),
+            localPath: localIfPresent([
+                "swiftmaestro-models/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit",
+                "mlx-community/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit",
+            ]),
             estimatedMemoryGB: 14,
             supportsTools: true,  // Qwen 3.5 family uses xmlFunction
             recTemperature: 0.7, recTopP: 0.9, recRepetitionPenalty: 1.05,

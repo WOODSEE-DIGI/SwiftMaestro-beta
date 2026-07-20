@@ -40,6 +40,7 @@ final class SettingsBackupService {
         ThemeStore.userBubbleKey,
         ThemeStore.userBubbleTextKey,
         ThemeStore.chatBackgroundKey,
+        ThemeStore.chatTextKey,
         ThemeStore.sidebarKey,
         ThemeStore.sidebarTextKey,
         ThemeStore.plansPanelKey,

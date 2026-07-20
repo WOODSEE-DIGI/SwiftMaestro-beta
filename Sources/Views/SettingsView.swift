@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 enum SwiftMaestroSettingsStore {
     static let allowedModelsKey = "settings.models.allowedModels"
@@ -149,12 +150,14 @@ struct SettingsView: View {
             minWidth: 760, idealWidth: 900, maxWidth: .infinity,
             minHeight: 780, idealHeight: 960, maxHeight: .infinity)
         .tint(theme.accent)
+        .foregroundStyle(theme.chatText)
         .preferredColorScheme(theme.appearance.colorScheme)
         #if os(macOS)
         .background(
             WindowSizeConfigurator(
                 minSize: CGSize(width: 760, height: 780),
-                defaultSize: CGSize(width: 900, height: 960)
+                defaultSize: CGSize(width: 900, height: 960),
+                backgroundColor: theme.background
             )
         )
         #endif
@@ -170,10 +173,12 @@ struct SettingsView: View {
 /// collapsed/expanded sections still read as distinct blocks the way the
 /// previous `GroupBox`-based layout did.
 private struct AppearanceSectionStyle: ViewModifier {
+    @Environment(ThemeStore.self) private var theme
+
     func body(content: Content) -> some View {
         content
             .padding(10)
-            .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .background(theme.secondaryBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .strokeBorder(Color.secondary.opacity(0.15)))
@@ -191,13 +196,21 @@ private extension View {
 
 struct AppearanceSettingsTab: View {
     @Environment(ThemeStore.self) private var theme
+    @Environment(SkinStore.self) private var skinStore
+
+    @State private var showingImportSkinPanel = false
+    @State private var showingExportSkinPanel = false
+    @State private var showingSaveSkinSheet = false
+    @State private var skinToExport: Skin?
+    @State private var newSkinName = ""
+    @State private var newSkinDescription = ""
 
     /// Panel kinds that get their own customizable header color. Excludes
     /// `.agentChat` (already covered by the "Chat" section's colors) and
     /// `.plugin` (data-driven, unbounded count — plugin panels just follow
     /// the shared accent for now).
     static let customizablePanels: [WorkspacePanelKind] = [
-        .notesMD, .appleNotes, .calendar, .reminders, .contacts,
+        .busMonitor, .notesMD, .appleNotes, .calendar, .reminders, .contacts,
         .canvas, .kanban, .numbers, .whatsapp, .terminal,
     ]
 
@@ -234,6 +247,8 @@ struct AppearanceSettingsTab: View {
                         Text("Tints buttons, selections, links, and plan cards app-wide. Also the "
                             + "default header color for any panel below that hasn't been customized.")
                             .font(.caption).foregroundStyle(.secondary)
+                        Divider()
+                        skinSection
                     }
                     .padding(.top, 8)
                 }
@@ -265,6 +280,7 @@ struct AppearanceSettingsTab: View {
                 DisclosureGroup("Chat", isExpanded: $chatExpanded) {
                     VStack(alignment: .leading, spacing: 12) {
                         ColorPicker("Background", selection: theme.chatBackgroundBinding, supportsOpacity: false)
+                        ColorPicker("Assistant text", selection: theme.chatTextBinding, supportsOpacity: false)
                         ColorPicker("Your message bubble", selection: theme.userBubbleBinding, supportsOpacity: false)
                         ColorPicker("Your message text", selection: theme.userBubbleTextBinding, supportsOpacity: false)
                         Text("Leave the background unset to follow the system.")
@@ -314,6 +330,7 @@ struct AppearanceSettingsTab: View {
             }
             .padding()
         }
+        .scrollContentBackground(.hidden)
         .onAppear {
             // The shared color panel otherwise opens on the grayscale slider for
             // white/clear/gray starting colors (so it looks "black" until you
@@ -388,6 +405,158 @@ struct AppearanceSettingsTab: View {
         }
         .frame(maxWidth: .infinity)
     }
+
+    // MARK: - Skin Section
+
+    private var skinSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Skin")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer()
+            }
+
+            Picker("Skin", selection: Binding(
+                get: { skinStore.currentSkinID ?? Skin.default.id },
+                set: { skinStore.applySkin(id: $0) }
+            )) {
+                ForEach(skinStore.skins) { skin in
+                    Text(skin.name)
+                        .tag(skin.id)
+                        .help(skin.description ?? "")
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+
+            Text(skinStore.currentSkin?.description ?? "Choose a preset, or save and import custom skins.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 8) {
+                Button("Import skin…") { showingImportSkinPanel = true }
+                Button("Export current skin…") {
+                    skinToExport = skinStore.skinFromCurrentColors(name: "My Skin")
+                    showingExportSkinPanel = true
+                }
+                .disabled(!theme.hasColorOverrides && skinStore.currentSkin == nil)
+                Button("Save current as skin…") { showingSaveSkinSheet = true }
+                .disabled(!theme.hasColorOverrides && skinStore.currentSkin == nil)
+            }
+            .controlSize(.small)
+
+            if let currentSkin = skinStore.currentSkin, !currentSkin.isBuiltIn {
+                HStack(spacing: 8) {
+                    Button("Delete \"\(currentSkin.name)\"", role: .destructive) {
+                        do {
+                            try skinStore.deleteSkin(currentSkin)
+                        } catch {
+                            NSLog("[SkinStore] delete failed: \(error)")
+                        }
+                    }
+                    .controlSize(.small)
+                    Spacer()
+                }
+            }
+        }
+        .fileImporter(
+            isPresented: $showingImportSkinPanel,
+            allowedContentTypes: [.json],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                do {
+                    try skinStore.importSkin(from: url)
+                } catch {
+                    NSLog("[SkinStore] import failed: \(error)")
+                }
+            case .failure:
+                break
+            }
+        }
+        .fileExporter(
+            isPresented: $showingExportSkinPanel,
+            document: skinToExport.map { SkinDocument(skin: $0) },
+            contentType: .json,
+            defaultFilename: "My Skin"
+        ) { result in
+            if case .failure(let error) = result {
+                NSLog("[SkinStore] export failed: \(error)")
+            }
+        }
+        .sheet(isPresented: $showingSaveSkinSheet) {
+            SaveSkinSheet(
+                skinStore: skinStore,
+                isPresented: $showingSaveSkinSheet,
+                name: $newSkinName,
+                description: $newSkinDescription
+            )
+        }
+    }
+}
+
+// MARK: - Skin Save Sheet
+
+private struct SaveSkinSheet: View {
+    let skinStore: SkinStore
+    @Binding var isPresented: Bool
+    @Binding var name: String
+    @Binding var description: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Save current colors as skin")
+                .font(.headline)
+            TextField("Skin name", text: $name)
+            TextField("Description (optional)", text: $description)
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { isPresented = false }
+                Button("Save") {
+                    guard !name.isEmpty else { return }
+                    let skin = skinStore.skinFromCurrentColors(
+                        name: name,
+                        description: description.isEmpty ? nil : description
+                    )
+                    do {
+                        try skinStore.saveSkin(skin)
+                        skinStore.applySkin(skin)
+                    } catch {
+                        NSLog("[SkinStore] save failed: \(error)")
+                    }
+                    isPresented = false
+                    name = ""
+                    description = ""
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(name.isEmpty)
+            }
+        }
+        .padding()
+        .frame(width: 360)
+    }
+}
+
+// MARK: - Skin Export Document
+
+private struct SkinDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.json] }
+    static var writableContentTypes: [UTType] { [.json] }
+
+    var skin: Skin
+
+    init(skin: Skin) { self.skin = skin }
+
+    init(configuration: ReadConfiguration) throws {
+        let data = configuration.file.regularFileContents ?? Data()
+        self.skin = try Skin.from(jsonData: data)
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: try skin.jsonData())
+    }
 }
 
 // MARK: - Storage tab (Plans & Todos)
@@ -436,6 +605,7 @@ struct StorageSettingsTab: View {
             }
             .padding(8)
         }
+        .scrollContentBackground(.hidden)
     }
 
     @ViewBuilder
@@ -542,6 +712,7 @@ struct SecretsSettingsTab: View {
             }
             .padding()
         }
+        .scrollContentBackground(.hidden)
         .onAppear { reload() }
         .sheet(isPresented: $showingAdd) {
             AddSecretSheet { name, value, scope, synced, note in
@@ -757,6 +928,7 @@ struct ModelsSettingsTab: View {
             }
             .padding()
         }
+        .scrollContentBackground(.hidden)
         .onAppear {
             // Rescan the model root so models that live under the
             // swiftmaestro-models/ layout are recognized without requiring a
@@ -1022,6 +1194,7 @@ struct TuningSettingsTab: View {
             }
             .padding()
         }
+        .scrollContentBackground(.hidden)
         .onAppear {
             if selectedModelID.isEmpty {
                 selectedModelID = catalog.selectedModel?.id ?? catalog.models.first?.id ?? ""
@@ -1168,6 +1341,7 @@ struct RulesSettingsTab: View {
             }
             .padding()
         }
+        .scrollContentBackground(.hidden)
         .onAppear {
             rules = SwiftMaestroSettingsStore.loadRules()
         }
@@ -1286,11 +1460,12 @@ struct ContextSettingsTab: View {
             }
             .padding()
         }
+        .scrollContentBackground(.hidden)
         .onAppear {
             authorizedFolders = SwiftMaestroSettingsStore.loadAuthorizedFolders()
             filesInMemory = SwiftMaestroSettingsStore.loadFilesInMemory()
             lastImportDate = SwiftMaestroSettingsStore.loadLastImportDate()
-            collapseCompactionSummaries = SwiftMaestroSettingsStore.loadCollapseCompactionSummaries()
+            SwiftMaestroSettingsStore.saveCollapseCompactionSummaries(collapseCompactionSummaries)
         }
     }
 }
@@ -1326,6 +1501,7 @@ struct MCPSettingsTab: View {
             }
             .padding()
         }
+        .scrollContentBackground(.hidden)
         .onAppear {
             servers = SwiftMaestroSettingsStore.loadMCPServers()
         }

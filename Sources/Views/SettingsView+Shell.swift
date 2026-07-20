@@ -123,6 +123,7 @@ struct ShellSettingsTab: View {
             }
             .padding()
         }
+        .scrollContentBackground(.hidden)
         .onChange(of: policyStore.enabled) { _, _ in policyStore.save() }
         .onChange(of: policyStore.defaultTimeout) { _, _ in policyStore.save() }
         .onChange(of: policyStore.outputCap) { _, _ in policyStore.save() }

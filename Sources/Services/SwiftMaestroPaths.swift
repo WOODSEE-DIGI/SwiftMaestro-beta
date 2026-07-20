@@ -62,6 +62,14 @@ enum SwiftMaestroPaths {
         return dir
     }
 
+    /// `~/Library/Application Support/SwiftMaestro/skins/` — user-created and imported
+    /// skin JSON files. Built-in skins live in `SkinStore` and are not written here.
+    static var skinsDir: URL {
+        let dir = appSupportDir.appendingPathComponent("skins", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
     // MARK: - Migration
 
     /// One-time migration from the old flat layout (where chats/plans/todos/workspace lived

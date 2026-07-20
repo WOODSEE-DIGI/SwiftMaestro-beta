@@ -46,7 +46,7 @@ final class WhatsAppService {
     /// Best-available display name per contact, keyed by BOTH the bare
     /// number and the full JID form (see `loadContactDisplayNames`). Public
     /// so the view can resolve a message's raw `sender` number (e.g.
-    /// "61410906593") to a real name (e.g. "George Li") the same way
+    /// "00000000000") to a real name (e.g. "Example Name") the same way
     /// `loadChats` already does for the chat list itself.
     private(set) var contactDisplayNames: [String: String] = [:]
     /// Local filesystem path for a message's downloaded (or, for a message
@@ -294,9 +294,9 @@ final class WhatsAppService {
             // PushName (the name the OTHER person set for their own WhatsApp
             // profile, which is present for essentially every contact who's
             // ever messaged us, address-book entry or not). That's why chats
-            // like "61410906593" and "93278217216209" showed raw numbers
+            // like "00000000000" and "00000000000000" showed raw numbers
             // instead of names, even though whatsmeow_contacts already had
-            // "George Li" / "Carissa Anderson" recorded as push_name. Fixed
+            // "Example Name" / "Another Name" recorded as push_name. Fixed
             // at the source in the Go bridge for NEW chats going forward;
             // this resolves it client-side for every chat ALREADY stored
             // with a bad name, using the same already-collected data, so it
@@ -481,7 +481,7 @@ final class WhatsAppService {
     /// almost every contact who's ever messaged us, even with zero
     /// address-book entry, which is exactly the gap this closes) >
     /// BusinessName. Keyed by BOTH the full JID and the bare number (e.g.
-    /// both "61410906593@s.whatsapp.net" and "61410906593"), since
+    /// both "00000000000@s.whatsapp.net" and "00000000000"), since
     /// `chats.jid` stores full JIDs but `messages.sender` stores bare
     /// numbers. Returns an empty map (not an error) if the file/table is
     /// missing, so this degrades gracefully.

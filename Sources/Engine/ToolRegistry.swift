@@ -26,6 +26,7 @@ extension MaestroTools {
         await registerWhatsAppTools()
         await registerAppsTools()
         await registerMessagingTools()
+        await registerBusTools()
         await registerTodoTools()
         await registerPlanTools()
         await registerWorkspaceTools()
@@ -41,7 +42,8 @@ extension MaestroTools {
 
     /// Registers a `ToolProvider`'s tools with the shared `ToolRegistry`.
     /// Each tool is wrapped in a `ToolDefinition` and dispatched through the
-    /// standard registry path.
+    /// standard registry path. Invalidates the schema cache so the new tools
+    /// are visible to the next agent run.
     static func registerToolProvider(_ provider: ToolProvider) async {
         let tools = await provider.provideTools()
         let definitions = tools.map { tool in
@@ -53,5 +55,6 @@ extension MaestroTools {
             )
         }
         await ToolRegistry.shared.register(definitions)
+        await invalidateToolSchemaCache()
     }
 }

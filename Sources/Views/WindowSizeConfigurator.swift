@@ -11,18 +11,19 @@ import AppKit
 struct WindowSizeConfigurator: NSViewRepresentable {
     let minSize: CGSize
     let defaultSize: CGSize
+    let backgroundColor: Color?
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
-        DispatchQueue.main.async { configure(window: view.window) }
+        DispatchQueue.main.async { configure(window: view.window, context: context) }
         return view
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        DispatchQueue.main.async { configure(window: nsView.window) }
+        DispatchQueue.main.async { configure(window: nsView.window, context: context) }
     }
 
-    private func configure(window: NSWindow?) {
+    private func configure(window: NSWindow?, context: Context) {
         guard let window else { return }
         // SwiftUI's Settings scene builds a preferences-style window whose
         // styleMask omits `.resizable`, so `.windowResizability` alone never adds
@@ -34,6 +35,15 @@ struct WindowSizeConfigurator: NSViewRepresentable {
         if current.width < minSize.width || current.height < minSize.height {
             window.setContentSize(NSSize(width: defaultSize.width, height: defaultSize.height))
             window.center()
+        }
+
+        if let backgroundColor {
+            let resolved = backgroundColor.resolve(in: context.environment)
+            window.backgroundColor = NSColor(
+                srgbRed: CGFloat(resolved.red),
+                green: CGFloat(resolved.green),
+                blue: CGFloat(resolved.blue),
+                alpha: CGFloat(resolved.opacity))
         }
     }
 }

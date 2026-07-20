@@ -39,29 +39,23 @@ actor SteerInbox {
 
 @MainActor
 final class DelegateStreamHandler: ObservableObject {
-    /// The target agent's ID receiving streamed tokens.
-    let targetAgentID: String
-    /// Callback to append a token to the target agent's messages.
-    var onToken: ((String) -> Void)?
-    /// Callback when delegation starts (append empty assistant message).
-    var onStart: (() -> Void)?
-    /// Callback when delegation finishes (save history).
-    var onFinish: (() -> Void)?
+    /// Callback when a delegation starts: (agentID, modelDisplayName).
+    var onStart: ((String, String?) -> Void)?
+    /// Callback to append a token: (agentID, token).
+    var onToken: ((String, String) -> Void)?
+    /// Callback when a delegation finishes: (agentID).
+    var onFinish: ((String) -> Void)?
 
-    init(targetAgentID: String) {
-        self.targetAgentID = targetAgentID
+    func start(agentID: String, modelDisplayName: String?) {
+        onStart?(agentID, modelDisplayName)
     }
 
-    func token(_ text: String) {
-        onToken?(text)
+    func token(agentID: String, _ text: String) {
+        onToken?(agentID, text)
     }
 
-    func start() {
-        onStart?()
-    }
-
-    func finish() {
-        onFinish?()
+    func finish(agentID: String) {
+        onFinish?(agentID)
     }
 }
 
@@ -241,7 +235,12 @@ final class AgentExecutor: Sendable {
                             maxTokens: maxTokens,
                             continuation: continuation
                         )
-                        let cleanContent = Self.stripRawToolCallXML(content)
+                        // Strip any thinking/channel tags that the model streamed into the
+                        // text content before we use it for heuristics, nudges, or history.
+                        // This keeps <channel>/</channel> markers from leaking into the
+                        // conversation and from confusing the shell-command recovery path.
+                        let strippedContent = ThinkingTagStripper.strip(content)
+                        let cleanContent = Self.stripRawToolCallXML(strippedContent)
                         let callNames = rawToolCalls.map { $0.name }.joined(separator: ", ")
                         if rawToolCalls.isEmpty {
                             let preview = cleanContent.prefix(200).replacingOccurrences(of: "\n", with: "\\n")
@@ -254,7 +253,7 @@ final class AgentExecutor: Sendable {
                         // XML parser returned an empty/missing `command` argument, recover
                         // the command from the assistant's text (fenced block, command-like
                         // line, or raw XML) so it actually runs.
-                        var effectiveToolCalls = Self.recoverShellCommands(in: rawToolCalls, from: content)
+                        var effectiveToolCalls = Self.recoverShellCommands(in: rawToolCalls, from: strippedContent)
 
                         guard !Task.isCancelled else { break iterations }
                         // The forced wrap-up round IS the final answer.
@@ -614,10 +613,16 @@ final class AgentExecutor: Sendable {
     private static func recoverShellCommands(
         in toolCalls: [RoundToolCall], from content: String
     ) -> [RoundToolCall] {
-        guard let command = firstShellCommand(in: content)
-                ?? firstCommandLikeLine(in: content)
-                ?? firstCommandFromRawXML(in: content)
+        // Content arriving here is already tag-stripped by the caller, but strip again
+        // defensively so any recovered command value is definitely clean.
+        let cleanContent = ThinkingTagStripper.strip(content)
+        guard let command = firstShellCommand(in: cleanContent)
+                ?? firstCommandLikeLine(in: cleanContent)
+                ?? firstCommandFromRawXML(in: cleanContent)
         else { return toolCalls }
+        let cleanedCommand = ThinkingTagStripper.strip(command)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanedCommand.isEmpty else { return toolCalls }
         return toolCalls.map { tc in
             guard tc.name == "execute_command" else { return tc }
             var args = ((try? JSONSerialization.jsonObject(
@@ -625,7 +630,7 @@ final class AgentExecutor: Sendable {
             )) as? [String: Any]) ?? [:]
             let existing = (args["command"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
             guard existing == nil || existing?.isEmpty == true else { return tc }
-            args["command"] = command
+            args["command"] = cleanedCommand
             guard let data = try? JSONSerialization.data(withJSONObject: args),
                   let json = String(data: data, encoding: .utf8)
             else { return tc }
@@ -862,6 +867,8 @@ final class AgentExecutor: Sendable {
         "create_plan", "edit_plan", "read_plans", "read_plan",
         // Messaging: agent_id identifies the sender / the inbox owner.
         "send_agent_message", "read_agent_messages",
+        // Bus: agent_id identifies the publisher/subscriber.
+        "bus_publish", "bus_subscribe", "bus_read", "bus_request", "bus_context_snapshot",
     ]
 
     /// Always stamp `agent_id` onto live-todo tool calls.
@@ -945,7 +952,7 @@ final class AgentExecutor: Sendable {
                 ?? [ChatViewModel.systemMessage(
                     for: target, projectName: proj.isEmpty ? nil : proj,
                     workingDirectory: targetWD)]
-            msgs.append(Message(role: .user, content: trimmedTask))
+            msgs.append(Message(role: .user, content: trimmedTask, timestamp: Date()))
             return (target, proj, msgs, targetWD)
         }
         guard let (target, proj, messages, effectiveWD) = prep else {
@@ -981,6 +988,9 @@ final class AgentExecutor: Sendable {
                     catalog.models.first { $0.huggingFaceID == resolved.modelID }?.isLiteModel ?? false
                 }
             }
+        }
+        let subModelDisplayName = await MainActor.run {
+            catalog?.model(forID: subModelID)?.displayName ?? subModelID
         }
 
         // Delegate tool surface: project tools only (no Navigator tools), plus
@@ -1021,8 +1031,8 @@ final class AgentExecutor: Sendable {
         await MainActor.run {
             ProcessResourceSampler.shared.startSubagent(id: target.id.uuidString, name: target.name)
         }
-        await delegateStreamHandler?.start()
-        pendingDelegateEvents.append(.delegateStart(agentID: target.id.uuidString, modelID: subModelID))
+        await delegateStreamHandler?.start(
+            agentID: target.id.uuidString, modelDisplayName: subModelDisplayName)
         // Pass the parent's authorized roots to the child so it can access
         // the same folders (e.g. the vault) without re-authorizing.
         MaestroTools.inheritedRoots = MaestroTools.authorizedRootsForParent()
@@ -1035,7 +1045,7 @@ final class AgentExecutor: Sendable {
                 project: proj.isEmpty ? nil : proj,
                 workingDirectory: effectiveWD,
                 agentID: target.id.uuidString,
-                maxRounds: 6,
+                maxRounds: 4,
                 maxTokens: subMaxTokens
             ) {
                 switch output {
@@ -1046,8 +1056,7 @@ final class AgentExecutor: Sendable {
                     await MainActor.run {
                         ProcessResourceSampler.shared.recordSubagentToken(id: target.id.uuidString)
                     }
-                    await delegateStreamHandler?.token(token)
-                    pendingDelegateEvents.append(.delegateToken(agentID: target.id.uuidString, token: token))
+                    await delegateStreamHandler?.token(agentID: target.id.uuidString, token)
                 case .toolCall:
                     // Rounds that end in tool calls are narration, not the answer.
                     lastRoundText = ""
@@ -1064,16 +1073,14 @@ final class AgentExecutor: Sendable {
             await MainActor.run {
                 ProcessResourceSampler.shared.stopSubagent(id: target.id.uuidString)
             }
-            await delegateStreamHandler?.finish()
-            pendingDelegateEvents.append(.delegateFinish(agentID: target.id.uuidString))
+            await delegateStreamHandler?.finish(agentID: target.id.uuidString)
             return DelegateResult(project: proj, agent: target.name, answer: nil,
                 error: "delegate failed: \(error.localizedDescription)")
         }
         await MainActor.run {
             ProcessResourceSampler.shared.stopSubagent(id: target.id.uuidString)
         }
-        await delegateStreamHandler?.finish()
-        pendingDelegateEvents.append(.delegateFinish(agentID: target.id.uuidString))
+        await delegateStreamHandler?.finish(agentID: target.id.uuidString)
         let trimmedLast = lastRoundText.trimmingCharacters(in: .whitespacesAndNewlines)
         let rawAnswer = trimmedLast.isEmpty
             ? narration.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1086,9 +1093,14 @@ final class AgentExecutor: Sendable {
 
         // Persist the delegated exchange to the target agent's own history
         // and update the in-memory ChatViewModel so the UI reflects it.
+        let completedAt = Date()
         await MainActor.run {
             var msgs = messages
-            msgs.append(Message(role: .assistant, content: answer))
+            // The last message is the assistant answer; stamp it with the actual
+            // model and time so the sub-agent chat footer shows metadata.
+            msgs.append(Message(
+                role: .assistant, content: answer,
+                timestamp: completedAt, modelName: subModelDisplayName))
             ChatHistoryStore.save(msgs, agentId: target.id)
             NSLog("[DELEGATE] saving \(msgs.count) messages for \(target.name) (id=\(target.id))")
             if let cache = ChatViewModelCache.shared {
@@ -1137,6 +1149,9 @@ final class AgentExecutor: Sendable {
             subBackend = resolved.backend
             subMaxTokens = resolved.maxTokens
         }
+        let subModelDisplayName = await MainActor.run {
+            catalog?.model(forID: subModelID)?.displayName ?? subModelID
+        }
         let sub = AgentExecutor(
             modelID: subModelID, backend: subBackend,
             delegateBackendResolver: delegateBackendResolver)
@@ -1150,8 +1165,8 @@ final class AgentExecutor: Sendable {
         await MainActor.run {
             ProcessResourceSampler.shared.startSubagent(id: target.id.uuidString, name: target.name)
         }
-        await delegateStreamHandler?.start()
-        pendingDelegateEvents.append(.delegateStart(agentID: target.id.uuidString, modelID: subModelID))
+        await delegateStreamHandler?.start(
+            agentID: target.id.uuidString, modelDisplayName: subModelDisplayName)
         do {
             for try await output in sub.run(
                 messages: messages, toolSpecs: specs, mcp: mcp,
@@ -1160,7 +1175,7 @@ final class AgentExecutor: Sendable {
                 project: proj.isEmpty ? nil : proj,
                 workingDirectory: workingDirectory,
                 agentID: target.id.uuidString,
-                maxRounds: 6,
+                maxRounds: 4,
                 maxTokens: subMaxTokens
             ) {
                 switch output {
@@ -1171,8 +1186,7 @@ final class AgentExecutor: Sendable {
                     await MainActor.run {
                         ProcessResourceSampler.shared.recordSubagentToken(id: target.id.uuidString)
                     }
-                    await delegateStreamHandler?.token(token)
-                    pendingDelegateEvents.append(.delegateToken(agentID: target.id.uuidString, token: token))
+                    await delegateStreamHandler?.token(agentID: target.id.uuidString, token)
                 case .toolCall:
                     lastRoundText = ""
                 case .info, .turnBreak:
@@ -1185,16 +1199,14 @@ final class AgentExecutor: Sendable {
             await MainActor.run {
                 ProcessResourceSampler.shared.stopSubagent(id: target.id.uuidString)
             }
-            await delegateStreamHandler?.finish()
-            pendingDelegateEvents.append(.delegateFinish(agentID: target.id.uuidString))
+            await delegateStreamHandler?.finish(agentID: target.id.uuidString)
             return DelegateResult(project: proj, agent: target.name, answer: nil,
                 error: "delegate failed: \(error.localizedDescription)")
         }
         await MainActor.run {
             ProcessResourceSampler.shared.stopSubagent(id: target.id.uuidString)
         }
-        await delegateStreamHandler?.finish()
-        pendingDelegateEvents.append(.delegateFinish(agentID: target.id.uuidString))
+        await delegateStreamHandler?.finish(agentID: target.id.uuidString)
         let trimmedLast = lastRoundText.trimmingCharacters(in: .whitespacesAndNewlines)
         let rawAnswer = trimmedLast.isEmpty
             ? narration.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1204,9 +1216,12 @@ final class AgentExecutor: Sendable {
             return DelegateResult(project: proj, agent: target.name, answer: nil,
                 error: "agent finished without a text answer")
         }
+        let completedAt = Date()
         await MainActor.run {
             var msgs = messages
-            msgs.append(Message(role: .assistant, content: answer))
+            msgs.append(Message(
+                role: .assistant, content: answer,
+                timestamp: completedAt, modelName: subModelDisplayName))
             ChatHistoryStore.save(msgs, agentId: target.id)
         }
         return DelegateResult(project: proj, agent: target.name, answer: answer, error: nil)
@@ -1277,7 +1292,7 @@ final class AgentExecutor: Sendable {
                     ?? [ChatViewModel.systemMessage(
                         for: target, projectName: proj.isEmpty ? nil : proj,
                         workingDirectory: targetWD)]
-                msgs.append(Message(role: .user, content: p.task))
+                msgs.append(Message(role: .user, content: p.task, timestamp: Date()))
                 return ResolvedTarget(
                     project: proj, target: target, messages: msgs,
                     workingDirectory: targetWD)

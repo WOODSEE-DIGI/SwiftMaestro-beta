@@ -19,22 +19,22 @@ struct ObsidianToolProvider: ToolProvider {
     func provideTools() async -> [ToolProviderTool] {
         [
             ToolProviderTool(
-                name: "search_vault",
+                name: "obsidian_search_vault",
                 spec: Self.specs[0],
                 category: .vault,
                 handler: { call in await Self.searchVault(call) }),
             ToolProviderTool(
-                name: "read_note",
+                name: "obsidian_read_note",
                 spec: Self.specs[1],
                 category: .vault,
                 handler: { call in await Self.readNote(call) }),
             ToolProviderTool(
-                name: "write_note",
+                name: "obsidian_write_note",
                 spec: Self.specs[2],
                 category: .vault,
                 handler: { call in await Self.writeNote(call) }),
             ToolProviderTool(
-                name: "list_vault",
+                name: "obsidian_list_vault",
                 spec: Self.specs[3],
                 category: .vault,
                 handler: { call in await Self.listVault(call) }),
@@ -51,7 +51,7 @@ struct ObsidianToolProvider: ToolProvider {
 
     static let specs: [ToolSpec] = [
         MaestroTools.rawSpec(
-            "search_vault",
+            "obsidian_search_vault",
             "Full-text search across all Obsidian vault notes. Returns matching lines with file paths and line numbers.",
             properties: [
                 "query": ["type": "string", "description": "Search query string"],
@@ -59,14 +59,14 @@ struct ObsidianToolProvider: ToolProvider {
             ],
             required: ["query"]),
         MaestroTools.rawSpec(
-            "read_note",
+            "obsidian_read_note",
             "Read a note from the Obsidian vault. Returns the full markdown content.",
             properties: [
                 "filepath": ["type": "string", "description": "Vault-relative path (e.g. 'Tech Configs/Network Settings/router.md') or absolute path under ~/Obsidian"],
             ],
             required: ["filepath"]),
         MaestroTools.rawSpec(
-            "write_note",
+            "obsidian_write_note",
             "Create, overwrite, or append a note in any Obsidian vault under ~/Obsidian. "
             + "Parent folders are created automatically. Obsidian picks up changes live.",
             properties: [
@@ -76,7 +76,7 @@ struct ObsidianToolProvider: ToolProvider {
             ],
             required: ["filepath", "content"]),
         MaestroTools.rawSpec(
-            "list_vault",
+            "obsidian_list_vault",
             "List notes and folders in the Obsidian vault. Returns a directory listing with [DIR] and [FILE] prefixes.",
             properties: [
                 "subfolder": ["type": "string", "description": "Subfolder to list (default: vault root)"],

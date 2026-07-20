@@ -55,7 +55,8 @@ struct AgentChatWindowView: View {
         .background(
             WindowSizeConfigurator(
                 minSize: CGSize(width: 720, height: 520),
-                defaultSize: CGSize(width: 960, height: 720)
+                defaultSize: CGSize(width: 960, height: 720),
+                backgroundColor: nil
             )
         )
         #if os(macOS)

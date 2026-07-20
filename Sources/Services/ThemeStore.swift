@@ -11,7 +11,7 @@ import AppKit
 final class ThemeStore {
 
     /// Window appearance: follow the system, or force light/dark.
-    enum Appearance: String, CaseIterable, Identifiable {
+    enum Appearance: String, CaseIterable, Identifiable, Codable {
         case system, light, dark
         var id: String { rawValue }
         var label: String {
@@ -36,6 +36,7 @@ final class ThemeStore {
     static let userBubbleKey = "theme.userBubbleHex"
     static let userBubbleTextKey = "theme.userBubbleTextHex"
     static let chatBackgroundKey = "theme.chatBackgroundHex"
+    static let chatTextKey = "theme.chatTextHex"
     static let sidebarKey = "theme.sidebarHex"
     static let sidebarTextKey = "theme.sidebarTextHex"
     static let plansPanelKey = "theme.plansPanelHex"
@@ -69,6 +70,7 @@ final class ThemeStore {
     private var userBubbleOverride: Color?
     private var userBubbleTextOverride: Color?
     private var chatBackgroundOverride: Color?
+    private var chatTextOverride: Color?
     private var sidebarOverride: Color?
     private var sidebarTextOverride: Color?
     private var plansPanelOverride: Color?
@@ -79,8 +81,8 @@ final class ThemeStore {
     private var secondaryBackgroundOverride: Color?
     /// Per-panel-kind overrides, keyed by `WorkspacePanelKind.themeStorageKey`.
     /// Absent key => that panel uses the shared `accent` color (see
-    /// `panelAccent(for:)`).
-    private var panelAccentOverrides: [String: Color] = [:]
+    /// `panelAccent(for:)`). Internal so `SkinStore` can snapshot current colors.
+    var panelAccentOverrides: [String: Color] = [:]
 
     init() {
         let defaults = UserDefaults.standard
@@ -90,6 +92,7 @@ final class ThemeStore {
         userBubbleOverride = defaults.string(forKey: Self.userBubbleKey).flatMap(Color.init(hex:))
         userBubbleTextOverride = defaults.string(forKey: Self.userBubbleTextKey).flatMap(Color.init(hex:))
         chatBackgroundOverride = defaults.string(forKey: Self.chatBackgroundKey).flatMap(Color.init(hex:))
+        chatTextOverride = defaults.string(forKey: Self.chatTextKey).flatMap(Color.init(hex:))
         sidebarOverride = defaults.string(forKey: Self.sidebarKey).flatMap(Color.init(hex:))
         sidebarTextOverride = defaults.string(forKey: Self.sidebarTextKey).flatMap(Color.init(hex:))
         plansPanelOverride = defaults.string(forKey: Self.plansPanelKey).flatMap(Color.init(hex:))
@@ -111,6 +114,7 @@ final class ThemeStore {
         userBubbleOverride = defaults.string(forKey: Self.userBubbleKey).flatMap(Color.init(hex:))
         userBubbleTextOverride = defaults.string(forKey: Self.userBubbleTextKey).flatMap(Color.init(hex:))
         chatBackgroundOverride = defaults.string(forKey: Self.chatBackgroundKey).flatMap(Color.init(hex:))
+        chatTextOverride = defaults.string(forKey: Self.chatTextKey).flatMap(Color.init(hex:))
         sidebarOverride = defaults.string(forKey: Self.sidebarKey).flatMap(Color.init(hex:))
         sidebarTextOverride = defaults.string(forKey: Self.sidebarTextKey).flatMap(Color.init(hex:))
         plansPanelOverride = defaults.string(forKey: Self.plansPanelKey).flatMap(Color.init(hex:))
@@ -141,6 +145,9 @@ final class ThemeStore {
     /// (not `.clear`) so the color picker opens on the actual color instead of a
     /// black/transparent swatch, while still matching the system look.
     var chatBackground: Color { chatBackgroundOverride ?? Color(nsColor: .windowBackgroundColor) }
+    /// Main chat text color for assistant messages. Defaults to `.primary` so it
+    /// follows the system light/dark mode when no skin overrides it.
+    var chatText: Color { chatTextOverride ?? .primary }
     /// Agent sidebar background. Defaults to the system window background for the
     /// picker; the view only replaces the list's material when `sidebarOverridden`.
     var sidebarBackground: Color { sidebarOverride ?? Color(nsColor: .windowBackgroundColor) }
@@ -184,7 +191,7 @@ final class ThemeStore {
     /// True when any color has been customized (drives the Reset button).
     var hasColorOverrides: Bool {
         accentOverride != nil || userBubbleOverride != nil || userBubbleTextOverride != nil
-            || chatBackgroundOverride != nil || sidebarOverride != nil || sidebarTextOverride != nil
+            || chatBackgroundOverride != nil || chatTextOverride != nil || sidebarOverride != nil || sidebarTextOverride != nil
             || plansPanelOverride != nil || plansTextOverride != nil
             || tasksPanelOverride != nil || tasksTextOverride != nil
             || backgroundOverride != nil || secondaryBackgroundOverride != nil
@@ -204,6 +211,9 @@ final class ThemeStore {
     }
     var chatBackgroundBinding: Binding<Color> {
         Binding(get: { self.chatBackground }, set: { self.setChatBackground($0) })
+    }
+    var chatTextBinding: Binding<Color> {
+        Binding(get: { self.chatText }, set: { self.setChatText($0) })
     }
     var sidebarBinding: Binding<Color> {
         Binding(get: { self.sidebarBackground }, set: { self.setSidebar($0) })
@@ -238,6 +248,7 @@ final class ThemeStore {
     func setUserBubble(_ color: Color) { userBubbleOverride = color; persist(Self.userBubbleKey, color) }
     func setUserBubbleText(_ color: Color) { userBubbleTextOverride = color; persist(Self.userBubbleTextKey, color) }
     func setChatBackground(_ color: Color) { chatBackgroundOverride = color; persist(Self.chatBackgroundKey, color) }
+    func setChatText(_ color: Color) { chatTextOverride = color; persist(Self.chatTextKey, color) }
     func setSidebar(_ color: Color) { sidebarOverride = color; persist(Self.sidebarKey, color) }
     func setSidebarText(_ color: Color) { sidebarTextOverride = color; persist(Self.sidebarTextKey, color) }
     func setPlansPanel(_ color: Color) { plansPanelOverride = color; persist(Self.plansPanelKey, color) }
@@ -266,6 +277,7 @@ final class ThemeStore {
         userBubbleOverride = nil
         userBubbleTextOverride = nil
         chatBackgroundOverride = nil
+        chatTextOverride = nil
         sidebarOverride = nil
         sidebarTextOverride = nil
         plansPanelOverride = nil
@@ -277,7 +289,7 @@ final class ThemeStore {
         panelAccentOverrides = [:]
         for key in [
             Self.accentKey, Self.userBubbleKey, Self.userBubbleTextKey,
-            Self.chatBackgroundKey, Self.sidebarKey, Self.sidebarTextKey,
+            Self.chatBackgroundKey, Self.chatTextKey, Self.sidebarKey, Self.sidebarTextKey,
             Self.plansPanelKey, Self.plansTextKey, Self.tasksPanelKey, Self.tasksTextKey,
             Self.backgroundKey, Self.secondaryBackgroundKey, Self.panelAccentsKey,
         ] {

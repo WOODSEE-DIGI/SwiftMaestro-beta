@@ -157,6 +157,7 @@ struct VisionProxySettingsTab: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
         .onAppear { checkServerStatus() }
         .onChange(of: visionProxy.config.provider) { _, _ in checkServerStatus() }
         .onChange(of: visionProxy.config.serverPort) { _, _ in checkServerStatus() }

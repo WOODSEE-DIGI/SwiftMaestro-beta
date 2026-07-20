@@ -229,6 +229,7 @@ enum MarkdownParser {
 // MARK: - Text Segment View
 
 struct TextSegmentView: View {
+    @Environment(ThemeStore.self) private var theme
 
     let content: String
     let isUser: Bool
@@ -236,7 +237,7 @@ struct TextSegmentView: View {
     var body: some View {
         // Render text with clickable links. Plain URLs are auto-linked, and
         // existing markdown links [text](url) are rendered as native Link views.
-        LinkedText(content: MarkdownParser.autoLinkURLs(content))
+        LinkedText(content: MarkdownParser.autoLinkURLs(content), textColor: theme.chatText)
             .font(.body)
             .textSelection(.enabled)
             .padding(.horizontal, 12)
@@ -248,6 +249,7 @@ struct TextSegmentView: View {
 /// Splits text into alternating plain text and markdown link segments.
 private struct LinkedText: View {
     let content: String
+    let textColor: Color
 
     private var pieces: [TextPiece] {
         MarkdownParser.parseLinkedText(content)
@@ -258,7 +260,7 @@ private struct LinkedText: View {
         pieces.reduce(Text("")) { partial, piece in
             switch piece {
             case .plain(let text):
-                return partial + Text(text)
+                return partial + Text(text).foregroundStyle(textColor)
             case .link(let label, let url):
                 // SwiftUI Text cannot embed a Link; use a styled Text with the
                 // URL as a run attribute. The environment's `openURL` handler

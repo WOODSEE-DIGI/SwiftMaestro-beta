@@ -62,6 +62,7 @@ struct WhisperKitSettingsTab: View {
             statusSection
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
         .alert("Reload Model", isPresented: $showReloadAlert) {
             Button("Cancel", role: .cancel) {}
             Button("Reload") {

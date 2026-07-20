@@ -328,7 +328,7 @@ struct WhatsAppView: View {
             VStack(alignment: .leading, spacing: 4) {
                 if !message.isFromMe, let sender = message.sender {
                     // `sender` is often just a bare phone/LID number (e.g.
-                    // "61410906593") - resolve it the same way the chat list
+                    // "00000000000") - resolve it the same way the chat list
                     // does, using contact data the bridge already has but
                     // wasn't using (see WhatsAppService.loadContactDisplayNames).
                     Text(service.contactDisplayNames[sender] ?? sender)

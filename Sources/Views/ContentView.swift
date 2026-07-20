@@ -78,7 +78,8 @@ struct ContentView: View {
         .background(
             WindowSizeConfigurator(
                 minSize: CGSize(width: 900, height: 620),
-                defaultSize: CGSize(width: 1100, height: 760)
+                defaultSize: CGSize(width: 1100, height: 760),
+                backgroundColor: nil
             )
         )
         #endif
@@ -213,16 +214,20 @@ struct ContentView: View {
 
     private var agentsSidebar: some View {
         List(selection: $focusedKind) {
-            Section("Agents") {
+            Section {
                 agentRow(
                     title: workspace.navigator.name,
                     systemImage: "point.3.connected.trianglepath.dotted",
                     id: workspace.navigator.id
                 )
                 .tag(WorkspacePanelKind.agentChat(workspace.navigator.id))
+            } header: {
+                Text("Agents")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(theme.sidebarText.opacity(0.7))
             }
             ForEach(workspace.projects) { project in
-                Section(project.name) {
+                Section {
                     ForEach(workspace.projectAgents(in: project.id)) { agent in
                         agentRow(title: agent.name, systemImage: nil, id: agent.id)
                             .tag(WorkspacePanelKind.agentChat(agent.id))
@@ -236,6 +241,10 @@ struct ContentView: View {
                                 }
                             }
                     }
+                } header: {
+                    Text(project.name)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(theme.sidebarText.opacity(0.7))
                 }
             }
         }
@@ -246,25 +255,38 @@ struct ContentView: View {
 
     private var appsSidebar: some View {
         List(selection: $focusedKind) {
-            Section("Apple Apps") {
+            Section {
                 sidebarRow("Apple Notes", kind: .appleNotes)
                 sidebarRow("Calendar", kind: .calendar)
                 sidebarRow("Reminders", kind: .reminders)
                 sidebarRow("Contacts", kind: .contacts)
                 sidebarRow("Numbers", kind: .numbers)
-                sidebarRow("WhatsApp", kind: .whatsapp)
+            } header: {
+                Text("Apple Apps")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(theme.sidebarText.opacity(0.7))
             }
-            Section("Swift Apps") {
+            Section {
+                sidebarRow("WhatsApp", kind: .whatsapp)
+                sidebarRow("Bus Monitor", kind: .busMonitor)
                 sidebarRow("Notes.md", kind: .notesMD)
                 sidebarRow("Canvas", kind: .canvas)
                 sidebarRow("Kanban", kind: .kanban)
                 sidebarRow("Terminal", kind: .terminal)
+            } header: {
+                Text("Swift Apps")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(theme.sidebarText.opacity(0.7))
             }
             if !pluginService.plugins.isEmpty {
-                Section("Plugins") {
+                Section {
                     ForEach(pluginService.plugins) { manifest in
                         sidebarRow(manifest.name, kind: .plugin(manifest.id), icon: manifest.icon)
                     }
+                } header: {
+                    Text("Plugins")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(theme.sidebarText.opacity(0.7))
                 }
             }
         }
@@ -281,6 +303,7 @@ struct ContentView: View {
     private func sidebarRow(_ title: String, kind: WorkspacePanelKind, icon: String? = nil) -> some View {
         HStack {
             Label(title, systemImage: icon ?? kind.icon)
+                .foregroundStyle(theme.sidebarText)
             Spacer()
             if workspaceLayout.isOpen(kind) {
                 Circle()
@@ -296,7 +319,7 @@ struct ContentView: View {
             HStack {
                 Text("Loaded Agents")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(theme.sidebarText.opacity(0.7))
                 Spacer()
             }
             ModelResourceMonitor()
@@ -624,15 +647,53 @@ final class ChatViewModelCache {
 
     /// Append a token to an agent's current assistant message (for delegate streaming).
     /// Strips XML thinking/channel tags so the chat shows clean content.
+    /// Tokens are buffered and flushed in small batches to avoid one SwiftUI
+    /// update per token, which is the dominant source of "laggy" streaming.
     func appendToken(_ token: String, toAgentID agentID: UUID) {
-        guard let vm = byID[agentID] else { return }
+        guard byID[agentID] != nil else { return }
+        var buffer = tokenBuffers[agentID] ?? ""
+        buffer += token
+        tokenBuffers[agentID] = buffer
+
+        let now = ContinuousClock.now
+        let last = lastFlushTimes[agentID] ?? now
+        let threshold = 50  // characters
+        let interval: Duration = .milliseconds(50)
+        let elapsed = last.duration(to: now)
+        if buffer.count >= threshold || elapsed >= interval {
+            flushTokens(for: agentID)
+        }
+    }
+
+    /// Buffers of streaming tokens per agent, waiting to be flushed to the UI.
+    private var tokenBuffers: [UUID: String] = [:]
+    /// Last UI flush time per agent, so we can time-cap token buffering.
+    private var lastFlushTimes: [UUID: ContinuousClock.Instant] = [:]
+
+    /// Flush the buffered tokens for an agent into its last assistant message.
+    /// This is the only place we mutate the UI and re-strip the accumulated
+    /// content, so expensive tag stripping and SwiftUI re-renders happen once
+    /// per batch instead of once per token.
+    func flushTokens(for agentID: UUID) {
+        guard let vm = byID[agentID],
+              let buffer = tokenBuffers[agentID],
+              !buffer.isEmpty else { return }
+        tokenBuffers[agentID] = ""
+        lastFlushTimes[agentID] = ContinuousClock.now
+
         vm.objectWillChange.send()
         if vm.messages.last?.role == .assistant {
-            // Re-strip the entire accumulated content each token so tags that span
+            let idx = vm.messages.count - 1
+            // Re-strip the entire accumulated content each flush so tags that span
             // token boundaries or appear in different forms still get removed.
-            let accumulated = vm.messages[vm.messages.count - 1].content + token
+            let accumulated = vm.messages[idx].content + buffer
             let cleaned = Self.stripThinkingTags(accumulated)
-            vm.messages[vm.messages.count - 1].content = cleaned
+            vm.messages[idx].content = cleaned
+            // Ensure the live streaming message carries metadata even if it was
+            // created before the model name was resolved.
+            if vm.messages[idx].modelName == nil || vm.messages[idx].modelName?.isEmpty == true {
+                vm.messages[idx].modelName = ChatViewModel.effectiveDelegateModelNames[agentID.uuidString]
+            }
         }
     }
 
@@ -643,16 +704,20 @@ final class ChatViewModelCache {
     }
 
     /// Notify an agent that delegation started (append empty assistant message).
-    func beginDelegation(forAgentID agentID: UUID) {
+    /// `modelName` is the resolved model running the sub-agent, shown in the footer.
+    func beginDelegation(forAgentID agentID: UUID, modelName: String? = nil) {
         guard let vm = byID[agentID] else { return }
         vm.objectWillChange.send()
-        vm.messages.append(Message(role: .assistant, content: ""))
+        vm.messages.append(Message(
+            role: .assistant, content: "",
+            timestamp: Date(), modelName: modelName))
         onOpenAgentWindow?(agentID)
     }
 
     /// Reload an agent's messages from the persisted exchange after delegation.
     @MainActor
     func reloadMessages(forAgentID agentID: UUID, messages: [Message]) {
+        flushTokens(for: agentID)
         if let vm = byID[agentID] {
             vm.objectWillChange.send()
             vm.messages = messages
@@ -678,6 +743,7 @@ final class ChatViewModelCache {
 
     /// Notify an agent that delegation finished (save history).
     func finishDelegation(forAgentID agentID: UUID) {
+        flushTokens(for: agentID)
         guard let vm = byID[agentID] else { return }
         vm.persistHistory()
     }

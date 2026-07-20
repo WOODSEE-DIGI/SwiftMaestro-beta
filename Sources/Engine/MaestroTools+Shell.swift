@@ -153,6 +153,24 @@ extension MaestroTools {
             )
         }
 
+        // Defensive: strip any thinking/channel tags that leaked into the command
+        // parameter (Gemma 4 emits <channel>/</channel>, Qwen emits  think/think).
+        // If stripping leaves nothing, the model emitted a tag instead of a command.
+        let sanitized = ThinkingTagStripper.strip(raw)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sanitized.isEmpty else {
+            NSLog("[SHELL] executeShell rejected command after tag stripping. raw='\(raw)'")
+            return errorJSON(
+                "The command parameter contained only a thinking/channel tag ('\(raw)') "
+                + "instead of a real shell command. NEVER put thinking tags or reasoning "
+                + "markers inside the <parameter=command> block. Put only the literal shell "
+                + "command. Example:\n"
+                + "<tool_call>\n<function=execute_command>\n<parameter=command>\n"
+                + "brew update\n</parameter>\n</function>\n</tool_call>"
+            )
+        }
+        let command = sanitized
+
         // 1. Check if shell tool is enabled
         guard await MainActor.run(body: { ShellPolicyStore.shared.enabled }) else {
             return errorJSON(
@@ -162,20 +180,20 @@ extension MaestroTools {
 
         // 2. Classify the command
         let classification: ShellClassification = await MainActor.run(body: {
-            ShellPolicyStore.shared.classify(raw)
+            ShellPolicyStore.shared.classify(command)
         })
 
         // 3. Handle deny
         if classification == .denied {
             return errorJSON(
-                "Command blocked by always-deny policy: \"\(raw)\"."
+                "Command blocked by always-deny policy: \"\(command)\"."
             )
         }
 
         // 4. Dry-run — return classification info without executing
         if args.dryRun {
             return encodeJSON(DryRunResult(
-                command: raw,
+                command: command,
                 classification: classification,
                 cwd: args.cwd
             ))
@@ -184,20 +202,20 @@ extension MaestroTools {
         // 5. Handle ask — show approval banner and wait
         if classification == .ask {
             let workingDir = args.cwd ?? NSHomeDirectory()
-            let approved = await requestShellApproval(command: raw, cwd: workingDir)
+            let approved = await requestShellApproval(command: command, cwd: workingDir)
             guard approved else {
-                return errorJSON("Command denied by user: \"\(raw)\".")
+                return errorJSON("Command denied by user: \"\(command)\".")
             }
         }
 
         // 6. Background process — spawn and return immediately
         if args.startBackground {
             let workingDir = args.cwd ?? NSHomeDirectory()
-            return await spawnBackgroundProcess(raw, cwd: workingDir)
+            return await spawnBackgroundProcess(command, cwd: workingDir)
         }
 
         // 7. Execute (allowed, unknown, or approved)
-        return await runShellCommand(raw, cwd: args.cwd, timeout: args.timeout)
+        return await runShellCommand(command, cwd: args.cwd, timeout: args.timeout)
     }
 
     // MARK: - Approval Flow
