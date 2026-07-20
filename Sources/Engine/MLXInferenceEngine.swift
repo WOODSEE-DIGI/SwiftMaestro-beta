@@ -803,6 +803,25 @@ final class MLXInferenceEngine {
         }
     }
 
+    // MARK: - Tool schema sanitization
+
+    /// Sanitize tool schemas through a JSON round-trip so all values are proper
+    /// JSON types (String/Number/Boolean/Array/Dict/NSNull) before they hit
+    /// swift-jinja's `Value(any:)`, which can mis-bridge `[String: any Sendable]`
+    /// existential containers. Kept as a non-isolated helper so callers can run
+    /// it off the main actor before entering a `@MainActor` generation method.
+    nonisolated static func sanitizeToolSchemas(_ toolSchemas: [ToolSpec]?) -> [ToolSpec]? {
+        guard let toolSchemas else { return nil }
+        do {
+            let data = try JSONSerialization.data(withJSONObject: toolSchemas as Any)
+            let obj = try JSONSerialization.jsonObject(with: data)
+            return obj as? [ToolSpec] ?? toolSchemas
+        } catch {
+            NSLog("[ENGINE] tool schema JSON round-trip failed: \(error), using raw")
+            return toolSchemas
+        }
+    }
+
     // MARK: - Single round (for the pluggable in-process backend)
 
     /// Run ONE generation pass over a prepared chat (no tool loop). Streams
@@ -851,22 +870,8 @@ final class MLXInferenceEngine {
             temperature: Float(temperature), topP: Float(topP), repetitionPenalty: repPen,
             prefillStepSize: 1024)
 
-        // Sanitize tool schemas through JSON round-trip to ensure all values
-        // are proper JSON types (String/Number/Boolean/Array/Dict/NSNull) before
-        // they hit swift-jinja's Value(any:), which can mis-bridge
-        // [String: any Sendable] existential containers.
-        let sanitizedTools: [ToolSpec]? = toolSchemas.map { specs in
-            do {
-                let data = try JSONSerialization.data(withJSONObject: specs as Any)
-                let obj = try JSONSerialization.jsonObject(with: data)
-                return obj as? [ToolSpec] ?? specs
-            } catch {
-                NSLog("[ENGINE] tool schema JSON round-trip failed: \(error), using raw")
-                return specs
-            }
-        }
         let input = UserInput(
-            chat: chat, tools: sanitizedTools,
+            chat: chat, tools: toolSchemas,
             additionalContext: ["enable_thinking": thinkingEnabled])
         nonisolated(unsafe) let capturedInput = input
         nonisolated(unsafe) let pc = cache(forSession: sessionKey + "::" + model.id)
@@ -1020,21 +1025,11 @@ final class MLXInferenceEngine {
             temperature: Float(temperature), topP: Float(topP), repetitionPenalty: repPen,
             prefillStepSize: 1024)
 
-        let sanitizedTools: [ToolSpec]? = toolSchemas.map { specs in
-            do {
-                let data = try JSONSerialization.data(withJSONObject: specs as Any)
-                let obj = try JSONSerialization.jsonObject(with: data)
-                return obj as? [ToolSpec] ?? specs
-            } catch {
-                NSLog("[ENGINE] tool schema JSON round-trip failed: \(error), using raw")
-                return specs
-            }
-        }
         // .messages() path: raw dictionaries pass through DefaultMessageGenerator
         // untouched, preserving tool_calls and tool_call_id for the Jinja template.
         NSLog("[ENGINE] generateRound messages=\(wireMessages.count) images=\(images.count) hf=\(model.huggingFaceID)")
         let input = UserInput(
-            messages: wireMessages, images: images, tools: sanitizedTools,
+            messages: wireMessages, images: images, tools: toolSchemas,
             additionalContext: ["enable_thinking": thinkingEnabled])
         nonisolated(unsafe) let capturedInput = input
         nonisolated(unsafe) let pc = cache(forSession: sessionKey + "::" + model.id)
@@ -1102,7 +1097,7 @@ final class MLXInferenceEngine {
                         input: inputForGen, cache: cacheForGen,
                         parameters: parameters, context: context,
                         wiredMemoryTicket: wiredTicket,
-                        tools: sanitizedTools?.map { $0 as [String: any Sendable] })
+                        tools: toolSchemas?.map { $0 as [String: any Sendable] })
                 }
             }
         }

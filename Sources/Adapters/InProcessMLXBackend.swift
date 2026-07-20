@@ -54,11 +54,15 @@ final class InProcessMLXBackend: GenerationBackend {
             images = Self.extractAllImages(from: convo)
         }
         let wireMessages = Self.toWireMessages(preparedConvo)
+        // Sanitize tool schemas off the main actor before entering the @MainActor
+        // generateRound. This JSON round-trip can be slow with many tools and was
+        // previously blocking the main thread, causing a spinning beachball.
+        let sanitizedTools = MLXInferenceEngine.sanitizeToolSchemas(tools)
         NSLog("[InProcessMLXBackend] streamRound model=\(model.id) images=\(images.count) messages=\(wireMessages.count) gemma4=\(isGemma4)")
         return try await engine.generateRound(
             wireMessages: wireMessages,
             images: images,
-            toolSchemas: tools,
+            toolSchemas: sanitizedTools,
             model: model,
             sessionKey: sessionKey,
             temperature: temperature,

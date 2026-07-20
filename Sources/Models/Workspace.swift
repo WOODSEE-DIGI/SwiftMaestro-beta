@@ -196,6 +196,32 @@ final class WorkspaceStore {
         return ToolCategory.defaultEnabled(for: agent.kind)
     }
 
+    /// One-time migration: ensure every agent's saved enabled categories include
+    /// all categories currently visible for its kind. This is called once at app
+    /// startup after the workspace is loaded, so it does not mutate state during
+    /// a SwiftUI view render.
+    func migrateEnabledToolCategories() {
+        var changed = false
+        for i in agents.indices {
+            let kind = agents[i].kind
+            let saved = Set(agents[i].enabledToolCategories?.compactMap { ToolCategory(rawValue: $0) } ?? [])
+            let visible = Set(ToolCategory.visible(for: kind))
+            // If nothing is saved, defaults will already include everything visible.
+            // If saved set is non-empty, merge any new categories in.
+            if !saved.isEmpty {
+                let merged = saved.union(visible)
+                if merged != saved {
+                    agents[i].enabledToolCategories = Array(merged.map(\.rawValue))
+                    changed = true
+                }
+            }
+        }
+        if changed {
+            save()
+            NSLog("[WORKSPACE] migrated enabled tool categories to include new categories")
+        }
+    }
+
     /// Replace the enabled tool categories for an agent and persist.
     func setEnabledToolCategories(_ categories: Set<ToolCategory>, for agentID: UUID) {
         guard let i = agents.firstIndex(where: { $0.id == agentID }) else { return }

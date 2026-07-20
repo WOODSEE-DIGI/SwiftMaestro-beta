@@ -22,6 +22,8 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     case canvas
     case numbers
     case whatsapp
+    case web
+    case vault
 
     var id: String { rawValue }
 
@@ -45,7 +47,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .workspace, .memory, .messaging, .rules, .time, .mcp:
             return false
         case .file, .shell, .server, .index, .system, .sqlite,
-             .notes, .kanban, .canvas, .numbers, .whatsapp:
+             .notes, .kanban, .canvas, .numbers, .whatsapp, .web, .vault:
             return true
         }
     }
@@ -69,6 +71,8 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .canvas: return "Canvas"
         case .numbers: return "Numbers"
         case .whatsapp: return "WhatsApp"
+        case .web: return "Web"
+        case .vault: return "Vault"
         }
     }
 
@@ -91,6 +95,8 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .canvas: return "rectangle.3.group"
         case .numbers: return "tablecells"
         case .whatsapp: return "message"
+        case .web: return "globe"
+        case .vault: return "lock.square"
         }
     }
 
@@ -159,6 +165,10 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
                 "whatsapp_status", "start_whatsapp_bridge", "stop_whatsapp_bridge",
                 "list_whatsapp_chats", "read_whatsapp_messages", "send_whatsapp_message",
             ]
+        case .web:
+            return ["web_search", "fetch_url"]
+        case .vault:
+            return ["search_vault", "read_note", "write_note", "list_vault"]
         case .mcp:
             return []
         }
@@ -169,12 +179,12 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         switch kind {
         case .navigator:
             return [
-                .workspace, .memory, .system, .rules, .time,
+                .workspace, .memory, .system, .rules, .time, .web, .vault,
                 .notes, .kanban, .canvas, .numbers, .whatsapp,
             ]
         case .project:
             return [
-                .file, .shell, .server, .index, .memory, .messaging, .system, .mcp, .sqlite,
+                .file, .shell, .server, .index, .memory, .messaging, .system, .mcp, .sqlite, .web, .vault,
                 .notes, .kanban, .canvas, .numbers, .whatsapp,
             ]
         }

@@ -31,5 +31,27 @@ extension MaestroTools {
         await registerWorkspaceTools()
         await registerMetaTools()
         await registerTimeTools()
+        await registerWebTools()
+
+        // Tool providers — plugins that register their own tools.
+        await registerToolProvider(ObsidianToolProvider())
+    }
+
+    // MARK: - Tool Provider Registration
+
+    /// Registers a `ToolProvider`'s tools with the shared `ToolRegistry`.
+    /// Each tool is wrapped in a `ToolDefinition` and dispatched through the
+    /// standard registry path.
+    static func registerToolProvider(_ provider: ToolProvider) async {
+        let tools = await provider.provideTools()
+        let definitions = tools.map { tool in
+            ToolDefinition(
+                name: tool.name,
+                spec: tool.spec,
+                category: tool.category.rawValue,
+                handler: tool.handler
+            )
+        }
+        await ToolRegistry.shared.register(definitions)
     }
 }

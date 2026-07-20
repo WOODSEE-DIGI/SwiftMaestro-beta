@@ -714,6 +714,26 @@ class ChatViewModel: ObservableObject {
         DIRECTORY INDEXING:
         - For directory exploration, use index_directory (recursive, Spotlight metadata). \
         Only use list_dir for single-directory-level checks.
+
+        WEB SEARCH:
+        - Use web_search to find current information online. Returns titles, URLs, snippets.
+        - Use fetch_url to read the full content of a specific web page as markdown.
+        - For quick lookups, web_search is enough. For deep reading, fetch the URL after searching.
+        - MCP web tools (webclaw, firecrawl) provide richer scraping when enabled in Settings → MCP.
+
+        OBSIDIAN VAULT:
+        - The user's Obsidian vault lives under `~/Obsidian` and is exposed via the vault tools.
+        - Use search_vault for full-text search across notes; returns matching lines with file paths.
+        - Use read_note to read the full markdown of a specific note; `filepath` is relative to the vault root.
+        - Use list_vault to list notes and folders; optionally pass a subfolder.
+        - Use write_note to create, overwrite, or append to a note. Paths are relative to the vault root.
+        - For Apple Notes (not Obsidian), use the Notes.md / apple_notes tools instead.
+
+        TOOL RESULTS:
+        - After you receive a tool result, you MUST say something useful to the user. \
+        Never emit an empty assistant message. Summarize, quote, or list the key findings.
+        - If a tool returns a list, enumerate the items. If it returns a file's contents, \
+        summarize the key points. If it returns an error, report the error clearly.
         """
 
     /// Only injected when Compact Tool Mode is on for this agent (see

@@ -113,8 +113,15 @@ struct SwiftMaestroApp: App {
                     // Create the shared ~/.ai-context scaffold up front so a fresh,
                     // self-contained install has its data directory before first use.
                     SimpleMemoryStore.ensureScaffold()
+                    // Auto-configure web MCP servers (webclaw, firecrawl, read-website-fast)
+                    // on first launch so agents can search the web immediately.
+                    await WebSetupService.configureIfNeeded()
                     // Expose the workspace to native delegation/workspace tools.
                     MaestroTools.workspace = workspace
+                    // One-time migration so existing installs get newly-added tool
+                    // categories enabled by default without mutating state during UI
+                    // rendering.
+                    workspace.migrateEnabledToolCategories()
                     // Recover plans from previous builds and migrate them to the shared
                     // memory store so they survive workspace resets and reinstalls.
                     planStore.migrateFromLegacyStorage(navigatorID: workspace.navigator.id)

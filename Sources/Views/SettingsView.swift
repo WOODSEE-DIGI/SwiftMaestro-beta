@@ -1565,9 +1565,105 @@ struct MCPServerEntry: Identifiable, Codable {
     var advertisesToAgents: Bool { advertise ?? true }
     var advertisesToDelegates: Bool { advertiseToSubAgents ?? true }
 
-    /// No MCP servers are bundled by default: a fresh, self-contained install
-    /// ships nothing tied to a specific machine. The in-process tools (plans,
-    /// todos, messaging, workspace, time) work without any server. Testers add
-    /// their own servers in Settings → MCP, which persist to UserDefaults.
-    static let defaults: [MCPServerEntry] = []
+    /// Pre-configured MCP servers that ship with SwiftMaestro. These appear in
+    /// Settings → MCP on first launch. Enabled servers connect on launch;
+    /// disabled ones are ready to toggle on when their backend is available.
+    static let defaults: [MCPServerEntry] = [
+        // ── Web search & scraping (pick one or more) ──
+        MCPServerEntry(
+            name: "webclaw",
+            command: "/opt/homebrew/bin/webclaw-mcp",
+            scriptPath: "",
+            env: "",
+            workingDir: "",
+            timeout: 12,
+            enabled: false,
+            notes: "Local-first web scraping (Rust binary, 12+ tools). Install: brew install webclaw"
+        ),
+        MCPServerEntry(
+            name: "firecrawl",
+            command: "/opt/homebrew/bin/node",
+            scriptPath: "\(NSHomeDirectory())/GitHub/AI-ML-Agents/firecrawl-mcp-server/dist/index.js",
+            env: "FIRECRAWL_API_URL=http://localhost:3002",
+            workingDir: "\(NSHomeDirectory())/GitHub/AI-ML-Agents/firecrawl-mcp-server",
+            timeout: 15,
+            enabled: false,
+            notes: "Deep web scrape/search/crawl. Requires Docker: cd ~/GitHub/AI-ML-Agents/firecrawl && docker-compose up -d"
+        ),
+        MCPServerEntry(
+            name: "read-website-fast",
+            command: "/opt/homebrew/bin/node",
+            scriptPath: "\(NSHomeDirectory())/GitHub/AI-ML-Agents/mcp-read-website-fast/dist/serve-restart.js",
+            env: "",
+            workingDir: "\(NSHomeDirectory())/GitHub/AI-ML-Agents/mcp-read-website-fast",
+            timeout: 8,
+            enabled: true,
+            notes: "Fast single-page web extraction to clean markdown. No dependencies."
+        ),
+        // ── Infrastructure ──
+        MCPServerEntry(
+            name: "ai-context-bridge",
+            command: "/opt/homebrew/bin/node",
+            scriptPath: "\(NSHomeDirectory())/.ai-context/mcp-server/server.js",
+            env: "",
+            workingDir: "\(NSHomeDirectory())/.ai-context/mcp-server",
+            timeout: 10,
+            enabled: true,
+            notes: "Cross-project context, memory, knowledge, build tools (29 tools)."
+        ),
+        MCPServerEntry(
+            name: "playwright",
+            command: "/opt/homebrew/bin/node",
+            scriptPath: "\(NSHomeDirectory())/GitHub/AI-ML-Agents/playwright-mcp/packages/playwright-mcp/cli.js",
+            env: "HOME=\(NSHomeDirectory())",
+            workingDir: "\(NSHomeDirectory())/GitHub/AI-ML-Agents/playwright-mcp",
+            timeout: 12,
+            enabled: true,
+            notes: "Browser automation, testing, vision, network, devtools."
+        ),
+        MCPServerEntry(
+            name: "xcodebuildmcp",
+            command: "/opt/homebrew/bin/node",
+            scriptPath: "\(NSHomeDirectory())/GitHub/AI-ML-Agents/XcodeBuildMCP/build/cli.js",
+            env: "HOME=\(NSHomeDirectory())",
+            workingDir: "\(NSHomeDirectory())/GitHub/AI-ML-Agents/XcodeBuildMCP",
+            timeout: 10,
+            enabled: true,
+            args: ["\(NSHomeDirectory())/GitHub/AI-ML-Agents/XcodeBuildMCP/build/cli.js", "mcp"],
+            notes: "Xcode project management, simulator, app utilities."
+        ),
+        MCPServerEntry(
+            name: "swift-terminals",
+            command: "/opt/homebrew/bin/node",
+            scriptPath: "\(NSHomeDirectory())/GitHub/AI-ML-Agents/Swift-terminals/dist/index.js",
+            env: "",
+            workingDir: "\(NSHomeDirectory())/GitHub/AI-ML-Agents/Swift-terminals",
+            timeout: 8,
+            enabled: true,
+            notes: "Persistent terminal sessions and shell execution."
+        ),
+        // ── Communication ──
+        MCPServerEntry(
+            name: "whatsapp",
+            command: "/opt/homebrew/bin/uv",
+            scriptPath: "",
+            env: "",
+            workingDir: "\(NSHomeDirectory())/GitHub/AI-ML-Agents/whatsapp-mcp/whatsapp-mcp-server",
+            timeout: 10,
+            enabled: true,
+            args: ["--directory", "\(NSHomeDirectory())/GitHub/AI-ML-Agents/whatsapp-mcp/whatsapp-mcp-server", "run", "main.py"],
+            notes: "WhatsApp messaging. Requires bridge: cd ~/GitHub/AI-ML-Agents/whatsapp-mcp/whatsapp-bridge && go run main.go"
+        ),
+        // ── Web crawling (advanced, needs backend) ──
+        MCPServerEntry(
+            name: "crawlkit",
+            command: "/opt/homebrew/bin/node",
+            scriptPath: "\(NSHomeDirectory())/.ai-context/mcp-crawlkit/server.js",
+            env: "CRAWLKIT_BASE_URL=http://localhost:8088",
+            workingDir: "\(NSHomeDirectory())/.ai-context/mcp-crawlkit",
+            timeout: 12,
+            enabled: false,
+            notes: "Web crawl toolkit (scrape/batch/discover/watch/screenshot). Needs CrawlKit backend at localhost:8088."
+        ),
+    ]
 }
