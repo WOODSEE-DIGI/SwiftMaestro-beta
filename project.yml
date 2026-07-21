@@ -111,6 +111,7 @@ targets:
       - sdk: Contacts.framework
       - sdk: PaperKit.framework
       - sdk: PencilKit.framework
+      - sdk: AppIntents.framework
     scheme:
       testTargets:
         - SwiftMaestroTests

@@ -41,6 +41,44 @@ struct ChatView: View {
             _ = planStore.plans(in: .agent(vm.agent.id))
             for project in planScopeProjects { _ = planStore.plans(in: .project(project)) }
             _ = messageStore.inbox(for: vm.agent.id)
+
+            // Only the Navigator agent should receive audio input and external
+            // voice commands. Register this chat as the active recipient if it
+            // is the Navigator chat.
+            let isNavigator = vm.agent.kind == .navigator
+            AgentCommandCenter.shared.isNavigatorActive = isNavigator
+            if isNavigator {
+                AgentCommandCenter.shared.askAgentHandler = { [weak vm] question in
+                    guard let vm else { return }
+                    vm.inputText = question
+                    vm.send(engine: engine, catalog: catalog, model: effectiveModelForAgent)
+                }
+            }
+
+            // Observe external "start recording" commands (e.g. from Siri).
+            let observer = NotificationCenter.default.addObserver(
+                forName: .startWhisperRecording,
+                object: nil,
+                queue: .main
+            ) { _ in
+                guard isNavigator else { return }
+                Task { @MainActor in
+                    if !whisper.isRecording {
+                        whisper.toggleRecording()
+                    }
+                }
+            }
+
+            // Keep the task alive; on cancellation (view removed or agent changed)
+            // clear the handler and remove the observer.
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+            AgentCommandCenter.shared.isNavigatorActive = false
+            if isNavigator {
+                AgentCommandCenter.shared.askAgentHandler = nil
+            }
+            NotificationCenter.default.removeObserver(observer)
         }
         .onAppear {
             // Intercept Cmd+V before the TextField consumes it, so image pastes
@@ -95,6 +133,9 @@ struct ChatView: View {
         .onChange(of: whisper.pendingTranscription) { _, newValue in
             if let text = newValue, !text.isEmpty {
                 vm.inputText = text
+                if whisper.autoSendTranscription {
+                    submitInput()
+                }
             }
         }
         .sheet(isPresented: $showingPlans) {
@@ -737,22 +778,24 @@ struct ChatView: View {
             .buttonStyle(.plain)
             .help("Attach image")
 
-            // Microphone button — tap to record, tap again to stop.
-            Button { whisper.toggleRecording() } label: {
-                if whisper.isRecording {
-                    Image(systemName: "stop.circle.fill")
-                        .foregroundStyle(.red)
-                        .symbolEffect(.pulse, isActive: whisper.isRecording)
-                } else if whisper.modelState == .loading || whisper.modelState == .downloading {
-                    ProgressView()
-                        .controlSize(.small)
-                } else {
-                    Image(systemName: "mic.circle.fill")
-                        .foregroundColor(whisper.modelState == .loaded ? .orange : .secondary)
+            // Microphone button — only shown for the Navigator agent.
+            if vm.agent.kind == .navigator {
+                Button { whisper.toggleRecording() } label: {
+                    if whisper.isRecording {
+                        Image(systemName: "stop.circle.fill")
+                            .foregroundStyle(.red)
+                            .symbolEffect(.pulse, isActive: whisper.isRecording)
+                    } else if whisper.modelState == .loading || whisper.modelState == .downloading {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "mic.circle.fill")
+                            .foregroundColor(whisper.modelState == .loaded ? .orange : .secondary)
+                    }
                 }
+                .buttonStyle(.plain)
+                .help(whisper.isRecording ? "Stop recording" : "Record from microphone")
             }
-            .buttonStyle(.plain)
-            .help(whisper.isRecording ? "Stop recording" : "Record from microphone")
 
             TextField(streamingPlaceholder, text: inputTextBinding, axis: .vertical)
                 .textFieldStyle(.plain)

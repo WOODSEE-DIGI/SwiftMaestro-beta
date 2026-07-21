@@ -32,6 +32,9 @@ final class WhisperKitService: @unchecked Sendable {
     private var streamer: AudioStreamTranscriber?
     private var loadTask: Task<Void, Never>?
     private var recordingStartTime: Date?
+    private var silenceMonitorTask: Task<Void, Never>?
+    private var lastVoiceDate: Date?
+    private var voiceDetectedInRecording: Bool = false
 
     // MARK: - Settings (persisted via UserDefaults)
 
@@ -121,6 +124,38 @@ final class WhisperKitService: @unchecked Sendable {
     var saveAudioRecordings: Bool {
         get { UserDefaults.standard.bool(forKey: "\(Self.defaultsPrefix).saveAudioRecordings") }
         set { UserDefaults.standard.set(newValue, forKey: "\(Self.defaultsPrefix).saveAudioRecordings") }
+    }
+
+    // MARK: - Voice input automation
+
+    var autoStopAfterSilence: Bool {
+        get { UserDefaults.standard.object(forKey: "\(Self.defaultsPrefix).autoStopAfterSilence") != nil
+            ? UserDefaults.standard.bool(forKey: "\(Self.defaultsPrefix).autoStopAfterSilence")
+            : true }
+        set { UserDefaults.standard.set(newValue, forKey: "\(Self.defaultsPrefix).autoStopAfterSilence") }
+    }
+
+    var autoStopSilenceSeconds: Double {
+        get { UserDefaults.standard.object(forKey: "\(Self.defaultsPrefix).autoStopSilenceSeconds") != nil
+            ? UserDefaults.standard.double(forKey: "\(Self.defaultsPrefix).autoStopSilenceSeconds")
+            : 2.0 }
+        set { UserDefaults.standard.set(newValue, forKey: "\(Self.defaultsPrefix).autoStopSilenceSeconds") }
+    }
+
+    var autoSendTranscription: Bool {
+        get { UserDefaults.standard.object(forKey: "\(Self.defaultsPrefix).autoSendTranscription") != nil
+            ? UserDefaults.standard.bool(forKey: "\(Self.defaultsPrefix).autoSendTranscription")
+            : true }
+        set { UserDefaults.standard.set(newValue, forKey: "\(Self.defaultsPrefix).autoSendTranscription") }
+    }
+
+    // MARK: - Push to talk
+
+    /// Virtual key code for the global push-to-talk hotkey (e.g. kVK_F13 = 105).
+    /// 0 means disabled.
+    var pushToTalkKeyCode: UInt16 {
+        get { UInt16(UserDefaults.standard.integer(forKey: "\(Self.defaultsPrefix).pushToTalkKeyCode")) }
+        set { UserDefaults.standard.set(Int(newValue), forKey: "\(Self.defaultsPrefix).pushToTalkKeyCode") }
     }
 
     var transcriptionsFolderName: String {
@@ -342,6 +377,12 @@ final class WhisperKitService: @unchecked Sendable {
                     guard let self else { return }
                     self.bufferEnergy = newState.bufferEnergy
 
+                    // Voice-activity tracking for auto-stop-on-silence.
+                    if self.isRecording, let lastEnergy = newState.bufferEnergy.last, lastEnergy >= self.silenceThreshold {
+                        self.voiceDetectedInRecording = true
+                        self.lastVoiceDate = Date()
+                    }
+
                     // Capture live text from progress (cleared after each window)
                     if !newState.currentText.isEmpty && newState.currentText != "Waiting for speech..." {
                         self.liveTranscription = newState.currentText
@@ -368,7 +409,10 @@ final class WhisperKitService: @unchecked Sendable {
             self.unconfirmedText = ""
             self.liveTranscription = ""
             self.recordingStartTime = Date()
+            self.lastVoiceDate = nil
+            self.voiceDetectedInRecording = false
             self.startRecordingWriter()
+            self.startSilenceMonitor()
 
             do {
                 try await streamer.startStreamTranscription()
@@ -381,6 +425,8 @@ final class WhisperKitService: @unchecked Sendable {
     }
 
     private func stopRecording() {
+        silenceMonitorTask?.cancel()
+        silenceMonitorTask = nil
         Task {
             await streamer?.stopStreamTranscription()
             self.isRecording = false
@@ -422,6 +468,31 @@ final class WhisperKitService: @unchecked Sendable {
             self.unconfirmedText = ""
             self.liveTranscription = ""
             self.streamer = nil
+        }
+    }
+
+    // MARK: - Silence monitor
+
+    private func startSilenceMonitor() {
+        guard autoStopAfterSilence, autoStopSilenceSeconds > 0 else { return }
+        silenceMonitorTask?.cancel()
+        silenceMonitorTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 100_000_000) // 100 ms
+                guard await MainActor.run(body: { self.isRecording }) else { return }
+
+                let shouldStop = await MainActor.run { () -> Bool in
+                    guard self.voiceDetectedInRecording else { return false }
+                    guard let lastVoice = self.lastVoiceDate else { return false }
+                    return Date().timeIntervalSince(lastVoice) >= self.autoStopSilenceSeconds
+                }
+
+                if shouldStop {
+                    await MainActor.run { self.stopRecording() }
+                    return
+                }
+            }
         }
     }
 

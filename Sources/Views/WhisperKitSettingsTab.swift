@@ -2,6 +2,7 @@ import SwiftUI
 import WhisperKit
 import CoreAudio
 import AppKit
+import Carbon
 
 struct WhisperKitSettingsTab: View {
     @Environment(WhisperKitService.self) private var whisper
@@ -64,6 +65,7 @@ struct WhisperKitSettingsTab: View {
             languageSection
             deviceSection
             audioSection
+            pushToTalkSection
             saveSection
             effectSection
             computeSection
@@ -189,6 +191,76 @@ struct WhisperKitSettingsTab: View {
                     in: 0.1...0.9,
                     step: 0.05
                 )
+            }
+
+            Toggle("Auto-stop when silent", isOn: Binding(
+                get: { whisper.autoStopAfterSilence },
+                set: { (newValue: Bool) in whisper.autoStopAfterSilence = newValue }
+            ))
+            .help("Stop recording automatically after a period of silence")
+
+            if whisper.autoStopAfterSilence {
+                VStack(alignment: .leading) {
+                    HStack {
+                        Text("Silence timeout")
+                        Spacer()
+                        Text(String(format: "%.1f s", whisper.autoStopSilenceSeconds))
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    Slider(
+                        value: Binding(
+                            get: { whisper.autoStopSilenceSeconds },
+                            set: { (newValue: Double) in whisper.autoStopSilenceSeconds = newValue }
+                        ),
+                        in: 0.5...5.0,
+                        step: 0.5
+                    )
+                }
+            }
+
+            Toggle("Auto-send transcription", isOn: Binding(
+                get: { whisper.autoSendTranscription },
+                set: { (newValue: Bool) in whisper.autoSendTranscription = newValue }
+            ))
+            .help("Send the transcribed message automatically after recording stops")
+        }
+    }
+
+    private var pushToTalkSection: some View {
+        Section("Push to Talk (Stream Deck)") {
+            Toggle("Enable global push-to-talk key", isOn: Binding(
+                get: { whisper.pushToTalkKeyCode != 0 },
+                set: { (newValue: Bool) in
+                    let code: UInt16 = newValue ? 105 /* F13 */ : 0
+                    whisper.pushToTalkKeyCode = code
+                    GlobalHotkeyManager.shared.register(keyCode: code, service: whisper)
+                }
+            ))
+            .help("Hold a global key to record and release to stop. Great for Stream Deck.")
+
+            if whisper.pushToTalkKeyCode != 0 {
+                HStack {
+                    Text("Key")
+                    Spacer()
+                    Text(GlobalHotkeyManager.keyName(for: whisper.pushToTalkKeyCode))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+
+                Menu("Choose key") {
+                    ForEach([kVK_F13, kVK_F14, kVK_F15, kVK_F16, kVK_F17, kVK_F18, kVK_F19, kVK_F20, kVK_F1, kVK_F2, kVK_F3, kVK_F4, kVK_F5, kVK_F6, kVK_F7, kVK_F8, kVK_F9, kVK_F10, kVK_F11, kVK_F12, kVK_Space], id: \.self) { code in
+                        Button(GlobalHotkeyManager.keyName(for: UInt16(code))) {
+                            whisper.pushToTalkKeyCode = UInt16(code)
+                            GlobalHotkeyManager.shared.register(keyCode: UInt16(code), service: whisper)
+                        }
+                    }
+                }
+                .controlSize(.small)
+
+                Text("Program your Stream Deck button to emit this key. Hold = record, release = stop + auto-send.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
     }

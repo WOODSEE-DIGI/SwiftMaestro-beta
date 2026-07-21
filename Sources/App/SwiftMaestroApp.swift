@@ -63,6 +63,14 @@ struct SwiftMaestroApp: App {
         let theme = ThemeStore()
         _theme = State(wrappedValue: theme)
         _skinStore = State(wrappedValue: SkinStore(theme: theme))
+
+        // Register the global push-to-talk hotkey if the user has configured one.
+        // Stream Deck can be programmed to send this key; holding it starts
+        // WhisperKit recording, releasing it stops and (with auto-send) submits.
+        GlobalHotkeyManager.shared.register(
+            keyCode: whisperService.pushToTalkKeyCode,
+            service: whisperService
+        )
     }
     @State private var visionProxyService = VisionProxyService()
     @State private var notesViewModel = NotesViewModel()

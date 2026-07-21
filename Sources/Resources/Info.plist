@@ -38,5 +38,7 @@
 	<string>SwiftMaestro reads and manages your contacts when you ask it to, so it can act as a local CRM and personal assistant.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>SwiftMaestro uses the microphone for speech-to-text transcription.</string>
+	<key>NSSiriUsageDescription</key>
+	<string>SwiftMaestro lets you ask the agent a question hands-free using Siri.</string>
 </dict>
 </plist>
