@@ -56,10 +56,20 @@ These models are available for exploration but are not part of the verified core
 | Model | Approx. size / RAM | Best for |
 | --- | --- | --- |
 | Qwen 3.6 35B-A3B | ~20 GB | Fast, general use |
+| Qwen 3.6 27B (dense) | ~15 GB | Balanced quality / speed on 24 GB Macs |
+| Qwen 3.6 35B-A3B (8-bit) | ~35 GB | Higher-quality MoE for 64 GB Macs |
+| Gemma 4 26B-A4B (mlx-community 4-bit) | ~16 GB | Vision + text, alternative quant |
+| Gemma 4 31B (QAT 4-bit) | ~17 GB | Vision + text on 24–32 GB Macs |
+| Gemma 4 E4B (QAT 4-bit) | ~4 GB | Small vision + text on 16 GB Macs |
 | DeepSeek R1 8B (Qwen3) | ~4 GB | Lightweight reasoning |
 | Hermes 4 70B | ~56 GB | General purpose |
 | Magistral Small | ~13 GB | Fast inference |
 | Nemotron Cascade 30B | ~1 GB | Ultra-low memory |
+| DeepSeek V4-Flash | ~151 GB | Long-context reasoning (128 GB+ Mac) |
+| GLM-5.1 | ~150 GB | Coding, MIT license (128 GB+ Mac) |
+| MiniMax M2.7 | ~128 GB | Agentic coding (128 GB+ Mac) |
+| Kimi K2.6 | ~186 GB | Agentic coding / swarms (512 GB Mac) |
+| Llama 4 Scout | ~60 GB | Long context (10M tokens), vision + text |
 | Hub models (Qwen 3 8B/4B, Llama 3.2 1B) | ~1–6 GB | Quick experiments |
 
 ### Per-agent model overrides

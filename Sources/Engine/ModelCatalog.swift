@@ -364,6 +364,32 @@ final class ModelCatalog {
             downloadURL: "https://huggingface.co/lmstudio-community/Qwen3.6-35B-A3B-MLX-4bit"
         ),
         MaestroModel(
+            id: "local-qwen3.6-27b",
+            displayName: "Qwen 3.6 27B (dense)",
+            huggingFaceID: "mlx-community/Qwen3.6-27B-4bit",
+            isVision: false,
+            localPath: localIfPresent("swiftmaestro-models/Qwen3.6-27B-4bit"),
+            estimatedMemoryGB: 15,
+            toolCallFormat: .xmlFunction,
+            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05,
+            recContextLength: 128_000,
+            activeParamsB: 27,
+            downloadURL: "https://huggingface.co/mlx-community/Qwen3.6-27B-4bit"
+        ),
+        MaestroModel(
+            id: "local-qwen3.6-35b-a3b-8bit",
+            displayName: "Qwen 3.6 35B-A3B (8-bit)",
+            huggingFaceID: "mlx-community/Qwen3.6-35B-A3B-8bit",
+            isVision: false,
+            localPath: localIfPresent("swiftmaestro-models/Qwen3.6-35B-A3B-8bit"),
+            estimatedMemoryGB: 35,
+            toolCallFormat: .xmlFunction,
+            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05,
+            recContextLength: 131_072,
+            activeParamsB: 3,
+            downloadURL: "https://huggingface.co/mlx-community/Qwen3.6-35B-A3B-8bit"
+        ),
+        MaestroModel(
             id: "local-gemma4-12b",
             displayName: "Gemma 4 12B (4-bit)",
             huggingFaceID: "lmstudio-community/gemma-4-12B-it-MLX-4bit",
@@ -421,6 +447,48 @@ final class ModelCatalog {
             recContextLength: 128_000,
             activeParamsB: 4,
             downloadURL: "https://huggingface.co/lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit"
+        ),
+        MaestroModel(
+            id: "local-gemma4-26b-a4b",
+            displayName: "Gemma 4 26B-A4B (Vision+Text, mlx-community 4-bit)",
+            huggingFaceID: "mlx-community/gemma-4-26b-a4b-it-4bit",
+            isVision: true,
+            localPath: localIfPresent("swiftmaestro-models/gemma-4-26b-a4b-it-4bit"),
+            estimatedMemoryGB: 16,
+            supportsTools: true,
+            toolCallFormat: .gemma4,
+            recTemperature: 0.7, recTopP: 0.9, recRepetitionPenalty: 1.1,
+            recContextLength: 128_000,
+            activeParamsB: 4,
+            downloadURL: "https://huggingface.co/mlx-community/gemma-4-26b-a4b-it-4bit"
+        ),
+        MaestroModel(
+            id: "local-gemma4-31b-it",
+            displayName: "Gemma 4 31B (Vision+Text, QAT 4-bit)",
+            huggingFaceID: "mlx-community/gemma-4-31b-it-qat-4bit",
+            isVision: true,
+            localPath: localIfPresent("swiftmaestro-models/gemma-4-31b-it-qat-4bit"),
+            estimatedMemoryGB: 17,
+            supportsTools: true,
+            toolCallFormat: .gemma4,
+            recTemperature: 0.7, recTopP: 0.9, recRepetitionPenalty: 1.1,
+            recContextLength: 128_000,
+            activeParamsB: 31,
+            downloadURL: "https://huggingface.co/mlx-community/gemma-4-31b-it-qat-4bit"
+        ),
+        MaestroModel(
+            id: "local-gemma4-e4b",
+            displayName: "Gemma 4 E4B (Vision+Text, small)",
+            huggingFaceID: "mlx-community/gemma-4-e4b-it-qat-4bit",
+            isVision: true,
+            localPath: localIfPresent("swiftmaestro-models/gemma-4-e4b-it-qat-4bit"),
+            estimatedMemoryGB: 4,
+            supportsTools: true,
+            toolCallFormat: .gemma4,
+            recTemperature: 0.7, recTopP: 0.9, recRepetitionPenalty: 1.1,
+            recContextLength: 128_000,
+            activeParamsB: 4,
+            downloadURL: "https://huggingface.co/mlx-community/gemma-4-e4b-it-qat-4bit"
         ),
         MaestroModel(
             id: "local-qwen3-coder-30b-a3b",
@@ -572,6 +640,54 @@ final class ModelCatalog {
             supportsTools: true,
             recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05,
             recContextLength: 128_000
+        ),
+
+        // === Experimental / ultra-tier models (download on first use, very high memory) ===
+        MaestroModel(
+            id: "hub-deepseek-v4-flash",
+            displayName: "DeepSeek V4-Flash (4-bit, 1M context)",
+            huggingFaceID: "mlx-community/DeepSeek-V4-Flash-4bit",
+            isVision: false,
+            localPath: nil,
+            estimatedMemoryGB: 151,
+            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05
+        ),
+        MaestroModel(
+            id: "hub-glm-5.1",
+            displayName: "GLM-5.1 (MIT, coding)",
+            huggingFaceID: "mlx-community/GLM-5.1",
+            isVision: false,
+            localPath: nil,
+            estimatedMemoryGB: 150,
+            toolCallFormat: .glm4,
+            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05
+        ),
+        MaestroModel(
+            id: "hub-minimax-m2.7",
+            displayName: "MiniMax M2.7 (4-bit, agentic)",
+            huggingFaceID: "mlx-community/MiniMax-M2.7-4bit",
+            isVision: false,
+            localPath: nil,
+            estimatedMemoryGB: 128,
+            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05
+        ),
+        MaestroModel(
+            id: "hub-kimi-k2.6",
+            displayName: "Kimi K2.6 (DQ3, 512 GB Mac)",
+            huggingFaceID: "mlx-community/Kimi-K2.6-mlx-DQ3_K_M-q8",
+            isVision: false,
+            localPath: nil,
+            estimatedMemoryGB: 186,
+            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05
+        ),
+        MaestroModel(
+            id: "hub-llama4-scout",
+            displayName: "Llama 4 Scout (4-bit, 10M context)",
+            huggingFaceID: "mlx-community/meta-llama-Llama-4-Scout-17B-16E-4bit",
+            isVision: true,
+            localPath: nil,
+            estimatedMemoryGB: 60,
+            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05
         ),
 
         // === Hub models (download on first use) ===
