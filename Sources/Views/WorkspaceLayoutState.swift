@@ -34,6 +34,8 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
     case terminal
     /// Live view of the internal agent bus: topics, messages, and subscribers.
     case busMonitor
+    /// Audio input/output control panel: device selection, mute, and level meter.
+    case audioControl
 
     var icon: String {
         switch self {
@@ -50,6 +52,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .plugin: return "puzzlepiece.extension"
         case .terminal: return "terminal"
         case .busMonitor: return "network"
+        case .audioControl: return "mic"
         }
     }
 
@@ -71,13 +74,15 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .numbers: return "numbers"
         case .whatsapp: return "whatsapp"
         case .plugin: return "plugin"
-        case .terminal: return "terminal"
+                case .terminal: return "terminal"
         case .busMonitor: return "busMonitor"
+        case .audioControl: return "audioControl"
         }
     }
 
     /// Static display name for non-agent panels. Agent chat panels resolve
     /// their name from `WorkspaceStore` at the view layer instead, since the
+
     /// name can change (rename) independently of this identity.
     var staticDisplayName: String? {
         switch self {
@@ -92,13 +97,15 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .numbers: return "Numbers"
         case .whatsapp: return "WhatsApp"
         case .plugin: return nil
-        case .terminal: return "Terminal"
+                case .terminal: return "Terminal"
         case .busMonitor: return "Bus Monitor"
+        case .audioControl: return "Audio Control"
         }
     }
 
     /// Minimum comfortable column width. Agent chat panels host their own
     /// nested Plans/Tasks/Terminal sub-panels (see `ChatView`'s own
+
     /// `ResizablePanelHost`), so squeezing one down to a generic panel's
     /// minimum would squish that inner layout unreadable — the exact bug this
     /// value exists to prevent. Simpler single-content panels can go narrower.
@@ -127,6 +134,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .plugin(let id): return "plugin:\(id)"
         case .terminal: return "terminal"
         case .busMonitor: return "busMonitor"
+        case .audioControl: return "audioControl"
         }
     }
 }

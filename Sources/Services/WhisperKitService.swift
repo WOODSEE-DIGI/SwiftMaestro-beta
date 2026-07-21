@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import CoreML
+import CoreAudio
 @preconcurrency import WhisperKit
 import ArgmaxCore
 
@@ -77,6 +78,94 @@ final class WhisperKitService: @unchecked Sendable {
         get { UserDefaults.standard.string(forKey: "\(Self.defaultsPrefix).encoderCompute") ?? "neuralEngine" }
         set { UserDefaults.standard.set(newValue, forKey: "\(Self.defaultsPrefix).encoderCompute") }
     }
+
+    // MARK: - Audio Device Settings
+
+    var selectedInputDeviceID: AudioDeviceID? {
+        get {
+            let value = UserDefaults.standard.integer(forKey: "\(Self.defaultsPrefix).inputDeviceID")
+            return value == 0 ? nil : AudioDeviceID(value)
+        }
+        set {
+            if let newValue {
+                UserDefaults.standard.set(Int(newValue), forKey: "\(Self.defaultsPrefix).inputDeviceID")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "\(Self.defaultsPrefix).inputDeviceID")
+            }
+        }
+    }
+
+    var selectedOutputDeviceID: AudioDeviceID? {
+        get {
+            let value = UserDefaults.standard.integer(forKey: "\(Self.defaultsPrefix).outputDeviceID")
+            return value == 0 ? nil : AudioDeviceID(value)
+        }
+        set {
+            if let newValue {
+                UserDefaults.standard.set(Int(newValue), forKey: "\(Self.defaultsPrefix).outputDeviceID")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "\(Self.defaultsPrefix).outputDeviceID")
+            }
+        }
+    }
+
+    // MARK: - Save Location Settings
+
+    var saveTranscriptionsToNotes: Bool {
+        get { UserDefaults.standard.object(forKey: "\(Self.defaultsPrefix).saveTranscriptionsToNotes") != nil
+            ? UserDefaults.standard.bool(forKey: "\(Self.defaultsPrefix).saveTranscriptionsToNotes")
+            : true }
+        set { UserDefaults.standard.set(newValue, forKey: "\(Self.defaultsPrefix).saveTranscriptionsToNotes") }
+    }
+
+    var saveAudioRecordings: Bool {
+        get { UserDefaults.standard.bool(forKey: "\(Self.defaultsPrefix).saveAudioRecordings") }
+        set { UserDefaults.standard.set(newValue, forKey: "\(Self.defaultsPrefix).saveAudioRecordings") }
+    }
+
+    var transcriptionsFolderName: String {
+        get { UserDefaults.standard.string(forKey: "\(Self.defaultsPrefix).transcriptionsFolderName") ?? "Transcriptions" }
+        set { UserDefaults.standard.set(newValue, forKey: "\(Self.defaultsPrefix).transcriptionsFolderName") }
+    }
+
+    var recordingsFolderName: String {
+        get { UserDefaults.standard.string(forKey: "\(Self.defaultsPrefix).recordingsFolderName") ?? "Recordings" }
+        set { UserDefaults.standard.set(newValue, forKey: "\(Self.defaultsPrefix).recordingsFolderName") }
+    }
+
+    var recordingsSaveURL: URL? {
+        get {
+            guard let path = UserDefaults.standard.string(forKey: "\(Self.defaultsPrefix).recordingsPath"), !path.isEmpty else { return nil }
+            return URL(fileURLWithPath: path)
+        }
+        set {
+            if let newValue {
+                UserDefaults.standard.set(newValue.path, forKey: "\(Self.defaultsPrefix).recordingsPath")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "\(Self.defaultsPrefix).recordingsPath")
+            }
+        }
+    }
+
+    /// Set by the host so transcribed notes can be saved to the SwiftMaestro internal Notes.md vault.
+    var notesVaultURL: URL?
+
+    /// Persistent AUv3 effect chain applied to saved recordings.
+    var effectChain: [AudioEffectUnit] {
+        get {
+            guard let data = UserDefaults.standard.data(forKey: "\(Self.defaultsPrefix).effectChain"),
+                  let units = try? JSONDecoder().decode([AudioEffectUnit].self, from: data)
+            else { return [] }
+            return units
+        }
+        set {
+            if let data = try? JSONEncoder().encode(newValue) {
+                UserDefaults.standard.set(data, forKey: "\(Self.defaultsPrefix).effectChain")
+            }
+        }
+    }
+
+    private var recordingWriter: AudioRecordingWriter?
 
     // MARK: - Model Loading
 
@@ -222,6 +311,14 @@ final class WhisperKitService: @unchecked Sendable {
                 chunkingStrategy: .vad
             )
 
+            // Device IDs can change across reboots or when hardware is unplugged.
+            // Passing an invalid ID to WhisperKit causes an AVAudioEngine crash
+            // inside installTap (IsFormatSampleRateAndChannelCountValid).
+            let validatedInputDeviceID = AudioDeviceManager.shared.validInputDeviceID(selectedInputDeviceID)
+            if selectedInputDeviceID != nil, validatedInputDeviceID == nil {
+                NSLog("[WhisperKit] Saved input device ID \(selectedInputDeviceID!) is no longer available; falling back to default input device.")
+            }
+
             let streamer = AudioStreamTranscriber(
                 audioEncoder: kit.audioEncoder,
                 featureExtractor: kit.featureExtractor,
@@ -232,7 +329,14 @@ final class WhisperKitService: @unchecked Sendable {
                 decodingOptions: decodingOptions,
                 requiredSegmentsForConfirmation: 2,
                 silenceThreshold: silenceThreshold,
-                useVAD: useVAD
+                useVAD: useVAD,
+                inputDeviceID: validatedInputDeviceID,
+                audioBufferHandler: { [weak self] samples in
+                    guard let self else { return }
+                    Task {
+                        try? await self.recordingWriter?.append(samples: samples)
+                    }
+                }
             ) { @Sendable [weak self] _, newState in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
@@ -264,6 +368,7 @@ final class WhisperKitService: @unchecked Sendable {
             self.unconfirmedText = ""
             self.liveTranscription = ""
             self.recordingStartTime = Date()
+            self.startRecordingWriter()
 
             do {
                 try await streamer.startStreamTranscription()
@@ -291,6 +396,25 @@ final class WhisperKitService: @unchecked Sendable {
 
             if !finalText.isEmpty {
                 self.pendingTranscription = finalText
+                if self.saveTranscriptionsToNotes {
+                    self.saveTranscriptionToNotes(finalText)
+                }
+            }
+
+            if let writer = self.recordingWriter {
+                let recordedURL = writer.fileURL
+                try? await writer.close()
+                self.recordingWriter = nil
+                if !self.effectChain.isEmpty {
+                    let processedURL = recordedURL.deletingPathExtension().appendingPathExtension("processed.wav")
+                    do {
+                        try await AudioEffectManager.process(inputURL: recordedURL, outputURL: processedURL, chain: self.effectChain)
+                        try? FileManager.default.removeItem(at: recordedURL)
+                        try? FileManager.default.moveItem(at: processedURL, to: recordedURL)
+                    } catch {
+                        self.errorMessage = "Audio effect processing failed: \(error.localizedDescription)"
+                    }
+                }
             }
 
             self.currentText = ""
@@ -299,6 +423,42 @@ final class WhisperKitService: @unchecked Sendable {
             self.liveTranscription = ""
             self.streamer = nil
         }
+    }
+
+    // MARK: - Saving
+
+    private var defaultRecordingsURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
+    }
+
+    private func startRecordingWriter() {
+        guard saveAudioRecordings else { return }
+        let baseURL = recordingsSaveURL ?? defaultRecordingsURL
+        let folder = baseURL.appendingPathComponent(recordingsFolderName, isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: nil)
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        let fileName = "Recording \(formatter.string(from: Date()))".replacingOccurrences(of: ":", with: "-") + ".wav"
+        let fileURL = folder.appendingPathComponent(fileName)
+
+        recordingWriter = AudioRecordingWriter(fileURL: fileURL, sampleRate: Double(WhisperKit.sampleRate))
+        Task { try? await recordingWriter?.open() }
+    }
+
+    private func saveTranscriptionToNotes(_ text: String) {
+        guard let vaultURL = notesVaultURL else { return }
+        let folder = vaultURL.appendingPathComponent(transcriptionsFolderName, isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: nil)
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        let title = "Transcription \(formatter.string(from: Date()))"
+        let fileName = title.replacingOccurrences(of: ":", with: "-") + ".md"
+        let fileURL = folder.appendingPathComponent(fileName)
+
+        let content = "# \(title)\n\n\(text)\n"
+        try? content.write(to: fileURL, atomically: true, encoding: .utf8)
     }
 
     /// Consume the pending transcription (clears it after reading).

@@ -226,7 +226,7 @@ struct ContentView: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(theme.sidebarText.opacity(0.7))
             }
-            ForEach(workspace.projects) { project in
+            ForEach(workspace.visibleProjects) { project in
                 Section {
                     ForEach(workspace.projectAgents(in: project.id)) { agent in
                         agentRow(title: agent.name, systemImage: nil, id: agent.id)
@@ -269,6 +269,7 @@ struct ContentView: View {
             Section {
                 sidebarRow("WhatsApp", kind: .whatsapp)
                 sidebarRow("Bus Monitor", kind: .busMonitor)
+                sidebarRow("Audio Control", kind: .audioControl)
                 sidebarRow("Notes.md", kind: .notesMD)
                 sidebarRow("Canvas", kind: .canvas)
                 sidebarRow("Kanban", kind: .kanban)

@@ -12,11 +12,9 @@ struct ChatView: View {
     @Environment(ThemeStore.self) private var theme
     @Environment(WhisperKitService.self) private var whisper
     @Environment(\.openWindow) private var openWindow
-    @ObservedObject var vm: ChatViewModel
+    @StateObject var vm: ChatViewModel
     @State private var layoutState = PanelLayoutState.shared
     @State private var showingPlans = false
-    @State private var showingMessages = false
-    @State private var showingClearChatConfirm = false
     // Markdown export driven from the Plans panel's context menu.
     @State private var exporting = false
     @State private var exportDocument: MarkdownDocument?
@@ -28,7 +26,7 @@ struct ChatView: View {
     let title: String?
 
     init(vm: ChatViewModel, title: String? = nil) {
-        _vm = ObservedObject(wrappedValue: vm)
+        _vm = StateObject(wrappedValue: vm)
         self.title = title
     }
 
@@ -99,49 +97,6 @@ struct ChatView: View {
                 vm.inputText = text
             }
         }
-        .toolbar {
-            ToolbarItem {
-                Button {
-                    openWindow(id: "agent-chat-window", value: AgentChatWindowID(agentID: vm.agent.id))
-                } label: {
-                    Label("Open in Window", systemImage: "macwindow.on.rectangle")
-                }
-                .help("Open this agent’s chat in a floating window")
-            }
-            ToolbarItem {
-                Button { showingMessages = true } label: {
-                    let unread = messageStore.unreadCount(for: vm.agent.id)
-                    Image(systemName: unread > 0 ? "tray.full.fill" : "tray")
-                        .overlay(alignment: .topTrailing) {
-                            if unread > 0 {
-                                Text("\(unread)")
-                                    .font(.system(size: 9, weight: .bold))
-                                    .foregroundStyle(.white)
-                                    .padding(.horizontal, 3).padding(.vertical, 1)
-                                    .background(Capsule().fill(.red))
-                                    .offset(x: 8, y: -7)
-                            }
-                        }
-                }
-                .help("Inbox")
-            }
-            ToolbarItem {
-                Button(role: .destructive) { showingClearChatConfirm = true } label: {
-                    Label("Clear Chat", systemImage: "trash")
-                }
-                .help("Clear this agent's conversation and start fresh")
-            }
-        }
-        .confirmationDialog(
-            "Clear this conversation?",
-            isPresented: $showingClearChatConfirm,
-            titleVisibility: .visible
-        ) {
-            Button("Clear Chat", role: .destructive) { vm.clearChat() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This removes \(vm.agent.name)'s chat history. Project memory, plans, and tasks are untouched.")
-        }
         .sheet(isPresented: $showingPlans) {
             PlansSheet(
                 agentId: vm.agent.id,
@@ -150,16 +105,12 @@ struct ChatView: View {
             )
             .environment(planStore)
         }
-        .sheet(isPresented: $showingMessages) {
-            MessagesSheet(agentId: vm.agent.id, agentName: vm.agent.name)
-                .environment(messageStore)
-        }
     }
 
     /// Project names selectable as plan scopes in the Plans sheet: the Navigator
     /// can browse every project's shared plans; a project agent sees its own.
     private var planScopeProjects: [String] {
-        if vm.agent.kind == .navigator { return workspace.projects.map(\.name) }
+        if vm.agent.kind == .navigator { return workspace.visibleProjects.map(\.name) }
         return vm.projectName.map { [$0] } ?? []
     }
 

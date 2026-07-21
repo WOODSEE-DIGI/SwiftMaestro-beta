@@ -867,8 +867,12 @@ final class AgentExecutor: Sendable {
         "create_plan", "edit_plan", "read_plans", "read_plan",
         // Messaging: agent_id identifies the sender / the inbox owner.
         "send_agent_message", "read_agent_messages",
-        // Bus: agent_id identifies the publisher/subscriber.
-        "bus_publish", "bus_subscribe", "bus_read", "bus_request", "bus_context_snapshot",
+        // Bus: agent_id identifies the publisher/subscriber/replier.
+        "bus_publish", "bus_subscribe", "bus_read", "bus_request", "bus_reply", "bus_context_snapshot",
+        // Context store: agent_id is the default scope.
+        "context_update", "context_read", "fact_remember",
+        // Bus worker tools are intentionally EXCLUDED from agent-scoped injection.
+        // The agent_id/name they refer to is the *worker* agent, not the caller.
     ]
 
     /// Always stamp `agent_id` onto live-todo tool calls.

@@ -957,9 +957,9 @@ class ChatViewModel: ObservableObject {
         if agent.kind == .navigator {
             // Inject live workspace state so the Navigator knows exact project/agent names.
             var workspaceList = "No projects or agents exist yet."
-            if let ws = MaestroTools.workspace, !ws.projects.isEmpty {
+            if let ws = MaestroTools.workspace, !ws.visibleProjects.isEmpty {
                 var lines: [String] = []
-                for proj in ws.projects {
+                for proj in ws.visibleProjects {
                     let agentNames = ws.agents
                         .filter { $0.kind == .project && $0.projectId == proj.id }
                         .map { $0.name }
@@ -1144,7 +1144,7 @@ class ChatViewModel: ObservableObject {
         // 3. For the Navigator, expose all project plans so delegation requests
         //    like "continue the Spotlight plan" can be routed with full context.
         if agent.kind == .navigator, let workspace = MaestroTools.workspace {
-            for project in workspace.projects {
+            for project in workspace.visibleProjects {
                 let projectScope = PlanScope.project(project.name)
                 for plan in planStore.plans(in: projectScope) {
                     guard !seenIDs.contains(plan.id) else { continue }

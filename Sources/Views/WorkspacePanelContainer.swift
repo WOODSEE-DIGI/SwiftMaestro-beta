@@ -19,6 +19,7 @@ struct WorkspacePanelContainer<Content: View>: View {
 
     @State private var layout = WorkspaceLayoutState.shared
     @Environment(ThemeStore.self) private var theme
+    @Environment(WorkspaceStore.self) private var workspace
 
     var body: some View {
         VStack(spacing: 0) {
@@ -41,6 +42,10 @@ struct WorkspacePanelContainer<Content: View>: View {
                 .lineLimit(1)
 
             Spacer()
+
+            if case .agentChat(let id) = kind {
+                ChatPanelHeaderToolbar(agentID: id)
+            }
 
             Menu {
                 contextMenuContent

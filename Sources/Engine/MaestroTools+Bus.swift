@@ -36,6 +36,14 @@ extension MaestroTools {
                 name: "bus_context_snapshot", spec: busToolSpecs[5],
                 category: ToolCategory.bus.rawValue,
                 handler: { call in await busContextSnapshot(call) }),
+            ToolDefinition(
+                name: "bus_worker_start", spec: busToolSpecs[6],
+                category: ToolCategory.bus.rawValue,
+                handler: { call in await busWorkerStart(call) }),
+            ToolDefinition(
+                name: "bus_worker_stop", spec: busToolSpecs[7],
+                category: ToolCategory.bus.rawValue,
+                handler: { call in await busWorkerStop(call) }),
         ])
     }
 
@@ -74,6 +82,17 @@ extension MaestroTools {
             "topic": ["type": "string", "description": "Bus topic the original request was sent to."] as [String: any Sendable],
             "payload": ["type": "string", "description": "Reply body."] as [String: any Sendable],
         ]
+        let workerStartProps: [String: any Sendable] = [
+            "agent_name": ["type": "string", "description": "Display name of the agent that will act as the worker, e.g. 'bus-worker-qwen3-coder'."] as [String: any Sendable],
+            "agent_id": ["type": "string", "description": "Agent ID that will act as the worker. Use only if you know the UUID."] as [String: any Sendable],
+            "topic": ["type": "string", "description": "Bus topic the worker should listen on."] as [String: any Sendable],
+            "task_prompt": ["type": "string", "description": "System instructions for the worker."] as [String: any Sendable],
+        ]
+        let workerStopProps: [String: any Sendable] = [
+            "agent_name": ["type": "string", "description": "Display name of the worker agent."] as [String: any Sendable],
+            "agent_id": ["type": "string", "description": "Optional agent ID."] as [String: any Sendable],
+            "topic": ["type": "string", "description": "Optional topic: stop the worker listening on this topic."] as [String: any Sendable],
+        ]
         return [
             rawSpec("bus_publish",
                 "Publish a message to an internal agent bus topic. Fast, typed, fire-and-forget. "
@@ -99,6 +118,16 @@ extension MaestroTools {
                 + "applicable rules, and recent bus messages. Use to bring a new agent or a sub-agent "
                 + "up to speed without re-reading the same files and plans independently.",
                 properties: snapshotProps, required: []),
+            rawSpec("bus_worker_start",
+                "Start a persistent background worker that listens on a bus topic and replies to requests. "
+                + "The worker runs on the Swift side, so it can wait for requests that arrive after it starts. "
+                + "Provide either agent_name (preferred — the display name of the worker agent, e.g. 'bus-worker-qwen3-coder') "
+                + "or agent_id. Use this when you want one agent to field synchronous bus_request calls from another agent.",
+                properties: workerStartProps, required: ["topic"]),
+            rawSpec("bus_worker_stop",
+                "Stop a persistent background bus worker. Provide agent_name or agent_id to stop all workers for that agent, "
+                + "topic to stop the worker on that topic, or both.",
+                properties: workerStopProps, required: []),
         ]
     }
 
@@ -319,7 +348,80 @@ extension MaestroTools {
         ])
     }
 
+    private static func busWorkerStart(_ call: ToolCall) async -> String {
+        struct Args: Decodable {
+            let agent_id: String?
+            let agent_name: String?
+            let topic: String
+            let task_prompt: String?
+        }
+        guard let args = decodeArgs(call, as: Args.self),
+              !args.topic.isEmpty,
+              let agentID = await resolveWorkerAgentID(agentID: args.agent_id, agentName: args.agent_name)
+        else {
+            return errorJSON("bus_worker_start requires 'topic' and either 'agent_name' or 'agent_id' of the worker agent")
+        }
+        let worker = await MainActor.run { MaestroTools.busWorker }
+        guard let worker else {
+            return errorJSON("Bus worker service is not available")
+        }
+        let prompt = args.task_prompt ?? "Respond to the request accurately and concisely."
+        let taskPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let handle = await worker.start(agentID: agentID, topic: args.topic, taskPrompt: taskPrompt)
+        else {
+            return errorJSON("Failed to start worker (unknown agent or no model)")
+        }
+        return jsonString([
+            "started": true,
+            "worker_id": handle.id.uuidString,
+            "agent_id": handle.agentID.uuidString,
+            "agent_name": await MainActor.run {
+                MaestroTools.workspace?.agent(id: handle.agentID)?.name ?? handle.agentID.uuidString
+            },
+            "topic": handle.topic,
+        ])
+    }
+
+    private static func busWorkerStop(_ call: ToolCall) async -> String {
+        struct Args: Decodable {
+            let agent_id: String?
+            let agent_name: String?
+            let topic: String?
+        }
+        guard let args = decodeArgs(call, as: Args.self)
+        else { return errorJSON("bus_worker_stop: invalid arguments") }
+        let worker = await MainActor.run { MaestroTools.busWorker }
+        guard let worker else { return errorJSON("Bus worker service is not available") }
+        let agentID = await resolveWorkerAgentID(agentID: args.agent_id, agentName: args.agent_name)
+        if let topic = args.topic, !topic.isEmpty {
+            let handles = await worker.activeHandles
+            if let match = handles.first(where: { $0.topic == topic && (agentID == nil || $0.agentID == agentID) }) {
+                await worker.stop(id: match.id)
+            } else {
+                return errorJSON("No active worker matches topic '\(topic)'")
+            }
+        } else if let agentID {
+            await worker.stopAll(agentID: agentID)
+        } else {
+            return errorJSON("bus_worker_stop requires 'agent_name', 'agent_id', or 'topic'")
+        }
+        return jsonString(["stopped": true])
+    }
+
     // MARK: - Helpers
+
+    /// Resolve the worker agent from either an explicit UUID or a display name.
+    /// Name matching is case-insensitive so the model can use the sidebar label.
+    private static func resolveWorkerAgentID(agentID: String?, agentName: String?) async -> UUID? {
+        if let raw = agentID?.trimmingCharacters(in: .whitespaces), !raw.isEmpty,
+           let id = UUID(uuidString: raw) {
+            return id
+        }
+        guard let name = agentName?.trimmingCharacters(in: .whitespaces), !name.isEmpty else { return nil }
+        return await MainActor.run {
+            workspace?.agents.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }?.id
+        }
+    }
 
     private static func busSenderName(for agentID: UUID?) async -> String {
         guard let agentID = agentID else { return "Unknown" }

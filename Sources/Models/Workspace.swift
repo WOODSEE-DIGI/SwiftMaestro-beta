@@ -16,7 +16,16 @@ enum AgentKind: String, Codable, Hashable {
 struct Project: Identifiable, Codable, Hashable {
     var id: UUID
     var name: String
-    init(id: UUID = UUID(), name: String) { self.id = id; self.name = name }
+    /// Hidden projects are not shown in the main sidebar or in Navigator workspace lists,
+    /// but they are still persisted and can be used by infrastructure such as bus workers.
+    var hidden: Bool? = nil
+    init(id: UUID = UUID(), name: String, hidden: Bool? = nil) {
+        self.id = id
+        self.name = name
+        self.hidden = hidden
+    }
+
+    var isHidden: Bool { hidden ?? false }
 }
 
 struct AgentRecord: Identifiable, Codable, Hashable {
@@ -86,6 +95,9 @@ final class WorkspaceStore {
         return nav
     }
 
+    /// Projects that should appear in the main sidebar and in Navigator-facing lists.
+    var visibleProjects: [Project] { projects.filter { !$0.isHidden } }
+
     func projectAgents(in projectId: UUID) -> [AgentRecord] {
         agents.filter { $0.kind == .project && $0.projectId == projectId }
     }
@@ -154,6 +166,25 @@ final class WorkspaceStore {
         if let pid = a.projectId, projectAgents(in: pid).isEmpty {
             projects.removeAll { $0.id == pid }
         }
+        save()
+    }
+
+    /// Hide a project from the main sidebar and Navigator-facing lists.
+    /// Hidden projects remain persisted and their agents keep working.
+    func hideProject(id: UUID) {
+        guard let i = projects.firstIndex(where: { $0.id == id }) else { return }
+        projects[i].hidden = true
+        save()
+    }
+
+    /// Remove all agents in a project (and their chat history), then remove the project.
+    func archiveProject(id: UUID) {
+        let agentsInProject = projectAgents(in: id)
+        for a in agentsInProject {
+            ChatHistoryStore.clear(agentId: a.id)
+        }
+        agents.removeAll { $0.projectId == id }
+        projects.removeAll { $0.id == id }
         save()
     }
 
@@ -272,6 +303,26 @@ final class WorkspaceStore {
         if !agents.contains(where: { $0.kind == .navigator }) {
             agents.insert(AgentRecord(name: "Navigator", kind: .navigator), at: 0)
             save()
+        }
+
+        // One-time cleanup: hide the infrastructure BusWorkers project and remove
+        // leftover test projects that were created during early development.
+        let cleanupKey = "com.woodseedigi.swiftmaestro.workspaceSidebarCleanupDone"
+        if !UserDefaults.standard.bool(forKey: cleanupKey) {
+            let testProjectNames = Set(["testlab", "existing", "newname"])
+            var didChange = false
+            for project in projects {
+                if project.name.caseInsensitiveCompare("BusWorkers") == .orderedSame {
+                    hideProject(id: project.id)
+                    didChange = true
+                } else if testProjectNames.contains(project.name.lowercased()) {
+                    archiveProject(id: project.id)
+                    didChange = true
+                }
+            }
+            if didChange {
+                UserDefaults.standard.set(true, forKey: cleanupKey)
+            }
         }
     }
 

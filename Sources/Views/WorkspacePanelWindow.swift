@@ -84,6 +84,10 @@ struct WorkspacePanelWindowView: View {
 
             Spacer()
 
+            if case .agentChat(let id) = target.kind {
+                ChatPanelHeaderToolbar(agentID: id)
+            }
+
             Button {
                 isPinnedToFront.toggle()
             } label: {

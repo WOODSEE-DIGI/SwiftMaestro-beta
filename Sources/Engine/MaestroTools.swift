@@ -95,6 +95,12 @@ enum MaestroTools {
     /// Shared workspace layout state (panel grid). Set at app launch.
     @MainActor static weak var workspaceLayout: WorkspaceLayoutState?
 
+    /// Shared model catalog. Set at app launch.
+    @MainActor static weak var catalog: ModelCatalog?
+
+    /// Shared bus worker service. Set at app launch.
+    @MainActor static weak var busWorker: BusWorker?
+
     /// Returns the real local date/time. Unambiguously verifiable: the model
     /// cannot know the true current time without calling this, so a correct
     /// answer proves the tool round-trip actually fired.
@@ -718,7 +724,7 @@ enum MaestroTools {
         }
     }
 
-    private static func agentUUID(_ raw: String?) -> UUID? { raw.flatMap { UUID(uuidString: $0) } }
+    static func agentUUID(_ raw: String?) -> UUID? { raw.flatMap { UUID(uuidString: $0) } }
 
     private static func todoCreate(_ call: ToolCall, replace: Bool) async -> String {
         guard let args = decodeArgs(call, as: TodoCreateArgs.self) else {
@@ -1199,7 +1205,7 @@ enum MaestroTools {
         // deadlocking when the agentic loop's background task holds a reference.
         let snapshot: (navigator: String, projects: [(name: String, agents: [String])])? = await MainActor.run {
             guard let ws = workspace else { return nil }
-            let projects = ws.projects.map { project in
+            let projects = ws.visibleProjects.map { project in
                 (name: project.name, agents: ws.projectAgents(in: project.id).map { $0.name })
             }
             return (ws.navigator.name, projects)

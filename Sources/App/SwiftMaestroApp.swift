@@ -74,7 +74,9 @@ struct SwiftMaestroApp: App {
     @State private var numbersService = NumbersService()
     @State private var whatsAppService = WhatsAppService()
     @State private var pluginService = PluginService()
+    @State private var busWorker: BusWorker? = nil
     private let mcpService = MCPClientService()
+
 
     var body: some Scene {
         WindowGroup {
@@ -147,6 +149,13 @@ struct SwiftMaestroApp: App {
                     // spawn the user-enabled servers (permissioned by MCP flags).
                     engine.mcpService = mcpService
                     await mcpService.startEnabledServers()
+                    // Expose the model catalog so tools (bus worker, etc.) can resolve
+                    // an agent's effective model without coupling to the UI.
+                    MaestroTools.catalog = catalog
+                    // Create the persistent bus worker service and keep it alive.
+                    let worker = BusWorker(engine: engine, mcpService: mcpService)
+                    busWorker = worker
+                    MaestroTools.busWorker = worker
                     // Validate capabilities for every locally-present model so
                     // tool-call format / thinking support are known before any
                     // generation runs. This is fast (JSON reads only).
@@ -166,6 +175,7 @@ struct SwiftMaestroApp: App {
                         }
                     }
                     // Eagerly load WhisperKit so the mic button is ready.
+                    whisperService.notesVaultURL = notesViewModel.vaultURL
                     whisperService.ensureModelLoaded()
                     // Snapshot all user settings to ~/.config/SwiftMaestro/ so they
                     // survive plist deletion and can be synced via Chezmoi.

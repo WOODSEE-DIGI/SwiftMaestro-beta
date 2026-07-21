@@ -49,6 +49,8 @@ struct WorkspacePanelContentView: View {
             TerminalView()
         case .busMonitor:
             BusMonitorView()
+        case .audioControl:
+            AudioControlView()
         case .agentChat(let id):
             if let agent = workspace.agent(id: id), let cache = ChatViewModelCache.shared {
                 ChatView(vm: cache.viewModel(

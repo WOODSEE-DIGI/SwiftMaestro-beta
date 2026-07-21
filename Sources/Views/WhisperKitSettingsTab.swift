@@ -1,10 +1,15 @@
 import SwiftUI
 import WhisperKit
+import CoreAudio
+import AppKit
 
 struct WhisperKitSettingsTab: View {
     @Environment(WhisperKitService.self) private var whisper
     @State private var showReloadAlert = false
     @State private var pendingModel = ""
+    @State private var inputDevices: [AudioDevice] = []
+    @State private var outputDevices: [AudioDevice] = []
+    @State private var effectManager = AudioEffectManager()
 
     private let modelOptions = [
         "openai_whisper-tiny",
@@ -57,7 +62,10 @@ struct WhisperKitSettingsTab: View {
         Form {
             modelSection
             languageSection
+            deviceSection
             audioSection
+            saveSection
+            effectSection
             computeSection
             statusSection
         }
@@ -70,6 +78,22 @@ struct WhisperKitSettingsTab: View {
             }
         } message: {
             Text("Changing the model requires downloading and loading the new weights. This may take a moment.")
+        }
+        .task {
+            inputDevices = AudioDeviceManager.shared.inputDevices
+            outputDevices = AudioDeviceManager.shared.outputDevices
+            // Device IDs can become invalid when hardware is unplugged or the system
+            // reboots. Normalize any stale persisted selection to a currently valid device.
+            if let valid = AudioDeviceManager.shared.validInputDeviceID(whisper.selectedInputDeviceID) {
+                whisper.selectedInputDeviceID = valid
+            } else {
+                whisper.selectedInputDeviceID = nil
+            }
+            if let valid = AudioDeviceManager.shared.validOutputDeviceID(whisper.selectedOutputDeviceID) {
+                whisper.selectedOutputDeviceID = valid
+            } else {
+                whisper.selectedOutputDeviceID = nil
+            }
         }
     }
 
@@ -169,6 +193,131 @@ struct WhisperKitSettingsTab: View {
         }
     }
 
+    private var deviceSection: some View {
+        Section("Audio Devices") {
+            Picker("Input Device", selection: Binding(
+                get: { whisper.selectedInputDeviceID },
+                set: { (newValue: AudioDeviceID?) in whisper.selectedInputDeviceID = newValue }
+            )) {
+                Text("System Default").tag(AudioDeviceID?.none)
+                ForEach(inputDevices) { device in
+                    Text(device.name).tag(Optional(device.id))
+                }
+            }
+            .pickerStyle(.menu)
+            .help("Microphone used for Whisper transcription")
+
+            Picker("Output Device", selection: Binding(
+                get: { whisper.selectedOutputDeviceID },
+                set: { (newValue: AudioDeviceID?) in whisper.selectedOutputDeviceID = newValue }
+            )) {
+                Text("System Default").tag(AudioDeviceID?.none)
+                ForEach(outputDevices) { device in
+                    Text(device.name).tag(Optional(device.id))
+                }
+            }
+            .pickerStyle(.menu)
+            .help("Playback device used for audio output")
+
+            Button("Refresh Devices") {
+                inputDevices = AudioDeviceManager.shared.inputDevices
+                outputDevices = AudioDeviceManager.shared.outputDevices
+            }
+            .controlSize(.small)
+        }
+    }
+
+    private var saveSection: some View {
+        Section("Save Locations") {
+            Toggle("Save transcriptions to Notes.md", isOn: Binding(
+                get: { whisper.saveTranscriptionsToNotes },
+                set: { (newValue: Bool) in whisper.saveTranscriptionsToNotes = newValue }
+            ))
+
+            if whisper.saveTranscriptionsToNotes {
+                TextField("Transcriptions folder", text: Binding(
+                    get: { whisper.transcriptionsFolderName },
+                    set: { (newValue: String) in whisper.transcriptionsFolderName = newValue }
+                ))
+            }
+
+            Toggle("Save audio recordings", isOn: Binding(
+                get: { whisper.saveAudioRecordings },
+                set: { (newValue: Bool) in whisper.saveAudioRecordings = newValue }
+            ))
+
+            if whisper.saveAudioRecordings {
+                TextField("Recordings folder", text: Binding(
+                    get: { whisper.recordingsFolderName },
+                    set: { (newValue: String) in whisper.recordingsFolderName = newValue }
+                ))
+
+                HStack {
+                    Text("Location")
+                    Spacer()
+                    Text(pathPreview)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                Button("Choose recordings folder…") {
+                    chooseRecordingsFolder()
+                }
+                .controlSize(.small)
+            }
+        }
+    }
+
+    private var effectSection: some View {
+        Section("Audio Effect Chain (AUv3)") {
+            if effectManager.availableEffects.isEmpty {
+                HStack {
+                    Text("No AUv3 effects discovered yet.")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Scan") {
+                        effectManager.loadEffects()
+                    }
+                    .controlSize(.small)
+                }
+            } else {
+                if whisper.effectChain.isEmpty {
+                    Text("No effects in chain. The original recording is saved.")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                } else {
+                    ForEach(whisper.effectChain) { unit in
+                        HStack {
+                            Text(unit.name)
+                            Spacer()
+                            Button("Remove", systemImage: "minus.circle") {
+                                whisper.effectChain.removeAll { $0.id == unit.id }
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.red)
+                        }
+                    }
+                }
+
+                Menu("Add Effect…") {
+                    ForEach(effectManager.availableEffects) { effect in
+                        Button(effect.name) {
+                            var unit = effect
+                            unit.id = UUID()
+                            whisper.effectChain.append(unit)
+                        }
+                    }
+                }
+                .controlSize(.small)
+                .disabled(effectManager.availableEffects.isEmpty)
+            }
+        }
+        .task {
+            effectManager.loadEffects()
+        }
+    }
+
     private var computeSection: some View {
         Section("Compute") {
             Picker("Encoder Acceleration", selection: Binding(
@@ -196,6 +345,22 @@ struct WhisperKitSettingsTab: View {
     }
 
     // MARK: - Helpers
+
+    private var pathPreview: String {
+        let base = whisper.recordingsSaveURL ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
+        return base.appendingPathComponent(whisper.recordingsFolderName).path
+    }
+
+    private func chooseRecordingsFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose where to save audio recordings"
+        if panel.runModal() == .OK, let url = panel.url {
+            whisper.recordingsSaveURL = url
+        }
+    }
 
     private var stateIcon: String {
         switch whisper.modelState {
