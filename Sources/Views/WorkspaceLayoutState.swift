@@ -18,6 +18,8 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
     case canvas
     case kanban
     case numbers
+    case maps
+    case photos
     case whatsapp
     /// A WKWebView UI plugin, identified by its manifest id (see
     /// `PluginManifest`/`PluginService`). Unlike the other cases, this one is
@@ -48,6 +50,8 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .canvas: return "rectangle.3.group"
         case .kanban: return "rectangle.split.3x1"
         case .numbers: return "tablecells"
+        case .maps: return "map"
+        case .photos: return "photo.stack"
         case .whatsapp: return "message"
         case .plugin: return "puzzlepiece.extension"
         case .terminal: return "terminal"
@@ -72,6 +76,8 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .canvas: return "canvas"
         case .kanban: return "kanban"
         case .numbers: return "numbers"
+        case .maps: return "maps"
+        case .photos: return "photos"
         case .whatsapp: return "whatsapp"
         case .plugin: return "plugin"
                 case .terminal: return "terminal"
@@ -95,6 +101,8 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .canvas: return "Canvas"
         case .kanban: return "Kanban"
         case .numbers: return "Numbers"
+        case .maps: return "Maps"
+        case .photos: return "Photos"
         case .whatsapp: return "WhatsApp"
         case .plugin: return nil
                 case .terminal: return "Terminal"
@@ -130,6 +138,8 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .canvas: return "canvas"
         case .kanban: return "kanban"
         case .numbers: return "numbers"
+        case .maps: return "maps"
+        case .photos: return "photos"
         case .whatsapp: return "whatsapp"
         case .plugin(let id): return "plugin:\(id)"
         case .terminal: return "terminal"
@@ -452,4 +462,13 @@ final class WorkspaceLayoutState {
             floatingPanels = Set(decoded)
         }
     }
+}
+
+// MARK: - Notifications
+
+extension Notification.Name {
+    /// Posted by tools/agents to request that the main UI open or focus a
+    /// top-level workspace panel. The notification's `object` should be the
+    /// `WorkspacePanelKind` to open.
+    static let openWorkspacePanel = Notification.Name("com.woodseedigi.swiftmaestro.openWorkspacePanel")
 }

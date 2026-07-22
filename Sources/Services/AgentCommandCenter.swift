@@ -11,8 +11,8 @@ final class AgentCommandCenter {
     /// The closure receives the plain-text question and should send it.
     var askAgentHandler: ((String) -> Void)?
 
-    /// Whether the currently visible chat is the Navigator agent.
-    /// Used to restrict audio input (mic, push-to-talk) to Navigator.
+    /// Whether the currently visible chat is the Maestro agent.
+    /// Used to restrict audio input (mic, push-to-talk) to Maestro.
     var isNavigatorActive: Bool = false
 
     /// Dispatch a question to the active agent. If no handler is registered

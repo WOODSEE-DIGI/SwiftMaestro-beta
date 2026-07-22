@@ -25,6 +25,7 @@ extension MaestroTools {
         await registerSystemTools()
         await registerWhatsAppTools()
         await registerAppsTools()
+        await registerAppleAppsTools()
         await registerMessagingTools()
         await registerBusTools()
         await registerTodoTools()

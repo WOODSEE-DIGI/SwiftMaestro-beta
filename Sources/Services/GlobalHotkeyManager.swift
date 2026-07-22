@@ -58,7 +58,7 @@ final class GlobalHotkeyManager: @unchecked Sendable {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.wasRecordingWhenKeyPressed = service.isRecording
-                // Audio input is restricted to the Navigator agent.
+                // Audio input is restricted to the Maestro agent.
                 guard AgentCommandCenter.shared.isNavigatorActive else { return }
                 service.toggleRecording()
             }

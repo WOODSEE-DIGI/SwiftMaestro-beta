@@ -63,7 +63,7 @@ actor MCPClientService {
         started = true
 
         let entries = await MainActor.run { SwiftMaestroSettingsStore.loadMCPServers() }
-        for entry in entries where entry.enabled && !entry.scriptPath.isEmpty {
+        for entry in entries where entry.enabled && (!entry.command.isEmpty || !entry.scriptPath.isEmpty || !(entry.args ?? []).isEmpty) {
             do {
                 try await connect(to: entry)
             } catch {
@@ -117,7 +117,10 @@ actor MCPClientService {
         if let logDir {
             try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
             let logPath = logDir.appendingPathComponent("\(entry.name).stderr.log").path
-            if FileManager.default.fileExists(atPath: logPath) {
+            if !FileManager.default.fileExists(atPath: logPath) {
+                // FileHandle(forWritingAtPath:) requires an existing file.
+                try? "".write(toFile: logPath, atomically: true, encoding: .utf8)
+            } else {
                 // Truncate the previous log on each launch.
                 try? "".write(toFile: logPath, atomically: true, encoding: .utf8)
             }
@@ -263,7 +266,7 @@ actor MCPClientService {
     /// Which agent surface is asking for MCP tools. Exposure is configured
     /// per server in MCP settings (`advertise` / `advertiseToSubAgents`).
     enum ToolAudience: Sendable {
-        case interactive   // Navigator + project-agent chats
+        case interactive   // Maestro + project-agent chats
         case delegate      // delegated sub-agent runs (ask_project_agent/s)
     }
 

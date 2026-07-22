@@ -21,6 +21,9 @@
 	<!-- Contacts access for the built-in CRM-style contact manager. -->
 	<key>com.apple.security.personal-information.addressbook</key>
 	<true/>
+	<!-- Photos library access for listing albums and assets. -->
+	<key>com.apple.security.personal-information.photos-library</key>
+	<true/>
 	<!-- Apple Events automation (e.g. Notes) for the native macOS integration. -->
 	<key>com.apple.security.automation.apple-events</key>
 	<true/>

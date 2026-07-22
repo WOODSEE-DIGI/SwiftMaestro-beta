@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Workspace model
 //
-// Hierarchy: a persistent Navigator/Conductor agent (top level, no project) plus
+// Hierarchy: a persistent Maestro/Conductor agent (top level, no project) plus
 // Projects, each owning one or more long-lived project agents. Project memory
 // lives in the shared ai-context store keyed by project name; an agent's chat
 // history is stored separately (see ChatHistoryStore) so it can be cleared
@@ -16,7 +16,7 @@ enum AgentKind: String, Codable, Hashable {
 struct Project: Identifiable, Codable, Hashable {
     var id: UUID
     var name: String
-    /// Hidden projects are not shown in the main sidebar or in Navigator workspace lists,
+    /// Hidden projects are not shown in the main sidebar or in Maestro workspace lists,
     /// but they are still persisted and can be used by infrastructure such as bus workers.
     var hidden: Bool? = nil
     init(id: UUID = UUID(), name: String, hidden: Bool? = nil) {
@@ -70,7 +70,7 @@ private struct WorkspaceData: Codable {
 }
 
 /// Source of truth for projects + agents, persisted to Application Support.
-/// Start-clean: on first run only the Navigator exists (no preset projects).
+/// Start-clean: on first run only Maestro exists (no preset projects).
 @Observable
 @MainActor
 final class WorkspaceStore {
@@ -89,13 +89,13 @@ final class WorkspaceStore {
     /// The always-present conductor agent (created if somehow missing).
     var navigator: AgentRecord {
         if let nav = agents.first(where: { $0.kind == .navigator }) { return nav }
-        let nav = AgentRecord(name: "Navigator", kind: .navigator)
+        let nav = AgentRecord(name: "Maestro", kind: .navigator)
         agents.insert(nav, at: 0)
         save()
         return nav
     }
 
-    /// Projects that should appear in the main sidebar and in Navigator-facing lists.
+    /// Projects that should appear in the main sidebar and in Maestro-facing lists.
     var visibleProjects: [Project] { projects.filter { !$0.isHidden } }
 
     func projectAgents(in projectId: UUID) -> [AgentRecord] {
@@ -169,7 +169,7 @@ final class WorkspaceStore {
         save()
     }
 
-    /// Hide a project from the main sidebar and Navigator-facing lists.
+    /// Hide a project from the main sidebar and Maestro-facing lists.
     /// Hidden projects remain persisted and their agents keep working.
     func hideProject(id: UUID) {
         guard let i = projects.firstIndex(where: { $0.id == id }) else { return }
@@ -299,10 +299,17 @@ final class WorkspaceStore {
             }
             if uniqueProjects.count != ws.projects.count { save() }
         }
-        // Start clean: guarantee exactly one Navigator, no preset projects/agents.
+        // Start clean: guarantee exactly one Maestro, no preset projects/agents.
         if !agents.contains(where: { $0.kind == .navigator }) {
-            agents.insert(AgentRecord(name: "Navigator", kind: .navigator), at: 0)
+            agents.insert(AgentRecord(name: "Maestro", kind: .navigator), at: 0)
+        }
+
+        // One-time rename: if the conductor still has the old default name "Navigator",
+        // update it to "Maestro". Custom names are left untouched.
+        if let i = agents.firstIndex(where: { $0.kind == .navigator && $0.name == "Navigator" }) {
+            agents[i].name = "Maestro"
             save()
+            NSLog("[WORKSPACE] renamed conductor agent from Navigator to Maestro")
         }
 
         // One-time cleanup: hide the infrastructure BusWorkers project and remove

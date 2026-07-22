@@ -23,6 +23,9 @@ packages:
   SwiftTerm:
     url: https://github.com/migueldeicaza/SwiftTerm
     majorVersion: 1.14.0
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    majorVersion: 2.0
 
 groups:
   - Sources
@@ -85,6 +88,24 @@ targets:
           # notarization rejects any executable that requests it.
           CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
           OTHER_CODE_SIGN_FLAGS: "--timestamp --options runtime"
+    postBuildScripts:
+      - name: Bundle MCP Servers
+        script: |
+          # Copy bundled MCP servers into the app bundle's Resources directory.
+          # They live outside Sources/ to avoid xcodegen/Xcode scanning the large
+          # node_modules directories as source files.
+          SRC="${SRCROOT}/BundledMCP/mcp-servers"
+          DST="${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Resources/mcp-servers"
+          if [ -d "$SRC" ]; then
+            rm -rf "$DST"
+            mkdir -p "$(dirname "$DST")"
+            cp -R "$SRC" "$DST"
+            echo "Bundled MCP servers: $SRC -> $DST"
+          else
+            echo "No bundled MCP servers at $SRC (skipping)"
+          fi
+        shell: /bin/bash
+        alwaysOutOfDate: true
     dependencies:
       - package: SwiftMaestroKit
         product: SwiftMaestroKit
@@ -106,9 +127,13 @@ targets:
         product: GRDB
       - package: SwiftTerm
         product: SwiftTerm
+      - package: Sparkle
+        product: Sparkle
       - sdk: PDFKit.framework
       - sdk: EventKit.framework
       - sdk: Contacts.framework
+      - sdk: MapKit.framework
+      - sdk: Photos.framework
       - sdk: PaperKit.framework
       - sdk: PencilKit.framework
       - sdk: AppIntents.framework

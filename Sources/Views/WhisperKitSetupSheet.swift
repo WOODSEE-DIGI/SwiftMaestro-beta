@@ -65,7 +65,7 @@ struct WhisperKitSetupSheet: View {
                             Text("Preparing download…")
                         }
                     }
-                    Text("Stored in ~/Documents/huggingface/models/ — you can change the model in Settings → Whisper.")
+                    Text("Stored in ~/Library/Application Support/SwiftMaestro/WhisperKit/models/argmaxinc/whisperkit-coreml/ — you can change the model in Settings → Whisper.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 .padding(6)

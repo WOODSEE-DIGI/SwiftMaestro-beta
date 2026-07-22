@@ -32,6 +32,15 @@ enum SwiftMaestroPaths {
         return dir
     }
 
+    /// `~/Library/Application Support/SwiftMaestro/WhisperKit/` — local WhisperKit model
+    /// cache. Kept under Application Support instead of ~/Documents to avoid macOS TCC
+    /// directory-access prompts at launch.
+    static var whisperKitDir: URL {
+        let dir = appSupportDir.appendingPathComponent("WhisperKit", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
     /// `~/Library/Application Support/SwiftMaestro/logs/` — background process output, downloads.
     static var logsDir: URL {
         let dir = appSupportDir.appendingPathComponent("logs", isDirectory: true)

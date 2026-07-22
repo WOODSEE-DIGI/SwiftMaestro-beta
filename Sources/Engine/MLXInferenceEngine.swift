@@ -1037,7 +1037,7 @@ final class MLXInferenceEngine {
             pc.reset()
             NSLog("[ENGINE] model switch \(last) -> \(model.id): reset prompt cache (fresh prefill)")
             // Keep previous models resident; loadModel will evict only if memory
-            // budget requires. This lets Navigator (Qwen) and Scribe (Gemma)
+            // budget requires. This lets Maestro (Qwen) and Scribe (Gemma)
             // stay loaded simultaneously instead of thrashing on every switch.
         }
         lastGenerationModelID = model.id

@@ -8,7 +8,7 @@ struct AgentChatWindowID: Hashable, Codable {
 }
 
 /// A floating, resizable chat window for a single agent. Opened manually from
-/// the main chat toolbar, or automatically when Navigator delegates to a
+/// the main chat toolbar, or automatically when Maestro delegates to a
 /// sub-agent so the user can watch both agents at once.
 struct AgentChatWindowView: View {
     @Environment(MLXInferenceEngine.self) private var engine

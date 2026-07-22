@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Browse the plans visible to an agent. Personal plans belong to this agent;
-/// project scopes show plans shared across a project (the Navigator can browse
+/// project scopes show plans shared across a project (Maestro can browse
 /// any project's). Read-only viewer with delete; editing is done by the agent.
 struct PlansSheet: View {
     @Environment(PlanStore.self) private var planStore

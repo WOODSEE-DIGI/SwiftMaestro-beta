@@ -9,7 +9,7 @@ import SwiftMaestroKit
 // MCP-sourced tools join the *same* agentic loop in MLXInferenceEngine /
 // AgentExecutor.
 //
-// The Navigator (conductor) additionally gets workspace + delegation tools so it
+// Maestro (conductor) additionally gets workspace + delegation tools so it
 // can spin up long-lived project agents and hand work to them. `ask_project_agent`
 // is advertised here but executed by AgentExecutor (it needs the live
 // endpoint/model/MCP to run the target agent's loop).
@@ -49,10 +49,10 @@ enum MaestroTools {
     nonisolated(unsafe) static var currentEnabledCategories: Set<ToolCategory>?
 
     /// Companion to `currentEnabledCategories`: whether the run currently
-    /// being dispatched belongs to the Navigator (vs. a project agent).
+    /// being dispatched belongs to Maestro (vs. a project agent).
     /// `search_tools` needs this to reconstruct the same candidate tool list
     /// `schemas(navigator:)` would have built for this specific agent kind
-    /// (navigator and project agents get slightly different tool sets even
+    /// (Maestro and project agents get slightly different tool sets even
     /// within the same deferrable categories, e.g. OCR vs. SQLite).
     nonisolated(unsafe) static var currentIsNavigator: Bool = false
 
@@ -189,7 +189,7 @@ enum MaestroTools {
     /// this is just a category-scoped read of that registry).
     ///
     /// - Parameters:
-    ///   - navigator: `true` for the Navigator agent. Only used to pick the
+    ///   - navigator: `true` for the Maestro agent. Only used to pick the
     ///     default category scope when `enabledCategories` is nil - real
     ///     call sites always pass a concrete `enabledCategories` (from
     ///     `WorkspaceStore.enabledToolCategories`, itself defaulting to
@@ -284,9 +284,9 @@ enum MaestroTools {
         [
             rawSpec("send_agent_message",
                 "Leave a message in another agent's inbox (durable across runs). Use to "
-                + "hand off context or coordinate. Address the Navigator as agent \"Navigator\".",
+                + "hand off context or coordinate. Address the conductor as agent \"Maestro\".",
                 properties: [
-                    "to_agent": ["type": "string", "description": "Recipient agent name (or 'Navigator')."],
+                    "to_agent": ["type": "string", "description": "Recipient agent name (or 'Maestro')."],
                     "to_project": ["type": "string", "description": "Optional project to disambiguate the recipient."],
                     "subject": ["type": "string", "description": "Short subject line."],
                     "message": ["type": "string", "description": "The message body."],
@@ -301,7 +301,7 @@ enum MaestroTools {
 
     /// Categorized as `.memory` (matches ToolCategory's existing list exactly
     /// - todo/plan fall under the same "memory" toggle as memory_write/etc.;
-    /// messaging has its own `.messaging` category since navigator needs to
+    /// messaging has its own `.messaging` category since Maestro needs to
     /// get memory tools but NOT messaging - a distinction plain category
     /// membership can't express if they shared one category).
     static func registerTodoTools() async {
@@ -447,9 +447,9 @@ enum MaestroTools {
         ]
     }
 
-    // MARK: - Navigator (workspace + delegation) tools
+    // MARK: - Maestro (workspace + delegation) tools
 
-    /// Names of the Navigator-only workspace tools executed natively here.
+    /// Names of the Maestro-only workspace tools executed natively here.
     /// `ask_project_agent`/`ask_project_agents` are intentionally excluded -
     /// AgentExecutor's own delegation interceptor runs those directly and
     /// never reaches MaestroTools.execute() for them at all, so they're not
@@ -1032,7 +1032,7 @@ enum MaestroTools {
         }
         let toName = (args.to_agent ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !toName.isEmpty else {
-            return errorJSON("'to_agent' (recipient name, or 'Navigator') is required")
+            return errorJSON("'to_agent' (recipient name, or 'Maestro') is required")
         }
         let body = (args.message ?? "")
         guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -1071,13 +1071,16 @@ enum MaestroTools {
         }
     }
 
-    /// Resolve a recipient agent by name (+ optional project). "Navigator" maps to
+    /// Resolve a recipient agent by name (+ optional project). "Maestro" maps to
     /// the conductor; otherwise prefer a project match, else any agent by name.
     @MainActor
     private static func resolveRecipient(
         _ ws: WorkspaceStore, name: String, project: String?
     ) -> AgentRecord? {
-        if name.caseInsensitiveCompare("navigator") == .orderedSame { return ws.navigator }
+        if name.caseInsensitiveCompare("navigator") == .orderedSame
+            || name.caseInsensitiveCompare("maestro") == .orderedSame {
+            return ws.navigator
+        }
         if let project, !project.trimmingCharacters(in: .whitespaces).isEmpty {
             return ws.findAgent(projectName: project, agentName: name)
         }

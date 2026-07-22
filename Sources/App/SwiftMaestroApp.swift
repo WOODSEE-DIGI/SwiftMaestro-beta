@@ -80,9 +80,12 @@ struct SwiftMaestroApp: App {
     @State private var canvasStore = CanvasStore()
     @State private var kanbanStore = KanbanStore()
     @State private var numbersService = NumbersService()
+    @State private var mapsService = AppleMapsService.shared
+    @State private var photosService = ApplePhotosService()
     @State private var whatsAppService = WhatsAppService()
     @State private var pluginService = PluginService()
     @State private var busWorker: BusWorker? = nil
+    @State private var sparkleUpdater = SparkleUpdaterService.shared
     private let mcpService = MCPClientService()
 
 
@@ -106,8 +109,11 @@ struct SwiftMaestroApp: App {
                 .environment(canvasStore)
                 .environment(kanbanStore)
                 .environment(numbersService)
+                .environment(mapsService)
+                .environment(photosService)
                 .environment(whatsAppService)
                 .environment(pluginService)
+                .environment(sparkleUpdater)
                 .task {
                     appDelegate.mcpService = mcpService
                     appDelegate.whatsAppService = whatsAppService
@@ -131,6 +137,23 @@ struct SwiftMaestroApp: App {
                     // Create the shared ~/.ai-context scaffold up front so a fresh,
                     // self-contained install has its data directory before first use.
                     SimpleMemoryStore.ensureScaffold()
+                    // Extract and install any MCP servers bundled inside the app bundle
+                    // into ~/Library/Application Support/SwiftMaestro/mcp-servers/. This is
+                    // the foundation for a one-click install .dmg with no external deps.
+                    do {
+                        _ = try await MCPServerBundleService.shared.installIfNeeded()
+                    } catch {
+                        NSLog("[SwiftMaestroApp] MCP server bundle installation failed: %@", error.localizedDescription)
+                    }
+                    // If bundled servers were installed, update the saved MCP server list
+                    // so their resolved paths are used instead of the hardcoded defaults.
+                    await MCPServerBundleService.shared.applyBundledServersIfNeeded()
+                    // Install the default bundled model from the app bundle into the
+                    // canonical ~/Ai-models/models/ root. Hardlinks are used when the app
+                    // bundle and model root share a filesystem; otherwise a background
+                    // copy runs. This makes the "full" .dmg work immediately after the
+                    // user drags the app to /Applications.
+                    _ = await BundledModelService.shared.installIfNeeded()
                     // Auto-configure web MCP servers (webclaw, firecrawl, read-website-fast)
                     // on first launch so agents can search the web immediately.
                     await WebSetupService.configureIfNeeded()
@@ -204,7 +227,7 @@ struct SwiftMaestroApp: App {
         .windowResizability(.contentSize)
 
         // Floating chat window for any agent. Opens manually from the chat
-        // toolbar or automatically when Navigator delegates to a sub-agent.
+        // toolbar or automatically when Maestro delegates to a sub-agent.
         WindowGroup("Agent Chat", id: "agent-chat-window", for: AgentChatWindowID.self) { $target in
             AgentChatWindowView(target: target)
                 .environment(engine)
@@ -258,6 +281,8 @@ struct SwiftMaestroApp: App {
                     .environment(canvasStore)
                     .environment(kanbanStore)
                     .environment(numbersService)
+                    .environment(mapsService)
+                    .environment(photosService)
                     .environment(whatsAppService)
                     .environment(pluginService)
             }
@@ -279,6 +304,7 @@ struct SwiftMaestroApp: App {
                 .environment(skinStore)
                 .environment(whisperService)
                 .environment(\.mcpClientService, mcpService)
+                .environment(sparkleUpdater)
         }
         .defaultSize(width: 900, height: 960)
         // Settings scenes default to `.contentSize`, which pins the window to the

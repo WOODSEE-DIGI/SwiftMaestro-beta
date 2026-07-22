@@ -731,11 +731,11 @@ final class AgentExecutor: Sendable {
         "add_decision", "add_todo", "report_error", "update_session",
         "list_active_contexts",
         // Plan tools: a project agent's plans default to its project (shared);
-        // the Navigator (no project) keeps personal plans unless it passes one.
+        // Maestro (no project) keeps personal plans unless it passes one.
         "create_plan", "edit_plan", "read_plans", "read_plan",
     ]
 
-    /// Tools the Navigator is blocked from using (executor-level guard).
+    /// Tools Maestro is blocked from using (executor-level guard).
     /// The model sometimes ignores the tool spec and calls these anyway.
     /// Memory tools are ALLOWED (for coordination context); file/system/MCP tools are blocked.
     private static let navigatorBlockedTools: Set<String> = [
@@ -756,10 +756,10 @@ final class AgentExecutor: Sendable {
             return await delegateMany(argumentsJSON: tc.arguments, mcp: mcp, workingDirectory: workingDirectory)
         }
 
-        // Navigator guard: if project is nil (Navigator), block work tools.
+        // Maestro guard: if project is nil (Maestro), block work tools.
         // The model sometimes ignores the tool spec and calls tools it shouldn't have.
         if project == nil && Self.navigatorBlockedTools.contains(tc.name) {
-            return "{\"error\":\"\(tc.name) is not available to the Navigator. "
+            return "{\"error\":\"\(tc.name) is not available to Maestro. "
                 + "You MUST delegate this task to a project agent using ask_project_agent.\"}"
         }
 
@@ -997,7 +997,7 @@ final class AgentExecutor: Sendable {
             catalog?.model(forID: subModelID)?.displayName ?? subModelID
         }
 
-        // Delegate tool surface: project tools only (no Navigator tools), plus
+        // Delegate tool surface: project tools only (no Maestro tools), plus
         // MCP servers the user exposes to delegated sub-agents. Per-agent enabled
         // categories override the old automatic lite-mode reduction.
         let enabledCategories = await MainActor.run {

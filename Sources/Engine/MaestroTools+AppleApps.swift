@@ -1,0 +1,354 @@
+import Foundation
+import MLXLMCommon
+import SwiftMaestroKit
+
+// MARK: - Native Apple app tools: Maps, Photos, Stocks, News
+//
+// Exposes the additional native Apple apps the user asked for. Each service
+// follows the same pattern as AppleNotesService / NumbersService: a
+// `@MainActor` observable wrapper around the native framework or URL launcher.
+//
+// Capabilities:
+//   - Maps: full MapKit geocoding, reverse-geocoding, POI search, open in Maps.
+//   - Photos: PhotoKit album and asset metadata listing.
+//   - Stocks: app launcher (no public API).
+//   - News: app/URL launcher (no public API).
+extension MaestroTools {
+
+    /// Each of these tools belongs to its own category so users can enable
+    /// them individually per agent.
+    static func registerAppleAppsTools() async {
+        await ToolRegistry.shared.register([
+            // MARK: Maps
+            ToolDefinition(name: "geocode_address", spec: appleAppsToolSpecs[0], category: ToolCategory.maps.rawValue,
+                handler: { call in await geocodeAddressTool(call) }),
+            ToolDefinition(name: "reverse_geocode", spec: appleAppsToolSpecs[1], category: ToolCategory.maps.rawValue,
+                handler: { call in await reverseGeocodeTool(call) }),
+            ToolDefinition(name: "search_poi", spec: appleAppsToolSpecs[2], category: ToolCategory.maps.rawValue,
+                handler: { call in await searchPOITool(call) }),
+            ToolDefinition(name: "open_apple_maps", spec: appleAppsToolSpecs[3], category: ToolCategory.maps.rawValue,
+                handler: { call in await openAppleMapsTool(call) }),
+            ToolDefinition(name: "open_maps_panel", spec: appleAppsToolSpecs[9], category: ToolCategory.maps.rawValue,
+                handler: { _ in await openMapsPanelTool() }),
+            ToolDefinition(name: "search_maps_panel", spec: appleAppsToolSpecs[10], category: ToolCategory.maps.rawValue,
+                handler: { call in await searchMapsPanelTool(call) }),
+
+            // MARK: Photos
+            ToolDefinition(name: "list_photos_albums", spec: appleAppsToolSpecs[4], category: ToolCategory.photos.rawValue,
+                handler: { _ in await listPhotosAlbumsTool() }),
+            ToolDefinition(name: "list_photos_assets", spec: appleAppsToolSpecs[5], category: ToolCategory.photos.rawValue,
+                handler: { call in await listPhotosAssetsTool(call) }),
+            ToolDefinition(name: "open_photos_app", spec: appleAppsToolSpecs[6], category: ToolCategory.photos.rawValue,
+                handler: { _ in await openPhotosAppTool() }),
+
+            // MARK: Stocks
+            ToolDefinition(name: "open_stocks", spec: appleAppsToolSpecs[7], category: ToolCategory.stocks.rawValue,
+                handler: { call in await openStocksTool(call) }),
+
+            // MARK: News
+            ToolDefinition(name: "open_apple_news", spec: appleAppsToolSpecs[8], category: ToolCategory.news.rawValue,
+                handler: { call in await openAppleNewsTool(call) }),
+        ])
+    }
+
+    static var appleAppsToolSpecs: [ToolSpec] {
+        [
+            // MARK: Maps
+            rawSpec("geocode_address",
+                "Geocode a free-form address or place name using Apple MapKit. Returns coordinates and formatted address.",
+                properties: [
+                    "address": ["type": "string", "description": "Address or place name, e.g. '1 Apple Park Way, Cupertino'."],
+                ], required: ["address"]),
+            rawSpec("reverse_geocode",
+                "Convert latitude/longitude into a human-readable address using Apple MapKit.",
+                properties: [
+                    "latitude": ["type": "number", "description": "Latitude."],
+                    "longitude": ["type": "number", "description": "Longitude."],
+                ], required: ["latitude", "longitude"]),
+            rawSpec("search_poi",
+                "Search for points of interest near a location using Apple MapKit. Omit coordinates to search globally.",
+                properties: [
+                    "query": ["type": "string", "description": "Natural language query, e.g. 'coffee shop'."],
+                    "near_latitude": ["type": "number", "description": "Optional latitude to bias search."],
+                    "near_longitude": ["type": "number", "description": "Optional longitude to bias search."],
+                    "radius": ["type": "number", "description": "Search radius in meters (default 10000)."],
+                ], required: ["query"]),
+            rawSpec("open_apple_maps",
+                "Open Apple Maps to a query, address, or coordinate.",
+                properties: [
+                    "query": ["type": "string", "description": "Place name or search query."],
+                    "address": ["type": "string", "description": "Full address."],
+                    "latitude": ["type": "number", "description": "Latitude."],
+                    "longitude": ["type": "number", "description": "Longitude."],
+                ], required: []),
+            rawSpec("open_maps_panel",
+                "Open the SwiftMaestro in-app Maps panel. This is the embedded Maps panel, not the standalone Apple Maps app.",
+                properties: [:], required: []),
+            rawSpec("search_maps_panel",
+                "Open the SwiftMaestro in-app Maps panel and search for a place or address inside it.",
+                properties: [
+                    "query": ["type": "string", "description": "Place name or address to search for."],
+                    "mode": ["type": "string", "description": "Search mode: 'Places' for POI search, 'Address' for address geocoding."],
+                ], required: ["query"]),
+
+            // MARK: Photos
+            rawSpec("list_photos_albums",
+                "List albums and smart albums in the macOS Photos library. Prompts for Photos access on first use.",
+                properties: [:], required: []),
+            rawSpec("list_photos_assets",
+                "List recent photos/videos in the Photos library or a specific album.",
+                properties: [
+                    "album_id": ["type": "string", "description": "Album local identifier (from list_photos_albums). Omit for all photos."],
+                    "limit": ["type": "integer", "description": "Max assets to return (default 25)."],
+                ], required: []),
+            rawSpec("open_photos_app",
+                "Open the macOS Photos app.",
+                properties: [:], required: []),
+
+            // MARK: Stocks
+            rawSpec("open_stocks",
+                "Open the macOS Stocks app. Optionally tries to open a specific stock symbol.",
+                properties: [
+                    "symbol": ["type": "string", "description": "Optional stock symbol, e.g. 'AAPL'."],
+                ], required: []),
+
+            // MARK: News
+            rawSpec("open_apple_news",
+                "Open the Apple News app. Optionally open a specific Apple News URL or search term.",
+                properties: [
+                    "url": ["type": "string", "description": "Apple News URL (https://apple.news/...) or applenews:// URL."],
+                    "search": ["type": "string", "description": "Search term to open in News."],
+                ], required: []),
+        ]
+    }
+
+    // MARK: - Shared service instances
+
+    @MainActor
+    private static let sharedMapsService = AppleMapsService.shared
+
+    @MainActor
+    private static let sharedPhotosService = ApplePhotosService()
+
+    @MainActor
+    private static let sharedStocksService = AppleStocksService()
+
+    @MainActor
+    private static let sharedNewsService = AppleNewsService()
+
+    // MARK: - Maps argument types
+
+    private struct GeocodeArgs: Codable { let address: String? }
+    private struct ReverseGeocodeArgs: Codable { let latitude: Double?; let longitude: Double? }
+    private struct SearchPOIArgs: Codable {
+        let query: String?
+        let near_latitude: Double?
+        let near_longitude: Double?
+        let radius: Double?
+    }
+    private struct OpenMapsArgs: Codable {
+        let query: String?
+        let address: String?
+        let latitude: Double?
+        let longitude: Double?
+    }
+
+    // MARK: - Maps implementations
+
+    static func geocodeAddressTool(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: GeocodeArgs.self),
+              let address = args.address?.trimmingCharacters(in: .whitespaces), !address.isEmpty else {
+            return errorJSON("geocode_address requires 'address'")
+        }
+        await sharedMapsService.requestAuthorization()
+        do {
+            let results = try await sharedMapsService.geocodeAddress(address)
+            guard !results.isEmpty else { return "No results found for '\(address)'." }
+            return jsonString(["results": results.map(renderLocation)])
+        } catch {
+            return errorJSON(error.localizedDescription)
+        }
+    }
+
+    static func reverseGeocodeTool(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: ReverseGeocodeArgs.self),
+              let lat = args.latitude, let lon = args.longitude else {
+            return errorJSON("reverse_geocode requires 'latitude' and 'longitude'")
+        }
+        await sharedMapsService.requestAuthorization()
+        do {
+            let results = try await sharedMapsService.reverseGeocode(latitude: lat, longitude: lon)
+            guard !results.isEmpty else { return "No address found for those coordinates." }
+            return jsonString(["results": results.map(renderLocation)])
+        } catch {
+            return errorJSON(error.localizedDescription)
+        }
+    }
+
+    static func searchPOITool(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: SearchPOIArgs.self),
+              let query = args.query?.trimmingCharacters(in: .whitespaces), !query.isEmpty else {
+            return errorJSON("search_poi requires 'query'")
+        }
+        await sharedMapsService.requestAuthorization()
+        do {
+            let results = try await sharedMapsService.searchNearby(
+                query: query,
+                nearLatitude: args.near_latitude,
+                nearLongitude: args.near_longitude,
+                radius: args.radius ?? 10_000
+            )
+            guard !results.isEmpty else { return "No points of interest found for '\(query)'." }
+            return jsonString(["results": results.map(renderPOI)])
+        } catch {
+            return errorJSON(error.localizedDescription)
+        }
+    }
+
+    static func openAppleMapsTool(_ call: ToolCall) async -> String {
+        let args = decodeArgs(call, as: OpenMapsArgs.self)
+        let ok = await sharedMapsService.openInMaps(
+            query: args?.query,
+            address: args?.address,
+            latitude: args?.latitude,
+            longitude: args?.longitude
+        )
+        return ok
+            ? jsonString(["status": "opened", "destination": args?.query ?? args?.address ?? "current location"])
+            : errorJSON("could not open Apple Maps")
+    }
+
+    private struct SearchMapsPanelArgs: Codable {
+        let query: String?
+        let mode: String?
+    }
+
+    /// Open the SwiftMaestro in-app Maps panel by updating the workspace layout
+    /// and posting a notification so the main UI presents it.
+    static func openMapsPanelTool() async -> String {
+        return await MainActor.run(resultType: String.self) {
+            let result = WorkspaceLayoutState.shared.open(.maps)
+            NotificationCenter.default.post(name: .openWorkspacePanel, object: WorkspacePanelKind.maps)
+            return jsonString(["status": "opened", "panel": "maps", "placement": String(describing: result)])
+        }
+    }
+
+    /// Open the SwiftMaestro in-app Maps panel and drive its search field.
+    static func searchMapsPanelTool(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: SearchMapsPanelArgs.self),
+              let query = args.query?.trimmingCharacters(in: .whitespaces), !query.isEmpty else {
+            return errorJSON("search_maps_panel requires 'query'")
+        }
+        return await MainActor.run(resultType: String.self) {
+            let mode = args.mode?.trimmingCharacters(in: .whitespaces)
+            sharedMapsService.panelSearchQuery = query
+            sharedMapsService.panelSearchMode = (mode?.isEmpty == false ? mode : "Places")
+            sharedMapsService.panelSearchTrigger = UUID()
+            let result = WorkspaceLayoutState.shared.open(.maps)
+            NotificationCenter.default.post(name: .openWorkspacePanel, object: WorkspacePanelKind.maps)
+            return jsonString(["status": "searching", "panel": "maps", "query": query, "placement": String(describing: result)])
+        }
+    }
+
+    private static func renderLocation(_ location: AppleMapsLocation) -> [String: Any] {
+        [
+            "name": location.name,
+            "latitude": location.latitude,
+            "longitude": location.longitude,
+            "address": location.formattedAddress,
+            "city": location.city,
+            "state": location.state,
+            "country": location.country,
+        ]
+    }
+
+    private static func renderPOI(_ poi: AppleMapsPOI) -> [String: Any] {
+        [
+            "name": poi.name,
+            "latitude": poi.latitude,
+            "longitude": poi.longitude,
+            "address": poi.address,
+            "phone": poi.phone,
+            "url": poi.url,
+        ]
+    }
+
+    // MARK: - Photos argument types
+
+    private struct ListPhotosAssetsArgs: Codable { let album_id: String?; let limit: Int? }
+
+    // MARK: - Photos implementations
+
+    static func listPhotosAlbumsTool() async -> String {
+        await sharedPhotosService.requestAuthorization()
+        await sharedPhotosService.refreshStatus()
+        let albums = await sharedPhotosService.fetchAlbums()
+        guard !albums.isEmpty else { return "No albums found (or access not yet granted)." }
+        return jsonString(["albums": albums.map { album -> [String: Any] in
+            [
+                "id": album.id,
+                "title": album.title,
+                "type": album.type,
+                "assetCount": album.assetCount,
+            ]
+        }])
+    }
+
+    static func listPhotosAssetsTool(_ call: ToolCall) async -> String {
+        let args = decodeArgs(call, as: ListPhotosAssetsArgs.self)
+        await sharedPhotosService.requestAuthorization()
+        await sharedPhotosService.refreshStatus()
+        let assets = await sharedPhotosService.fetchAssets(
+            inAlbumLocalIdentifier: args?.album_id,
+            limit: args?.limit ?? 25
+        )
+        guard !assets.isEmpty else { return "No photos found." }
+        return jsonString(["assets": assets.map { asset -> [String: Any] in
+            var dict: [String: Any] = [
+                "id": asset.id,
+                "mediaType": asset.mediaType,
+                "width": asset.pixelWidth,
+                "height": asset.pixelHeight,
+            ]
+            if let creationDate = asset.creationDate { dict["creationDate"] = creationDate }
+            if let modificationDate = asset.modificationDate { dict["modificationDate"] = modificationDate }
+            if let latitude = asset.latitude { dict["latitude"] = latitude }
+            if let longitude = asset.longitude { dict["longitude"] = longitude }
+            if let filename = asset.filename { dict["filename"] = filename }
+            return dict
+        }])
+    }
+
+    static func openPhotosAppTool() async -> String {
+        let ok = await sharedPhotosService.openPhotos()
+        return ok ? jsonString(["status": "opened"]) : errorJSON("could not open Photos")
+    }
+
+    // MARK: - Stocks argument types
+
+    private struct OpenStocksArgs: Codable { let symbol: String? }
+
+    // MARK: - Stocks implementations
+
+    static func openStocksTool(_ call: ToolCall) async -> String {
+        let args = decodeArgs(call, as: OpenStocksArgs.self)
+        let ok = await sharedStocksService.openStocks(symbol: args?.symbol)
+        return ok
+            ? jsonString(["status": "opened", "symbol": args?.symbol ?? "none"])
+            : errorJSON("could not open Stocks")
+    }
+
+    // MARK: - News argument types
+
+    private struct OpenNewsArgs: Codable { let url: String?; let search: String? }
+
+    // MARK: - News implementations
+
+    static func openAppleNewsTool(_ call: ToolCall) async -> String {
+        let args = decodeArgs(call, as: OpenNewsArgs.self)
+        let ok = await sharedNewsService.openNews(url: args?.url, search: args?.search)
+        return ok
+            ? jsonString(["status": "opened", "url": args?.url, "search": args?.search])
+            : errorJSON("could not open Apple News")
+    }
+}

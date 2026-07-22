@@ -33,6 +33,10 @@ struct WorkspacePanelContentView: View {
             KanbanView()
         case .numbers:
             NumbersView()
+        case .maps:
+            MapsView()
+        case .photos:
+            PhotosView()
         case .whatsapp:
             WhatsAppView()
         case .plugin(let id):

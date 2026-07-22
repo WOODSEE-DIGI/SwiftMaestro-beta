@@ -22,6 +22,10 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     case kanban
     case canvas
     case numbers
+    case maps
+    case photos
+    case stocks
+    case news
     case whatsapp
     case web
     case vault
@@ -48,7 +52,8 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .workspace, .memory, .messaging, .bus, .rules, .time, .mcp:
             return false
         case .file, .shell, .server, .index, .system, .sqlite,
-             .notes, .kanban, .canvas, .numbers, .whatsapp, .web, .vault:
+             .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news,
+             .whatsapp, .web, .vault:
             return true
         }
     }
@@ -72,6 +77,10 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .kanban: return "Kanban"
         case .canvas: return "Canvas"
         case .numbers: return "Numbers"
+        case .maps: return "Maps"
+        case .photos: return "Photos"
+        case .stocks: return "Stocks"
+        case .news: return "News"
         case .whatsapp: return "WhatsApp"
         case .web: return "Web"
         case .vault: return "Vault"
@@ -97,6 +106,10 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .kanban: return "rectangle.split.3x1"
         case .canvas: return "rectangle.3.group"
         case .numbers: return "tablecells"
+        case .maps: return "map"
+        case .photos: return "photo.stack"
+        case .stocks: return "chart.line.uptrend.xyaxis"
+        case .news: return "newspaper"
         case .whatsapp: return "message"
         case .web: return "globe"
         case .vault: return "lock.square"
@@ -168,6 +181,22 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
                 "list_numbers_sheets", "list_numbers_tables", "read_numbers_table",
                 "write_numbers_cell", "export_numbers_document",
             ]
+        case .maps:
+            return [
+                "geocode_address", "reverse_geocode", "search_poi", "open_apple_maps",
+            ]
+        case .photos:
+            return [
+                "list_photos_albums", "list_photos_assets", "open_photos_app",
+            ]
+        case .stocks:
+            return [
+                "open_stocks",
+            ]
+        case .news:
+            return [
+                "open_apple_news",
+            ]
         case .whatsapp:
             return [
                 "whatsapp_status", "start_whatsapp_bridge", "stop_whatsapp_bridge",
@@ -188,12 +217,12 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .navigator:
             return [
                 .workspace, .memory, .bus, .system, .rules, .time, .web, .vault,
-                .notes, .kanban, .canvas, .numbers, .whatsapp,
+                .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .whatsapp,
             ]
         case .project:
             return [
                 .file, .shell, .server, .index, .memory, .messaging, .bus, .system, .mcp, .sqlite, .web, .vault,
-                .notes, .kanban, .canvas, .numbers, .whatsapp,
+                .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .whatsapp,
             ]
         }
     }

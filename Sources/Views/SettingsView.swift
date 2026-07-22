@@ -8,6 +8,8 @@ enum SwiftMaestroSettingsStore {
     static let filesInMemoryKey = "settings.context.filesInMemory"
     static let lastImportDateKey = "settings.context.lastImportDate"
     static let mcpServersKey = "settings.mcp.servers"
+    static let mcpCustomPresetKey = "settings.mcp.preset.custom"
+    static let mcpBundledPresetVersionKey = "settings.mcp.preset.bundledVersion"
     static let agentRulesKey = "settings.rules.agentRules"
     static let collapseCompactionSummariesKey = "settings.compaction.collapseSummariesByDefault"
 
@@ -86,6 +88,24 @@ enum SwiftMaestroSettingsStore {
         }
     }
 
+    /// Save the current MCP server list as the user's custom preset.
+    static func saveCustomMCPPreset(_ servers: [MCPServerEntry]) {
+        if let data = try? JSONEncoder().encode(servers) {
+            UserDefaults.standard.set(data, forKey: mcpCustomPresetKey)
+        }
+    }
+
+    /// Load the user's custom preset, or nil if none has been saved.
+    static func loadCustomMCPPreset() -> [MCPServerEntry]? {
+        guard let data = UserDefaults.standard.data(forKey: mcpCustomPresetKey) else { return nil }
+        return try? JSONDecoder().decode([MCPServerEntry].self, from: data)
+    }
+
+    /// Remove the custom preset.
+    static func clearCustomMCPPreset() {
+        UserDefaults.standard.removeObject(forKey: mcpCustomPresetKey)
+    }
+
     static func loadRules() -> [AgentRule] {
         guard
             let data = UserDefaults.standard.data(forKey: agentRulesKey),
@@ -141,6 +161,8 @@ struct SettingsView: View {
                 .tabItem { Label("Whisper", systemImage: "mic.fill") }
             ShellSettingsTab()
                 .tabItem { Label("Shell", systemImage: "terminal") }
+            AboutSettingsTab()
+                .tabItem { Label("About", systemImage: "info.circle") }
         }
         // Grow to fill whatever size the user resizes the window to (maxWidth/
         // maxHeight: .infinity), while keeping a sensible minimum so controls stay
@@ -1352,7 +1374,7 @@ struct ContextSettingsTab: View {
     @State private var selectedAgent: String = "All"
     @State private var authorizedFolders: [AuthorizedFolder] = []
     @State private var newFolderPath: String = ""
-    @State private var importScope: String = "Navigator (parent)"
+    @State private var importScope: String = "Maestro (parent)"
     @State private var importFolderPath: String = ""
     @State private var importStatus: String = ""
     @State private var filesInMemory: Int = 0
@@ -1411,7 +1433,7 @@ struct ContextSettingsTab: View {
                         HStack {
                             Text("Scope")
                             Picker("", selection: $importScope) {
-                                Text("Navigator (parent)").tag("Navigator (parent)")
+                                Text("Maestro (parent)").tag("Maestro (parent)")
                                 Text("Agent project (child)").tag("Agent project (child)")
                             }
                             .pickerStyle(.segmented)
@@ -1473,10 +1495,47 @@ struct ContextSettingsTab: View {
 struct MCPSettingsTab: View {
     @State private var servers: [MCPServerEntry] = []
     @State private var saveMessage: String?
+    @State private var presetAlert: PresetAlert?
+
+    private enum PresetAlert: Identifiable {
+        case overwriteCustom, overwriteBundled, noCustomPreset
+
+        var id: String {
+            switch self {
+            case .overwriteCustom: return "overwriteCustom"
+            case .overwriteBundled: return "overwriteBundled"
+            case .noCustomPreset: return "noCustomPreset"
+            }
+        }
+
+        var title: String {
+            switch self {
+            case .overwriteCustom:
+                return "Save Custom Preset"
+            case .overwriteBundled:
+                return "Switch to Bundled Preset"
+            case .noCustomPreset:
+                return "No Custom Preset"
+            }
+        }
+
+        var message: String {
+            switch self {
+            case .overwriteCustom:
+                return "This will overwrite your saved custom preset with the current server list."
+            case .overwriteBundled:
+                return "This will replace your current server list with the self-contained bundled servers. Switch back anytime using your saved custom preset."
+            case .noCustomPreset:
+                return "No custom preset has been saved yet. Save the current list as a custom preset first."
+            }
+        }
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                presetBar
+
                 ForEach($servers) { $server in
                     MCPServerRow(server: $server, onDelete: {
                         servers.removeAll { $0.id == server.id }
@@ -1505,8 +1564,93 @@ struct MCPSettingsTab: View {
         .onAppear {
             servers = SwiftMaestroSettingsStore.loadMCPServers()
         }
+        .alert(item: $presetAlert) { alert in
+            switch alert {
+            case .overwriteCustom:
+                return Alert(
+                    title: Text(alert.title),
+                    message: Text(alert.message),
+                    primaryButton: .default(Text("Save")) {
+                        SwiftMaestroSettingsStore.saveCustomMCPPreset(servers)
+                        saveMessage = "Custom preset saved"
+                    },
+                    secondaryButton: .cancel()
+                )
+            case .overwriteBundled:
+                return Alert(
+                    title: Text(alert.title),
+                    message: Text(alert.message),
+                    primaryButton: .default(Text("Switch")) {
+                        applyBundledPreset()
+                    },
+                    secondaryButton: .cancel()
+                )
+            case .noCustomPreset:
+                return Alert(
+                    title: Text(alert.title),
+                    message: Text(alert.message),
+                    dismissButton: .default(Text("OK"))
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var presetBar: some View {
+        GroupBox("MCP Presets") {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Switch between your custom configuration and the self-contained bundled servers.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 12) {
+                    Button {
+                        presetAlert = .overwriteCustom
+                    } label: {
+                        Label("Save as Custom Preset", systemImage: "square.and.arrow.down")
+                    }
+
+                    Button {
+                        if let custom = SwiftMaestroSettingsStore.loadCustomMCPPreset() {
+                            servers = custom
+                            SwiftMaestroSettingsStore.saveMCPServers(custom)
+                            saveMessage = "Switched to custom preset"
+                        } else {
+                            presetAlert = .noCustomPreset
+                        }
+                    } label: {
+                        Label("Use Custom Preset", systemImage: "person")
+                    }
+
+                    Button {
+                        presetAlert = .overwriteBundled
+                    } label: {
+                        Label("Use Bundled Preset", systemImage: "cube.box")
+                    }
+
+                    Spacer()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+            .padding(8)
+        }
+    }
+
+    private func applyBundledPreset() {
+        let bundled = MCPServerBundleService.shared.bundledEntries()
+        guard !bundled.isEmpty else {
+            saveMessage = "No bundled servers found"
+            return
+        }
+        servers = bundled
+        SwiftMaestroSettingsStore.saveMCPServers(bundled)
+        saveMessage = "Switched to bundled preset"
     }
 }
+
+
 
 /// `MCPClientService` is a plain `actor`, not `@Observable`, so it can't use
 /// the newer `@Environment(Type.self)` sugar (that requires Observable
@@ -1722,7 +1866,7 @@ struct MCPServerEntry: Identifiable, Codable {
     /// `scriptPath` can't express. When nil/empty the launcher falls back to
     /// `[scriptPath]`. Optional so older persisted configs still decode.
     var args: [String]? = nil
-    /// Whether this server's tools are advertised to interactive chats (Navigator
+    /// Whether this server's tools are advertised to interactive chats (Maestro
     /// and project agents). Tool specs dominate the prompt — and on hybrid-cache
     /// models every fresh round re-prefills it all — so trimming exposure here
     /// directly cuts per-turn latency. Optional (nil = true) so older persisted
@@ -1842,4 +1986,59 @@ struct MCPServerEntry: Identifiable, Codable {
             notes: "Web crawl toolkit (scrape/batch/discover/watch/screenshot). Needs CrawlKit backend at localhost:8088."
         ),
     ]
+}
+
+// MARK: - About / Updates tab
+
+struct AboutSettingsTab: View {
+    @Environment(SparkleUpdaterService.self) private var updater
+    @Environment(ThemeStore.self) private var theme
+
+    private var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
+    }
+
+    private var buildVersion: String {
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "Unknown"
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                Text("SwiftMaestro")
+                    .font(.title)
+                    .foregroundStyle(theme.chatText)
+
+                HStack {
+                    Text("Version")
+                    Spacer()
+                    Text("\(appVersion) (\(buildVersion))")
+                        .foregroundStyle(.secondary)
+                }
+
+                Button("Check for Updates…") {
+                    updater.checkForUpdates()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.regular)
+                .tint(theme.accent)
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Links")
+                        .font(.headline)
+
+                    Link("Website — swiftmaestro.com", destination: URL(string: "https://swiftmaestro.com")!)
+                    Link("GitHub — WOODSEE-DIGI/SwiftMaestro", destination: URL(string: "https://github.com/WOODSEE-DIGI/SwiftMaestro")!)
+                    Link("Git — git.woodsee.com", destination: URL(string: "https://git.woodsee.com")!)
+                }
+
+                Spacer()
+            }
+            .padding()
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .background(theme.background)
+    }
 }

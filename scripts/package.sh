@@ -16,18 +16,21 @@
 set -euo pipefail
 
 APP_NAME="SwiftMaestro"
-VERSION="${VERSION:-0.1.0-beta}"
 CONFIG="${CONFIG:-Release}"
 TEAM_ID="${TEAM_ID:-3BMZ2ULZ54}"
 SIGN_IDENTITY="${SIGN_IDENTITY:-Developer ID Application}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-SwiftMaestroNotary}"
 APP_PATH="build/$CONFIG/$APP_NAME.app"
-DMG="$APP_NAME-$VERSION.dmg"
 
 if [ ! -d "$APP_PATH" ]; then
     echo "App not found at $APP_PATH — run ./scripts/build.sh first."
     exit 1
 fi
+
+# Default the DMG version to the app's own CFBundleShortVersionString so the
+# installer and the app bundle can never drift.
+VERSION="${VERSION:-$(defaults read "$PWD/$APP_PATH/Contents/Info.plist" CFBundleShortVersionString)}"
+DMG="$APP_NAME-$VERSION.dmg"
 
 echo "=== Packaging $DMG ==="
 

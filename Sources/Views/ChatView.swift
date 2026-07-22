@@ -42,9 +42,9 @@ struct ChatView: View {
             for project in planScopeProjects { _ = planStore.plans(in: .project(project)) }
             _ = messageStore.inbox(for: vm.agent.id)
 
-            // Only the Navigator agent should receive audio input and external
+            // Only Maestro should receive audio input and external
             // voice commands. Register this chat as the active recipient if it
-            // is the Navigator chat.
+            // is the Maestro chat.
             let isNavigator = vm.agent.kind == .navigator
             AgentCommandCenter.shared.isNavigatorActive = isNavigator
             if isNavigator {
@@ -148,7 +148,7 @@ struct ChatView: View {
         }
     }
 
-    /// Project names selectable as plan scopes in the Plans sheet: the Navigator
+    /// Project names selectable as plan scopes in the Plans sheet: Maestro
     /// can browse every project's shared plans; a project agent sees its own.
     private var planScopeProjects: [String] {
         if vm.agent.kind == .navigator { return workspace.visibleProjects.map(\.name) }
@@ -778,7 +778,7 @@ struct ChatView: View {
             .buttonStyle(.plain)
             .help("Attach image")
 
-            // Microphone button — only shown for the Navigator agent.
+            // Microphone button — only shown for Maestro.
             if vm.agent.kind == .navigator {
                 Button { whisper.toggleRecording() } label: {
                     if whisper.isRecording {

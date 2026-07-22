@@ -85,7 +85,7 @@ struct Plan: Codable, Identifiable, Hashable {
 }
 
 /// Where a plan lives. Personal plans belong to a single agent; project plans are
-/// shared by every agent in a project (and authored/managed by the Navigator).
+/// shared by every agent in a project (and authored/managed by Maestro).
 enum PlanScope: Hashable {
     case agent(UUID)
     case project(String)
@@ -323,7 +323,7 @@ final class PlanStore {
 
     /// One-time migration from local app storage to the shared memory store.
     /// Orphaned agent plans (whose agent no longer exists) are reassigned to the
-    /// current Navigator so they remain visible. Project-scoped plans keep their
+    /// current Maestro so they remain visible. Project-scoped plans keep their
     /// project name. Safe to call on every launch (gated by UserDefaults).
     func migrateFromLegacyStorage(navigatorID: UUID) {
         guard !UserDefaults.standard.bool(forKey: Self.migrationKey) else {
@@ -350,7 +350,7 @@ final class PlanStore {
                       let legacyPlans = try? JSONDecoder().decode([Plan].self, from: data),
                       !legacyPlans.isEmpty else { continue }
 
-                // Agent plans whose agent no longer exists get reassigned to the Navigator.
+                // Agent plans whose agent no longer exists get reassigned to Maestro.
                 var targetScope = scope
                 if case .agent(let id) = scope, id != navigatorID {
                     targetScope = .agent(navigatorID)

@@ -102,6 +102,10 @@ struct ContentView: View {
             guard let newValue else { return }
             openPanel(newValue)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .openWorkspacePanel)) { notification in
+            guard let kind = notification.object as? WorkspacePanelKind else { return }
+            openPanel(kind)
+        }
         .onAppear {
             if workspaceLayout.rows.isEmpty && workspaceLayout.floatingPanels.isEmpty {
                 openPanel(.agentChat(workspace.navigator.id))
@@ -140,7 +144,7 @@ struct ContentView: View {
             // first body evaluation, which is earlier than .onAppear ever runs.
             chatCache.setVisionProxyService(visionProxyService)
             // When a delegation starts, open/front a floating chat window for the
-            // sub-agent so the user can watch Navigator and Scribe side-by-side.
+            // sub-agent so the user can watch Maestro and Scribe side-by-side.
             chatCache.onOpenAgentWindow = { [openWindow] agentID in
                 openWindow(id: "agent-chat-window", value: AgentChatWindowID(agentID: agentID))
             }
@@ -261,6 +265,8 @@ struct ContentView: View {
                 sidebarRow("Reminders", kind: .reminders)
                 sidebarRow("Contacts", kind: .contacts)
                 sidebarRow("Numbers", kind: .numbers)
+                sidebarRow("Maps", kind: .maps)
+                sidebarRow("Photos", kind: .photos)
             } header: {
                 Text("Apple Apps")
                     .font(.system(size: 11, weight: .semibold))
@@ -513,7 +519,7 @@ struct ContentView: View {
         workspace.archiveAgent(id: agent.id)
         chatCache.drop(agent.id)
         workspaceLayout.close(kind)
-        // Never leave the workspace fully empty — land back on Navigator.
+        // Never leave the workspace fully empty — land back on Maestro.
         if workspaceLayout.rows.isEmpty && workspaceLayout.floatingPanels.isEmpty {
             let navigatorKind = WorkspacePanelKind.agentChat(workspace.navigator.id)
             openPanel(navigatorKind)

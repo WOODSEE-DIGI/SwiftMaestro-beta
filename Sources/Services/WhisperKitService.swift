@@ -40,6 +40,20 @@ final class WhisperKitService: @unchecked Sendable {
 
     private static let defaultsPrefix = "settings.whisperkit"
 
+    /// Canonical local WhisperKit cache under Application Support.
+    /// Kept out of ~/Documents to avoid macOS TCC directory-access prompts.
+    private static let modelDirectory = SwiftMaestroPaths.whisperKitDir
+
+    /// The full folder WhisperKit creates under `modelDirectory` for a given variant.
+    /// Mirrors the repo layout WhisperKit uses: `downloadBase/models/argmaxinc/whisperkit-coreml/<variant>`.
+    private static func resolvedModelFolder(for variant: String) -> URL {
+        modelDirectory
+            .appendingPathComponent("models", isDirectory: true)
+            .appendingPathComponent("argmaxinc", isDirectory: true)
+            .appendingPathComponent("whisperkit-coreml", isDirectory: true)
+            .appendingPathComponent(variant, isDirectory: true)
+    }
+
     var selectedModel: String {
         get {
             let stored = UserDefaults.standard.string(forKey: "\(Self.defaultsPrefix).model")
@@ -229,9 +243,11 @@ final class WhisperKitService: @unchecked Sendable {
                 )
 
                 if needsDownload {
-                    // Manual download with progress callback
+                    // Download into the Application Support cache so we never touch
+                    // ~/Documents and avoid the macOS TCC directory-access prompt.
                     let folder = try await WhisperKit.download(
                         variant: selectedModel,
+                        downloadBase: Self.modelDirectory,
                         progressCallback: { @Sendable [weak self] progress in
                             Task { @MainActor [weak self] in
                                 self?.downloadProgress = progress.fractionCompleted
@@ -242,6 +258,7 @@ final class WhisperKitService: @unchecked Sendable {
 
                     let config = WhisperKitConfig(
                         model: selectedModel,
+                        downloadBase: Self.modelDirectory,
                         modelFolder: folder.path,
                         computeOptions: computeOptions,
                         verbose: false,
@@ -253,13 +270,12 @@ final class WhisperKitService: @unchecked Sendable {
                     let kit = try await WhisperKit(config)
                     self.whisperKit = kit
                 } else {
-                    // Already on disk — resolve the local folder path
-                    let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
-                        .appendingPathComponent("huggingface/models/argmaxinc/whisperkit-coreml")
-                    let modelPath = base?.appendingPathComponent(selectedModel).path
+                    // Already on disk — resolve the local folder path under Application Support.
+                    let modelPath = Self.resolvedModelFolder(for: selectedModel).path
 
                     let config = WhisperKitConfig(
                         model: selectedModel,
+                        downloadBase: Self.modelDirectory,
                         modelFolder: modelPath,
                         computeOptions: computeOptions,
                         verbose: false,
@@ -499,7 +515,7 @@ final class WhisperKitService: @unchecked Sendable {
     // MARK: - Saving
 
     private var defaultRecordingsURL: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
+        SwiftMaestroPaths.appSupportDir.appendingPathComponent("Recordings", isDirectory: true)
     }
 
     private func startRecordingWriter() {
@@ -561,10 +577,10 @@ final class WhisperKitService: @unchecked Sendable {
     }
 
     /// Check if the model files exist on disk (already downloaded).
+    /// Only checks the Application Support cache; the legacy ~/Documents path is
+    /// intentionally not inspected to avoid macOS TCC directory-access prompts.
     var isModelDownloaded: Bool {
-        let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("huggingface/models/argmaxinc/whisperkit-coreml")
-        guard let modelFolder = base?.appendingPathComponent(selectedModel) else { return false }
+        let modelFolder = Self.resolvedModelFolder(for: selectedModel)
         let required = ["MelSpectrogram.mlmodelc", "AudioEncoder.mlmodelc", "TextDecoder.mlmodelc"]
         return required.allSatisfy { FileManager.default.fileExists(atPath: modelFolder.appendingPathComponent($0).path) }
     }

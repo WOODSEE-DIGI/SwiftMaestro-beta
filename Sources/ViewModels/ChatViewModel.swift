@@ -2,7 +2,7 @@ import Foundation
 import MLXLMCommon
 import SwiftMaestroKit
 
-/// Drives one agent's chat. The Navigator is the top-level conductor; project
+/// Drives one agent's chat. Maestro is the top-level conductor; project
 /// agents belong to a project and operate scoped to that project's memory.
 /// Chat history persists per agent (ChatHistoryStore) separately from project
 /// memory, so it can be cleared without affecting the project.
@@ -183,7 +183,7 @@ class ChatViewModel: ObservableObject {
             let topP = model.tunedTopP
             let maxTokens = model.tunedMaxTokens
 
-        // Tool surface: project agents get the normal tools; the Navigator
+        // Tool surface: project agents get the normal tools; Maestro
         // additionally gets the workspace/delegation tools. Per-agent enabled
         // tool categories override the old automatic lite-mode reduction.
         var toolSpecs: [ToolSpec] = []
@@ -198,7 +198,7 @@ class ChatViewModel: ObservableObject {
                 navigator: isNavigator, liteMode: model.isLiteModel,
                 enabledCategories: enabledCategories, compactMode: compactMode)
             if let mcp = engine.mcpService {
-                // Navigator gets NO MCP tools — it delegates everything.
+                // Maestro gets NO MCP tools — it delegates everything.
                 // Only project agents get MCP tools (read_note, list_dir, etc.).
                 if !isNavigator {
                     let mcpSchemas = await mcp.currentSchemas()
@@ -881,7 +881,7 @@ class ChatViewModel: ObservableObject {
 
         MESSAGING:
         - You can leave durable messages for other agents with send_agent_message \
-        (address the conductor as agent "Navigator") and read your own inbox with \
+        (address the conductor as agent "Maestro") and read your own inbox with \
         read_agent_messages. Use these to hand off context or coordinate work.
         - To send a message you MUST call send_agent_message. NEVER say a message \
         was sent unless you actually called the tool and got a result back.
@@ -955,7 +955,7 @@ class ChatViewModel: ObservableObject {
     ) -> Message {
         let base: String
         if agent.kind == .navigator {
-            // Inject live workspace state so the Navigator knows exact project/agent names.
+            // Inject live workspace state so Maestro knows exact project/agent names.
             var workspaceList = "No projects or agents exist yet."
             if let ws = MaestroTools.workspace, !ws.visibleProjects.isEmpty {
                 var lines: [String] = []
@@ -968,7 +968,7 @@ class ChatViewModel: ObservableObject {
                 workspaceList = lines.joined(separator: "\n")
             }
             base = """
-                You are the Navigator, the conductor for SwiftMaestro. You handle general \
+                You are Maestro, the conductor for SwiftMaestro. You handle general \
                 chat and coordinate project work. You delegate to project agents and \
                 synthesize their results for the user.
 
@@ -1115,7 +1115,7 @@ class ChatViewModel: ObservableObject {
 
     /// Build a prompt section that lists the plans visible to this agent.
     /// Project agents see their own personal plans plus the project-shared plans.
-    /// The Navigator sees every project's shared plans so it can delegate plan
+    /// Maestro sees every project's shared plans so it can delegate plan
     /// work accurately. If no plans exist, returns an empty string.
     @MainActor
     static func planContextPrompt(for agent: AgentRecord, projectName: String?) -> String {
@@ -1141,7 +1141,7 @@ class ChatViewModel: ObservableObject {
             }
         }
 
-        // 3. For the Navigator, expose all project plans so delegation requests
+        // 3. For Maestro, expose all project plans so delegation requests
         //    like "continue the Spotlight plan" can be routed with full context.
         if agent.kind == .navigator, let workspace = MaestroTools.workspace {
             for project in workspace.visibleProjects {

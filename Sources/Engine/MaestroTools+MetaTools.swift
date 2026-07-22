@@ -60,8 +60,8 @@ extension MaestroTools {
     private struct SearchToolsArgs: Codable { let query: String? }
 
     /// The full candidate list of deferrable-category tools reachable by the
-    /// agent currently dispatching (per `currentIsNavigator`/
-    /// `currentEnabledCategories`), built from the SAME `schemas(...)` source
+    /// agent currently dispatching (per `currentIsNavigator`, i.e. whether it is
+    /// Maestro or a project agent / `currentEnabledCategories`), built from the SAME `schemas(...)` source
     /// of truth `compactMode` uses to decide what to hide — so search results
     /// and what `call_tool` will actually accept never drift apart.
     private static func deferredCandidates() async -> [(name: String, description: String, category: ToolCategory)] {

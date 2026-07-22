@@ -186,7 +186,7 @@ final class ModelCatalog {
 
     static let selectedModelKey = "models.selectedModelID"
     /// Launch default when no selection has been persisted yet. The 8-bit
-    /// Gemma 4 navigator — good quality at 26GB, fits 64GB M1 minimum spec.
+    /// Gemma 4 Maestro — good quality at 26GB, fits 64GB M1 minimum spec.
     nonisolated static let defaultModelID = "local-gemma4-26b"
 
     var selectedModel: MaestroModel? {
