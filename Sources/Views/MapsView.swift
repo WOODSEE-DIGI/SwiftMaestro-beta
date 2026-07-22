@@ -17,6 +17,8 @@ struct MapsView: View {
     @State private var errorMessage: String?
     @State private var searchMode: SearchMode = .poi
     @State private var selectedResultID: UUID?
+    @State private var showTraffic = true
+    @State private var mapType: MapType = .standard
     @State private var mapRegion = MKCoordinateRegion(
         center: CLLocationCoordinate2D(latitude: 0, longitude: 0),
         span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
@@ -26,6 +28,20 @@ struct MapsView: View {
         case poi = "Places"
         case geocode = "Address"
         var id: String { rawValue }
+    }
+
+    private enum MapType: String, CaseIterable, Identifiable {
+        case standard = "Standard"
+        case satellite = "Satellite"
+        case hybrid = "Hybrid"
+        var id: String { rawValue }
+        var mkType: MKMapType {
+            switch self {
+            case .standard: return .standard
+            case .satellite: return .satellite
+            case .hybrid: return .hybrid
+            }
+        }
     }
 
     var body: some View {
@@ -61,7 +77,18 @@ struct MapsView: View {
             }
         }
         .task {
+            // Defer state changes so they don't happen during the view update.
+            await Task.yield()
             service.requestAuthorization()
+            // If the agent triggered a search before the view existed, run it now.
+            if let requested = service.panelSearchQuery {
+                query = requested
+                if let modeRaw = service.panelSearchMode,
+                   let mode = SearchMode(rawValue: modeRaw) {
+                    searchMode = mode
+                }
+                await performSearch()
+            }
         }
         .onChange(of: service.panelSearchTrigger) { _, _ in
             guard let requested = service.panelSearchQuery else { return }
@@ -77,24 +104,29 @@ struct MapsView: View {
     // MARK: - Header
 
     private var header: some View {
-        HStack {
+        HStack(spacing: 12) {
             Text("Maps")
                 .font(.headline)
             Spacer()
-            Picker("Mode", selection: $searchMode) {
-                ForEach(SearchMode.allCases) { mode in
-                    Text(mode.rawValue).tag(mode)
-                }
+            Picker("Map type", selection: $mapType) {
+                Text("Map").tag(MapType.standard)
+                Text("Sat").tag(MapType.satellite)
+                Text("Hyb").tag(MapType.hybrid)
             }
             .pickerStyle(.segmented)
-            .frame(width: 180)
+            .labelsHidden()
+            .frame(width: 130)
+            Toggle("Traffic", isOn: $showTraffic)
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .help("Show Apple Maps traffic overlay")
         }
     }
 
     // MARK: - Search bar
 
     private var searchBar: some View {
-        HStack {
+        HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
             TextField(searchMode == .poi ? "Search places" : "Geocode address", text: $query)
@@ -103,6 +135,14 @@ struct MapsView: View {
                 ProgressView()
                     .controlSize(.small)
             }
+            Picker("Search mode", selection: $searchMode) {
+                ForEach(SearchMode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 140)
             Button("Search") {
                 Task { await performSearch() }
             }
@@ -120,7 +160,9 @@ struct MapsView: View {
             region: $mapRegion,
             pois: searchMode == .poi ? results : [],
             locations: searchMode == .geocode ? locations : [],
-            selectedID: $selectedResultID
+            selectedID: $selectedResultID,
+            showsTraffic: showTraffic,
+            mapType: mapType.mkType
         )
         .frame(minHeight: 180, idealHeight: 240)
         .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -237,12 +279,10 @@ struct MapsView: View {
             case .poi:
                 let pois = try await service.searchNearby(query: trimmed)
                 results = pois
-                selectedResultID = pois.first?.id
                 fitMapTo(pois: pois)
             case .geocode:
                 let found = try await service.geocodeAddress(trimmed)
                 locations = found
-                selectedResultID = found.first?.id
                 fitMapTo(locations: found)
             }
         } catch {
@@ -300,6 +340,8 @@ struct ResultMap: NSViewRepresentable {
     let pois: [AppleMapsPOI]
     let locations: [AppleMapsLocation]
     @Binding var selectedID: UUID?
+    let showsTraffic: Bool
+    let mapType: MKMapType
 
     func makeNSView(context: Context) -> MKMapView {
         let mapView = MKMapView()
@@ -311,6 +353,8 @@ struct ResultMap: NSViewRepresentable {
     }
 
     func updateNSView(_ mapView: MKMapView, context: Context) {
+        mapView.showsTraffic = showsTraffic
+        mapView.mapType = mapType
         if !context.coordinator.isProgrammaticUpdate {
             mapView.setRegion(region, animated: true)
         }

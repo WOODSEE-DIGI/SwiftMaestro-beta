@@ -71,8 +71,9 @@ fi
 APPCAST_WORKING="$DIST_DIR/.appcast-work"
 mkdir -p "$APPCAST_WORKING"
 # generate_appcast uses the filename in the working directory as the URL suffix.
-# Keep the real filename so the download URL matches exactly.
-cp "$DIST_DIR/${APP_NAME}-${VERSION}-full.dmg" "$APPCAST_WORKING/"
+# Keep the real filename so the download URL matches exactly. Use a hard link
+# instead of a copy so the 28 GB full DMG is never duplicated.
+ln "$DIST_DIR/${APP_NAME}-${VERSION}-full.dmg" "$APPCAST_WORKING/${APP_NAME}-${VERSION}-full.dmg"
 
 # Optional release notes for the full installer (will be picked up by generate_appcast).
 if [ -f "CHANGELOG.md" ]; then

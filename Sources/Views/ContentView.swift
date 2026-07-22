@@ -190,20 +190,13 @@ struct ContentView: View {
     private var sidebar: some View {
         VStack(spacing: 0) {
             agentsSidebar
-                .frame(minHeight: 120, maxHeight: .infinity)
+                .frame(minHeight: 120)
 
             Divider()
                 .padding(.horizontal, 8)
 
             appsSidebar
                 .frame(minHeight: 120, maxHeight: .infinity)
-
-            Divider()
-                .padding(.horizontal, 8)
-
-            loadedAgentsPanel
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
         }
         .navigationTitle("SwiftMaestro")
         .toolbar {
@@ -217,44 +210,50 @@ struct ContentView: View {
     }
 
     private var agentsSidebar: some View {
-        List(selection: $focusedKind) {
-            Section {
-                agentRow(
-                    title: workspace.navigator.name,
-                    systemImage: "point.3.connected.trianglepath.dotted",
-                    id: workspace.navigator.id
-                )
-                .tag(WorkspacePanelKind.agentChat(workspace.navigator.id))
-            } header: {
-                Text("Agents")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(theme.sidebarText.opacity(0.7))
-            }
-            ForEach(workspace.visibleProjects) { project in
+        VStack(spacing: 0) {
+            List(selection: $focusedKind) {
                 Section {
-                    ForEach(workspace.projectAgents(in: project.id)) { agent in
-                        agentRow(title: agent.name, systemImage: nil, id: agent.id)
-                            .tag(WorkspacePanelKind.agentChat(agent.id))
-                            .contextMenu {
-                                Button("Clear Chat") {
-                                    chatCache.viewModel(for: agent, projectName: project.name)
-                                        .clearChat()
-                                }
-                                Button("Remove Agent", role: .destructive) {
-                                    removeAgent(agent)
-                                }
-                            }
-                    }
+                    agentRow(
+                        title: workspace.navigator.name,
+                        systemImage: "point.3.connected.trianglepath.dotted",
+                        id: workspace.navigator.id
+                    )
+                    .tag(WorkspacePanelKind.agentChat(workspace.navigator.id))
                 } header: {
-                    Text(project.name)
+                    Text("Agents")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(theme.sidebarText.opacity(0.7))
                 }
+                ForEach(workspace.visibleProjects) { project in
+                    Section {
+                        ForEach(workspace.projectAgents(in: project.id)) { agent in
+                            agentRow(title: agent.name, systemImage: nil, id: agent.id)
+                                .tag(WorkspacePanelKind.agentChat(agent.id))
+                                .contextMenu {
+                                    Button("Clear Chat") {
+                                        chatCache.viewModel(for: agent, projectName: project.name)
+                                            .clearChat()
+                                    }
+                                    Button("Remove Agent", role: .destructive) {
+                                        removeAgent(agent)
+                                    }
+                                }
+                        }
+                    } header: {
+                        Text(project.name)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(theme.sidebarText.opacity(0.7))
+                    }
+                }
             }
+            .listStyle(.sidebar)
+            .scrollContentBackground(theme.sidebarOverridden ? .hidden : .automatic)
+            .background(theme.sidebarOverridden ? theme.sidebarBackground : Color.clear)
+
+            agentsActivityFooter
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
         }
-        .listStyle(.sidebar)
-        .scrollContentBackground(theme.sidebarOverridden ? .hidden : .automatic)
-        .background(theme.sidebarOverridden ? theme.sidebarBackground : Color.clear)
     }
 
     private var appsSidebar: some View {
@@ -321,18 +320,16 @@ struct ContentView: View {
         .tag(kind)
     }
 
-    private var loadedAgentsPanel: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Loaded Agents")
-                    .font(.caption)
-                    .foregroundStyle(theme.sidebarText.opacity(0.7))
-                Spacer()
-            }
-            ModelResourceMonitor()
-            ProcessResourceMonitor()
+    /// Compact model + process activity shown directly under the Agents section.
+    /// Nests the status monitors under the conductor so the sidebar top section is
+    /// useful and the bottom of the sidebar is not crowded.
+    private var agentsActivityFooter: some View {
+        VStack(alignment: .leading, spacing: 8) {
             EngineStatusBar()
+            ProcessResourceMonitor()
         }
+        .padding(.top, 4)
+        .padding(.bottom, 8)
     }
 
     /// A sidebar agent row showing its name plus a red unread-message badge.

@@ -29,6 +29,22 @@ extension MaestroTools {
                 name: "ocr_image", spec: fileToolSpecs[3],
                 category: ToolCategory.file.rawValue,
                 handler: { call in await ocrImage(call) }),
+            ToolDefinition(
+                name: "copy_file", spec: fileToolSpecs[4],
+                category: ToolCategory.file.rawValue,
+                handler: { call in await copyFile(call) }),
+            ToolDefinition(
+                name: "move_file", spec: fileToolSpecs[5],
+                category: ToolCategory.file.rawValue,
+                handler: { call in await moveFile(call) }),
+            ToolDefinition(
+                name: "delete_file", spec: fileToolSpecs[6],
+                category: ToolCategory.file.rawValue,
+                handler: { call in await deleteFile(call) }),
+            ToolDefinition(
+                name: "create_directory", spec: fileToolSpecs[7],
+                category: ToolCategory.file.rawValue,
+                handler: { call in await createDirectory(call) }),
         ])
     }
 
@@ -79,6 +95,28 @@ extension MaestroTools {
                 properties: [
                     "path": ["type": "string", "description": "Absolute path to the image file."],
                 ], required: ["path"]),
+            rawSpec("copy_file",
+                "Copy a file to a new location. Both source and destination must be inside authorized folders.",
+                properties: [
+                    "source": ["type": "string", "description": "Absolute path to the source file."],
+                    "destination": ["type": "string", "description": "Absolute path for the new copy."],
+                ], required: ["source", "destination"]),
+            rawSpec("move_file",
+                "Move or rename a file. Both source and destination must be inside authorized folders.",
+                properties: [
+                    "source": ["type": "string", "description": "Absolute path to the source file."],
+                    "destination": ["type": "string", "description": "Absolute path for the moved file (rename by changing the last component)."],
+                ], required: ["source", "destination"]),
+            rawSpec("delete_file",
+                "Delete a file. The path must be inside an authorized folder. Use with caution.",
+                properties: [
+                    "path": ["type": "string", "description": "Absolute path to the file to delete."],
+                ], required: ["path"]),
+            rawSpec("create_directory",
+                "Create a directory and any intermediate directories. The path must be inside an authorized folder.",
+                properties: [
+                    "path": ["type": "string", "description": "Absolute path of the directory to create."],
+                ], required: ["path"]),
         ]
     }
 
@@ -90,6 +128,10 @@ extension MaestroTools {
     private struct WriteFileArgs: Codable { let path: String?; let content: String?; let encoding: String?; let append: Bool? }
     private struct ListDirArgs: Codable { let path: String? }
     private struct OCRImageArgs: Codable { let path: String? }
+    private struct CopyFileArgs: Codable { let source: String?; let destination: String? }
+    private struct MoveFileArgs: Codable { let source: String?; let destination: String? }
+    private struct DeleteFileArgs: Codable { let path: String? }
+    private struct CreateDirectoryArgs: Codable { let path: String? }
 
     // MARK: - Path normalization
 
@@ -512,5 +554,115 @@ extension MaestroTools {
             return errorJSON("failed to encode VLM payload")
         }
         return str
+    }
+
+    // MARK: - File operations
+
+    static func copyFile(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: CopyFileArgs.self),
+              let rawSource = args.source?.trimmingCharacters(in: .whitespaces), !rawSource.isEmpty,
+              let rawDest = args.destination?.trimmingCharacters(in: .whitespaces), !rawDest.isEmpty else {
+            return errorJSON("copy_file requires 'source' and 'destination'")
+        }
+        guard let source = resolveAbsolute(rawSource) else {
+            return errorJSON("copy_file requires an absolute source path (got '\(rawSource)')")
+        }
+        guard let destination = resolveAbsolute(rawDest) else {
+            return errorJSON("copy_file requires an absolute destination path (got '\(rawDest)')")
+        }
+        let roots = authorizedRoots()
+        guard isAllowed(source, roots: roots) else { return denied(rawSource) }
+        guard isAllowed(destination, roots: roots) else { return denied(rawDest) }
+        let actualSource = fuzzyResolve(source, wantDirectory: false) ?? source
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: actualSource, isDirectory: &isDir), !isDir.boolValue else {
+            return errorJSON("no file at '\(source)'\(didYouMean(path: source, wantDirectory: false))")
+        }
+        do {
+            try FileManager.default.createDirectory(
+                at: URL(fileURLWithPath: destination).deletingLastPathComponent(),
+                withIntermediateDirectories: true)
+            if FileManager.default.fileExists(atPath: destination) {
+                try FileManager.default.removeItem(atPath: destination)
+            }
+            try FileManager.default.copyItem(atPath: actualSource, toPath: destination)
+            return jsonString(["status": "copied", "source": actualSource, "destination": destination])
+        } catch {
+            return errorJSON("failed to copy '\(actualSource)' to '\(destination)': \(error.localizedDescription)")
+        }
+    }
+
+    static func moveFile(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: MoveFileArgs.self),
+              let rawSource = args.source?.trimmingCharacters(in: .whitespaces), !rawSource.isEmpty,
+              let rawDest = args.destination?.trimmingCharacters(in: .whitespaces), !rawDest.isEmpty else {
+            return errorJSON("move_file requires 'source' and 'destination'")
+        }
+        guard let source = resolveAbsolute(rawSource) else {
+            return errorJSON("move_file requires an absolute source path (got '\(rawSource)')")
+        }
+        guard let destination = resolveAbsolute(rawDest) else {
+            return errorJSON("move_file requires an absolute destination path (got '\(rawDest)')")
+        }
+        let roots = authorizedRoots()
+        guard isAllowed(source, roots: roots) else { return denied(rawSource) }
+        guard isAllowed(destination, roots: roots) else { return denied(rawDest) }
+        let actualSource = fuzzyResolve(source, wantDirectory: false) ?? source
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: actualSource, isDirectory: &isDir), !isDir.boolValue else {
+            return errorJSON("no file at '\(source)'\(didYouMean(path: source, wantDirectory: false))")
+        }
+        do {
+            try FileManager.default.createDirectory(
+                at: URL(fileURLWithPath: destination).deletingLastPathComponent(),
+                withIntermediateDirectories: true)
+            if FileManager.default.fileExists(atPath: destination) {
+                try FileManager.default.removeItem(atPath: destination)
+            }
+            try FileManager.default.moveItem(atPath: actualSource, toPath: destination)
+            return jsonString(["status": "moved", "source": actualSource, "destination": destination])
+        } catch {
+            return errorJSON("failed to move '\(actualSource)' to '\(destination)': \(error.localizedDescription)")
+        }
+    }
+
+    static func deleteFile(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: DeleteFileArgs.self),
+              let raw = args.path?.trimmingCharacters(in: .whitespaces), !raw.isEmpty else {
+            return errorJSON("delete_file requires 'path'")
+        }
+        guard let resolved = resolveAbsolute(raw) else {
+            return errorJSON("delete_file requires an absolute path (got '\(raw)')")
+        }
+        guard isAllowed(resolved, roots: authorizedRoots()) else { return denied(raw) }
+        let actualPath = fuzzyResolve(resolved, wantDirectory: false) ?? resolved
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: actualPath, isDirectory: &isDir), !isDir.boolValue else {
+            return errorJSON("no file at '\(resolved)'\(didYouMean(path: resolved, wantDirectory: false))")
+        }
+        do {
+            try FileManager.default.removeItem(atPath: actualPath)
+            return jsonString(["status": "deleted", "path": actualPath])
+        } catch {
+            return errorJSON("failed to delete '\(actualPath)': \(error.localizedDescription)")
+        }
+    }
+
+    static func createDirectory(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: CreateDirectoryArgs.self),
+              let raw = args.path?.trimmingCharacters(in: .whitespaces), !raw.isEmpty else {
+            return errorJSON("create_directory requires 'path'")
+        }
+        guard let resolved = resolveAbsolute(raw) else {
+            return errorJSON("create_directory requires an absolute path (got '\(raw)')")
+        }
+        guard isAllowed(resolved, roots: authorizedRoots()) else { return denied(raw) }
+        do {
+            try FileManager.default.createDirectory(
+                atPath: resolved, withIntermediateDirectories: true, attributes: nil)
+            return jsonString(["status": "created", "path": resolved])
+        } catch {
+            return errorJSON("failed to create directory '\(resolved)': \(error.localizedDescription)")
+        }
     }
 }

@@ -18,7 +18,14 @@ build/
 *.dmg
 *.dmg.sparse.sparseimage
 *.sparseimage
+*.sparsebundle
+
+# Staging / distribution directories
+dist/
+BundledMCP/
+store/
 
 # Node (docs/mcp-template example server)
 node_modules/
 SwiftMaestro-0.1.0-full.dmg
+SwiftMaestro-0.1.0-beta.dmg

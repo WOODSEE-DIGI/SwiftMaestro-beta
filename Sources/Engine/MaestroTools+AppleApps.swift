@@ -85,7 +85,7 @@ extension MaestroTools {
                 "Open the SwiftMaestro in-app Maps panel. This is the embedded Maps panel, not the standalone Apple Maps app.",
                 properties: [:], required: []),
             rawSpec("search_maps_panel",
-                "Open the SwiftMaestro in-app Maps panel and search for a place or address inside it.",
+                "Open the SwiftMaestro in-app Maps panel and search for a place or address inside it. The panel shows the map location and a traffic overlay if available, but it does NOT return real-time traffic conditions or incident data to the agent. Only describe what is actually returned by the tool.",
                 properties: [
                     "query": ["type": "string", "description": "Place name or address to search for."],
                     "mode": ["type": "string", "description": "Search mode: 'Places' for POI search, 'Address' for address geocoding."],
@@ -234,19 +234,46 @@ extension MaestroTools {
     }
 
     /// Open the SwiftMaestro in-app Maps panel and drive its search field.
+    /// Also performs the search and returns the results so the agent can describe
+    /// what was actually found instead of hallucinating.
     static func searchMapsPanelTool(_ call: ToolCall) async -> String {
         guard let args = decodeArgs(call, as: SearchMapsPanelArgs.self),
               let query = args.query?.trimmingCharacters(in: .whitespaces), !query.isEmpty else {
             return errorJSON("search_maps_panel requires 'query'")
         }
-        return await MainActor.run(resultType: String.self) {
-            let mode = args.mode?.trimmingCharacters(in: .whitespaces)
+        await sharedMapsService.requestAuthorization()
+        let mode = args.mode?.trimmingCharacters(in: .whitespaces)
+        let searchMode = (mode?.isEmpty == false ? mode : "Places")
+
+        let searchResult = await MainActor.run(resultType: String.self) {
             sharedMapsService.panelSearchQuery = query
-            sharedMapsService.panelSearchMode = (mode?.isEmpty == false ? mode : "Places")
-            sharedMapsService.panelSearchTrigger = UUID()
+            sharedMapsService.panelSearchMode = searchMode
             let result = WorkspaceLayoutState.shared.open(.maps)
             NotificationCenter.default.post(name: .openWorkspacePanel, object: WorkspacePanelKind.maps)
-            return jsonString(["status": "searching", "panel": "maps", "query": query, "placement": String(describing: result)])
+            return String(describing: result)
+        }
+
+        do {
+            let found: [String: Any]
+            if searchMode == "Address" {
+                let locations = try await sharedMapsService.geocodeAddress(query)
+                found = ["locations": locations.map(renderLocation)]
+            } else {
+                let pois = try await sharedMapsService.searchNearby(query: query)
+                found = ["pois": pois.map(renderPOI)]
+            }
+            await MainActor.run {
+                sharedMapsService.panelSearchTrigger = UUID()
+            }
+            return jsonString([
+                "status": "searched",
+                "panel": "maps",
+                "query": query,
+                "mode": searchMode,
+                "placement": searchResult,
+            ].merging(found) { current, _ in current })
+        } catch {
+            return errorJSON("panel search failed: \(error.localizedDescription)")
         }
     }
 

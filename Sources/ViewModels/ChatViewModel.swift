@@ -732,6 +732,8 @@ class ChatViewModel: ObservableObject {
         - Send images via ocr_image (not list_dir).
         - For creating or overwriting files, use write_file. NEVER paste the file contents \
         in chat as a code block — the tool writes the file; the chat is only for reasoning.
+        - For file operations, use copy_file, move_file, delete_file, and create_directory. \
+        move_file can rename a file by changing the last path component.
         - MAX 5 tool calls per message. If you need more, tell the user what you'd do next.
 
         SHELL COMMAND RULES:
@@ -1009,6 +1011,14 @@ class ChatViewModel: ObservableObject {
                 The chat history is automatically compacted when it approaches the model's \
                 context limit. Older turns are summarized into a checkpoint that is injected \
                 into the inference context. You do not need to compact or delete history yourself.
+
+                MAPS / TRAFFIC RULE:
+                The open_maps_panel and search_maps_panel tools only control the SwiftMaestro \
+                in-app Maps panel. They can display a location and a traffic overlay, but they \
+                do NOT return real-time traffic conditions, incidents, or travel times to you. \
+                Never claim you have retrieved, analyzed, or reported current traffic data. \
+                If the user asks for real-time traffic, explain that the panel shows the map \
+                location but you cannot determine current traffic conditions.
                 """
         } else {
             let proj = projectName ?? "this project"
