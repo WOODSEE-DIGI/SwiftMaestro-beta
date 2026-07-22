@@ -34,6 +34,7 @@ extension MaestroTools {
         await registerMetaTools()
         await registerTimeTools()
         await registerWebTools()
+        await registerBlueskyTools()
 
         // Tool providers — plugins that register their own tools.
         await registerToolProvider(ObsidianToolProvider())

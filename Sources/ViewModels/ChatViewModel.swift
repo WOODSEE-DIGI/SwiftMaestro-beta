@@ -763,6 +763,13 @@ class ChatViewModel: ObservableObject {
         - For quick lookups, web_search is enough. For deep reading, fetch the URL after searching.
         - MCP web tools (webclaw, firecrawl) provide richer scraping when enabled in Settings → MCP.
 
+        BLUESKY:
+        - Use search_bluesky_posts to search public Bluesky posts by keyword.
+        - Use get_bluesky_profile to get a Bluesky user's profile, bio, and counts.
+        - Use get_bluesky_author_feed to get recent posts from a specific handle or DID.
+        - Use get_bluesky_thread to read a post and its replies by AT URI.
+        - Use search_bluesky_actors to find public Bluesky user profiles.
+
         NOTES APPS:
         - SwiftMaestro Notes.md: the in-app Markdown vault (shown in the sidebar as "Notes.md"). \
         Use list_notes, read_note, write_note, and search_notes for this vault. Paths are relative to the Notes.md vault root.

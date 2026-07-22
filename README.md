@@ -20,7 +20,7 @@ A native macOS AI assistant that runs large language models **fully on-device** 
 - **Plans & task checklists** — docked panels, resizable plan windows, and Markdown export.
 - **Behavioral rules** — add custom rules that guide the agent's behaviour, scoped globally or per-agent.
 - **Private by design** — no telemetry, no analytics. Secrets live in the macOS Keychain and are never written to chat history or the memory store.
-- **Distributed as a notarized `.dmg`** — Developer ID signed and Apple-notarized, so it opens cleanly on any Apple Silicon Mac.
+- **Distributed as a signed `.dmg`** — Developer ID signed for Apple Silicon Mac.
 
 ## Requirements
 - Apple Silicon Mac (M1 or later). Intel is not supported — MLX is Apple-Silicon-only.
@@ -30,9 +30,9 @@ A native macOS AI assistant that runs large language models **fully on-device** 
 - Disk space and RAM scale with the model you choose (see [Models](#models)).
 
 ## Install (beta)
-1. Download the latest `SwiftMaestro-<version>.dmg` from the [Releases page](https://github.com/WOODSEE-DIGI/SwiftMaestro/releases).
+1. Download **[SwiftMaestro-0.1.2-beta.dmg](https://swiftmaestro.com/download/SwiftMaestro-0.1.2-beta.dmg)** from the SwiftMaestro website.
 2. Open the `.dmg` and drag **SwiftMaestro** to **Applications**.
-3. Launch it. Because it's notarized, it opens without Gatekeeper warnings.
+3. Launch it. Because it's Developer ID signed, it opens cleanly on first launch.
 
 On first launch a guided onboarding walks you through picking and downloading a language model. A separate one-time setup dialog installs the speech recognition model (~3 GB) when you first use the microphone.
 

@@ -28,6 +28,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     case news
     case whatsapp
     case web
+    case bluesky
     case vault
 
     var id: String { rawValue }
@@ -53,7 +54,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             return false
         case .file, .shell, .server, .index, .system, .sqlite,
              .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news,
-             .whatsapp, .web, .vault:
+             .whatsapp, .web, .bluesky, .vault:
             return true
         }
     }
@@ -83,6 +84,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .news: return "News"
         case .whatsapp: return "WhatsApp"
         case .web: return "Web"
+        case .bluesky: return "Bluesky"
         case .vault: return "Vault"
         }
     }
@@ -112,6 +114,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .news: return "newspaper"
         case .whatsapp: return "message"
         case .web: return "globe"
+        case .bluesky: return "at"
         case .vault: return "lock.square"
         }
     }
@@ -204,6 +207,11 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             ]
         case .web:
             return ["web_search", "fetch_url"]
+        case .bluesky:
+            return [
+                "search_bluesky_posts", "get_bluesky_profile", "get_bluesky_author_feed",
+                "get_bluesky_thread", "search_bluesky_actors",
+            ]
         case .vault:
             return ["obsidian_search_vault", "obsidian_read_note", "obsidian_write_note", "obsidian_list_vault"]
         case .mcp:
@@ -217,12 +225,12 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .navigator:
             return [
                 .workspace, .memory, .bus, .system, .rules, .time, .web, .vault,
-                .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .whatsapp,
+                .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .whatsapp, .bluesky,
             ]
         case .project:
             return [
                 .file, .shell, .server, .index, .memory, .messaging, .bus, .system, .mcp, .sqlite, .web, .vault,
-                .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .whatsapp,
+                .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .whatsapp, .bluesky,
             ]
         }
     }
