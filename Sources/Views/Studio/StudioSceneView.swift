@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct StudioSceneView: View {
     @StateObject private var service = StudioSceneService.shared
@@ -120,24 +121,15 @@ struct StudioSceneView: View {
                         ForEach(scene.layers.sorted(by: { $0.zIndex < $1.zIndex })) { layer in
                             layerPreview(layer, in: geometry.size, scene: scene)
                         }
+                        MouseTrackingCanvas(
+                            onMouseDown: { point in canvasMouseDown(at: point, scene: scene, containerSize: geometry.size) },
+                            onMouseDragged: { point in canvasMouseDragged(at: point, scene: scene, containerSize: geometry.size) },
+                            onMouseUp: { point in canvasMouseUp(at: point, scene: scene, containerSize: geometry.size) },
+                            onDoubleClick: { point in canvasDoubleClick(at: point, scene: scene, containerSize: geometry.size) }
+                        )
+                        .frame(width: geometry.size.width, height: geometry.size.height)
                     }
                     .frame(width: geometry.size.width, height: geometry.size.height)
-                    .contentShape(Rectangle())
-                    .gesture(
-                        DragGesture(minimumDistance: 4, coordinateSpace: .local)
-                            .onChanged { value in
-                                handleCanvasDrag(scene: scene, containerSize: geometry.size, value: value)
-                            }
-                            .onEnded { value in
-                                endCanvasDrag(scene: scene, containerSize: geometry.size, value: value)
-                            }
-                    )
-                    .onTapGesture { location in
-                        handleCanvasTap(at: location, scene: scene, containerSize: geometry.size)
-                    }
-                    .onTapGesture(count: 2) { location in
-                        enterTransformMode(at: location, scene: scene, containerSize: geometry.size)
-                    }
                 } else {
                     ContentUnavailableView(
                         "No Scene Selected",
@@ -233,6 +225,9 @@ struct StudioSceneView: View {
     // MARK: - Canvas Layer Drag
 
     @State private var canvasDrag: CanvasDragState? = nil
+    @State private var mouseDragStart: CGPoint? = nil
+    @State private var mouseDragMoved: Bool = false
+    @State private var reassignCameraLayer: SceneLayer? = nil
 
     private struct CanvasDragState {
         let layerID: UUID
@@ -263,65 +258,82 @@ struct StudioSceneView: View {
         case topLeft, topRight, bottomLeft, bottomRight
     }
 
-    private func handleCanvasDrag(scene: StudioScene, containerSize: CGSize, value: DragGesture.Value) {
+    private func scenePoint(at viewPoint: CGPoint, containerSize: CGSize, scene: StudioScene) -> CGPoint {
         let scaleX = Double(containerSize.width) / Double(scene.width)
         let scaleY = Double(containerSize.height) / Double(scene.height)
-        let pointX = Double(value.location.x) / scaleX
-        let pointY = Double(value.location.y) / scaleY
+        return CGPoint(x: Double(viewPoint.x) / scaleX, y: Double(viewPoint.y) / scaleY)
+    }
 
-        if canvasDrag == nil {
-            let sorted = scene.layers.sorted(by: { $0.zIndex < $1.zIndex })
-            let point = CGPoint(x: pointX, y: pointY)
-            let layer: SceneLayer?
-            let handle: DragHandle
-            if let transformID = transformLayerID,
-               let tLayer = scene.layers.first(where: { $0.id == transformID }),
-               tLayer.isVisible {
-                if let h = handleAt(point, for: tLayer) {
-                    layer = tLayer
-                    handle = h
-                } else if layerRect(tLayer).contains(point) {
-                    layer = tLayer
-                    handle = .body
-                } else if let top = findTopLayer(at: point, in: sorted) {
-                    transformLayerID = nil
-                    layer = top
-                    handle = handleAt(point, for: top) ?? .body
-                } else {
-                    transformLayerID = nil
-                    selectedLayerID = nil
-                    return
-                }
+    private func startDragState(at viewPoint: CGPoint, scene: StudioScene, containerSize: CGSize) -> Bool {
+        let point = scenePoint(at: viewPoint, containerSize: containerSize, scene: scene)
+        let sorted = scene.layers.sorted(by: { $0.zIndex < $1.zIndex })
+        let layer: SceneLayer?
+        let handle: DragHandle
+        if let transformID = transformLayerID,
+           let tLayer = scene.layers.first(where: { $0.id == transformID }),
+           tLayer.isVisible {
+            if let h = handleAt(point, for: tLayer) {
+                layer = tLayer
+                handle = h
+            } else if layerRect(tLayer).contains(point) {
+                layer = tLayer
+                handle = .body
+            } else if let top = findTopLayer(at: point, in: sorted) {
+                transformLayerID = nil
+                layer = top
+                handle = handleAt(point, for: top) ?? .body
             } else {
-                if let top = findTopLayer(at: point, in: sorted) {
-                    layer = top
-                    handle = handleAt(point, for: top) ?? .body
-                } else {
-                    selectedLayerID = nil
-                    return
-                }
+                transformLayerID = nil
+                selectedLayerID = nil
+                return false
             }
-            guard let startLayer = layer else { return }
-            canvasDrag = CanvasDragState(
-                layerID: startLayer.id,
-                startX: startLayer.x,
-                startY: startLayer.y,
-                startWidth: startLayer.width,
-                startHeight: startLayer.height,
-                startCropX: startLayer.crop.x,
-                startCropY: startLayer.crop.y,
-                startCropWidth: startLayer.crop.width,
-                startCropHeight: startLayer.crop.height,
-                handle: handle
-            )
-            selectedLayerID = startLayer.id
+        } else {
+            if let top = findTopLayer(at: point, in: sorted) {
+                layer = top
+                handle = handleAt(point, for: top) ?? .body
+            } else {
+                selectedLayerID = nil
+                return false
+            }
         }
+        guard let startLayer = layer else { return false }
+        canvasDrag = CanvasDragState(
+            layerID: startLayer.id,
+            startX: startLayer.x,
+            startY: startLayer.y,
+            startWidth: startLayer.width,
+            startHeight: startLayer.height,
+            startCropX: startLayer.crop.x,
+            startCropY: startLayer.crop.y,
+            startCropWidth: startLayer.crop.width,
+            startCropHeight: startLayer.crop.height,
+            handle: handle
+        )
+        selectedLayerID = startLayer.id
+        return true
+    }
 
+    private func canvasMouseDown(at viewPoint: CGPoint, scene: StudioScene, containerSize: CGSize) {
+        mouseDragStart = viewPoint
+        mouseDragMoved = false
+        _ = startDragState(at: viewPoint, scene: scene, containerSize: containerSize)
+    }
+
+    private func canvasMouseDragged(at viewPoint: CGPoint, scene: StudioScene, containerSize: CGSize) {
+        guard let start = mouseDragStart else { return }
+        let threshold: CGFloat = 3
+        if !mouseDragMoved, hypot(viewPoint.x - start.x, viewPoint.y - start.y) < threshold {
+            return
+        }
+        mouseDragMoved = true
+        if canvasDrag == nil {
+            guard startDragState(at: start, scene: scene, containerSize: containerSize) else { return }
+        }
         guard let state = canvasDrag,
               let layer = scene.layers.first(where: { $0.id == state.layerID }) else { return }
 
-        let deltaX = Double(value.translation.width) / scaleX
-        let deltaY = Double(value.translation.height) / scaleY
+        let deltaX = Double(viewPoint.x - start.x) / (Double(containerSize.width) / Double(scene.width))
+        let deltaY = Double(viewPoint.y - start.y) / (Double(containerSize.height) / Double(scene.height))
 
         let updated = layerAfterDrag(
             layer: layer,
@@ -332,14 +344,12 @@ struct StudioSceneView: View {
         service.updateLayer(in: scene.id, layer: updated, save: false)
     }
 
-    private func endCanvasDrag(scene: StudioScene, containerSize: CGSize, value: DragGesture.Value) {
-        if let state = canvasDrag,
+    private func canvasMouseUp(at viewPoint: CGPoint, scene: StudioScene, containerSize: CGSize) {
+        if mouseDragMoved, let state = canvasDrag,
            let layer = scene.layers.first(where: { $0.id == state.layerID }) {
-            let scaleX = Double(containerSize.width) / Double(scene.width)
-            let scaleY = Double(containerSize.height) / Double(scene.height)
-            let deltaX = Double(value.translation.width) / scaleX
-            let deltaY = Double(value.translation.height) / scaleY
-
+            let start = mouseDragStart ?? viewPoint
+            let deltaX = Double(viewPoint.x - start.x) / (Double(containerSize.width) / Double(scene.width))
+            let deltaY = Double(viewPoint.y - start.y) / (Double(containerSize.height) / Double(scene.height))
             let updated = layerAfterDrag(
                 layer: layer,
                 state: state,
@@ -347,8 +357,31 @@ struct StudioSceneView: View {
                 deltaY: deltaY
             )
             service.updateLayer(in: scene.id, layer: updated)
+        } else if !mouseDragMoved, let start = mouseDragStart {
+            let point = scenePoint(at: start, containerSize: containerSize, scene: scene)
+            let sorted = scene.layers.sorted(by: { $0.zIndex < $1.zIndex })
+            if let layer = findTopLayer(at: point, in: sorted) {
+                selectedLayerID = layer.id
+            } else {
+                selectedLayerID = nil
+                transformLayerID = nil
+            }
         }
         canvasDrag = nil
+        mouseDragStart = nil
+        mouseDragMoved = false
+    }
+
+    private func canvasDoubleClick(at viewPoint: CGPoint, scene: StudioScene, containerSize: CGSize) {
+        let point = scenePoint(at: viewPoint, containerSize: containerSize, scene: scene)
+        let sorted = scene.layers.sorted(by: { $0.zIndex < $1.zIndex })
+        if let layer = findTopLayer(at: point, in: sorted) {
+            transformLayerID = layer.id
+            selectedLayerID = layer.id
+        }
+        canvasDrag = nil
+        mouseDragStart = nil
+        mouseDragMoved = false
     }
 
     private func layerAfterDrag(layer: SceneLayer, state: CanvasDragState, deltaX: Double, deltaY: Double) -> SceneLayer {
@@ -538,32 +571,6 @@ struct StudioSceneView: View {
         return nil
     }
 
-    private func handleCanvasTap(at location: CGPoint, scene: StudioScene, containerSize: CGSize) {
-        let scaleX = Double(containerSize.width) / Double(scene.width)
-        let scaleY = Double(containerSize.height) / Double(scene.height)
-        let pointX = Double(location.x) / scaleX
-        let pointY = Double(location.y) / scaleY
-        let sorted = scene.layers.sorted(by: { $0.zIndex < $1.zIndex })
-        if let layer = findTopLayer(at: CGPoint(x: pointX, y: pointY), in: sorted) {
-            selectedLayerID = layer.id
-        } else {
-            selectedLayerID = nil
-            transformLayerID = nil
-        }
-    }
-
-    private func enterTransformMode(at location: CGPoint, scene: StudioScene, containerSize: CGSize) {
-        let scaleX = Double(containerSize.width) / Double(scene.width)
-        let scaleY = Double(containerSize.height) / Double(scene.height)
-        let pointX = Double(location.x) / scaleX
-        let pointY = Double(location.y) / scaleY
-        let sorted = scene.layers.sorted(by: { $0.zIndex < $1.zIndex })
-        if let layer = findTopLayer(at: CGPoint(x: pointX, y: pointY), in: sorted) {
-            transformLayerID = layer.id
-            selectedLayerID = layer.id
-        }
-    }
-
     // MARK: - Layer Preview
 
     private func layerPreview(_ layer: SceneLayer, in containerSize: CGSize, scene: StudioScene) -> some View {
@@ -739,6 +746,22 @@ struct StudioSceneView: View {
                     }
                     .disabled(layer.zIndex == scene.layers.map(\.zIndex).max() ?? 0)
                 }
+
+                if case .camera(let sourceID) = layer.source {
+                    HStack {
+                        Text("Camera")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(sourceID.isEmpty ? "None" : sourceID)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        Button("Reassign…") {
+                            reassignCameraLayer = layer
+                        }
+                        .controlSize(.small)
+                    }
+                }
             }
 
             Section("Transform") {
@@ -792,6 +815,9 @@ struct StudioSceneView: View {
         .formStyle(.grouped)
         .padding(.vertical, 8)
         .frame(maxHeight: 320)
+        .sheet(item: $reassignCameraLayer) { layerToReassign in
+            ReassignCameraSheet(layer: layerToReassign)
+        }
     }
 
     private func moveLayerRelative(in scene: StudioScene, layer: SceneLayer, direction: Int) {
@@ -1229,6 +1255,113 @@ private struct SceneOutputSheet: View {
         if line.lowercased().contains("warning") { return .yellow }
         if line.hasPrefix("[info]") { return .cyan }
         return .primary
+    }
+}
+
+// MARK: - Reassign Camera Sheet
+
+private struct ReassignCameraSheet: View {
+    let layer: SceneLayer
+    @Environment(\.dismiss) private var dismiss
+    @State private var service = TetheringService.shared
+    @State private var selectedSourceID: String = ""
+
+    private var sourceID: String {
+        if case .camera(let id) = layer.source { return id }
+        return ""
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Reassign Camera")
+                .font(.title3.bold())
+
+            Picker("Camera", selection: $selectedSourceID) {
+                ForEach(Array(service.availableSources.enumerated()), id: \.offset) { _, source in
+                    Text(source.name).tag(source.id.rawValue)
+                }
+            }
+            .pickerStyle(.menu)
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button("Reassign") {
+                    NotificationCenter.default.post(
+                        name: .reassignCameraLayer,
+                        object: nil,
+                        userInfo: ["oldSourceID": sourceID, "newSourceID": selectedSourceID]
+                    )
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(selectedSourceID.isEmpty)
+            }
+        }
+        .padding()
+        .frame(width: 320)
+        .task {
+            await service.discover()
+            if selectedSourceID.isEmpty, let first = service.availableSources.first {
+                selectedSourceID = first.id.rawValue
+            }
+        }
+    }
+}
+
+// MARK: - Mouse Tracking Canvas
+
+/// A transparent AppKit-backed overlay that forwards mouse events to SwiftUI
+/// so the scene canvas gets precise double-click / drag handling without
+/// fighting SwiftUI gesture conflicts.
+private struct MouseTrackingCanvas: NSViewRepresentable {
+    let onMouseDown: (CGPoint) -> Void
+    let onMouseDragged: (CGPoint) -> Void
+    let onMouseUp: (CGPoint) -> Void
+    let onDoubleClick: (CGPoint) -> Void
+
+    func makeNSView(context: Context) -> MouseTrackingView {
+        let view = MouseTrackingView()
+        view.onMouseDown = onMouseDown
+        view.onMouseDragged = onMouseDragged
+        view.onMouseUp = onMouseUp
+        view.onDoubleClick = onDoubleClick
+        return view
+    }
+
+    func updateNSView(_ nsView: MouseTrackingView, context: Context) {
+        nsView.onMouseDown = onMouseDown
+        nsView.onMouseDragged = onMouseDragged
+        nsView.onMouseUp = onMouseUp
+        nsView.onDoubleClick = onDoubleClick
+    }
+
+    final class MouseTrackingView: NSView {
+        var onMouseDown: ((CGPoint) -> Void)?
+        var onMouseDragged: ((CGPoint) -> Void)?
+        var onMouseUp: ((CGPoint) -> Void)?
+        var onDoubleClick: ((CGPoint) -> Void)?
+
+        override var isFlipped: Bool { true }
+
+        override func mouseDown(with event: NSEvent) {
+            let point = convert(event.locationInWindow, from: nil)
+            if event.clickCount == 2 {
+                onDoubleClick?(point)
+            } else {
+                onMouseDown?(point)
+            }
+        }
+
+        override func mouseDragged(with event: NSEvent) {
+            let point = convert(event.locationInWindow, from: nil)
+            onMouseDragged?(point)
+        }
+
+        override func mouseUp(with event: NSEvent) {
+            let point = convert(event.locationInWindow, from: nil)
+            onMouseUp?(point)
+        }
     }
 }
 
