@@ -1,0 +1,5 @@
+# Bundled FFmpeg binaries are downloaded by scripts/download-ffmpeg.sh and
+# embedded into the app bundle at build time. Do not commit them.
+*
+!.gitignore
+!README.md

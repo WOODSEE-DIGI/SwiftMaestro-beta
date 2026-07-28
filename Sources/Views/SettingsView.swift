@@ -234,6 +234,7 @@ struct AppearanceSettingsTab: View {
     static let customizablePanels: [WorkspacePanelKind] = [
         .busMonitor, .notesMD, .appleNotes, .calendar, .reminders, .contacts,
         .canvas, .kanban, .numbers, .whatsapp, .terminal,
+        .tethering, .streamIngest, .broadcast, .streamMixer, .ndiBrowser, .colorAdjustments, .scenes,
     ]
 
     // Collapsible section state. "Appearance" and "App Panels" open by
@@ -666,6 +667,7 @@ struct StorageSettingsTab: View {
 struct SecretsSettingsTab: View {
     @State private var secrets: [SecretMetadata] = []
     @State private var showingAdd = false
+    @State private var editingMeta: SecretMetadata? = nil
     @State private var errorMessage: String?
 
     var body: some View {
@@ -697,6 +699,10 @@ struct SecretsSettingsTab: View {
                                     }
                                 }
                                 Spacer()
+                                Button { editingMeta = meta } label: {
+                                    Image(systemName: "pencil")
+                                }
+                                .buttonStyle(.plain)
                                 Button(role: .destructive) { delete(meta) } label: {
                                     Image(systemName: "trash")
                                 }
@@ -741,6 +747,11 @@ struct SecretsSettingsTab: View {
                 add(name: name, value: value, scope: scope, synced: synced, note: note)
             }
         }
+        .sheet(item: $editingMeta) { meta in
+            EditSecretSheet(meta: meta) { name, value, scope, synced, note in
+                edit(original: meta, name: name, value: value, scope: scope, synced: synced, note: note)
+            }
+        }
     }
 
     @ViewBuilder
@@ -760,6 +771,23 @@ struct SecretsSettingsTab: View {
     private func add(name: String, value: String, scope: SecretScope, synced: Bool, note: String?) {
         do {
             try SecretsStore.upsert(name: name, value: value, scope: scope, synced: synced, note: note)
+            errorMessage = nil
+            reload()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func edit(original: SecretMetadata, name: String, value: String, scope: SecretScope, synced: Bool, note: String?) {
+        do {
+            try SecretsStore.update(
+                original: original,
+                name: name,
+                value: value.isEmpty ? nil : value,
+                scope: scope,
+                synced: synced,
+                note: note
+            )
             errorMessage = nil
             reload()
         } catch {
@@ -835,6 +863,81 @@ private struct AddSecretSheet: View {
     private var canSave: Bool {
         !name.trimmingCharacters(in: .whitespaces).isEmpty
             && !value.isEmpty
+            && (scopeChoice == .permanent || !projectId.trimmingCharacters(in: .whitespaces).isEmpty)
+    }
+}
+
+private struct EditSecretSheet: View {
+    enum ScopeChoice: String, CaseIterable, Identifiable {
+        case permanent, project
+        var id: String { rawValue }
+    }
+
+    @Environment(\.dismiss) private var dismiss
+    let meta: SecretMetadata
+    let onSave: (String, String, SecretScope, Bool, String?) -> Void
+
+    @State private var name: String
+    @State private var value: String
+    @State private var scopeChoice: ScopeChoice
+    @State private var projectId: String
+    @State private var syncAcrossMacs: Bool
+    @State private var note: String
+
+    init(meta: SecretMetadata, onSave: @escaping (String, String, SecretScope, Bool, String?) -> Void) {
+        self.meta = meta
+        self.onSave = onSave
+        _name = State(initialValue: meta.name)
+        _value = State(initialValue: "")
+        switch meta.scope {
+        case .global:
+            _scopeChoice = State(initialValue: .permanent)
+            _projectId = State(initialValue: "")
+        case .project(let id):
+            _scopeChoice = State(initialValue: .project)
+            _projectId = State(initialValue: id)
+        }
+        _syncAcrossMacs = State(initialValue: meta.synced)
+        _note = State(initialValue: meta.note ?? "")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Edit Secret").font(.title3.bold())
+            Form {
+                TextField("Name", text: $name)
+                SecureField("Value (leave empty to keep current)", text: $value)
+                Picker("Scope", selection: $scopeChoice) {
+                    Text("Permanent (all projects)").tag(ScopeChoice.permanent)
+                    Text("This project only").tag(ScopeChoice.project)
+                }
+                .pickerStyle(.radioGroup)
+                if scopeChoice == .project {
+                    TextField("Project name", text: $projectId)
+                }
+                Toggle("Sync across my Macs (iCloud Keychain)", isOn: $syncAcrossMacs)
+                TextField("Note (optional)", text: $note)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button("Save") {
+                    let scope: SecretScope = scopeChoice == .project
+                        ? .project(projectId.trimmingCharacters(in: .whitespaces))
+                        : .global
+                    onSave(name, value, scope, syncAcrossMacs, note.isEmpty ? nil : note)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canSave)
+            }
+        }
+        .padding()
+        .frame(width: 460)
+    }
+
+    private var canSave: Bool {
+        !name.trimmingCharacters(in: .whitespaces).isEmpty
             && (scopeChoice == .permanent || !projectId.trimmingCharacters(in: .whitespaces).isEmpty)
     }
 }

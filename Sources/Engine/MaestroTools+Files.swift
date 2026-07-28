@@ -306,13 +306,19 @@ extension MaestroTools {
         return roots
     }
 
-    /// Resolve to an absolute, standardized path, or nil if it is not absolute.
-    /// Replaces invisible/alternative space characters and strips zero-width
-    /// characters so model-generated paths match filesystem paths.
+    /// Resolve to an absolute, standardized path. Replaces invisible/alternative
+    /// space characters and strips zero-width characters so model-generated paths
+    /// match filesystem paths. Relative paths are resolved against the agent's
+    /// current working directory when one is set.
     static func resolveAbsolute(_ path: String) -> String? {
         let expanded = unescapeShellPath((path as NSString).expandingTildeInPath)
-        guard expanded.hasPrefix("/") else { return nil }
         var cleaned = normalizePathInvisibles(expanded)
+        if !cleaned.hasPrefix("/") {
+            guard let workingDirectory = MaestroTools.workingDirectory, !workingDirectory.isEmpty else {
+                return nil
+            }
+            cleaned = (workingDirectory as NSString).appendingPathComponent(cleaned)
+        }
         return URL(fileURLWithPath: cleaned).standardizedFileURL.path
     }
 
@@ -385,7 +391,12 @@ extension MaestroTools {
         let endLine = min(totalLines, startLine + maxLines - 1)
         let slice = allLines[(startLine - 1)..<endLine]
         let prefix = "Lines \(startLine)-\(endLine) of \(totalLines):\n"
-        let truncated = endLine < totalLines
+        // Only warn about truncation when the caller did not explicitly cap the
+        // lines. If the model asked for exactly N lines, the suffix "... (X more
+        // lines)" makes small models think the read was truncated and they loop
+        // trying to re-read the same file.
+        let hasExplicitLimit = limit != nil
+        let truncated = (endLine < totalLines && !hasExplicitLimit)
             ? prefix + slice.joined(separator: "\n") + "\n... (\(totalLines - endLine) more lines)"
             : prefix + slice.joined(separator: "\n")
         return truncated + (actualPath == path ? "" : "\n[resolved path: \(actualPath)]")
@@ -394,20 +405,28 @@ extension MaestroTools {
     static func readFile(_ call: ToolCall) async -> String {
         guard let args = decodeArgs(call, as: ReadFileArgs.self),
               let raw = args.path?.trimmingCharacters(in: .whitespaces), !raw.isEmpty else {
+            NSLog("[read_file] missing path; args=%@", call.function.arguments)
             return errorJSON("read_file requires 'path'")
         }
         guard let resolved = resolveAbsolute(raw) else {
+            NSLog("[read_file] could not resolve path '%@' against working directory '%@'", raw, MaestroTools.workingDirectory ?? "(none)")
             return errorJSON("read_file requires an absolute path (got '\(raw)')")
         }
-        guard isAllowed(resolved, roots: authorizedRoots()) else { return denied(raw) }
+        guard isAllowed(resolved, roots: authorizedRoots()) else {
+            NSLog("[read_file] access denied for '%@' (resolved: '%@'); roots=%@", raw, resolved, authorizedRoots())
+            return denied(raw)
+        }
         let actualPath = fuzzyResolve(resolved, wantDirectory: false) ?? resolved
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: actualPath, isDirectory: &isDir), !isDir.boolValue else {
+            NSLog("[read_file] no file at '%@' (resolved: '%@')", raw, actualPath)
             return errorJSON("no file at '\(resolved)'.\(didYouMean(path: resolved, wantDirectory: false))")
         }
         guard let data = FileManager.default.contents(atPath: actualPath) else {
+            NSLog("[read_file] could not read contents of '%@'", actualPath)
             return errorJSON("could not read '\(actualPath)'")
         }
+        NSLog("[read_file] success: raw='%@' resolved='%@' size=%d bytes", raw, actualPath, data.count)
         guard data.count <= maxReadBytes else {
             return errorJSON("file too large (\(data.count) bytes; limit \(maxReadBytes)).")
         }
@@ -417,15 +436,19 @@ extension MaestroTools {
         switch category {
         case .text:
             if let text = FileContentExtractor.extractText(from: actualPath) {
-                return applyLineLimit(text, offset: args.offset, limit: args.limit,
-                                      totalSource: text, path: resolved, actualPath: actualPath)
+                let result = applyLineLimit(text, offset: args.offset, limit: args.limit,
+                                            totalSource: text, path: resolved, actualPath: actualPath)
+                NSLog("[read_file] returning text result: %@", String(result.prefix(200)))
+                return result
             }
             return readBinaryContent(data: data, path: actualPath)
 
         case .pdf, .document:
             if let text = FileContentExtractor.extractText(from: actualPath), !text.isEmpty {
-                return applyLineLimit(text, offset: args.offset, limit: args.limit,
-                                      totalSource: text, path: resolved, actualPath: actualPath)
+                let result = applyLineLimit(text, offset: args.offset, limit: args.limit,
+                                            totalSource: text, path: resolved, actualPath: actualPath)
+                NSLog("[read_file] returning document result: %@", String(result.prefix(200)))
+                return result
             }
             // Fall through to binary representation if document extraction fails.
             return readBinaryContent(data: data, path: actualPath)

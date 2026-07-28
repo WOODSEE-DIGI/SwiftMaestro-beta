@@ -50,9 +50,14 @@ struct AgentRecord: Identifiable, Codable, Hashable {
     /// behavior — this is opt-in. Optional so existing `workspace.json`
     /// (written before this field) still decodes.
     var compactToolMode: Bool?
+    /// Subagent category (e.g. coding, research, design). `nil` means use
+    /// heuristics based on the agent name. Optional so existing workspace.json
+    /// decodes and upgrades lazily.
+    var category: AgentCategory?
     init(id: UUID = UUID(), name: String, kind: AgentKind, projectId: UUID? = nil,
          modelID: String? = nil, workingDirectory: String? = nil,
-         enabledToolCategories: [String]? = nil, compactToolMode: Bool? = nil) {
+         enabledToolCategories: [String]? = nil, compactToolMode: Bool? = nil,
+         category: AgentCategory? = nil) {
         self.id = id
         self.name = name
         self.kind = kind
@@ -61,6 +66,7 @@ struct AgentRecord: Identifiable, Codable, Hashable {
         self.workingDirectory = workingDirectory
         self.enabledToolCategories = enabledToolCategories
         self.compactToolMode = compactToolMode
+        self.category = category
     }
 }
 
@@ -120,6 +126,27 @@ final class WorkspaceStore {
         }
     }
 
+    /// Effective category for an agent. Explicitly-set category wins; otherwise
+    /// infer from the agent name.
+    func resolvedCategory(for agent: AgentRecord) -> AgentCategory {
+        agent.category ?? AgentCategory.infer(from: agent.name)
+    }
+
+    /// All visible project agents grouped by their resolved category.
+    /// Agents whose project is hidden (e.g. infrastructure BusWorkers) are excluded.
+    func projectAgentsByCategory() -> [(category: AgentCategory, agents: [AgentRecord])] {
+        let hiddenProjectIDs = Set(projects.filter { $0.isHidden }.map(\.id))
+        let grouped = Dictionary(grouping: agents.filter {
+            $0.kind == .project && !($0.projectId.map { hiddenProjectIDs.contains($0) } ?? false)
+        }) {
+            resolvedCategory(for: $0)
+        }
+        return AgentCategory.allCases.compactMap { category in
+            let list = grouped[category] ?? []
+            return list.isEmpty ? nil : (category, list.sorted(by: { $0.name < $1.name }))
+        }
+    }
+
     // MARK: - Mutations
 
     @discardableResult
@@ -135,11 +162,15 @@ final class WorkspaceStore {
     @discardableResult
     func createAgent(
         name: String, in project: Project,
-        workingDirectory: String? = nil, modelID: String? = nil
+        workingDirectory: String? = nil, modelID: String? = nil,
+        category: AgentCategory? = nil
     ) -> AgentRecord {
+        let resolvedCategory = category ?? AgentCategory.infer(from: name)
         let a = AgentRecord(
             name: name, kind: .project, projectId: project.id,
-            modelID: modelID, workingDirectory: workingDirectory)
+            modelID: modelID, workingDirectory: workingDirectory,
+            enabledToolCategories: Array(resolvedCategory.defaultToolCategories.map(\.rawValue)),
+            category: resolvedCategory)
         agents.append(a)
         save()
         return a
@@ -149,13 +180,22 @@ final class WorkspaceStore {
     @discardableResult
     func createProjectAgent(
         projectName: String, agentName: String,
-        workingDirectory: String? = nil, modelID: String? = nil
+        workingDirectory: String? = nil, modelID: String? = nil,
+        category: AgentCategory? = nil
     ) -> AgentRecord {
         let p = ensureProject(named: projectName)
         if let existing = findAgent(projectName: projectName, agentName: agentName) { return existing }
         return createAgent(
             name: agentName, in: p,
-            workingDirectory: workingDirectory, modelID: modelID)
+            workingDirectory: workingDirectory, modelID: modelID,
+            category: category)
+    }
+
+    /// Set (or clear with `nil`) an agent's category and persist.
+    func setCategory(_ category: AgentCategory?, for agentID: UUID) {
+        guard let i = agents.firstIndex(where: { $0.id == agentID }) else { return }
+        agents[i].category = category
+        save()
     }
 
     /// Remove a project agent (and its chat history); prune the project if empty.
@@ -228,19 +268,22 @@ final class WorkspaceStore {
     }
 
     /// One-time migration: ensure every agent's saved enabled categories include
-    /// all categories currently visible for its kind. This is called once at app
-    /// startup after the workspace is loaded, so it does not mutate state during
-    /// a SwiftUI view render.
+    /// the categories its baseline requires. For categorized agents the baseline
+    /// is the category's default tool set; for uncategorized agents it is the
+    /// kind's default set. This is called once at app startup after the workspace
+    /// is loaded, so it does not mutate state during a SwiftUI view render.
     func migrateEnabledToolCategories() {
         var changed = false
         for i in agents.indices {
             let kind = agents[i].kind
             let saved = Set(agents[i].enabledToolCategories?.compactMap { ToolCategory(rawValue: $0) } ?? [])
-            let visible = Set(ToolCategory.visible(for: kind))
-            // If nothing is saved, defaults will already include everything visible.
-            // If saved set is non-empty, merge any new categories in.
+            // If nothing is saved, the defaults will already provide the right baseline.
+            // If a saved set exists, top it up to the agent's baseline without
+            // adding unrelated categories.
+            let baseline = agents[i].category?.defaultToolCategories
+                ?? Set(ToolCategory.defaultEnabled(for: kind))
             if !saved.isEmpty {
-                let merged = saved.union(visible)
+                let merged = saved.union(baseline)
                 if merged != saved {
                     agents[i].enabledToolCategories = Array(merged.map(\.rawValue))
                     changed = true
@@ -249,7 +292,7 @@ final class WorkspaceStore {
         }
         if changed {
             save()
-            NSLog("[WORKSPACE] migrated enabled tool categories to include new categories")
+            NSLog("[WORKSPACE] migrated enabled tool categories to baseline defaults")
         }
     }
 
@@ -310,6 +353,33 @@ final class WorkspaceStore {
             agents[i].name = "Maestro"
             save()
             NSLog("[WORKSPACE] renamed conductor agent from Navigator to Maestro")
+        }
+
+        // One-time category migration: infer a category for existing project
+        // agents that don't have one yet. This lets the new sidebar group
+        // existing agents immediately without requiring manual assignment.
+        // Also seed the default tool categories for the inferred category.
+        let categoryMigrationKey = "com.woodseedigi.swiftmaestro.categoryMigrationDone"
+        if !UserDefaults.standard.bool(forKey: categoryMigrationKey) {
+            var didChange = false
+            for i in agents.indices where agents[i].kind == .project {
+                if agents[i].category == nil {
+                    let inferred = AgentCategory.infer(from: agents[i].name)
+                    agents[i].category = inferred
+                    didChange = true
+                }
+                if agents[i].enabledToolCategories == nil,
+                   let category = agents[i].category {
+                    agents[i].enabledToolCategories = Array(
+                        category.defaultToolCategories.map(\.rawValue))
+                    didChange = true
+                }
+            }
+            if didChange {
+                save()
+                NSLog("[WORKSPACE] inferred categories and tool sets for existing project agents")
+            }
+            UserDefaults.standard.set(true, forKey: categoryMigrationKey)
         }
 
         // One-time cleanup: hide the infrastructure BusWorkers project and remove

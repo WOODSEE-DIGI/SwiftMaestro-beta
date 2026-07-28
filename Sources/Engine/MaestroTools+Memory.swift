@@ -126,9 +126,12 @@ extension MaestroTools {
                     "query": ["type": "string", "description": "Text to search for."] as [String: any Sendable],
                 ] as [String: any Sendable], required: ["query"]),
             rawSpec("memory_list",
-                "List stored memory entry paths, optionally limited to one kind.",
+                "List a small page of stored memory entry paths (metadata only). Prefer memory_search for finding specific content. Default limit is 50; use offset to paginate.",
                 properties: [
                     "kind": ["type": "string", "description": memoryKindDesc] as [String: any Sendable],
+                    "path": ["type": "string", "description": "Optional path prefix to narrow results (e.g. 'projects/SwiftMaestro')."] as [String: any Sendable],
+                    "limit": ["type": "integer", "description": "Max entries to return (default 50, max 200)."] as [String: any Sendable],
+                    "offset": ["type": "integer", "description": "Skip this many entries for pagination."] as [String: any Sendable],
                 ] as [String: any Sendable], required: []),
             rawSpec("context_update",
                 "Update the structured context profile for an agent, project, or session. "
@@ -198,7 +201,7 @@ extension MaestroTools {
     private struct MemoryWriteArgs: Codable { let path: String?; let content: String?; let kind: String? }
     private struct MemoryReadArgs: Codable { let path: String?; let kind: String? }
     private struct MemorySearchArgs: Codable { let query: String? }
-    private struct MemoryListArgs: Codable { let kind: String? }
+    private struct MemoryListArgs: Codable { let kind: String?; let path: String?; let limit: Int?; let offset: Int? }
 
     private static func memoryKind(_ raw: String?) -> MaestroURI.Kind {
         guard let raw = raw?.trimmingCharacters(in: .whitespaces).lowercased(), !raw.isEmpty,
@@ -255,18 +258,18 @@ extension MaestroTools {
     static func memoryList(_ call: ToolCall) async -> String {
         let args = decodeArgs(call, as: MemoryListArgs.self)
         let store = SimpleMemoryStore()
-        let kindRaw = args?.kind?.trimmingCharacters(in: .whitespaces) ?? ""
-        let kinds: [MaestroURI.Kind] = kindRaw.isEmpty
-            ? MaestroURI.Kind.allCases
-            : [memoryKind(kindRaw)]
-        var lines: [String] = []
-        for kind in kinds {
-            for entry in store.entries(kind: kind) {
-                lines.append("- [\(kind.rawValue)] \(entry)")
-            }
+        let kind = memoryKind(args?.kind)
+        let pathPrefix = args?.path?.trimmingCharacters(in: .whitespaces)
+        let limit = max(1, min(args?.limit ?? 50, 200))
+        let offset = max(0, args?.offset ?? 0)
+        let total = store.countEntries(kind: kind, pathPrefix: pathPrefix)
+        let entries = store.entries(kind: kind, pathPrefix: pathPrefix, limit: limit, offset: offset)
+        guard !entries.isEmpty else { return "No memory entries in \(kind.rawValue)\(pathPrefix.map { " under \($0)" } ?? "")." }
+        let lines = entries.map { "- [\(kind.rawValue)] \($0)" }
+        if total == entries.count && offset == 0 {
+            return "Memory entries (\(total)):\n" + lines.joined(separator: "\n")
         }
-        guard !lines.isEmpty else { return "Memory store is empty." }
-        return "Memory entries (\(lines.count)):\n" + lines.joined(separator: "\n")
+        return "Showing \(entries.count) of \(total) memory entries in \(kind.rawValue) (offset \(offset), limit \(limit)):\n" + lines.joined(separator: "\n") + "\n\nUse memory_search to find specific content, or increase offset to paginate."
     }
 
     // MARK: - Context store handlers

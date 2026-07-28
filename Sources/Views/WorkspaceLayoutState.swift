@@ -21,6 +21,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
     case maps
     case photos
     case whatsapp
+    case discord
     /// A WKWebView UI plugin, identified by its manifest id (see
     /// `PluginManifest`/`PluginService`). Unlike the other cases, this one is
     /// data-driven — there's no fixed enum case per plugin. `icon` returns a
@@ -38,6 +39,24 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
     case busMonitor
     /// Audio input/output control panel: device selection, mute, and level meter.
     case audioControl
+    /// Tethered / live multi-source camera capture (USB PTP, HDMI, webcam, NDI).
+    case tethering
+    /// Local RTMP/SRT/WebRTC ingest server.
+    case streamIngest
+    /// RTMP/SRT broadcast publisher to platforms or custom endpoints.
+    case broadcast
+    /// Route and switch between sources; send to publisher or recorder.
+    case streamMixer
+    /// Discover and preview NDI sources on the network.
+    case ndiBrowser
+    /// Color adjustments / LUT / filter panel for live video sources.
+    case colorAdjustments
+    /// Multi-layer scene composer with sources and overlays.
+    case scenes
+    /// A movable launcher containing the Apple Apps, Swift Apps, and Plugins
+    /// sections from the sidebar. Users can dock it anywhere in the workspace
+    /// grid (e.g. under Plans) when the sidebar is overcrowded.
+    case appLauncher
 
     var icon: String {
         switch self {
@@ -53,10 +72,19 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .maps: return "map"
         case .photos: return "photo.stack"
         case .whatsapp: return "message"
+        case .discord: return "bubble.left.and.text.bubble.right.fill"
         case .plugin: return "puzzlepiece.extension"
         case .terminal: return "terminal"
         case .busMonitor: return "network"
         case .audioControl: return "mic"
+        case .tethering: return "camera.viewfinder"
+        case .streamIngest: return "arrow.down.circle"
+        case .broadcast: return "arrow.up.circle"
+        case .streamMixer: return "arrow.triangle.merge"
+        case .ndiBrowser: return "network.badge.shield.half.filled"
+        case .colorAdjustments: return "slider.horizontal.3"
+        case .scenes: return "rectangle.stack"
+        case .appLauncher: return "square.grid.2x2"
         }
     }
 
@@ -79,16 +107,24 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .maps: return "maps"
         case .photos: return "photos"
         case .whatsapp: return "whatsapp"
+        case .discord: return "discord"
         case .plugin: return "plugin"
-                case .terminal: return "terminal"
+        case .terminal: return "terminal"
         case .busMonitor: return "busMonitor"
         case .audioControl: return "audioControl"
+        case .tethering: return "tethering"
+        case .streamIngest: return "streamIngest"
+        case .broadcast: return "broadcast"
+        case .streamMixer: return "streamMixer"
+        case .ndiBrowser: return "ndiBrowser"
+        case .colorAdjustments: return "colorAdjustments"
+        case .scenes: return "scenes"
+        case .appLauncher: return "appLauncher"
         }
     }
 
     /// Static display name for non-agent panels. Agent chat panels resolve
     /// their name from `WorkspaceStore` at the view layer instead, since the
-
     /// name can change (rename) independently of this identity.
     var staticDisplayName: String? {
         switch self {
@@ -104,16 +140,24 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .maps: return "Maps"
         case .photos: return "Photos"
         case .whatsapp: return "WhatsApp"
+        case .discord: return "Discord"
         case .plugin: return nil
-                case .terminal: return "Terminal"
+        case .terminal: return "Terminal"
         case .busMonitor: return "Bus Monitor"
         case .audioControl: return "Audio Control"
+        case .tethering: return "Cameras"
+        case .streamIngest: return "Stream Ingest"
+        case .broadcast: return "Broadcast"
+        case .streamMixer: return "Stream Mixer"
+        case .ndiBrowser: return "NDI Browser"
+        case .colorAdjustments: return "Color Adjustments"
+        case .scenes: return "Scenes"
+        case .appLauncher: return "Apps"
         }
     }
 
     /// Minimum comfortable column width. Agent chat panels host their own
     /// nested Plans/Tasks/Terminal sub-panels (see `ChatView`'s own
-
     /// `ResizablePanelHost`), so squeezing one down to a generic panel's
     /// minimum would squish that inner layout unreadable — the exact bug this
     /// value exists to prevent. Simpler single-content panels can go narrower.
@@ -141,72 +185,287 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .maps: return "maps"
         case .photos: return "photos"
         case .whatsapp: return "whatsapp"
+        case .discord: return "discord"
         case .plugin(let id): return "plugin:\(id)"
         case .terminal: return "terminal"
         case .busMonitor: return "busMonitor"
         case .audioControl: return "audioControl"
+        case .tethering: return "tethering"
+        case .streamIngest: return "streamIngest"
+        case .broadcast: return "broadcast"
+        case .streamMixer: return "streamMixer"
+        case .ndiBrowser: return "ndiBrowser"
+        case .colorAdjustments: return "colorAdjustments"
+        case .scenes: return "scenes"
+        case .appLauncher: return "appLauncher"
         }
     }
 }
 
-// MARK: - Workspace Row
+// MARK: - Tiling Drop Zone
 
-/// One horizontal row of the workspace grid — a left-to-right sequence of
-/// panels. Rows themselves stack top-to-bottom, so the overall workspace is a
-/// 2-D grid of "quadrants" (any number of rows, any number of columns per
-/// row) rather than a single endlessly-shrinking horizontal strip.
-struct WorkspaceRow: Identifiable, Codable, Equatable, Sendable {
+/// Where a dragged panel should land relative to the tile it is dropped on.
+/// `center` stacks it with the target; the four cardinal directions split
+/// the target tile in half and place the dragged panel on that side.
+enum TilingDropZone: String, Codable, Hashable, Sendable, CaseIterable {
+    case left, right, top, bottom, center
+
+    /// The split axis implied by this zone, if any.
+    var splitAxis: LayoutAxis? {
+        switch self {
+        case .left, .right: return .horizontal
+        case .top, .bottom: return .vertical
+        case .center: return nil
+        }
+    }
+
+    /// When creating a new split, `true` means the dragged panel becomes the
+    /// `first` child (left/top); `false` means the `second` child (right/bottom).
+    var draggedPanelIsFirst: Bool? {
+        switch self {
+        case .left, .top: return true
+        case .right, .bottom: return false
+        case .center: return nil
+        }
+    }
+}
+
+// MARK: - Layout Axis
+
+/// The split direction of a binary-tree layout node. Kept as a custom type
+/// (rather than SwiftUI `Axis`) because it must be `Codable`/`Sendable`.
+enum LayoutAxis: String, Codable, Hashable, Sendable {
+    case horizontal, vertical
+}
+
+// MARK: - Layout Node
+
+/// Recursive binary tree representing the tiled workspace. A node is either a
+/// single panel leaf, a stack of panels sharing one tile (center drop), or a
+/// split that divides space between two children. This model can represent
+/// any quadrant/location the user drags a panel into, without locking the UI
+/// into a fixed number of rows or columns.
+indirect enum LayoutNode: Codable, Hashable, Sendable {
+    case leaf(WorkspacePanelKind)
+    case stack([WorkspacePanelKind])
+    case split(axis: LayoutAxis, ratio: Double, first: LayoutNode, second: LayoutNode)
+
+    /// All individual panel kinds contained in this subtree.
+    func allPanels() -> [WorkspacePanelKind] {
+        switch self {
+        case .leaf(let kind): return [kind]
+        case .stack(let kinds): return kinds
+        case .split(_, _, let first, let second): return first.allPanels() + second.allPanels()
+        }
+    }
+
+    /// Whether the subtree contains the panel.
+    func contains(_ kind: WorkspacePanelKind) -> Bool {
+        switch self {
+        case .leaf(let k): return k == kind
+        case .stack(let kinds): return kinds.contains(kind)
+        case .split(_, _, let first, let second): return first.contains(kind) || second.contains(kind)
+        }
+    }
+
+    /// A path of first/second decisions from the root to the target panel.
+    func path(to kind: WorkspacePanelKind) -> LayoutPath? {
+        switch self {
+        case .leaf(let k):
+            return k == kind ? LayoutPath() : nil
+        case .stack(let kinds):
+            return kinds.contains(kind) ? LayoutPath() : nil
+        case .split(_, _, let first, let second):
+            if let firstPath = first.path(to: kind) {
+                return LayoutPath(steps: [.first] + firstPath.steps)
+            }
+            if let secondPath = second.path(to: kind) {
+                return LayoutPath(steps: [.second] + secondPath.steps)
+            }
+            return nil
+        }
+    }
+
+    /// Remove the first occurrence of `kind` from this subtree and simplify
+    /// the resulting tree (collapse single-child splits, empty stacks, etc.).
+    /// Returns the new node, or `nil` if the subtree becomes empty.
+    func removing(_ kind: WorkspacePanelKind) -> LayoutNode? {
+        switch self {
+        case .leaf(let k):
+            return k == kind ? nil : self
+        case .stack(let kinds):
+            let filtered = kinds.filter { $0 != kind }
+            if filtered.isEmpty { return nil }
+            if filtered.count == 1 { return .leaf(filtered[0]) }
+            return .stack(filtered)
+        case .split(let axis, let ratio, let first, let second):
+            if first.contains(kind) {
+                guard let newFirst = first.removing(kind) else {
+                    return second.simplified()
+                }
+                return .split(axis: axis, ratio: ratio, first: newFirst, second: second).simplified()
+            } else if second.contains(kind) {
+                guard let newSecond = second.removing(kind) else {
+                    return first.simplified()
+                }
+                return .split(axis: axis, ratio: ratio, first: first, second: newSecond).simplified()
+            }
+            return self
+        }
+    }
+
+    /// Insert `kind` relative to the node at `path`, in the requested `zone`.
+    /// Returns a new node; if the path no longer exists, returns `self`.
+    func inserting(_ kind: WorkspacePanelKind, at path: LayoutPath, zone: TilingDropZone) -> LayoutNode {
+        if path.isEmpty {
+            return insertAtSelf(kind, zone: zone)
+        }
+        switch self {
+        case .leaf, .stack:
+            // Path is invalid for a leaf; treat as a self-insert on the root.
+            return insertAtSelf(kind, zone: zone)
+        case .split(let axis, let ratio, let first, let second):
+            guard let step = path.first else { return insertAtSelf(kind, zone: zone) }
+            switch step {
+            case .first:
+                let rest = path.droppingFirst()
+                let newFirst = first.inserting(kind, at: rest, zone: zone)
+                return .split(axis: axis, ratio: ratio, first: newFirst, second: second)
+            case .second:
+                let rest = path.droppingFirst()
+                let newSecond = second.inserting(kind, at: rest, zone: zone)
+                return .split(axis: axis, ratio: ratio, first: first, second: newSecond)
+            }
+        }
+    }
+
+    private func insertAtSelf(_ kind: WorkspacePanelKind, zone: TilingDropZone) -> LayoutNode {
+        switch zone {
+        case .center:
+            switch self {
+            case .leaf(let existing):
+                return .stack([existing, kind])
+            case .stack(var kinds):
+                if !kinds.contains(kind) { kinds.append(kind) }
+                return .stack(kinds)
+            case .split:
+                // Cannot stack on a split; default to a right-side split.
+                return .split(axis: .horizontal, ratio: 0.5, first: self, second: .leaf(kind))
+            }
+        default:
+            guard let axis = zone.splitAxis, let firstSlot = zone.draggedPanelIsFirst else { return self }
+            let split = LayoutNode.split(axis: axis, ratio: 0.5, first: self, second: .leaf(kind))
+            if firstSlot {
+                // dragged panel should be first: swap the self/leaf order but
+                // keep ratio meaning "first child's fraction".
+                return .split(axis: axis, ratio: 0.5, first: .leaf(kind), second: self)
+            }
+            return split
+        }
+    }
+
+    /// Simplify single-child splits and empty stacks after a removal.
+    private func simplified() -> LayoutNode? {
+        switch self {
+        case .leaf: return self
+        case .stack(let kinds):
+            if kinds.isEmpty { return nil }
+            if kinds.count == 1 { return .leaf(kinds[0]) }
+            return self
+        case .split(_, _, let first, let second):
+            let simpleFirst = first.simplified()
+            let simpleSecond = second.simplified()
+            if simpleFirst == nil { return simpleSecond }
+            if simpleSecond == nil { return simpleFirst }
+            return self
+        }
+    }
+}
+
+// MARK: - Layout Path
+
+/// A path from the root of the layout tree to a specific node. Each step
+/// chooses the first or second child of a split.
+struct LayoutPath: Hashable, Sendable {
+    enum Step: String, Codable, Hashable, Sendable {
+        case first, second
+    }
+    var steps: [Step] = []
+
+    var isEmpty: Bool { steps.isEmpty }
+    var first: Step? { steps.first }
+
+    func droppingFirst() -> LayoutPath {
+        LayoutPath(steps: Array(steps.dropFirst()))
+    }
+}
+
+// MARK: - Legacy Workspace Row / Column
+
+// These types are kept solely for decoding the previous grid persistence
+// format and migrating it into the binary tree model.
+
+private struct LegacyColumn: Identifiable, Decodable, Equatable, Sendable {
     var id: UUID = UUID()
     var panels: [WorkspacePanelKind] = []
 }
 
+private struct LegacyRow: Identifiable, Decodable, Equatable, Sendable {
+    var id: UUID = UUID()
+    var columns: [LegacyColumn] = []
+
+    enum CodingKeys: String, CodingKey {
+        case id, columns, panels
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        if let columns = try? container.decode([LegacyColumn].self, forKey: .columns) {
+            self.columns = columns
+        } else if let panels = try? container.decode([WorkspacePanelKind].self, forKey: .panels) {
+            self.columns = panels.map { LegacyColumn(panels: [$0]) }
+        }
+    }
+}
+
 // MARK: - Workspace Layout State
 
-/// Tracks the workspace grid (rows of docked panels), which panels are
-/// floating in their own windows instead, per-panel column widths, per-row
-/// heights, and persists all of it across relaunch. The sidebar acts as a
-/// *launcher*: selecting an item opens/focuses it here rather than replacing
-/// whatever else is already open.
-///
-/// Placement: the very first panel ever opened docks immediately (so there's
-/// a usable main window from launch); every panel after that opens as its
-/// own floating window by default, matching the "professional AV app" style
-/// of some inspiration apps — the user decides whether/where to dock it, not
-/// the app. Docking (via a floating window's own "Dock" button, or dragging
-/// it back) is Tetris-placed: it joins the current (last) row *if* that row
-/// still has comfortable room for it at every panel's minimum column width;
-/// otherwise it starts a brand new row below, rather than squeezing everything
-/// already in that row past readability. The user can always override this
-/// manually via each docked panel's "Move to New Row" / "Move Up" / "Move
-/// Down" actions.
+/// Tracks the tiled workspace (a recursive binary tree of panels), which
+/// panels are floating in their own windows, per-split ratios, and the
+/// workspace lock state. Selecting an item in the sidebar opens or focuses it;
+/// dragging a panel by its grip rearranges the tree.
 @Observable
 @MainActor
 final class WorkspaceLayoutState {
 
     static let shared = WorkspaceLayoutState()
 
-    private(set) var rows: [WorkspaceRow] = []
+    /// The root of the binary tiling tree. `nil` means an empty workspace.
+    private(set) var root: LayoutNode?
 
     /// Panels currently open in their own floating window rather than docked
-    /// into `rows`. New panels open floating by default (see `open(_:)`) —
-    /// only the very first panel the user ever opens docks automatically, so
-    /// there's always a usable main window on first launch.
+    /// into the tree. New panels open floating by default (see `open(_:)`)
+    /// after the very first one, which docks immediately so the main window
+    /// is never empty on first launch.
     private(set) var floatingPanels: Set<WorkspacePanelKind> = []
 
-    /// Docked width per panel (by storage key), within whatever row it's in.
-    /// The trailing panel in each row is always flexible and ignores this.
-    private var columnWidths: [String: CGFloat] = [:]
-    /// Docked height per row (by row id), for every row except the last,
-    /// which is always flexible.
-    private var rowHeights: [UUID: CGFloat] = [:]
+    /// When `true`, the workspace layout is locked and panels cannot be dragged
+    /// or dropped. The lock toggle lives in the main toolbar.
+    var isLocked = false
 
-    /// The most recently measured width of the workspace content area,
-    /// updated reactively from `ContentView` via a geometry read. Used only
-    /// to decide whether a newly opened panel fits in the current row.
+    /// Persisted split ratio per split node. Keyed by a deterministic hash of
+    /// the split's path and the panels it contains, so the ratio survives a
+    /// rebuild of the tree. Values are between 0.1 and 0.9.
+    private var splitRatios: [String: Double] = [:]
+
+    /// The most recently measured width of the workspace content area.
+    /// Used to decide whether a newly opened panel fits comfortably.
     var availableWidth: CGFloat = 1_000
 
     private let defaultsKey = "SwiftMaestro.WorkspaceLayout"
-    private static let dividerAllowance: CGFloat = 10
+    private static let minRatio: Double = 0.1
+    private static let maxRatio: Double = 0.9
 
     init() {
         load()
@@ -215,45 +474,50 @@ final class WorkspaceLayoutState {
     // MARK: - Queries
 
     func isOpen(_ kind: WorkspacePanelKind) -> Bool {
-        floatingPanels.contains(kind) || rows.contains { $0.panels.contains(kind) }
+        floatingPanels.contains(kind) || root?.contains(kind) == true
     }
 
     func isFloating(_ kind: WorkspacePanelKind) -> Bool {
         floatingPanels.contains(kind)
     }
 
-    /// All docked open panels in row-major (top-to-bottom, left-to-right)
-    /// order. Does not include floating panels.
+    /// All panels currently docked in the tree, in a stable traversal order.
     var allOpenPanels: [WorkspacePanelKind] {
-        rows.flatMap(\.panels)
+        root?.allPanels() ?? []
     }
 
-    private func rowIndex(of kind: WorkspacePanelKind) -> Int? {
-        rows.firstIndex { $0.panels.contains(kind) }
+    /// Path of the given panel in the tree, or `nil` if floating or closed.
+    func path(of kind: WorkspacePanelKind) -> LayoutPath? {
+        root?.path(to: kind)
     }
 
-    // MARK: - Open / close
+    /// Whether the tree contains at least one split node.
+    var hasMultipleTiles: Bool {
+        guard let root else { return false }
+        switch root {
+        case .leaf, .stack: return false
+        case .split: return true
+        }
+    }
+
+    // MARK: - Open / close / float
 
     enum OpenResult {
         case alreadyOpen
-        /// This was the very first panel ever opened — docked immediately so
-        /// there's a usable main window.
+        /// The very first panel opened into an empty workspace.
         case dockedDirectly
-        /// Opened as a new floating window — the caller is responsible for
-        /// actually presenting it via `openWindow(id:value:)`.
+        /// Opened as a new floating window.
         case floated
     }
 
-    /// Open a panel. The very first panel opened (nothing docked or floating
-    /// yet) docks immediately; every panel after that opens as a floating
-    /// window by default — the user decides whether/where to dock it. No-op
-    /// if already open either way.
+    /// Open a panel. The first panel ever opened docks immediately; every
+    /// panel after that opens as a floating window by default.
     @discardableResult
     func open(_ kind: WorkspacePanelKind) -> OpenResult {
         guard !isOpen(kind) else { return .alreadyOpen }
 
-        if rows.isEmpty && floatingPanels.isEmpty {
-            rows.append(WorkspaceRow(panels: [kind]))
+        if root == nil && floatingPanels.isEmpty {
+            root = .leaf(kind)
             save()
             return .dockedDirectly
         }
@@ -263,170 +527,110 @@ final class WorkspaceLayoutState {
         return .floated
     }
 
-    /// Dock a currently-floating panel into the workspace grid — Tetris-
-    /// placed into the current row if it fits, else a new row below. No-op if
-    /// `kind` isn't currently floating. Does not close the panel's floating
-    /// window; the caller (the window's own "Dock" button) is responsible for
-    /// dismissing it.
+    /// Dock a floating panel into the tree. By default it is placed below the
+    /// existing root as a new bottom row. The user can then drag it elsewhere.
     func dock(_ kind: WorkspacePanelKind) {
         guard floatingPanels.remove(kind) != nil else { return }
-        if let lastIndex = rows.indices.last, fitsInRow(rows[lastIndex], adding: kind) {
-            rows[lastIndex].panels.append(kind)
+        if let root {
+            self.root = .split(axis: .vertical, ratio: 0.5, first: root, second: .leaf(kind))
         } else {
-            rows.append(WorkspaceRow(panels: [kind]))
+            self.root = .leaf(kind)
         }
         save()
     }
 
-    /// Pop a currently-docked panel back out into its own floating window.
-    /// The caller is responsible for actually presenting the window via
-    /// `openWindow(id:value:)`.
+    /// Pop a docked panel back out into its own floating window.
     func float(_ kind: WorkspacePanelKind) {
-        guard let rowIdx = rowIndex(of: kind) else { return }
-        rows[rowIdx].panels.removeAll { $0 == kind }
-        columnWidths[kind.storageKey] = nil
-        if rows[rowIdx].panels.isEmpty {
-            let removedID = rows[rowIdx].id
-            rows.remove(at: rowIdx)
-            rowHeights[removedID] = nil
-        }
+        guard root?.contains(kind) == true else { return }
+        root = root?.removing(kind)
         floatingPanels.insert(kind)
         save()
     }
 
-    /// Whether `kind` can join `row` without squeezing any panel (existing or
-    /// new) below its comfortable minimum column width, given the last
-    /// measured workspace width.
-    private func fitsInRow(_ row: WorkspaceRow, adding kind: WorkspacePanelKind) -> Bool {
-        guard !row.panels.isEmpty else { return true }
-        let widths = row.panels.map(\.minColumnWidth) + [kind.minColumnWidth]
-        let dividers = CGFloat(widths.count - 1) * Self.dividerAllowance
-        let required = widths.reduce(0, +) + dividers
-        return required <= availableWidth
-    }
-
-    /// Close a panel entirely, whether docked or floating. Does not dismiss
-    /// the panel's floating window if it has one — callers closing a floating
-    /// window should dismiss the window itself, which the user does directly
-    /// via its own close button.
+    /// Close a panel, whether docked or floating. Does not dismiss its window.
     func close(_ kind: WorkspacePanelKind) {
         if floatingPanels.remove(kind) != nil {
             save()
             return
         }
-        guard let idx = rowIndex(of: kind) else { return }
-        rows[idx].panels.removeAll { $0 == kind }
-        columnWidths[kind.storageKey] = nil
-        if rows[idx].panels.isEmpty {
-            let removedID = rows[idx].id
-            rows.remove(at: idx)
-            rowHeights[removedID] = nil
-        }
+        root = root?.removing(kind)
         save()
     }
 
-    // MARK: - Reordering — within a row
+    /// Move a panel by dragging it from its current location onto the target
+    /// panel `target` with the requested `zone`. If the source is floating, it
+    /// is removed from the floating set and inserted into the tree. If `target`
+    /// is no longer in the tree after the source is removed (e.g. source and
+    /// target were the same), the source becomes the root leaf.
+    func movePanel(_ kind: WorkspacePanelKind, to target: WorkspacePanelKind, zone: TilingDropZone) {
+        guard !isLocked else { return }
+        guard kind != target || floatingPanels.contains(kind) else { return }
 
-    func moveWithinRow(_ kind: WorkspacePanelKind, to newIndex: Int) {
-        guard let rowIdx = rowIndex(of: kind),
-              let oldIndex = rows[rowIdx].panels.firstIndex(of: kind) else { return }
-        var panels = rows[rowIdx].panels
-        panels.remove(at: oldIndex)
-        let adjusted = newIndex > oldIndex ? newIndex - 1 : newIndex
-        panels.insert(kind, at: min(max(adjusted, 0), panels.count))
-        rows[rowIdx].panels = panels
-        save()
-    }
-
-    /// Column index of `kind` within its own row, and that row's panel count
-    /// — used by the panel header to decide whether Move Left/Right apply.
-    func columnPosition(of kind: WorkspacePanelKind) -> (index: Int, count: Int)? {
-        guard let rowIdx = rowIndex(of: kind),
-              let colIdx = rows[rowIdx].panels.firstIndex(of: kind) else { return nil }
-        return (colIdx, rows[rowIdx].panels.count)
-    }
-
-    /// Row index of `kind`, and the total row count — used by the panel
-    /// header to decide whether Move Up/Down apply.
-    func rowPosition(of kind: WorkspacePanelKind) -> (index: Int, count: Int)? {
-        guard let rowIdx = rowIndex(of: kind) else { return nil }
-        return (rowIdx, rows.count)
-    }
-
-    // MARK: - Reordering — across rows (manual quadrant control)
-
-    /// Pull `kind` out of its current row and give it a brand new row
-    /// immediately below that row — the manual escape hatch for turning a
-    /// crowded row into a proper quadrant layout.
-    func sendToNewRow(_ kind: WorkspacePanelKind) {
-        guard let rowIdx = rowIndex(of: kind) else { return }
-        rows[rowIdx].panels.removeAll { $0 == kind }
-        let insertAt = rowIdx + 1
-        if rows[rowIdx].panels.isEmpty {
-            rows[rowIdx] = WorkspaceRow(panels: [kind])
-        } else {
-            rows.insert(WorkspaceRow(panels: [kind]), at: min(insertAt, rows.count))
+        // Remove source from wherever it lives.
+        let sourceWasFloating = floatingPanels.remove(kind) != nil
+        if !sourceWasFloating {
+            root = root?.removing(kind)
         }
-        save()
-    }
 
-    /// Merge `kind` into the row above (or below) it, appending it as the
-    /// last column of that row. If its own row becomes empty, the row is
-    /// removed.
-    func moveToAdjacentRow(_ kind: WorkspacePanelKind, direction: RowMoveDirection) {
-        guard let rowIdx = rowIndex(of: kind) else { return }
-        let targetIdx = direction == .up ? rowIdx - 1 : rowIdx + 1
-        guard rows.indices.contains(targetIdx) else { return }
-
-        rows[rowIdx].panels.removeAll { $0 == kind }
-        let emptiedRowID = rows[rowIdx].panels.isEmpty ? rows[rowIdx].id : nil
-        if rows[rowIdx].panels.isEmpty {
-            rows.remove(at: rowIdx)
-        }
-        // Recompute the target index in case removing the source row shifted it.
-        let adjustedTarget = (emptiedRowID != nil && targetIdx > rowIdx) ? targetIdx - 1 : targetIdx
-        guard rows.indices.contains(adjustedTarget) else {
-            // Target row vanished (shouldn't normally happen) — give it back
-            // its own row rather than dropping the panel.
-            rows.insert(WorkspaceRow(panels: [kind]), at: min(rowIdx, rows.count))
+        // Locate the target in the post-removal tree.
+        guard root?.contains(target) == true else {
+            if root == nil { root = .leaf(kind) }
+            else { root = root?.inserting(kind, at: LayoutPath(), zone: .right) }
             save()
             return
         }
-        rows[adjustedTarget].panels.append(kind)
-        if let emptiedRowID { rowHeights[emptiedRowID] = nil }
+
+        guard let targetPath = root?.path(to: target) else {
+            root = .leaf(kind)
+            save()
+            return
+        }
+
+        root = root?.inserting(kind, at: targetPath, zone: zone)
         save()
     }
 
-    enum RowMoveDirection { case up, down }
+    // MARK: - Split ratios
+
+    /// Ratio for the split at the given path. Returns a clamped default if
+    /// no persisted ratio exists.
+    func ratio(for path: LayoutPath) -> Double {
+        splitRatios[path.ratioKey] ?? 0.5
+    }
+
+    /// Update and persist the ratio for a split.
+    func setRatio(_ ratio: Double, for path: LayoutPath) {
+        splitRatios[path.ratioKey] = max(Self.minRatio, min(Self.maxRatio, ratio))
+        save()
+    }
+
+    /// Binding to a split ratio so `TilingSplitView` can drive it directly.
+    func ratioBinding(for path: LayoutPath) -> Binding<Double> {
+        Binding(
+            get: { self.ratio(for: path) },
+            set: { newValue in
+                self.setRatio(newValue, for: path)
+            }
+        )
+    }
+
+    // MARK: - Legacy reordering API compatibility
+
+    // These methods are no-ops or simplified because the new tiling model is
+    // manipulated by direct drag-and-drop. They are kept to avoid breaking
+    // any remaining call sites that may invoke them.
+
+    func moveWithinRow(_ kind: WorkspacePanelKind, to newColumnIndex: Int) { }
+    func moveWithinColumn(_ kind: WorkspacePanelKind, direction: MoveDirection) { }
+    func moveOutOfColumn(_ kind: WorkspacePanelKind) { }
+    func moveIntoColumn(_ kind: WorkspacePanelKind, direction: MoveDirection) { }
+    func sendToNewRow(_ kind: WorkspacePanelKind) { }
+    func moveToAdjacentRow(_ kind: WorkspacePanelKind, direction: MoveDirection) { }
+
+    enum MoveDirection { case up, down, left, right }
 
     // MARK: - Sizing
 
-    /// A two-way binding to a panel's column width within its row, persisted
-    /// on every change.
-    func widthBinding(for kind: WorkspacePanelKind) -> Binding<CGFloat> {
-        Binding(
-            get: { self.columnWidths[kind.storageKey] ?? max(kind.minColumnWidth, 420) },
-            set: { newValue in
-                self.columnWidths[kind.storageKey] = newValue
-                self.save()
-            }
-        )
-    }
-
-    /// A two-way binding to a row's height, persisted on every change.
-    func heightBinding(for row: WorkspaceRow) -> Binding<CGFloat> {
-        Binding(
-            get: { self.rowHeights[row.id] ?? 420 },
-            set: { newValue in
-                self.rowHeights[row.id] = newValue
-                self.save()
-            }
-        )
-    }
-
-    /// Called from `ContentView` whenever the workspace content area's
-    /// measured width changes, so future `open(_:)` placement decisions use
-    /// an up-to-date width.
     func updateAvailableWidth(_ width: CGFloat) {
         guard width > 0, abs(width - availableWidth) > 1 else { return }
         availableWidth = width
@@ -435,32 +639,69 @@ final class WorkspaceLayoutState {
     // MARK: - Persistence
 
     private func save() {
-        let data = try? JSONEncoder().encode(rows)
-        UserDefaults.standard.set(data, forKey: defaultsKey + ".rows")
-        UserDefaults.standard.set(columnWidths.mapValues(Double.init), forKey: defaultsKey + ".columnWidths")
-        let heightsByKey = Dictionary(uniqueKeysWithValues: rowHeights.map { ($0.key.uuidString, Double($0.value)) })
-        UserDefaults.standard.set(heightsByKey, forKey: defaultsKey + ".rowHeights")
+        let rootData = root.flatMap { try? JSONEncoder().encode($0) }
+        UserDefaults.standard.set(rootData, forKey: defaultsKey + ".root")
+        UserDefaults.standard.set(splitRatios.mapValues { Double($0) }, forKey: defaultsKey + ".splitRatios")
         let floatingData = try? JSONEncoder().encode(Array(floatingPanels))
         UserDefaults.standard.set(floatingData, forKey: defaultsKey + ".floatingPanels")
+        UserDefaults.standard.set(isLocked, forKey: defaultsKey + ".isLocked")
     }
 
     private func load() {
-        if let data = UserDefaults.standard.data(forKey: defaultsKey + ".rows"),
-           let decoded = try? JSONDecoder().decode([WorkspaceRow].self, from: data) {
-            rows = decoded
+        if let rootData = UserDefaults.standard.data(forKey: defaultsKey + ".root"),
+           let decoded = try? JSONDecoder().decode(LayoutNode.self, from: rootData) {
+            root = decoded
+        } else if let legacyData = UserDefaults.standard.data(forKey: defaultsKey + ".rows"),
+                  let legacyRows = try? JSONDecoder().decode([LegacyRow].self, from: legacyData) {
+            root = migrateLegacyRows(legacyRows)
         }
-        if let widths = UserDefaults.standard.dictionary(forKey: defaultsKey + ".columnWidths") as? [String: Double] {
-            columnWidths = widths.mapValues { CGFloat($0) }
-        }
-        if let heights = UserDefaults.standard.dictionary(forKey: defaultsKey + ".rowHeights") as? [String: Double] {
-            rowHeights = Dictionary(uniqueKeysWithValues: heights.compactMap { key, value in
-                UUID(uuidString: key).map { ($0, CGFloat(value)) }
-            })
+        if let ratios = UserDefaults.standard.dictionary(forKey: defaultsKey + ".splitRatios") as? [String: Double] {
+            splitRatios = ratios
         }
         if let floatingData = UserDefaults.standard.data(forKey: defaultsKey + ".floatingPanels"),
            let decoded = try? JSONDecoder().decode([WorkspacePanelKind].self, from: floatingData) {
             floatingPanels = Set(decoded)
         }
+        isLocked = UserDefaults.standard.bool(forKey: defaultsKey + ".isLocked")
+    }
+
+    /// Convert the old rows/columns/stacks grid into a binary tree.
+    /// Each row becomes a vertical split of its columns; each column becomes a
+    /// horizontal split of its panel stacks; each stack becomes a vertical
+    /// split of its panels. Ratios default to 0.5.
+    private func migrateLegacyRows(_ rows: [LegacyRow]) -> LayoutNode? {
+        guard !rows.isEmpty else { return nil }
+        func buildStack(_ panels: [WorkspacePanelKind]) -> LayoutNode {
+            guard !panels.isEmpty else { return .leaf(.appLauncher) }
+            if panels.count == 1 { return .leaf(panels[0]) }
+            return .stack(panels)
+        }
+        func buildColumn(_ column: LegacyColumn) -> LayoutNode {
+            let stacks = column.panels.map { buildStack([$0]) }
+            guard let first = stacks.first else { return .leaf(.appLauncher) }
+            return stacks.dropFirst().reduce(first) { acc, next in
+                .split(axis: .vertical, ratio: 0.5, first: acc, second: next)
+            }
+        }
+        func buildRow(_ row: LegacyRow) -> LayoutNode {
+            guard !row.columns.isEmpty else { return .leaf(.appLauncher) }
+            let columns = row.columns.map(buildColumn)
+            return columns.reduce(columns[0]) { acc, next in
+                .split(axis: .horizontal, ratio: 0.5, first: acc, second: next)
+            }
+        }
+        let treeRows = rows.map(buildRow)
+        return treeRows.reduce(treeRows[0]) { acc, next in
+            .split(axis: .vertical, ratio: 0.5, first: acc, second: next)
+        }
+    }
+}
+
+// MARK: - Layout Path Helpers
+
+private extension LayoutPath {
+    var ratioKey: String {
+        steps.map { $0.rawValue }.joined(separator: "/")
     }
 }
 
@@ -471,4 +712,12 @@ extension Notification.Name {
     /// top-level workspace panel. The notification's `object` should be the
     /// `WorkspacePanelKind` to open.
     static let openWorkspacePanel = Notification.Name("com.woodseedigi.swiftmaestro.openWorkspacePanel")
+    /// Posted when a workspace panel that is already open should be brought to
+    /// the front of the window stack. The notification's `object` should be the
+    /// `WorkspacePanelKind` to focus.
+    static let bringWorkspacePanelToFront = Notification.Name("com.woodseedigi.swiftmaestro.bringWorkspacePanelToFront")
+    /// Posted when a detached agent-chat window that is already open should be
+    /// brought to the front. The notification's `object` should be the agent's
+    /// `UUID`.
+    static let bringAgentChatToFront = Notification.Name("com.woodseedigi.swiftmaestro.bringAgentChatToFront")
 }

@@ -101,18 +101,26 @@ enum KeychainService {
     ///   reads (e.g. redaction during memory writes) where a modal would block
     ///   the agent.
     static func read(account: String, allowUI: Bool = true) throws -> String? {
+        try read(service: service, account: account, allowUI: allowUI)
+    }
+
+    /// Read a secret value for an arbitrary keychain service/account.
+    /// This lets SwiftMaestro read secrets created by other scripts (e.g.
+    /// `upload-release.sh`) without requiring them to use the app's bundle
+    /// service name.
+    static func read(service customService: String, account: String, allowUI: Bool = true) throws -> String? {
         guard !allowUI else {
-            return try _read(account: account, allowUI: true)
+            return try _read(service: customService, account: account, allowUI: true)
         }
         return try performWithoutKeychainUI {
-            try _read(account: account, allowUI: false)
+            try _read(service: customService, account: account, allowUI: false)
         }
     }
 
-    private static func _read(account: String, allowUI: Bool) throws -> String? {
+    private static func _read(service customService: String, account: String, allowUI: Bool) throws -> String? {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
+            kSecAttrService as String: customService,
             kSecAttrAccount as String: account,
             kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
             kSecReturnData as String: kCFBooleanTrue!,

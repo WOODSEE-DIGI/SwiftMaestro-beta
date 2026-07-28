@@ -23,6 +23,10 @@ class ChatViewModel: ObservableObject {
     /// the default cwd for shell commands so the model resolves paths reliably.
     /// Persisted per agent in UserDefaults.
     @Published var workingDirectory: String?
+    /// The model (HuggingFace ID) this agent is configured to use. Used when
+    /// regenerating the system prompt so the model-capacity guidance matches
+    /// the actual model instead of defaulting to the small-model fallback.
+    @Published var currentModelHuggingFaceID: String? = nil
 
     let agent: AgentRecord
     let projectName: String?
@@ -61,15 +65,42 @@ class ChatViewModel: ObservableObject {
         let legacyWD = UserDefaults.standard.string(forKey: Self.workingDirKey(agent.id))
         let wd = (recordWD?.isEmpty == false) ? recordWD : legacyWD
         self.workingDirectory = wd
+        let modelID = Self.effectiveModelHuggingFaceID(for: agent)
+        self.currentModelHuggingFaceID = modelID
         if let saved = ChatHistoryStore.load(agentId: agent.id), !saved.isEmpty {
             self.messages = saved
         } else {
             self.messages = [Self.systemMessage(
-                for: agent, projectName: projectName, workingDirectory: wd)]
+                for: agent, projectName: projectName, workingDirectory: wd,
+                modelID: modelID)]
         }
     }
 
     private static func workingDirKey(_ id: UUID) -> String { "workingDir.\(id.uuidString)" }
+
+    /// Resolve the HuggingFace ID of the model this agent is configured to use,
+    /// falling back to the global default selection. Used to seed the system
+    /// prompt with accurate model-capacity guidance.
+    private static func effectiveModelHuggingFaceID(for agent: AgentRecord) -> String? {
+        let catalog = ModelCatalog()
+        let live = MaestroTools.workspace?.agent(id: agent.id) ?? agent
+        return catalog.effectiveModel(for: live)?.huggingFaceID
+    }
+
+    /// Update the cached model ID when the user changes the per-agent model
+    /// picker, and regenerate the system prompt so the capacity guidance matches.
+    func updateModelHuggingFaceID() {
+        currentModelHuggingFaceID = Self.effectiveModelHuggingFaceID(for: agent)
+        // Regenerate only the leading system message; user/assistant history is
+        // preserved. The model-specific prompt section will be updated on the
+        // next inference anyway, but this keeps the visible/serialized prompt
+        // accurate.
+        if let first = messages.first, first.role == .system {
+            messages[0] = Self.systemMessage(
+                for: agent, projectName: projectName, workingDirectory: workingDirectory,
+                modelID: currentModelHuggingFaceID)
+        }
+    }
 
     /// Set (or clear) the agent's working directory and persist it.
     func setWorkingDirectory(_ path: String?) {
@@ -230,8 +261,8 @@ class ChatViewModel: ObservableObject {
                         // A model is "capable" if it is present locally, advertises tools,
                         // and is not Gemma 4 (whose tool-call format is currently unreliable
                         // for delegated build work). We no longer reject MoE models just because
-                        // their active parameter count is small — Qwen 3 Coder 30B-A3B,
-                        // Qwen 3.6 35B-A3B, and Gemma 4 26B are the user's chosen models.
+                        // their active parameter count is small — Qwen 3.6 35B-A3B
+                        // and Gemma 4 26B are the user's chosen models.
                         m.localPath != nil
                             && m.advertisesTools
                             && !m.huggingFaceID.lowercased().contains("gemma-4")
@@ -295,6 +326,8 @@ class ChatViewModel: ObservableObject {
                     engine: engine, catalog: catalog,
                     temperature: effectiveTemp, topP: topP, thinkingEnabled: thinking,
                     project: project, workingDirectory: workingDir, agentID: agentID,
+                    maxRounds: Self.maxRounds(for: agent),
+                    maxToolCallsPerTool: Self.maxToolCallsPerTool(for: agent),
                     maxTokens: maxTokens,
                     steerInbox: inbox)
                 for try await output in stream {
@@ -668,7 +701,10 @@ class ChatViewModel: ObservableObject {
         generateTask?.cancel()
         currentActivity = nil
         ChatHistoryStore.clear(agentId: agent.id)
-        messages = [Self.systemMessage(for: agent, projectName: projectName)]
+        currentModelHuggingFaceID = Self.effectiveModelHuggingFaceID(for: agent)
+        messages = [Self.systemMessage(
+            for: agent, projectName: projectName, workingDirectory: workingDirectory,
+            modelID: currentModelHuggingFaceID)]
         isStreaming = false
         lastCompactionMessageCount = 0
         lastCompactionTime = nil
@@ -712,7 +748,10 @@ class ChatViewModel: ObservableObject {
     // MARK: - System prompt
 
     /// Hard rules governing tool use (anti-fabrication). Injected into every agent.
-    private static let toolDiscipline = """
+    /// `maxRounds` is the category-specific tool-round budget so the model is told the
+    /// same limit the executor will enforce.
+    private static func toolDiscipline(maxRounds: Int) -> String {
+        """
         TOOL USE — STRICT RULES:
         - Tools are REAL and execute on the user's system. NEVER simulate tool calls \
         as text or code blocks.
@@ -725,7 +764,9 @@ class ChatViewModel: ObservableObject {
         fake results, file paths, or data.
         - NEVER claim you wrote, saved, or created a file unless write_file returned \
         success. NEVER claim you read a file unless read_file returned content.
-        - STOP GATHERING after 2 tool rounds. Start writing your answer NOW.
+        - STOP GATHERING after \(maxRounds) tool rounds. Start writing your answer NOW.
+        - Respect per-tool call limits. If a tool description says a maximum number of calls, \
+        do NOT exceed it. When the cap is reached, use the results you already have and answer.
         - Do NOT narrate future tool calls ("Let me read..."). Just call the tool.
         - read_file handles ANY file type including .docx, .pdf, images, binary.
         - For large documents, use index_document/search_chunks/read_chunk.
@@ -734,6 +775,16 @@ class ChatViewModel: ObservableObject {
         in chat as a code block — the tool writes the file; the chat is only for reasoning.
         - For file operations, use copy_file, move_file, delete_file, and create_directory. \
         move_file can rename a file by changing the last path component.
+        - For finding files by pattern, use glob_files (e.g. 'Sources/**/*.swift').
+        - For searching file contents, use grep_code with a regular expression.
+        - For surgical edits, use edit_file with exact old_string/new_string. Prefer it over \
+        write_file for small changes.
+        - For git operations, use git_status, git_diff, git_log, and git_branch. \
+        Do NOT run git directly in execute_command unless those tools are insufficient.
+        - For one-off specialist work, use task (creates a temporary subagent, returns a result).
+        - If a project contains a .opencode/permissions.json or .ai-context/permissions.json file,
+          some tools or paths may require user approval. If a tool returns a permission error, stop
+          and ask the user for approval before retrying.
         - MAX 5 tool calls per message. If you need more, tell the user what you'd do next.
 
         SHELL COMMAND RULES:
@@ -742,6 +793,15 @@ class ChatViewModel: ObservableObject {
         - If the command would be `<channel>`, `</channel>`, `<channel|>`, `>`, ` thought`,
         or any other marker, STOP and emit the real command instead.
         - The shell runs /bin/zsh -lic. Standard zsh syntax, pipes, and redirections work.
+
+        RELEASE UPLOAD RULES:
+        - To publish a SwiftMaestro release DMG to swiftmaestro.com, use upload_release.
+        - Pass the absolute path to the DMG as `dmg_path`. The tool reads the SFTP password
+        from the macOS Keychain automatically; do NOT put the password in the tool call.
+        - If the user asks you to "upload the beta", "publish the release", or "put the DMG
+        on the site", call upload_release with the correct DMG path.
+        - After uploading, ensure download.html links to the exact filename that was uploaded
+        (e.g. download/SwiftMaestro-Beta-YYYYMMDD.dmg). Fix the link with write_file if needed.
 
         CRITICAL HONESTY RULES:
         - If you lack a tool for a task, say "I don't have a tool for that" NOW.
@@ -784,6 +844,7 @@ class ChatViewModel: ObservableObject {
         - If a tool returns a list, enumerate the items. If it returns a file's contents, \
         summarize the key points. If it returns an error, report the error clearly.
         """
+    }
 
     /// Only injected when Compact Tool Mode is on for this agent (see
     /// `WorkspaceStore.compactToolMode`). Explains the search_tools/call_tool
@@ -802,7 +863,7 @@ class ChatViewModel: ObservableObject {
         """
 
     /// Exact XML tool-call format for models whose chat template uses XML function
-    /// calls (e.g. Qwen 3 Coder). Reinforces the schema so small models don't emit
+    /// calls (Qwen 3.5 / 3.6 family). Reinforces the schema so small models don't emit
     /// empty/malformed parameters.
     private static let xmlToolFormatGuidance = """
         XML TOOL CALL FORMAT (mandatory for this model):
@@ -960,7 +1021,8 @@ class ChatViewModel: ObservableObject {
 
     static func systemMessage(
         for agent: AgentRecord, projectName: String?, workingDirectory: String? = nil,
-        modelDescription: String? = nil, usesXMLTools: Bool = false
+        modelDescription: String? = nil, model: MaestroModel? = nil, modelID: String? = nil,
+        usesXMLTools: Bool = false
     ) -> Message {
         let base: String
         if agent.kind == .navigator {
@@ -1048,7 +1110,7 @@ class ChatViewModel: ObservableObject {
                 sentence that describes an action must be immediately followed by that tool call.
                 3. If you say "Let me read...", "I will check...", "I need to see...", or \
                 similar, the VERY NEXT tokens must be a <tool_call> block, not more text.
-                4. Stop gathering after 2 tool rounds; then write/summarize the answer.
+                4. Stop gathering after \(maxRounds(for: agent)) tool rounds; then write/summarize the answer.
 
                 VERIFY / RESUME RULE:
                 When the user asks you to continue, resume, verify, or "try again", do NOT
@@ -1078,7 +1140,13 @@ class ChatViewModel: ObservableObject {
                 """
         }
         var content = base + "\n\n" + Self.planContextPrompt(for: agent, projectName: projectName)
-        content += "\n\n" + Self.toolDiscipline
+
+        // Add a category-specific prompt section (coding, research, design, etc.).
+        let categorySection = Self.categoryPrompt(for: agent, model: model, modelID: modelID)
+        if !categorySection.isEmpty {
+            content += "\n\n" + categorySection
+        }
+        content += "\n\n" + Self.toolDiscipline(maxRounds: Self.maxRounds(for: agent))
         if MaestroTools.workspace?.compactToolMode(for: agent.id) == true {
             content += "\n\n" + Self.compactToolModeGuidance
         }
@@ -1114,6 +1182,17 @@ class ChatViewModel: ObservableObject {
             if !projectRules.isEmpty {
                 content += "\n\n" + ProjectRuleService.shared.renderRules(projectRules)
             }
+
+            let parentAgentsMd = Self.parentAgentsMdPrompt(forWorkingDirectory: wd)
+            if !parentAgentsMd.isEmpty {
+                content += "\n\n" + parentAgentsMd
+            }
+
+            let opencodeSections = ProjectOpenCodeService.shared.sections(
+                forWorkingDirectory: wd, agentName: agent.name)
+            if !opencodeSections.isEmpty {
+                content += "\n\n" + ProjectOpenCodeService.shared.renderSections(opencodeSections)
+            }
         }
 
         let applicable = SwiftMaestroSettingsStore.loadRules().filter { rule in
@@ -1128,6 +1207,33 @@ class ChatViewModel: ObservableObject {
             content += "\n\nFollow these rules at all times:\n\(list)"
         }
         return Message(role: .system, content: content)
+    }
+
+    /// Build a category-specific prompt section for an agent. Returns an empty
+    /// string if the agent has no special category instructions.
+    @MainActor
+    static func categoryPrompt(
+        for agent: AgentRecord, model: MaestroModel? = nil, modelID: String? = nil
+    ) -> String {
+        let category = agent.category ?? AgentCategory.infer(from: agent.name)
+        return category.promptSection(agentName: agent.name, model: model, modelID: modelID) ?? ""
+    }
+
+    /// Per-category tool-round budget for the agentic loop. Coding agents get more
+    /// rounds because read→edit→build→verify chains need more steps than a single
+    /// chat or research turn.
+    @MainActor
+    static func maxRounds(for agent: AgentRecord) -> Int {
+        let category = agent.category ?? AgentCategory.infer(from: agent.name)
+        return category.maxRounds
+    }
+
+    /// Per-category per-tool hard call limits for the agentic loop. Research agents
+    /// are capped on web_search so small models cannot loop on the same query.
+    @MainActor
+    static func maxToolCallsPerTool(for agent: AgentRecord) -> [String: Int] {
+        let category = agent.category ?? AgentCategory.infer(from: agent.name)
+        return category.maxToolCallsPerTool
     }
 
     /// Build a prompt section that lists the plans visible to this agent.
@@ -1190,6 +1296,39 @@ class ChatViewModel: ObservableObject {
         return lines.joined(separator: "\n")
     }
 
+    /// Build a prompt section by reading AGENTS.md files discovered in parent
+    /// directories of the working directory. Closer AGENTS.md files are listed
+    /// first; all are advisory and supplement the system prompt. The root-level
+    /// AGENTS.md is already loaded by ProjectRuleService, so this method only
+    /// walks upward to capture repo/org-wide conventions.
+    static func parentAgentsMdPrompt(forWorkingDirectory wd: String) -> String {
+        let fileManager = FileManager.default
+        var current = URL(fileURLWithPath: wd).deletingLastPathComponent()
+        var files: [URL] = []
+        while current.path != "/" {
+            let candidate = current.appendingPathComponent("AGENTS.md")
+            if fileManager.fileExists(atPath: candidate.path) {
+                files.append(candidate)
+            }
+            let parent = current.deletingLastPathComponent()
+            if parent.path == current.path { break }
+            current = parent
+        }
+        guard !files.isEmpty else { return "" }
+        var sections: [String] = []
+        for file in files {
+            if let data = fileManager.contents(atPath: file.path),
+               let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !text.isEmpty {
+                sections.append("AGENTS.md — \(file.path)\n\n\(text)")
+            }
+        }
+        guard !sections.isEmpty else { return "" }
+        return "═══ PROJECT CONTEXT FROM AGENTS.md ═══\n\n"
+            + sections.joined(separator: "\n\n")
+            + "\n\nThese instructions apply in addition to the rules above."
+    }
+
     private func messagesForInference(
         model: MaestroModel,
         modelDescription: String? = nil,
@@ -1201,8 +1340,13 @@ class ChatViewModel: ObservableObject {
         // The stored leading system message is display-only and is dropped here.
         let systemMessage = Self.systemMessage(
             for: agent, projectName: projectName, workingDirectory: workingDirectory,
-            modelDescription: modelDescription,
-            usesXMLTools: model.toolCallFormat == .xmlFunction)
+            modelDescription: modelDescription, model: model, modelID: model.huggingFaceID,
+            usesXMLTools: model.toolCallFormat == .xmlFunction || model.toolCallFormat == .gemma4)
+        // Keep the visible/serialized system prompt in sync with the regenerated
+        // inference prompt so the user sees the correct model-capacity guidance.
+        if let first = messages.first, first.role == .system {
+            messages[0] = systemMessage
+        }
         var output: [Message] = [systemMessage]
         for message in messages where message.role != .system {
             // Strip the display-only "🔧 called `name`" markers so the model can't
@@ -1320,7 +1464,6 @@ class ChatViewModel: ObservableObject {
         let preferredIDs = [
             "local-deepseek-r1-8b",
             "local-qwen3.5-27b",
-            "local-qwen3-coder-30b-a3b",
             "local-qwen3.6-35b-a3b",
         ]
         if let fast = preferredIDs.lazy.compactMap({ catalog.model(forID: $0) })

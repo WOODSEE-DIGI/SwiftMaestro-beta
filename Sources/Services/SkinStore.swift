@@ -632,6 +632,13 @@ extension WorkspacePanelKind {
             "numbers": .numbers,
             "whatsapp": .whatsapp,
             "terminal": .terminal,
+            "tethering": .tethering,
+            "streamIngest": .streamIngest,
+            "broadcast": .broadcast,
+            "streamMixer": .streamMixer,
+            "ndiBrowser": .ndiBrowser,
+            "colorAdjustments": .colorAdjustments,
+            "scenes": .scenes,
         ]
     }
 }

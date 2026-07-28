@@ -10,6 +10,7 @@ struct WorkspacePanelContentView: View {
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(NotesViewModel.self) private var notesViewModel
     @Environment(PluginService.self) private var pluginService
+    @Environment(DiscordService.self) private var discordService
 
     var body: some View {
         switch kind {
@@ -39,6 +40,8 @@ struct WorkspacePanelContentView: View {
             PhotosView()
         case .whatsapp:
             WhatsAppView()
+        case .discord:
+            DiscordView()
         case .plugin(let id):
             if let manifest = pluginService.manifest(id: id) {
                 PluginPanelView(manifest: manifest)
@@ -55,6 +58,20 @@ struct WorkspacePanelContentView: View {
             BusMonitorView()
         case .audioControl:
             AudioControlView()
+        case .tethering:
+            TetheringView()
+        case .streamIngest:
+            StreamIngestView()
+        case .broadcast:
+            BroadcastView()
+        case .streamMixer:
+            StreamMixerView()
+        case .ndiBrowser:
+            NDIBrowserView()
+        case .colorAdjustments:
+            ColorAdjustmentsView()
+        case .scenes:
+            StudioSceneView()
         case .agentChat(let id):
             if let agent = workspace.agent(id: id), let cache = ChatViewModelCache.shared {
                 ChatView(vm: cache.viewModel(
@@ -68,6 +85,8 @@ struct WorkspacePanelContentView: View {
                     description: Text("This agent no longer exists")
                 )
             }
+        case .appLauncher:
+            AppsLauncherPanel()
         }
     }
 }

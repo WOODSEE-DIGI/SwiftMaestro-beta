@@ -73,9 +73,15 @@ targets:
         MACOSX_DEPLOYMENT_TARGET: 14.0
         ENABLE_HARDENED_RUNTIME: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks /opt/homebrew/lib"
+        HEADER_SEARCH_PATHS: "$(inherited) /opt/homebrew/include $(SRCROOT)/Sources"
+        LIBRARY_SEARCH_PATHS: "$(inherited) /opt/homebrew/lib"
+        OTHER_SWIFT_FLAGS: "$(inherited) -Xcc -fmodule-map-file=$(SRCROOT)/Modules/LibUSB/module.modulemap -Xcc -I/opt/homebrew/include"
+        OTHER_LDFLAGS: "$(inherited) -L/opt/homebrew/lib -lusb-1.0"
         INFOPLIST_FILE: Sources/Resources/Info.plist
         CODE_SIGN_ENTITLEMENTS: Sources/Resources/SwiftMaestro.entitlements
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/Resources/SwiftMaestro-Bridging-Header.h
+        SWIFT_OBJC_INTEROP_MODE: objcxx
       configs:
         Debug:
           CODE_SIGN_STYLE: Automatic
@@ -106,6 +112,35 @@ targets:
           fi
         shell: /bin/bash
         alwaysOutOfDate: true
+        outputFiles:
+          - $(BUILT_PRODUCTS_DIR)/$(PRODUCT_NAME).app/Contents/Resources/mcp-servers
+      - name: Bundle FFmpeg
+        script: |
+          # Copy bundled FFmpeg binaries into the app bundle's Resources directory.
+          SRC_DIR="${SRCROOT}/BundledFFmpeg"
+          DST_DIR="${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Resources"
+          if [ -d "$SRC_DIR" ]; then
+            for BIN in ffmpeg ffprobe; do
+              SRC="$SRC_DIR/$BIN"
+              DST="$DST_DIR/$BIN"
+              if [ -f "$SRC" ]; then
+                rm -f "$DST"
+                mkdir -p "$DST_DIR"
+                cp "$SRC" "$DST"
+                chmod +x "$DST"
+                echo "Bundled FFmpeg binary: $SRC -> $DST"
+              else
+                echo "No bundled $BIN binary at $SRC (skipping)"
+              fi
+            done
+          else
+            echo "No bundled FFmpeg directory at $SRC_DIR (skipping)"
+          fi
+        shell: /bin/bash
+        alwaysOutOfDate: true
+        outputFiles:
+          - $(BUILT_PRODUCTS_DIR)/$(PRODUCT_NAME).app/Contents/Resources/ffmpeg
+          - $(BUILT_PRODUCTS_DIR)/$(PRODUCT_NAME).app/Contents/Resources/ffprobe
     dependencies:
       - package: SwiftMaestroKit
         product: SwiftMaestroKit
@@ -136,6 +171,7 @@ targets:
       - sdk: Photos.framework
       - sdk: PaperKit.framework
       - sdk: PencilKit.framework
+      - sdk: IOKit.framework
     scheme:
       testTargets:
         - SwiftMaestroTests

@@ -61,6 +61,15 @@ struct AgentChatWindowView: View {
         )
         #if os(macOS)
         .background(WindowPinConfigurator(isPinned: isPinnedToFront))
+        .background(
+            WindowFocusObserver(
+                name: .bringAgentChatToFront,
+                match: { [agentID = target?.agentID] object in
+                    guard let objectID = object as? UUID else { return false }
+                    return objectID == agentID
+                }
+            )
+        )
         #endif
         .toolbar {
             ToolbarItem(placement: .primaryAction) {

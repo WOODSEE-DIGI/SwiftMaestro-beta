@@ -815,11 +815,53 @@ final class MLXInferenceEngine {
         do {
             let data = try JSONSerialization.data(withJSONObject: toolSchemas as Any)
             let obj = try JSONSerialization.jsonObject(with: data)
-            return obj as? [ToolSpec] ?? toolSchemas
+            let normalized = normalizeSchemaTypes(obj)
+            return normalized as? [ToolSpec] ?? toolSchemas
         } catch {
             NSLog("[ENGINE] tool schema JSON round-trip failed: \(error), using raw")
             return toolSchemas
         }
+    }
+
+    /// Recursively normalize JSON Schema `type` values to plain strings.
+    ///
+    /// Gemma 4's chat template applies `value['type'] | upper` in Jinja, which
+    /// crashes when `type` is an array (e.g. `["string", "null"]` emitted by some
+    /// MCP servers) or any non-string value. This helper collapses multi-type
+    /// arrays to the first non-null string and forces unknown/missing types to
+    /// "string" so the chat template can render the tool surface.
+    nonisolated private static func normalizeSchemaTypes(_ value: Any) -> Any {
+        if var dict = value as? [String: Any] {
+            if let typeValue = dict["type"] {
+                dict["type"] = normalizedTypeString(typeValue)
+            }
+            // Recurse into every nested dictionary or array so we catch `type`
+            // fields inside `function.parameters.properties`, `items`, `anyOf`,
+            // `response`, and any other nested schema the chat template touches.
+            for (key, child) in dict {
+                if child is [String: Any] || child is [Any] {
+                    dict[key] = normalizeSchemaTypes(child)
+                }
+            }
+            return dict as [String: Any]
+        }
+        if let arr = value as? [Any] {
+            return arr.map { normalizeSchemaTypes($0) }
+        }
+        return value
+    }
+
+    /// Collapse a JSON Schema `type` value to a single string safe for Gemma 4.
+    nonisolated private static func normalizedTypeString(_ value: Any) -> String {
+        if let s = value as? String { return s }
+        if let arr = value as? [Any] {
+            for item in arr {
+                if let s = item as? String, s.lowercased() != "null" {
+                    return s
+                }
+            }
+        }
+        return "string"
     }
 
     // MARK: - Single round (for the pluggable in-process backend)

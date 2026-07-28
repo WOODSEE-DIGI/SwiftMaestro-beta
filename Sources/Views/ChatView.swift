@@ -386,7 +386,10 @@ struct ChatView: View {
     private var agentModelBinding: Binding<String> {
         Binding(
             get: { workspace.agent(id: vm.agent.id)?.modelID ?? "" },
-            set: { workspace.setModel($0.isEmpty ? nil : $0, for: vm.agent.id) }
+            set: { newValue in
+                workspace.setModel(newValue.isEmpty ? nil : newValue, for: vm.agent.id)
+                vm.updateModelHuggingFaceID()
+            }
         )
     }
 

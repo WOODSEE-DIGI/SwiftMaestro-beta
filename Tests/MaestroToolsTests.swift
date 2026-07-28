@@ -584,4 +584,36 @@ final class MaestroToolsTests: XCTestCase {
             .replacingOccurrences(of: " ", with: "_")
             .lowercased()
     }
+
+    // MARK: - Web search (Bing HTML parser)
+
+    func testParseBingResultsExtractsTitleURLAndSnippet() {
+        let html = """
+        <ol>
+            <li class="b_algo" data-id iid=SERP.5324>
+                <div class="b_tpcn"><a href="ignored">top card</a></div>
+                <h2 class=""><a target="_blank" href="https://www.bing.com/ck/a?!&&p=e0579fccfd9bfd11d81e65132465e3671301d796822a5d626d89e1a15c8154aeJmltdHM9MTc4NTAyNDAwMA&ptn=3&ver=2&hsh=4&fclid=119c4e63-7dcf-6064-1d26-59c17c5261e8&u=a1aHR0cHM6Ly93d3cuc3dpZnQub3JnL2Jsb2cvc3dpZnQtNi4zLXJlbGVhc2VkLw&ntb=1"><strong>Swift 6.3</strong> Released | Swift.org</a></h2>
+                <div class="b_caption"><p class="b_lineclamp2"><span class="news_dt">24 Mar 2026</span>&nbsp;&#0183;&#32;Swift 6.3 makes these benefits more accessible across the stack.</p></div>
+            </li>
+        </ol>
+        """
+        let results = MaestroTools.parseBingResults(html, maxResults: 5)
+        XCTAssertEqual(results.count, 1)
+        let result = results[0]
+        XCTAssertEqual(result.title, "Swift 6.3 Released | Swift.org")
+        XCTAssertEqual(result.url, "https://www.swift.org/blog/swift-6.3-released/")
+        XCTAssertTrue(result.snippet.contains("Swift 6.3 makes these benefits"))
+    }
+
+    func testParseBingResultsRespectsMaxResults() {
+        let html = """
+        <ol>
+            <li class="b_algo"><h2><a href="https://www.bing.com/ck/a?u=a1aHR0cHM6Ly9leGFtcGxlLmNvbS8x">One</a></h2></li>
+            <li class="b_algo"><h2><a href="https://www.bing.com/ck/a?u=a1aHR0cHM6Ly9leGFtcGxlLmNvbS8y">Two</a></h2></li>
+            <li class="b_algo"><h2><a href="https://www.bing.com/ck/a?u=a1aHR0cHM6Ly9leGFtcGxlLmNvbS8z">Three</a></h2></li>
+        </ol>
+        """
+        let results = MaestroTools.parseBingResults(html, maxResults: 2)
+        XCTAssertEqual(results.count, 2)
+    }
 }

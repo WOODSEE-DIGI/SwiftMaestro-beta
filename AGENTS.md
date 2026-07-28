@@ -80,7 +80,7 @@ Verified core models:
 - **Gemma 4 26B-A4B 8-bit** (default) — vision + text, general navigator
 - **Qwen 3.5 122B (A10B)** — deep reasoning, complex tasks
 - **Qwen 3.5 27B (Opus Distilled)** — balanced performance
-- **Qwen 3 Coder 30B-A3B** — coding tasks, sub-agents
+- **Qwen 3 Coder Next** — coding tasks, sub-agents
 
 Experimental models (tool support may be limited): Qwen 3.6, DeepSeek R1, Hermes 4, Magistral, Nemotron, Hub models.
 

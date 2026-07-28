@@ -491,25 +491,6 @@ final class ModelCatalog {
             downloadURL: "https://huggingface.co/mlx-community/gemma-4-e4b-it-qat-4bit"
         ),
         MaestroModel(
-            id: "local-qwen3-coder-30b-a3b",
-            displayName: "Qwen 3 Coder 30B-A3B (Instruct)",
-            huggingFaceID: "lmstudio-community/Qwen3-Coder-30B-A3B-Instruct-MLX-4bit",
-            isVision: false,
-            localPath: localIfPresent([
-                "swiftmaestro-models/Qwen3-Coder-30B-A3B-Instruct-MLX-4bit",
-                "lmstudio-community/Qwen3-Coder-30B-A3B-Instruct-MLX-4bit",
-            ]),
-            estimatedMemoryGB: 17,
-            // Same XML <function>/<parameter> format as Qwen 3.6/3.5 family.
-            // Tools enabled — the coder model is a strong choice for sub-agents.
-            supportsTools: true,
-            toolCallFormat: .xmlFunction,
-            recTemperature: 0.7, recTopP: 0.8, recRepetitionPenalty: 1.05,
-            recMaxTokens: 65536,
-            recContextLength: 128_000,
-            activeParamsB: 3
-        ),
-        MaestroModel(
             id: "local-qwen3.5-27b",
             displayName: "Qwen 3.5 27B (Opus Distilled)",
             huggingFaceID: "mlx-community/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit",
@@ -628,7 +609,8 @@ final class ModelCatalog {
             supportsTools: true,
             toolCallFormat: .xmlFunction,
             recTemperature: 0.7, recTopP: 0.8, recRepetitionPenalty: 1.05,
-            recContextLength: 128_000
+            recContextLength: 128_000,
+            activeParamsB: 3   // 30B-A3B: 3 billion active params per token
         ),
         MaestroModel(
             id: "local-gpt-oss-120b",
@@ -640,6 +622,22 @@ final class ModelCatalog {
             supportsTools: true,
             recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05,
             recContextLength: 128_000
+        ),
+        MaestroModel(
+            id: "local-kimi-dev-72b",
+            displayName: "Kimi Dev 72B (4-bit)",
+            huggingFaceID: "mlx-community/Kimi-Dev-72B-4bit",
+            isVision: false,
+            localPath: localIfPresent("swiftmaestro-models/Kimi-Dev-72B-4bit"),
+            estimatedMemoryGB: 45,
+            // Qwen2.5-based dense model; tool format is the classic Qwen2 JSON
+            // tool-call schema rather than the Qwen3 XML function format. Leave
+            // supportsTools off until we verify tool-call parsing works.
+            supportsTools: false,
+            recTemperature: 0.7, recTopP: 0.8, recRepetitionPenalty: 1.05,
+            recContextLength: 131_072,
+            activeParamsB: 72,
+            downloadURL: "https://huggingface.co/mlx-community/Kimi-Dev-72B-4bit"
         ),
 
         // === Experimental / ultra-tier models (download on first use, very high memory) ===

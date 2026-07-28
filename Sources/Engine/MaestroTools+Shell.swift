@@ -89,52 +89,9 @@ extension MaestroTools {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             command = try container.decodeIfPresent(String.self, forKey: .command)
             cwd = try container.decodeIfPresent(String.self, forKey: .cwd)
-            timeout = try container.decodeIfPresent(FlexibleInt.self, forKey: .timeout)?.value
-            dry_run = try container.decodeIfPresent(FlexibleBool.self, forKey: .dry_run)?.value
-            start_background = try container.decodeIfPresent(FlexibleBool.self, forKey: .start_background)?.value
-        }
-    }
-
-    /// Decodes a Bool from either a JSON boolean or a string like "true"/"false".
-    private struct FlexibleBool: Decodable {
-        let value: Bool
-        init(from decoder: Decoder) throws {
-            let container = try decoder.singleValueContainer()
-            if let bool = try? container.decode(Bool.self) {
-                value = bool
-                return
-            }
-            if let string = try? container.decode(String.self) {
-                switch string.lowercased().trimmingCharacters(in: .whitespaces) {
-                case "true", "1", "yes", "on": value = true
-                case "false", "0", "no", "off": value = false
-                default:
-                    throw DecodingError.dataCorruptedError(
-                        in: container,
-                        debugDescription: "Cannot decode '\(string)' as Bool")
-                }
-                return
-            }
-            throw DecodingError.dataCorruptedError(
-                in: container, debugDescription: "Expected Bool or String")
-        }
-    }
-
-    /// Decodes an Int from either a JSON integer or a numeric string.
-    private struct FlexibleInt: Decodable {
-        let value: Int
-        init(from decoder: Decoder) throws {
-            let container = try decoder.singleValueContainer()
-            if let int = try? container.decode(Int.self) {
-                value = int
-                return
-            }
-            if let string = try? container.decode(String.self), let int = Int(string) {
-                value = int
-                return
-            }
-            throw DecodingError.dataCorruptedError(
-                in: container, debugDescription: "Expected Int or numeric String")
+            timeout = try container.decodeIfPresent(LenientInt.self, forKey: .timeout)?.value
+            dry_run = try container.decodeIfPresent(LenientBool.self, forKey: .dry_run)?.value
+            start_background = try container.decodeIfPresent(LenientBool.self, forKey: .start_background)?.value
         }
     }
 
@@ -594,7 +551,7 @@ private struct ShellCommandResult: Encodable {
     let timedOut: Bool
 }
 
-private struct ShellRawResult {
+internal struct ShellRawResult {
     let success: Bool
     let exitCode: Int32
     let stdout: String

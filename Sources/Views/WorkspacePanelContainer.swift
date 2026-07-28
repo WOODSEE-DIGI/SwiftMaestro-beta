@@ -4,13 +4,16 @@ import SwiftUI
 //
 // Wraps a top-level workspace panel (an agent's chat, Notes.md, Apple Notes,
 // Calendar, Reminders, Contacts, Canvas, or Kanban) with a lightweight header:
-// icon + title, a "Move Left/Right" context menu for reordering, and a close
+// icon + title, an obvious drag grip for tiling drag-and-drop, and a close
 // button. The multi-panel analogue of `PanelContainer`, which serves the same
 // role one level down for Plans/Tasks/Terminal inside a single agent's chat.
 struct WorkspacePanelContainer<Content: View>: View {
 
     let kind: WorkspacePanelKind
     let title: String
+    /// Whether the panel can be dragged to another tile. Disabled when the
+    /// workspace is locked.
+    var isDraggable: Bool = true
     @ViewBuilder let content: () -> Content
     /// Called when the user chooses "Pop Out to Window" — the caller is
     /// responsible for actually presenting the floating window via
@@ -18,8 +21,8 @@ struct WorkspacePanelContainer<Content: View>: View {
     var onFloat: ((WorkspacePanelKind) -> Void)? = nil
 
     @State private var layout = WorkspaceLayoutState.shared
+    @State private var dragState = TilingDragState.shared
     @Environment(ThemeStore.self) private var theme
-    @Environment(WorkspaceStore.self) private var workspace
 
     var body: some View {
         VStack(spacing: 0) {
@@ -32,6 +35,26 @@ struct WorkspacePanelContainer<Content: View>: View {
 
     private var header: some View {
         HStack(spacing: 6) {
+            // Drag grip: the obvious handle for moving the whole tile.
+            if isDraggable {
+                Image(systemName: "line.3.horizontal")
+                    .font(.caption)
+                    .foregroundStyle(theme.panelAccent(for: kind).opacity(0.85))
+                    .frame(width: 22, height: 20)
+                    .contentShape(Rectangle())
+                    .onDrag {
+                        dragState.beginDrag(kind)
+                        return NSItemProvider.workspacePanel(kind)
+                    }
+                    .help("Drag to move this panel")
+            } else {
+                Image(systemName: "lock")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22, height: 20)
+                    .help("Workspace is locked")
+            }
+
             Image(systemName: kind.icon)
                 .font(.caption)
                 .foregroundStyle(theme.panelAccent(for: kind))
@@ -81,66 +104,7 @@ struct WorkspacePanelContainer<Content: View>: View {
 
     @ViewBuilder
     private var contextMenuContent: some View {
-        // Left/Right — reorder within this panel's own row.
-        if let column = layout.columnPosition(of: kind) {
-            if column.index > 0 {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        layout.moveWithinRow(kind, to: column.index - 1)
-                    }
-                } label: {
-                    Label("Move Left", systemImage: "arrow.left")
-                }
-            }
-            if column.index < column.count - 1 {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        layout.moveWithinRow(kind, to: column.index + 2)
-                    }
-                } label: {
-                    Label("Move Right", systemImage: "arrow.right")
-                }
-            }
-        }
-
-        Divider()
-
-        // Up/Down — merge into the adjacent row (manual quadrant control).
-        if let row = layout.rowPosition(of: kind) {
-            if row.index > 0 {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        layout.moveToAdjacentRow(kind, direction: .up)
-                    }
-                } label: {
-                    Label("Move Up a Row", systemImage: "arrow.up")
-                }
-            }
-            if row.index < row.count - 1 {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        layout.moveToAdjacentRow(kind, direction: .down)
-                    }
-                } label: {
-                    Label("Move Down a Row", systemImage: "arrow.down")
-                }
-            }
-        }
-
-        // Only offer "split into its own row" if it currently shares a row
-        // with something else.
-        if let column = layout.columnPosition(of: kind), column.count > 1 {
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    layout.sendToNewRow(kind)
-                }
-            } label: {
-                Label("Move to New Row", systemImage: "rectangle.split.2x1")
-            }
-        }
-
         if let onFloat {
-            Divider()
             Button {
                 layout.float(kind)
                 onFloat(kind)

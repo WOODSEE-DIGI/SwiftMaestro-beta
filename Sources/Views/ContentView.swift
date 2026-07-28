@@ -12,6 +12,7 @@ struct ContentView: View {
     @Environment(KanbanStore.self) private var kanbanStore
     @Environment(ContactsService.self) private var contactsService
     @Environment(PluginService.self) private var pluginService
+    @Environment(DiscordService.self) private var discordService
     @Environment(\.openWindow) private var openWindow
     /// The multi-panel workspace: the sidebar is a *launcher* onto this — an
     /// agent chat, Notes.md, Apple Notes, Contacts, etc. can all be open side
@@ -27,6 +28,7 @@ struct ContentView: View {
     @State private var chatCache = ChatViewModelCache()
     @State private var newProjectName = ""
     @State private var newAgentName = ""
+    @State private var newAgentCategory: AgentCategory = .general
     /// First-run welcome: shown once, only when no models are present on disk.
     @AppStorage("onboarding.seenV1") private var onboardingSeen = false
     /// WhisperKit first-run: shown once when the speech model needs downloading.
@@ -44,7 +46,17 @@ struct ContentView: View {
         case onboarding
         case whisperSetup
         case notesOnboarding
-        var id: Int { hashValue }
+        case agentCategory(AgentRecord)
+
+        var id: Int {
+            switch self {
+            case .newAgent: return 1
+            case .onboarding: return 2
+            case .whisperSetup: return 3
+            case .notesOnboarding: return 4
+            case .agentCategory(let agent): return 5 + agent.id.hashValue
+            }
+        }
     }
 
     var body: some View {
@@ -69,6 +81,17 @@ struct ContentView: View {
                     .frame(width: 165)
                 }
                 .help("Global default model — used by any agent whose model is set to “Default (global)”.")
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    workspaceLayout.isLocked.toggle()
+                } label: {
+                    Image(systemName: workspaceLayout.isLocked ? "lock" : "lock.open")
+                    Text(workspaceLayout.isLocked ? "Locked" : "Unlocked")
+                }
+                .help(workspaceLayout.isLocked
+                    ? "Workspace is locked — panels cannot be dragged"
+                    : "Workspace is unlocked — drag the grip to rearrange panels")
             }
         }
         .frame(minWidth: 900, minHeight: 620)
@@ -96,6 +119,8 @@ struct ContentView: View {
                     .environment(whisper)
             case .notesOnboarding:
                 NotesOnboardingSheet(onDone: { activeSheet = nil })
+            case .agentCategory(let agent):
+                agentCategorySheet(for: agent)
             }
         }
         .onChange(of: focusedKind) { _, newValue in
@@ -107,7 +132,7 @@ struct ContentView: View {
             openPanel(kind)
         }
         .onAppear {
-            if workspaceLayout.rows.isEmpty && workspaceLayout.floatingPanels.isEmpty {
+            if workspaceLayout.root == nil && workspaceLayout.floatingPanels.isEmpty {
                 openPanel(.agentChat(workspace.navigator.id))
             }
             // Explicitly (re)present every panel that was floating when the
@@ -145,8 +170,14 @@ struct ContentView: View {
             chatCache.setVisionProxyService(visionProxyService)
             // When a delegation starts, open/front a floating chat window for the
             // sub-agent so the user can watch Maestro and Scribe side-by-side.
+            // Use the tracked workspace-panel window so the sidebar can refocus it.
             chatCache.onOpenAgentWindow = { [openWindow] agentID in
-                openWindow(id: "agent-chat-window", value: AgentChatWindowID(agentID: agentID))
+                let kind = WorkspacePanelKind.agentChat(agentID)
+                let result = WorkspaceLayoutState.shared.open(kind)
+                if result == .dockedDirectly {
+                    WorkspaceLayoutState.shared.float(kind)
+                }
+                openWindow(id: "workspace-panel-window", value: WorkspacePanelWindowID(kind: kind))
             }
             // Welcome a fresh install (no model files on disk yet), once.
             if !onboardingSeen && !catalog.models.contains(where: { $0.localPath != nil }) {
@@ -195,7 +226,7 @@ struct ContentView: View {
             Divider()
                 .padding(.horizontal, 8)
 
-            appsSidebar
+            movableAppsSidebar
                 .frame(minHeight: 120, maxHeight: .infinity)
         }
         .navigationTitle("SwiftMaestro")
@@ -224,25 +255,38 @@ struct ContentView: View {
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(theme.sidebarText.opacity(0.7))
                 }
-                ForEach(workspace.visibleProjects) { project in
+                ForEach(workspace.projectAgentsByCategory(), id: \.category) { group in
                     Section {
-                        ForEach(workspace.projectAgents(in: project.id)) { agent in
-                            agentRow(title: agent.name, systemImage: nil, id: agent.id)
-                                .tag(WorkspacePanelKind.agentChat(agent.id))
-                                .contextMenu {
-                                    Button("Clear Chat") {
-                                        chatCache.viewModel(for: agent, projectName: project.name)
-                                            .clearChat()
-                                    }
-                                    Button("Remove Agent", role: .destructive) {
-                                        removeAgent(agent)
-                                    }
+                        ForEach(group.agents) { agent in
+                            let projectName = workspace.projectName(for: agent)
+                            agentRow(
+                                title: agent.name,
+                                subtitle: projectName,
+                                systemImage: workspace.resolvedCategory(for: agent).systemImage,
+                                id: agent.id
+                            )
+                            .tag(WorkspacePanelKind.agentChat(agent.id))
+                            .contextMenu {
+                                Button("Clear Chat") {
+                                    chatCache.viewModel(for: agent, projectName: projectName)
+                                        .clearChat()
                                 }
+                                Button("Change Category") {
+                                    activeSheet = .agentCategory(agent)
+                                }
+                                Button("Remove Agent", role: .destructive) {
+                                    removeAgent(agent)
+                                }
+                            }
                         }
                     } header: {
-                        Text(project.name)
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(theme.sidebarText.opacity(0.7))
+                        HStack(spacing: 4) {
+                            Image(systemName: group.category.systemImage)
+                                .font(.system(size: 10))
+                            Text(group.category.displayName)
+                        }
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(theme.sidebarText.opacity(0.7))
                     }
                 }
             }
@@ -272,7 +316,21 @@ struct ContentView: View {
                     .foregroundStyle(theme.sidebarText.opacity(0.7))
             }
             Section {
+                sidebarRow("Cameras", kind: .tethering)
+                sidebarRow("Stream Ingest", kind: .streamIngest)
+                sidebarRow("Broadcast", kind: .broadcast)
+                sidebarRow("Stream Mixer", kind: .streamMixer)
+                sidebarRow("NDI Browser", kind: .ndiBrowser)
+                sidebarRow("Color Adjustments", kind: .colorAdjustments)
+                sidebarRow("Scenes", kind: .scenes)
+            } header: {
+                Text("Studio")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(theme.sidebarText.opacity(0.7))
+            }
+            Section {
                 sidebarRow("WhatsApp", kind: .whatsapp)
+                sidebarRow("Discord", kind: .discord)
                 sidebarRow("Bus Monitor", kind: .busMonitor)
                 sidebarRow("Audio Control", kind: .audioControl)
                 sidebarRow("Notes.md", kind: .notesMD)
@@ -301,6 +359,43 @@ struct ContentView: View {
         .background(theme.sidebarOverridden ? theme.sidebarBackground : Color.clear)
     }
 
+    /// The bottom section of the sidebar: either the full Apple Apps/Swift Apps/Plugins
+    /// list, or a compact bar when it has been moved into the workspace as a panel.
+    @ViewBuilder
+    private var movableAppsSidebar: some View {
+        if workspaceLayout.isOpen(.appLauncher) {
+            HStack {
+                Label("Apps in workspace", systemImage: "square.grid.2x2")
+                    .foregroundStyle(theme.sidebarText)
+                Spacer()
+                Button("Return to Sidebar") {
+                    workspaceLayout.close(.appLauncher)
+                }
+                .buttonStyle(.plain)
+                .font(.caption)
+                .foregroundStyle(theme.accent)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+        } else {
+            VStack(spacing: 0) {
+                HStack {
+                    Spacer()
+                    Button("Move to Workspace") {
+                        openPanel(.appLauncher)
+                    }
+                    .buttonStyle(.plain)
+                    .font(.caption)
+                    .foregroundStyle(theme.accent)
+                }
+                .padding(.horizontal, 12)
+                .padding(.top, 8)
+
+                appsSidebar
+            }
+        }
+    }
+
     /// A non-agent sidebar row. Shows a small filled dot when the panel is
     /// currently open in the workspace, since with multiple panels open at
     /// once the row highlight alone no longer tells you what's visible.
@@ -318,6 +413,11 @@ struct ContentView: View {
             }
         }
         .tag(kind)
+        .accessibilityAction(.default) {
+            // Expose the row as an AXPress target for screen readers / UI
+            // automation without changing the normal List selection behavior.
+            openPanel(kind)
+        }
     }
 
     /// Compact model + process activity shown directly under the Agents section.
@@ -334,15 +434,29 @@ struct ContentView: View {
 
     /// A sidebar agent row showing its name plus a red unread-message badge.
     @ViewBuilder
-    private func agentRow(title: String, systemImage: String?, id: UUID) -> some View {
+    private func agentRow(
+        title: String,
+        subtitle: String? = nil,
+        systemImage: String?,
+        id: UUID
+    ) -> some View {
         let isSelected = focusedKind == .agentChat(id)
         let isOpen = workspaceLayout.isOpen(.agentChat(id))
         HStack {
-            Group {
-                if let systemImage {
-                    Label(title, systemImage: systemImage)
-                } else {
-                    Text(title)
+            VStack(alignment: .leading, spacing: 1) {
+                Group {
+                    if let systemImage {
+                        Label(title, systemImage: systemImage)
+                    } else {
+                        Text(title)
+                    }
+                }
+                .font(.system(size: 13))
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 10))
+                        .foregroundStyle(isSelected ? Color.white.opacity(0.8) : theme.sidebarText.opacity(0.6))
+                        .lineLimit(1)
                 }
             }
             // Selected rows keep the system's white-on-accent highlight; others
@@ -363,86 +477,22 @@ struct ContentView: View {
                     .frame(width: 6, height: 6)
             }
         }
+        .accessibilityAction(.default) {
+            // Expose the row as an AXPress target so screen readers and UI
+            // automation can activate it. This is separate from the regular
+            // mouse/tap selection that SwiftUI's List already handles, so it
+            // will not double-fire for normal interaction.
+            openPanel(.agentChat(id))
+        }
     }
 
     // MARK: - Workspace (multi-panel, multi-row detail area)
 
     @ViewBuilder
     private var detail: some View {
-        if workspaceLayout.rows.isEmpty {
-            ContentUnavailableView(
-                "Select an Item",
-                systemImage: "bubble.left.and.text.bubble.right",
-                description: Text("Choose an agent or app from the sidebar to open it")
-            )
-        } else {
-            // A vertical host of rows, each row itself a horizontal host of
-            // columns — a genuine 2-D tiling grid ("quadrants") rather than a
-            // single endlessly-shrinking horizontal strip. Track the measured
-            // width so `WorkspaceLayoutState.open(_:)` can Tetris-place new
-            // panels into the current row only when they'd actually fit.
-            GeometryReader { proxy in
-                ResizablePanelHost(axis: .vertical, panes: rowPanes)
-                    .onAppear { workspaceLayout.updateAvailableWidth(proxy.size.width) }
-                    .onChange(of: proxy.size.width) { _, newValue in
-                        workspaceLayout.updateAvailableWidth(newValue)
-                    }
-            }
-        }
+        TilingWorkspaceView()
     }
 
-    /// One resizable (vertical) pane per row. Every row is drag-resizable
-    /// except the last, which is always flexible and fills remaining height.
-    private var rowPanes: [ResizablePane] {
-        let rows = workspaceLayout.rows
-        return rows.enumerated().map { index, row in
-            let isLast = index == rows.count - 1
-            return ResizablePane(
-                id: row.id,
-                length: isLast ? nil : workspaceLayout.heightBinding(for: row),
-                minLength: 200,
-                maxLength: 1_400
-            ) {
-                ResizablePanelHost(axis: .horizontal, panes: columnPanes(for: row))
-            }
-        }
-    }
-
-    /// One resizable (horizontal) pane per panel within a single row. Every
-    /// column is drag-resizable except the last, which is always flexible —
-    /// matching `ResizablePanelHost`'s "fixed panes + one trailing flexible
-    /// pane" contract.
-    private func columnPanes(for row: WorkspaceRow) -> [ResizablePane] {
-        row.panels.enumerated().map { index, kind in
-            let isLast = index == row.panels.count - 1
-            return ResizablePane(
-                id: kind,
-                length: isLast ? nil : workspaceLayout.widthBinding(for: kind),
-                minLength: kind.minColumnWidth,
-                maxLength: 1_400
-            ) {
-                WorkspacePanelContainer(kind: kind, title: title(for: kind), content: {
-                    panelContent(for: kind)
-                }, onFloat: { kind in
-                    openWindow(id: "workspace-panel-window", value: WorkspacePanelWindowID(kind: kind))
-                })
-            }
-        }
-    }
-
-    private func title(for kind: WorkspacePanelKind) -> String {
-        if case .agentChat(let id) = kind {
-            return workspace.agent(id: id)?.name ?? "Agent"
-        }
-        if case .plugin(let id) = kind {
-            return pluginService.manifest(id: id)?.name ?? "Plugin"
-        }
-        return kind.staticDisplayName ?? "Panel"
-    }
-
-    private func panelContent(for kind: WorkspacePanelKind) -> some View {
-        WorkspacePanelContentView(kind: kind)
-    }
 
     // MARK: - New project agent sheet
 
@@ -454,6 +504,16 @@ struct ContentView: View {
             Form {
                 TextField("Project name", text: $newProjectName)
                 TextField("Agent name", text: $newAgentName)
+                Picker("Category", selection: $newAgentCategory) {
+                    ForEach(AgentCategory.allCases) { category in
+                        HStack(spacing: 4) {
+                            Image(systemName: category.systemImage)
+                            Text(category.displayName)
+                        }
+                        .tag(category)
+                    }
+                }
+                .pickerStyle(.menu)
             }
             HStack {
                 Spacer()
@@ -464,6 +524,36 @@ struct ContentView: View {
                         newProjectName.trimmingCharacters(in: .whitespaces).isEmpty
                             || newAgentName.trimmingCharacters(in: .whitespaces).isEmpty
                     )
+            }
+        }
+        .padding()
+        .frame(width: 420)
+    }
+
+    private func agentCategorySheet(for agent: AgentRecord) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Agent Category").font(.title3.bold())
+            Text("Choose the category for \(agent.name). This affects the sidebar grouping, system prompt, and default tools.")
+                .font(.caption).foregroundStyle(.secondary)
+            Form {
+                Picker("Category", selection: .init(
+                    get: { workspace.resolvedCategory(for: agent) },
+                    set: { workspace.setCategory($0, for: agent.id) }
+                )) {
+                    ForEach(AgentCategory.allCases) { category in
+                        HStack(spacing: 4) {
+                            Image(systemName: category.systemImage)
+                            Text(category.displayName)
+                        }
+                        .tag(category)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+            }
+            HStack {
+                Spacer()
+                Button("Done") { activeSheet = nil }
+                    .keyboardShortcut(.defaultAction)
             }
         }
         .padding()
@@ -489,6 +579,12 @@ struct ContentView: View {
             if workspaceLayout.isFloating(kind) {
                 openWindow(id: "workspace-panel-window", value: WorkspacePanelWindowID(kind: kind))
             }
+            // Bring any open floating window for this panel to the front, and
+            // also bring any detached agent-chat window to the front.
+            NotificationCenter.default.post(name: .bringWorkspacePanelToFront, object: kind)
+            if case .agentChat(let id) = kind {
+                NotificationCenter.default.post(name: .bringAgentChatToFront, object: id)
+            }
         case .dockedDirectly:
             break
         }
@@ -497,7 +593,8 @@ struct ContentView: View {
     private func createAgent() {
         let created = workspace.createProjectAgent(
             projectName: newProjectName.trimmingCharacters(in: .whitespaces),
-            agentName: newAgentName.trimmingCharacters(in: .whitespaces)
+            agentName: newAgentName.trimmingCharacters(in: .whitespaces),
+            category: newAgentCategory
         )
         let kind = WorkspacePanelKind.agentChat(created.id)
         openPanel(kind)
@@ -508,6 +605,7 @@ struct ContentView: View {
     private func resetNewAgent() {
         newProjectName = ""
         newAgentName = ""
+        newAgentCategory = .general
         activeSheet = nil
     }
 
@@ -517,7 +615,7 @@ struct ContentView: View {
         chatCache.drop(agent.id)
         workspaceLayout.close(kind)
         // Never leave the workspace fully empty — land back on Maestro.
-        if workspaceLayout.rows.isEmpty && workspaceLayout.floatingPanels.isEmpty {
+        if workspaceLayout.root == nil && workspaceLayout.floatingPanels.isEmpty {
             let navigatorKind = WorkspacePanelKind.agentChat(workspace.navigator.id)
             openPanel(navigatorKind)
             focusedKind = navigatorKind

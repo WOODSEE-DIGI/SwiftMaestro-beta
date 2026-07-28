@@ -144,7 +144,22 @@ struct Agent: Identifiable {
 
     /// Single source of truth for the built-in agent names. Used to seed the
     /// sidebar and to populate per-agent scope pickers in Settings.
-    static let defaultAgentNames = ["General", "Coding"]
+    /// Each name maps to one of the 13 `AgentCategory` buckets via `AgentCategory.infer`.
+    static let defaultAgentNames = [
+        "Generalist",    // general
+        "SwiftCoder",    // coding
+        "ResearchScout", // research
+        "Analyst",       // analysis
+        "Builder",       // create
+        "TechWriter",    // writing
+        "Designer",      // design
+        "DevOps",        // devops
+        "Tester",        // testing
+        "DataScientist", // data
+        "Marketer",      // marketing
+        "LegalAnalysis", // legal — analysis/research only, not legal advice
+        "FinanceAnalyst" // finance
+    ]
 }
 
 // MARK: - Provider types

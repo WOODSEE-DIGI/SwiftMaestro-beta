@@ -30,6 +30,26 @@
 	<integer>86400</integer>
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.woodseedigi.swiftmaestro.workspace-panel</string>
+			<key>UTTypeDescription</key>
+			<string>SwiftMaestro Workspace Panel</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>swiftmaestro-panel</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright © 2026. All rights reserved.</string>
 	<key>NSPrincipalClass</key>
@@ -48,6 +68,8 @@
 	<string>SwiftMaestro reads your Photos albums and recent asset metadata when you ask it to.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>SwiftMaestro uses the microphone for speech-to-text transcription.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>SwiftMaestro uses cameras and capture cards for tethered photography and live video preview.</string>
 	<key>NSSiriUsageDescription</key>
 	<string>SwiftMaestro lets you ask the agent a question hands-free using Siri.</string>
 </dict>

@@ -9,13 +9,14 @@ struct ChatPanelHeaderToolbar: View {
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(AgentMessageStore.self) private var messageStore
     @Environment(\.openWindow) private var openWindow
+    @State private var layout = WorkspaceLayoutState.shared
     @State private var showingMessages = false
     @State private var showingClearChatConfirm = false
 
     var body: some View {
         HStack(spacing: 6) {
             Button {
-                openWindow(id: "agent-chat-window", value: AgentChatWindowID(agentID: agentID))
+                floatOrFocus()
             } label: {
                 Image(systemName: "macwindow.on.rectangle")
             }
@@ -62,6 +63,27 @@ struct ChatPanelHeaderToolbar: View {
 
     private var agentName: String {
         workspace.agent(id: agentID)?.name ?? "Agent"
+    }
+
+    /// Open this agent's chat in a tracked floating workspace panel, or bring
+    /// the existing floating panel to the front. This keeps the sidebar's
+    /// "open" indicator and the focus notification in sync, instead of opening
+    /// an untracked `AgentChatWindow` that the sidebar can't find later.
+    private func floatOrFocus() {
+        let kind = WorkspacePanelKind.agentChat(agentID)
+        if layout.isFloating(kind) {
+            NotificationCenter.default.post(name: .bringWorkspacePanelToFront, object: kind)
+            return
+        }
+        if layout.isOpen(kind) {
+            layout.float(kind)
+        } else {
+            let result = layout.open(kind)
+            if result == .dockedDirectly {
+                layout.float(kind)
+            }
+        }
+        openWindow(id: "workspace-panel-window", value: WorkspacePanelWindowID(kind: kind))
     }
 
     private func clearChat() {

@@ -45,6 +45,22 @@ struct WorkspacePanelWindowView: View {
         .navigationTitle(title)
         #if os(macOS)
         .background(
+            // Agent-chat panels need the same comfortable default size as the
+            // dedicated `AgentChatWindow`; otherwise an empty chat can collapse
+            // the workspace panel window to an unusable size.
+            Group {
+                if case .agentChat = target.kind {
+                    WindowSizeConfigurator(
+                        minSize: CGSize(width: 720, height: 520),
+                        defaultSize: CGSize(width: 960, height: 720),
+                        backgroundColor: nil
+                    )
+                } else {
+                    EmptyView()
+                }
+            }
+        )
+        .background(
             WindowCloseObserver {
                 // The user closed this window some other way than the Dock
                 // button (red close button, Cmd+W, ⌘Q, etc.) — the panel is
@@ -58,6 +74,16 @@ struct WorkspacePanelWindowView: View {
             }
         )
         .background(WindowPinConfigurator(isPinned: isPinnedToFront))
+        .background(WindowCascadeConfigurator())
+        .background(
+            WindowFocusObserver(
+                name: .bringWorkspacePanelToFront,
+                match: { [kind = target.kind] object in
+                    guard let objectKind = object as? WorkspacePanelKind else { return false }
+                    return objectKind == kind
+                }
+            )
+        )
         #endif
     }
 
@@ -125,7 +151,7 @@ struct WorkspacePanelWindowView: View {
 /// reliably tied to window-close specifically, so this observes
 /// `NSWindow.willCloseNotification` directly instead.
 private struct WindowCloseObserver: NSViewRepresentable {
-    let onClose: () -> Void
+    let onClose: @MainActor @Sendable () -> Void
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
@@ -146,11 +172,11 @@ private struct WindowCloseObserver: NSViewRepresentable {
     }
 
     final class Coordinator {
-        private let onClose: () -> Void
+        private let onClose: @MainActor @Sendable () -> Void
         private var observer: NSObjectProtocol?
         private weak var observedWindow: NSWindow?
 
-        init(onClose: @escaping () -> Void) {
+        init(onClose: @escaping @MainActor @Sendable () -> Void) {
             self.onClose = onClose
         }
 
@@ -163,7 +189,9 @@ private struct WindowCloseObserver: NSViewRepresentable {
                 object: window,
                 queue: .main
             ) { [onClose] _ in
-                onClose()
+                Task { @MainActor in
+                    onClose()
+                }
             }
         }
 
@@ -177,3 +205,4 @@ private struct WindowCloseObserver: NSViewRepresentable {
     }
 }
 #endif
+

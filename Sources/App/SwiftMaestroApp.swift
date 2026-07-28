@@ -60,6 +60,21 @@ struct SwiftMaestroApp: App {
     @State private var whisperService = WhisperKitService()
 
     init() {
+        // ACP agent mode: when launched with --acp, run as a headless JSON-RPC
+        // agent over stdin/stdout instead of starting the SwiftUI app.
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("--acp") {
+            SwiftMaestroDefaultsMigration.applyIfNeeded()
+            let engine = MLXInferenceEngine()
+            let catalog = ModelCatalog()
+            let agent = ACPAgent(engine: engine, catalog: catalog)
+            Task {
+                await agent.run()
+                exit(0)
+            }
+            RunLoop.main.run()
+        }
+
         let theme = ThemeStore()
         _theme = State(wrappedValue: theme)
         _skinStore = State(wrappedValue: SkinStore(theme: theme))
@@ -83,6 +98,7 @@ struct SwiftMaestroApp: App {
     @State private var mapsService = AppleMapsService.shared
     @State private var photosService = ApplePhotosService()
     @State private var whatsAppService = WhatsAppService()
+    @State private var discordService = DiscordService()
     @State private var pluginService = PluginService()
     @State private var busWorker: BusWorker? = nil
     @State private var sparkleUpdater = SparkleUpdaterService.shared
@@ -112,6 +128,7 @@ struct SwiftMaestroApp: App {
                 .environment(mapsService)
                 .environment(photosService)
                 .environment(whatsAppService)
+                .environment(discordService)
                 .environment(pluginService)
                 .environment(sparkleUpdater)
                 .task {
@@ -121,6 +138,10 @@ struct SwiftMaestroApp: App {
                     // Must complete before any agent could possibly dispatch a
                     // tool call — see ToolRegistry.swift's migration notes.
                     await MaestroTools.registerAllMigratedTools()
+                    // Install the OpenCode-style permission checker so project
+                    // .opencode/permissions.json and .ai-context/permissions.json
+                    // policies can allow/ask/deny tools and paths.
+                    await ToolRegistry.shared.setPermissionChecker(PermissionService.shared)
                     // Restore user settings from the external JSON backup if the
                     // UserDefaults plist has been reset or deleted. This must run
                     // before the observable stores read their initial values.
@@ -284,6 +305,7 @@ struct SwiftMaestroApp: App {
                     .environment(mapsService)
                     .environment(photosService)
                     .environment(whatsAppService)
+                    .environment(discordService)
                     .environment(pluginService)
             }
         }

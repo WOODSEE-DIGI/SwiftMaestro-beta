@@ -119,18 +119,46 @@ struct SimpleMemoryStore: Sendable {
         return baseDir.appendingPathComponent(kindDir, isDirectory: true)
     }
 
-    /// Relative slash paths of every entry stored under a kind (recursive).
-    func entries(kind: MaestroURI.Kind) -> [String] {
+    /// Relative slash paths of entries stored under a kind (recursive), with optional path prefix and pagination.
+    func entries(kind: MaestroURI.Kind, pathPrefix: String? = nil, limit: Int? = nil, offset: Int? = nil) -> [String] {
         let dir = directory(for: kind)
         guard let walker = FileManager.default.enumerator(
             at: dir, includingPropertiesForKeys: [.isRegularFileKey]) else { return [] }
+        let prefix = pathPrefix?.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         var out: [String] = []
         for case let url as URL in walker {
             guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true
             else { continue }
-            out.append(url.path.replacingOccurrences(of: dir.path + "/", with: ""))
+            let rel = url.path.replacingOccurrences(of: dir.path + "/", with: "")
+            if let prefix = prefix, !prefix.isEmpty, !rel.hasPrefix(prefix) && !rel.hasPrefix(prefix + "/") { continue }
+            out.append(rel)
         }
-        return out.sorted()
+        let sorted = out.sorted()
+        let total = sorted.count
+        let start = max(0, min(offset ?? 0, total))
+        let end: Int
+        if let limit = limit, limit > 0 {
+            end = min(total, start + limit)
+        } else {
+            end = total
+        }
+        return Array(sorted[start..<end])
+    }
+
+    /// Count entries under a kind, optionally filtered by a path prefix.
+    func countEntries(kind: MaestroURI.Kind, pathPrefix: String? = nil) -> Int {
+        let dir = directory(for: kind)
+        guard let walker = FileManager.default.enumerator(
+            at: dir, includingPropertiesForKeys: [.isRegularFileKey]) else { return 0 }
+        let prefix = pathPrefix?.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        var count = 0
+        for case let url as URL in walker {
+            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { continue }
+            let rel = url.path.replacingOccurrences(of: dir.path + "/", with: "")
+            if let prefix = prefix, !prefix.isEmpty, !rel.hasPrefix(prefix) && !rel.hasPrefix(prefix + "/") { continue }
+            count += 1
+        }
+        return count
     }
 
     /// Full-text search across the whole store. Returns (relative path, snippet).

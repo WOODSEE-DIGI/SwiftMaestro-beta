@@ -502,6 +502,12 @@ enum MaestroTools {
                 name: "open_panel", spec: navigatorToolSpecs[7],
                 category: ToolCategory.workspace.rawValue,
                 handler: { call in await openPanelTool(call) }),
+            ToolDefinition(
+                name: "task", spec: navigatorToolSpecs[8],
+                category: ToolCategory.workspace.rawValue,
+                handler: { _ in
+                    errorJSON("task must be intercepted by AgentExecutor, not dispatched directly.")
+                }),
         ])
     }
 
@@ -613,6 +619,22 @@ enum MaestroTools {
                 ],
                 required: ["panel"]
             ),
+            functionSpec(
+                name: "task",
+                description:
+                    "Spin up a temporary one-shot subagent for a single task, wait for its "
+                    + "answer, then tear it down. Use this exactly like OpenCode's task tool: "
+                    + "when you need a specialist to explore, code, or analyze something and return "
+                    + "a concise result. The agent is created, used, and archived automatically.",
+                properties: [
+                    "agent": ["type": "string", "description": "Short name for the temporary specialist agent (e.g. 'swift-explorer', 'doc-writer')."],
+                    "task": ["type": "string", "description": "The task or question to hand to the subagent."],
+                    "project": ["type": "string", "description": "Optional project name to scope the agent. Defaults to a temporary task project."],
+                    "workingDirectory": ["type": "string", "description": "Optional absolute working directory. Inherited from the creating agent when omitted."],
+                    "model": ["type": "string", "description": "Optional model identifier or shorthand ('coding', 'default'). Uses the global default model when omitted."],
+                ],
+                required: ["agent", "task"]
+            ),
         ]
     }
 
@@ -703,7 +725,7 @@ enum MaestroTools {
     }
 
     /// Accepts an int as a number or a numeric string.
-    private struct LenientInt: Decodable {
+    internal struct LenientInt: Decodable {
         let value: Int?
         init(from decoder: Decoder) throws {
             let c = try decoder.singleValueContainer()
@@ -714,7 +736,7 @@ enum MaestroTools {
     }
 
     /// Accepts a bool as a boolean or a string like "true"/"false".
-    private struct LenientBool: Decodable {
+    internal struct LenientBool: Decodable {
         let value: Bool?
         init(from decoder: Decoder) throws {
             let c = try decoder.singleValueContainer()
@@ -1120,27 +1142,24 @@ enum MaestroTools {
     }
 
     /// Resolve a free-form model hint into a known `MaestroModel.id`.
-    /// Supported: "coding"/"coder" → the local Qwen 3 Coder model; otherwise
+    /// Supported: "coding"/"coder" → the local Qwen 3 Coder Next model; otherwise
     /// the raw string is kept if it matches a known model id. Also does a
-    /// case-insensitive display-name match so the model picker's visible
-    /// labels (e.g. "Qwen 3 Coder 30B-A3B (Instruct)") resolve correctly.
+    /// case-insensitive display-name match so the model picker's visible labels
+    /// resolve correctly.
     @MainActor
-    private static func resolveAgentModelID(
+    static func resolveAgentModelID(
         _ hint: String?, agentName: String? = nil, catalog: ModelCatalog?
     ) -> String? {
         let resolvedHint = hint?.trimmingCharacters(in: .whitespaces)
-        let lowerAgent = agentName?.lowercased() ?? ""
-        let isCodingAgent = lowerAgent.contains("coding") || lowerAgent.contains("coder")
-            || lowerAgent.contains("code")
         if let resolvedHint, !resolvedHint.isEmpty {
             let lower = resolvedHint.lowercased()
+            // The explicit "coding" shorthand selects the coding-specialist model.
             if lower == "coding" || lower == "coder" || lower == "code" {
-                return "local-qwen3-coder-30b-a3b"
+                return "local-qwen3-coder-next"
             }
             // If the hint matches a known catalog id, display name, or HF id,
             // return the canonical catalog id (so stored modelIDs are stable).
-            // When multiple models match (e.g. "qwen coder" matches both
-            // Qwen 3 Coder variants), prefer the one whose weights are actually
+            // When multiple models match, prefer the one whose weights are actually
             // installed on disk so the user isn't forced to download a model.
             if let catalog {
                 let candidates = catalog.matchingModels(for: resolvedHint)
@@ -1149,9 +1168,6 @@ enum MaestroTools {
                 }
             }
             return resolvedHint
-        }
-        if isCodingAgent {
-            return "local-qwen3-coder-30b-a3b"
         }
         return nil
     }

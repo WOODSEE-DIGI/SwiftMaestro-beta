@@ -137,6 +137,84 @@ enum SecretsStore {
         return meta
     }
 
+    /// Update a secret's metadata and/or value, moving the Keychain item when the
+    /// scope or name changes so references keep resolving correctly.
+    ///
+    /// Keychain reads are performed with `allowUI: false` so the user never sees a
+    /// keychain password dialog. If the keychain is locked and the account needs to
+    /// move, the caller must provide the new value explicitly.
+    static func update(
+        original: SecretMetadata,
+        name: String? = nil,
+        value: String? = nil,
+        scope: SecretScope? = nil,
+        synced: Bool? = nil,
+        note: String? = nil
+    ) throws -> SecretMetadata {
+        let newName = (name ?? original.name).trimmingCharacters(in: .whitespacesAndNewlines)
+        let newScope = scope ?? original.scope
+        let newSynced = synced ?? original.synced
+        let newNote = note ?? original.note
+
+        let accountChanged = newName != original.name || newScope != original.scope
+        let targetAccount = newScope.account(for: newName)
+
+        // Resolve the value that should end up in the (possibly new) Keychain account.
+        let resolvedValue: String
+        if let provided = value, !provided.isEmpty {
+            resolvedValue = provided
+        } else {
+            // Background read: never pop a keychain unlock dialog. If the keychain is
+            // locked we cannot retrieve the value, so the caller must supply it.
+            guard let existing = try? KeychainService.read(account: original.account, allowUI: false),
+                  !existing.isEmpty else {
+                throw SecretError.keychainLocked
+            }
+            resolvedValue = existing
+        }
+
+        if accountChanged {
+            // Move the secret to the account implied by the new name/scope.
+            try KeychainService.store(account: targetAccount, value: resolvedValue, synchronizable: newSynced)
+            try KeychainService.delete(account: original.account)
+        } else if newSynced != original.synced || (value != nil && !value!.isEmpty) {
+            // Same account, but value or sync flag changed.
+            try KeychainService.store(account: targetAccount, value: resolvedValue, synchronizable: newSynced)
+        }
+
+        lock.lock(); defer { lock.unlock() }
+        var items = loadIndexLocked()
+        items.removeAll { $0.account == original.account }
+        let updated = SecretMetadata(
+            name: newName,
+            scopeKind: newScope.kind,
+            projectId: newScope.projectId,
+            synced: newSynced,
+            note: newNote,
+            createdAt: original.createdAt,
+            updatedAt: Date(),
+            lastUsedAt: original.lastUsedAt
+        )
+        items.append(updated)
+        valueCache = nil
+        resolvedCache.removeValue(forKey: original.account)
+        resolvedCache.removeValue(forKey: targetAccount)
+        saveIndexLocked(items)
+        return updated
+    }
+
+    enum SecretError: LocalizedError {
+        case keychainLocked
+
+        var errorDescription: String? {
+            switch self {
+            case .keychainLocked:
+                return "The login keychain is locked, so the existing secret value can't be read. "
+                    + "Enter the current value in the Value field, or unlock the keychain in Keychain Access."
+            }
+        }
+    }
+
     static func delete(_ meta: SecretMetadata) throws {
         try KeychainService.delete(account: meta.account)
         lock.lock(); defer { lock.unlock() }

@@ -48,7 +48,7 @@ These models are the supported focus for SwiftMaestro and have verified tool sup
 | Gemma 4 26B-A4B 4-bit | ~16 GB | Lower memory, same checkpoint | ✅ |
 | Qwen 3.5 122B (A10B) | ~65 GB | Deepest reasoning | ✅ |
 | Qwen 3.5 27B (Opus Distilled) | ~14 GB | Balanced performance | ✅ |
-| Qwen 3 Coder 30B-A3B | ~17 GB | Coding tasks, sub-agents | ✅ |
+| Qwen 3 Coder Next | ~45 GB | Coding tasks, sub-agents | ✅ |
 
 ### Experimental models
 These models are available for exploration but are not part of the verified core:

@@ -27,6 +27,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     case stocks
     case news
     case whatsapp
+    case discord
     case web
     case bluesky
     case vault
@@ -54,7 +55,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             return false
         case .file, .shell, .server, .index, .system, .sqlite,
              .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news,
-             .whatsapp, .web, .bluesky, .vault:
+             .whatsapp, .discord, .web, .bluesky, .vault:
             return true
         }
     }
@@ -83,6 +84,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .stocks: return "Stocks"
         case .news: return "News"
         case .whatsapp: return "WhatsApp"
+        case .discord: return "Discord"
         case .web: return "Web"
         case .bluesky: return "Bluesky"
         case .vault: return "Vault"
@@ -113,6 +115,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .stocks: return "chart.line.uptrend.xyaxis"
         case .news: return "newspaper"
         case .whatsapp: return "message"
+        case .discord: return "bubble.left.and.text.bubble.right"
         case .web: return "globe"
         case .bluesky: return "at"
         case .vault: return "lock.square"
@@ -124,9 +127,9 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     var toolNames: [String] {
         switch self {
         case .file:
-            return ["read_file", "write_file", "list_dir", "ocr_image"]
+            return ["read_file", "write_file", "list_dir", "ocr_image", "glob_files", "grep_code", "edit_file"]
         case .shell:
-            return ["execute_command", "list_background_processes", "stop_background_process"]
+            return ["execute_command", "list_background_processes", "stop_background_process", "upload_release", "git_status", "git_diff", "git_log", "git_branch"]
         case .server:
             return ["start_server", "stop_server", "list_servers"]
         case .index:
@@ -160,7 +163,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             return [
                 "create_project_agent", "list_workspace", "archive_project_agent",
                 "ask_project_agent", "ask_project_agents", "set_agent_model",
-                "list_models", "open_panel",
+                "list_models", "open_panel", "task",
             ]
         case .rules:
             return ["list_rules", "set_rule", "read_project_rules"]
@@ -205,6 +208,11 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
                 "whatsapp_status", "start_whatsapp_bridge", "stop_whatsapp_bridge",
                 "list_whatsapp_chats", "read_whatsapp_messages", "send_whatsapp_message",
             ]
+        case .discord:
+            return [
+                "list_discord_servers", "list_discord_channels", "read_discord_messages",
+                "archive_discord_channel", "send_discord_message",
+            ]
         case .web:
             return ["web_search", "fetch_url"]
         case .bluesky:
@@ -225,12 +233,12 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .navigator:
             return [
                 .workspace, .memory, .bus, .system, .rules, .time, .web, .vault,
-                .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .whatsapp, .bluesky,
+                .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .whatsapp, .discord, .bluesky,
             ]
         case .project:
             return [
                 .file, .shell, .server, .index, .memory, .messaging, .bus, .system, .mcp, .sqlite, .web, .vault,
-                .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .whatsapp, .bluesky,
+                .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .whatsapp, .discord, .bluesky,
             ]
         }
     }

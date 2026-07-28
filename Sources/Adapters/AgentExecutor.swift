@@ -119,6 +119,7 @@ final class AgentExecutor: Sendable {
         workingDirectory: String? = nil,
         agentID: String? = nil,
         maxRounds: Int? = nil,
+        maxToolCallsPerTool: [String: Int]? = nil,
         maxTokens: Int = 32768,
         steerInbox: SteerInbox? = nil
     ) -> AsyncThrowingStream<AgentOutput, Error> {
@@ -142,7 +143,7 @@ final class AgentExecutor: Sendable {
                     // HARD CAP: even the main agent gets max 8 rounds to prevent
                     // infinite narration/gather loops on small models.
                     var round = 0
-                    let hardMaxRounds = 8
+                    let hardMaxRounds = 4
                     var didUseTool = false       // any tool ran this turn
                     var usedMutator = false      // a todo/plan/message/workspace/delegation tool ran
                     var autoNudges = 0           // CONSECUTIVE unproductive nudges
@@ -150,6 +151,10 @@ final class AgentExecutor: Sendable {
                     var finalWrapUpSent = false  // bounded-run wrap-up issued
                     var fileOpCount = 0          // file ops since last auto-save
                     let autoSaveThreshold = 5    // trigger auto-save after N file ops
+                    // Per-tool call budgets to stop small-model loops (e.g. web_search).
+                    let perToolBudget = maxToolCallsPerTool ?? [:]
+                    var toolCallCounts: [String: Int] = [:]
+                    var toolBudgetExceededNames = Set<String>()
                     // Context budget: configurable via UserDefaults; default raised from
                     // 80K to 200K so large indexing/file ops don't trip prematurely.
                     let tokenBudget = UserDefaults.standard.object(forKey: "agent.contextTokenBudget") as? Int ?? 200_000
@@ -177,6 +182,14 @@ final class AgentExecutor: Sendable {
                         // Also enforces a hard cap on the main agent to prevent
                         // infinite gather loops on small models.
                         var specsThisRound = toolSpecs
+                        // Enforce per-tool call budgets: once a tool's budget is exceeded,
+                        // remove it from the schemas so the model cannot call it again.
+                        if !toolBudgetExceededNames.isEmpty {
+                            specsThisRound = specsThisRound.filter { spec in
+                                guard let name = MaestroTools.toolName(from: spec) else { return true }
+                                return !toolBudgetExceededNames.contains(name)
+                            }
+                        }
                         let effectiveMax = maxRounds ?? hardMaxRounds
 
                         // MEMORY GUARD: Check system memory pressure before generation.
@@ -249,11 +262,21 @@ final class AgentExecutor: Sendable {
                             NSLog("[AGENT] round \(round): tools=\(specsThisRound.count) content=\(cleanContent.count) chars, toolCalls=[\(callNames)]")
                         }
 
+                        // Fallback: some backends (notably Gemma 4 with the .gemma4
+                        // format) stream raw XML tool-call blocks without surfacing them
+                        // as parsed `.toolCall` events. If the backend parsed nothing,
+                        // extract any raw XML blocks from the assistant text and use them
+                        // as the effective calls. When the backend already parsed calls,
+                        // skip the fallback to avoid duplicate executions.
+                        let rawXMLCalls = rawToolCalls.isEmpty
+                            ? Self.extractToolCallsFromRawXML(strippedContent, toolSpecs: specsThisRound)
+                            : []
+                        var effectiveToolCalls = rawToolCalls + rawXMLCalls
                         // Fallback: if the model emitted an execute_command call but the
                         // XML parser returned an empty/missing `command` argument, recover
                         // the command from the assistant's text (fenced block, command-like
                         // line, or raw XML) so it actually runs.
-                        var effectiveToolCalls = Self.recoverShellCommands(in: rawToolCalls, from: strippedContent)
+                        effectiveToolCalls = Self.recoverShellCommands(in: effectiveToolCalls, from: strippedContent)
 
                         guard !Task.isCancelled else { break iterations }
                         // The forced wrap-up round IS the final answer.
@@ -391,6 +414,22 @@ final class AgentExecutor: Sendable {
                                     ])
                                     fileOpCount = 0
                                 }
+                            }
+                            // Per-tool budget tracking: stop small-model loops on a single tool.
+                            toolCallCounts[tc.name, default: 0] += 1
+                            if let budget = perToolBudget[tc.name],
+                               toolCallCounts[tc.name] == budget,
+                               !toolBudgetExceededNames.contains(tc.name) {
+                                toolBudgetExceededNames.insert(tc.name)
+                                NSLog("[AGENT] TOOL BUDGET: \(tc.name) reached limit of \(budget)")
+                                convo.append([
+                                    "role": "user",
+                                    "content":
+                                        "SYSTEM: You have already called \(tc.name) "
+                                        + "\(budget) time\(budget == 1 ? "" : "s"). "
+                                        + "Do NOT call \(tc.name) again. Use the results you already "
+                                        + "have and provide your final answer now.",
+                                ])
                             }
                         }
                         // Drain any delegation streaming events and yield them
@@ -605,6 +644,190 @@ final class AgentExecutor: Sendable {
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Parameter-shape information for a tool, used by the XML fallback parser to
+    /// map bare `<parameter>` values onto the correct key.
+    internal struct ToolParameterInfo {
+        let required: [String]
+        let all: Set<String>
+    }
+
+    /// Build a map from tool name to the parameter names declared in its OpenAI
+    /// function schema. The XML fallback parser uses this to pair bare
+    /// `<parameter>` siblings (e.g. `<parameter>query</parameter><parameter>swift</parameter>`)
+    /// and to fall back to the first required parameter when only a single bare
+    /// value is provided.
+    private static func parameterNamesMap(from specs: [ToolSpec]) -> [String: ToolParameterInfo] {
+        var map: [String: ToolParameterInfo] = [:]
+        for spec in specs {
+            guard let name = MaestroTools.toolName(from: spec) else { continue }
+            let function = spec["function"] as? [String: any Sendable]
+            let parameters = function?["parameters"] as? [String: any Sendable]
+            let properties = parameters?["properties"] as? [String: any Sendable] ?? [:]
+            let required = parameters?["required"] as? [String] ?? []
+            map[name] = ToolParameterInfo(required: required, all: Set(properties.keys))
+        }
+        return map
+    }
+
+    /// Extract all `key="value"` attributes from an XML tag fragment.
+    private static func parseXMLAttributes(_ text: String) -> [String: String] {
+        var attrs: [String: String] = [:]
+        let attrPattern = #"([a-zA-Z0-9_]+)=\"([^\"]*)\""#
+        guard let attrRegex = try? NSRegularExpression(pattern: attrPattern, options: []) else { return attrs }
+        let nsRange = NSRange(text.startIndex..., in: text)
+        for match in attrRegex.matches(in: text, options: [], range: nsRange) {
+            guard let keyRange = Range(match.range(at: 1), in: text),
+                  let valRange = Range(match.range(at: 2), in: text) else { continue }
+            attrs[String(text[keyRange])] = String(text[valRange])
+        }
+        return attrs
+    }
+
+    /// Fallback parser for raw XML tool-call blocks that the backend's native
+    /// parser missed. Handles both well-formed `<tool_call><function=x>...</function></tool_call>`
+    /// and the partial/bare `<function=x>...</function>` blocks that small models like
+    /// Qwen 3 Coder emit when they drop the outer `<tool_call>` wrapper.
+    /// `toolSpecs` provides the parameter names so bare `<parameter>` values can be
+    /// paired/mapped onto the correct key (e.g. `query` for `web_search`).
+    internal static func extractToolCallsFromRawXML(_ text: String, toolSpecs: [ToolSpec] = []) -> [RoundToolCall] {
+        var calls: [RoundToolCall] = []
+        var matchedRanges: [Range<String.Index>] = []
+        let parameterInfoByName = parameterNamesMap(from: toolSpecs)
+
+        // First pass: fully-wrapped <tool_call> blocks. The inner body is what we parse.
+        let toolCallPattern = #"(?s)<tool_call>(.*?)</tool_call>"#
+        if let regex = try? NSRegularExpression(pattern: toolCallPattern, options: []) {
+            let nsRange = NSRange(text.startIndex..., in: text)
+            for match in regex.matches(in: text, options: [], range: nsRange) {
+                guard let blockRange = Range(match.range, in: text),
+                      let innerRange = Range(match.range(at: 1), in: text) else { continue }
+                if let call = parseXMLToolCallBlock(String(text[innerRange]), parameterInfoByName: parameterInfoByName) {
+                    calls.append(call)
+                    matchedRanges.append(blockRange)
+                }
+            }
+        }
+
+        // Second pass: bare <function=NAME> ... </function> blocks that the model
+        // emitted without the outer <tool_call> wrapper. We must avoid overlapping any
+        // already-matched wrapped calls.
+        let bareFunctionPattern = #"(?s)<function=([^>]+)>(.*?)</function>"#
+        if let regex = try? NSRegularExpression(pattern: bareFunctionPattern, options: []) {
+            let nsRange = NSRange(text.startIndex..., in: text)
+            for match in regex.matches(in: text, options: [], range: nsRange) {
+                guard let blockRange = Range(match.range, in: text) else { continue }
+                // Skip if this bare block overlaps an already-matched <tool_call> block.
+                if matchedRanges.contains(where: { $0.overlaps(blockRange) }) { continue }
+                if let call = parseXMLToolCallBlock(String(text[blockRange]), parameterInfoByName: parameterInfoByName) {
+                    calls.append(call)
+                }
+            }
+        }
+
+        return calls
+    }
+
+    /// Parse a single XML tool-call block (either the inner body of a <tool_call> block
+    /// or a bare <function=...> block) into a RoundToolCall.
+    /// `parameterInfoByName` maps tool names to their declared parameters so bare
+    /// `<parameter>` siblings can be paired as key/value and single bare values are
+    /// assigned to the first required parameter instead of the generic `value` key.
+    internal static func parseXMLToolCallBlock(_ block: String, parameterInfoByName: [String: ToolParameterInfo] = [:]) -> RoundToolCall? {
+        // Extract function name: <function=NAME> or <function>NAME</function>
+        let name: String? = {
+            if let nameRange = block.range(of: #"<function=([^>]+)>"#, options: .regularExpression) {
+                let nameWithTag = String(block[nameRange])
+                return nameWithTag.dropFirst(10).dropLast(1).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            if let tagStart = block.range(of: "<function>"),
+               let tagEnd = block.range(of: "</function>") {
+                return String(block[tagStart.upperBound..<tagEnd.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            return nil
+        }()
+        guard let functionName = name, !functionName.isEmpty else { return nil }
+        let info = parameterInfoByName[functionName]
+
+        // Extract argument content. Support four forms:
+        //   <parameter=name>value</parameter>
+        //   <parameter name="name">value</parameter>
+        //   <parameter>name</parameter><parameter>value</parameter> (bare key/value pairs)
+        //   <parameter>{"key":"value"}</parameter>
+        //   <parameter name="..." value="..." />  (self-closing attribute form)
+        var args: [String: Any] = [:]
+        let paramPattern = #"(?s)<parameter(?:=([^>\s]+))?\s*(.*?)(?:/>|>(.*?)</parameter>)"#
+        if let paramRegex = try? NSRegularExpression(pattern: paramPattern, options: []) {
+            let paramNSRange = NSRange(block.startIndex..., in: block)
+            var rawParams: [(name: String?, value: String, attrs: [String: String])] = []
+            for paramMatch in paramRegex.matches(in: block, options: [], range: paramNSRange) {
+                guard let paramRange = Range(paramMatch.range, in: block) else { continue }
+                var paramName = (Range(paramMatch.range(at: 1), in: block).map { String(block[$0]) } ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                let attrBlock = String(block[paramRange])
+                let attrs = parseXMLAttributes(attrBlock)
+                if paramName.isEmpty, let nameAttr = attrs["name"], !nameAttr.isEmpty {
+                    paramName = nameAttr
+                }
+                let valueRange = Range(paramMatch.range(at: 3), in: block)
+                let rawValue = valueRange.map { String(block[$0]).trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
+                let value = attrs["value"] ?? rawValue
+                rawParams.append((name: paramName.isEmpty ? nil : paramName, value: value, attrs: attrs))
+            }
+
+            func assign(key: String, value: String) {
+                if let data = value.data(using: .utf8),
+                   let parsed = try? JSONSerialization.jsonObject(with: data, options: [.allowFragments]) {
+                    if let obj = parsed as? [String: Any] {
+                        args.merge(obj) { _, new in new }
+                    } else if let str = parsed as? String {
+                        args[key] = str
+                    } else {
+                        args[key] = value
+                    }
+                } else {
+                    args[key] = value
+                }
+            }
+
+            var i = 0
+            while i < rawParams.count {
+                let p = rawParams[i]
+                if let key = p.name, !key.isEmpty {
+                    assign(key: key, value: p.value)
+                    for (attrKey, attrVal) in p.attrs where attrKey != "name" && attrKey != "value" {
+                        assign(key: attrKey, value: attrVal)
+                    }
+                } else {
+                    let value = p.value
+                    // Pair consecutive bare parameters when the first one is a known
+                    // parameter name for this tool: e.g. <parameter>query</parameter><parameter>swift</parameter>.
+                    if let info = info,
+                       info.all.contains(value),
+                       i + 1 < rawParams.count,
+                       rawParams[i + 1].name == nil {
+                        let nextValue = rawParams[i + 1].value
+                        assign(key: value, value: nextValue)
+                        i += 1
+                    } else {
+                        // Single bare value: assign to the first required parameter if known,
+                        // otherwise fall back to the generic "value" key.
+                        if let firstRequired = info?.required.first {
+                            assign(key: firstRequired, value: value)
+                        } else {
+                            assign(key: "value", value: value)
+                        }
+                    }
+                }
+                i += 1
+            }
+        }
+
+        guard !args.isEmpty,
+              let argsData = try? JSONSerialization.data(withJSONObject: args),
+              let argsJSON = String(data: argsData, encoding: .utf8)
+        else { return nil }
+        return RoundToolCall(id: UUID().uuidString, name: functionName, arguments: argsJSON)
+    }
+
     /// Recover a shell command from the assistant's text when the XML parser
     /// returned an execute_command tool call with an empty or missing `command`
     /// argument. Tries, in order: a fenced code block, a command-like line in
@@ -755,6 +978,9 @@ final class AgentExecutor: Sendable {
         if tc.name == "ask_project_agents" {
             return await delegateMany(argumentsJSON: tc.arguments, mcp: mcp, workingDirectory: workingDirectory)
         }
+        if tc.name == "task" {
+            return await taskDelegate(argumentsJSON: tc.arguments, mcp: mcp, workingDirectory: workingDirectory)
+        }
 
         // Maestro guard: if project is nil (Maestro), block work tools.
         // The model sometimes ignores the tool spec and calls tools it shouldn't have.
@@ -763,8 +989,14 @@ final class AgentExecutor: Sendable {
                 + "You MUST delegate this task to a project agent using ask_project_agent.\"}"
         }
 
+        // Gemma 4 and other small models sometimes emit literal newlines/carriage
+        // returns inside JSON string values instead of escaping them, and can
+        // wrap the whole object in a string literal or leak JSON punctuation into
+        // the keys. The injection helpers and ToolCall decoder both rely on
+        // valid JSON, so repair and then sanitize the raw arguments first.
+        let rawArguments = Self.sanitizeArgumentsJSON(ToolArgumentRepair.repair(tc.arguments))
         var argsJSON = Self.injectProject(
-            into: tc.arguments, toolName: tc.name, project: project
+            into: rawArguments, toolName: tc.name, project: project
         )
         // Default execute_command's cwd to the agent's working directory.
         argsJSON = Self.injectCwd(
@@ -785,8 +1017,10 @@ final class AgentExecutor: Sendable {
         // implicit authorized root (agents can create/edit under their cwd
         // without requiring manual Settings → Context entries).
         MaestroTools.workingDirectory = workingDirectory
+        NSLog("[executeTool] name=%@ args=%@ workingDirectory=%@", tc.name, argsJSON, workingDirectory ?? "(none)")
         if await MaestroTools.handles(tc.name) {
             let result = await MaestroTools.execute(call)
+            NSLog("[executeTool] result for %@: %@", tc.name, String(result.prefix(300)))
             // If create_project_agent returned "already_exists", rewrite the
             // result into a hard error so the model is forced to use
             // ask_project_agent instead of looping on create.
@@ -797,7 +1031,9 @@ final class AgentExecutor: Sendable {
             return result
         }
         if let mcp, await mcp.handles(tc.name) {
-            return await mcp.execute(call)
+            let result = await mcp.execute(call)
+            NSLog("[executeTool] MCP result for %@: %@", tc.name, String(result.prefix(300)))
+            return result
         }
         return await MaestroTools.execute(call)
     }
@@ -930,8 +1166,10 @@ final class AgentExecutor: Sendable {
             return DelegateResult(project: projectName ?? "", agent: agentName, answer: nil,
                 error: "each request needs a non-empty 'agent' and 'task'")
         }
-        // Resolve target + assemble its prompt on the MainActor.
-        let prep: (AgentRecord, String, [Message], String?)? = await MainActor.run {
+        // Resolve target + assemble its prompt on the MainActor. Include the
+        // target agent's effective model so the category prompt can be tailored
+        // to the model's capacity (e.g., small MoE vs large dense).
+        let prep: (AgentRecord, String, [Message], String?, String?)? = await MainActor.run {
             guard let ws = MaestroTools.workspace else { return nil }
             let target: AgentRecord?
             if let p = projectName, !p.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -952,14 +1190,19 @@ final class AgentExecutor: Sendable {
                !MaestroTools.delegatedAgentWorkingDirectories.contains(targetWD) {
                 MaestroTools.delegatedAgentWorkingDirectories.append(targetWD)
             }
+            let targetModel = self.catalog?.effectiveModel(for: target)
+            let targetModelID = targetModel?.huggingFaceID
+            let targetModelDesc = targetModel.map { "\($0.displayName) (model id \($0.huggingFaceID)), served via in-process Apple MLX" }
             var msgs = ChatHistoryStore.load(agentId: target.id)
                 ?? [ChatViewModel.systemMessage(
                     for: target, projectName: proj.isEmpty ? nil : proj,
-                    workingDirectory: targetWD)]
+                    workingDirectory: targetWD,
+                    modelDescription: targetModelDesc,
+                    modelID: targetModelID)]
             msgs.append(Message(role: .user, content: trimmedTask, timestamp: Date()))
-            return (target, proj, msgs, targetWD)
+            return (target, proj, msgs, targetWD, targetModelID)
         }
-        guard let (target, proj, messages, effectiveWD) = prep else {
+        guard let (target, proj, messages, effectiveWD, _) = prep else {
             // List available agents so the model can correct itself.
             let available = await MainActor.run {
                 guard let ws = MaestroTools.workspace else { return "none" }
@@ -1274,6 +1517,7 @@ final class AgentExecutor: Sendable {
         }
         let resolved: [ResolvedTarget?] = await MainActor.run {
             guard let ws = MaestroTools.workspace else { return parsed.map { _ in nil } }
+            let catalog = self.catalog
             return parsed.map { p in
                 let target: AgentRecord?
                 if let proj = p.project, !proj.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -1292,10 +1536,15 @@ final class AgentExecutor: Sendable {
                    !MaestroTools.delegatedAgentWorkingDirectories.contains(targetWD) {
                     MaestroTools.delegatedAgentWorkingDirectories.append(targetWD)
                 }
+                let targetModel = catalog?.effectiveModel(for: target)
+                let targetModelID = targetModel?.huggingFaceID
+                let targetModelDesc = targetModel.map { "\($0.displayName) (model id \($0.huggingFaceID)), served via in-process Apple MLX" }
                 var msgs = ChatHistoryStore.load(agentId: target.id)
                     ?? [ChatViewModel.systemMessage(
                         for: target, projectName: proj.isEmpty ? nil : proj,
-                        workingDirectory: targetWD)]
+                        workingDirectory: targetWD,
+                        modelDescription: targetModelDesc,
+                        modelID: targetModelID)]
                 msgs.append(Message(role: .user, content: p.task, timestamp: Date()))
                 return ResolvedTarget(
                     project: proj, target: target, messages: msgs,
@@ -1323,6 +1572,52 @@ final class AgentExecutor: Sendable {
             NSLog("[DELEGATE] \(i+1)/\(parsed.count) done: '\(r.agent)'")
         }
         return Self.json(["results": results])
+    }
+
+    /// `task` — OpenCode-style one-shot subagent. Creates a temporary project agent,
+    /// delegates the task, archives the agent, and returns the answer.
+    private func taskDelegate(argumentsJSON: String, mcp: MCPClientService?, workingDirectory: String? = nil) async -> String {
+        guard let data = argumentsJSON.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let agentName = obj["agent"] as? String,
+              let taskText = obj["task"] as? String,
+              !agentName.trimmingCharacters(in: .whitespaces).isEmpty,
+              !taskText.trimmingCharacters(in: .whitespaces).isEmpty else {
+            return MaestroTools.errorJSON("task requires non-empty 'agent' and 'task'")
+        }
+        let projectName = (obj["project"] as? String)?.trimmingCharacters(in: .whitespaces).nilIfEmpty ?? "__tasks__"
+        let effectiveWD = (obj["workingDirectory"] as? String)?.trimmingCharacters(in: .whitespaces).nilIfEmpty ?? workingDirectory
+        let modelArg = (obj["model"] as? String)?.trimmingCharacters(in: .whitespaces).nilIfEmpty
+        let cleanAgent = agentName.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        let cleanProject = projectName.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+
+        // Create a uniquely named agent so repeated task calls don't collide.
+        let uniqueAgent = "\(cleanAgent)-\(UUID().uuidString.prefix(8))"
+        let created: AgentRecord? = await MainActor.run {
+            guard let ws = MaestroTools.workspace else { return nil }
+            let modelID = MaestroTools.resolveAgentModelID(modelArg, agentName: uniqueAgent, catalog: ModelCatalog())
+            return ws.createProjectAgent(
+                projectName: cleanProject, agentName: uniqueAgent,
+                workingDirectory: effectiveWD, modelID: modelID)
+        }
+        guard let target = created else {
+            return MaestroTools.errorJSON("task: workspace unavailable or agent creation failed")
+        }
+        let result = await delegateOne(
+            projectName: cleanProject, agentName: target.name, task: taskText,
+            mcp: mcp, workingDirectory: effectiveWD)
+        // Archive the temporary agent and prune its project if empty.
+        await MainActor.run {
+            MaestroTools.workspace?.archiveAgent(id: target.id)
+        }
+        if let err = result.error {
+            return MaestroTools.errorJSON(err)
+        }
+        return Self.json([
+            "project": cleanProject,
+            "agent": target.name,
+            "answer": result.answer ?? "",
+        ])
     }
 
     // MARK: - Lenient delegation-argument parsing
@@ -1440,9 +1735,51 @@ final class AgentExecutor: Sendable {
         ThinkingTagStripper.strip(text)
     }
 
+    /// Escape literal control characters that appear inside JSON string values.
+    /// Small/local models (especially Gemma 4) emit tool-call JSON with raw
+    /// newlines/carriage returns/tabs inside string values instead of the required
+    /// `\\n`/`\\r`/`\\t` escapes. This breaks `JSONDecoder`, leaves the tool with
+    /// empty arguments, and produces the misleading "A search query is required"
+    /// style errors. The scanner is token-aware: it only touches characters inside
+    /// quoted string segments and preserves already-escaped sequences.
+    private static func sanitizeArgumentsJSON(_ json: String) -> String {
+        var result = ""
+        var insideString = false
+        var escaped = false
+        for char in json {
+            if escaped {
+                result.append(char)
+                escaped = false
+                continue
+            }
+            if char == "\\" {
+                result.append(char)
+                escaped = true
+                continue
+            }
+            if char == "\"" {
+                insideString.toggle()
+                result.append(char)
+                continue
+            }
+            if insideString {
+                switch char {
+                case "\n": result.append("\\n")
+                case "\r": result.append("\\r")
+                case "\t": result.append("\\t")
+                default: result.append(char)
+                }
+            } else {
+                result.append(char)
+            }
+        }
+        return result
+    }
+
     private static func toolCall(name: String, argumentsJSON: String) -> ToolCall {
+        let sanitized = sanitizeArgumentsJSON(argumentsJSON)
         let args: [String: JSONValue]
-        if let data = argumentsJSON.data(using: .utf8),
+        if let data = sanitized.data(using: .utf8),
            let decoded = try? JSONDecoder().decode([String: JSONValue].self, from: data) {
             args = decoded
         } else {
@@ -1459,6 +1796,8 @@ final class AgentExecutor: Sendable {
         "index_directory", "spotlight_search",
         "index_document", "search_chunks", "read_chunk",
         "execute_sqlite",
+        "glob_files", "grep_code", "edit_file",
+        "git_status", "git_diff", "git_log", "git_branch",
     ]
 
     /// Rough token estimate: ~4 chars per token for English text.
@@ -1501,4 +1840,8 @@ final class AgentExecutor: Sendable {
     static func isFileOpTool(_ name: String) -> Bool {
         fileOpToolNames.contains(name)
     }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }

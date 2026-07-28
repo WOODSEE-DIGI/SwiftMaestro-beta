@@ -74,7 +74,7 @@ extension MaestroTools {
 
     private struct SearchBlueskyPostsArgs: Decodable {
         let query: String?
-        let limit: FlexibleInt?
+        let limit: LenientInt?
         let sort: String?
     }
 
@@ -84,35 +84,17 @@ extension MaestroTools {
 
     private struct GetBlueskyAuthorFeedArgs: Decodable {
         let actor: String?
-        let limit: FlexibleInt?
+        let limit: LenientInt?
     }
 
     private struct GetBlueskyThreadArgs: Decodable {
         let uri: String?
-        let depth: FlexibleInt?
+        let depth: LenientInt?
     }
 
     private struct SearchBlueskyActorsArgs: Decodable {
         let query: String?
-        let limit: FlexibleInt?
-    }
-
-    /// Decodes an Int from either a JSON integer or a numeric string.
-    private struct FlexibleInt: Decodable {
-        let value: Int
-        init(from decoder: Decoder) throws {
-            let container = try decoder.singleValueContainer()
-            if let int = try? container.decode(Int.self) {
-                value = int
-                return
-            }
-            if let string = try? container.decode(String.self), let int = Int(string) {
-                value = int
-                return
-            }
-            throw DecodingError.dataCorruptedError(
-                in: container, debugDescription: "Expected Int or numeric String")
-        }
+        let limit: LenientInt?
     }
 
     // MARK: - API client

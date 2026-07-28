@@ -30,7 +30,7 @@ final class WorkspaceStoreTests: XCTestCase {
     func testNavigatorAlwaysExists() {
         let nav = store.navigator
         XCTAssertEqual(nav.kind, .navigator)
-        XCTAssertEqual(nav.name, "Navigator")
+        XCTAssertEqual(nav.name, "Maestro")
     }
 
     // MARK: - Ensure Project
