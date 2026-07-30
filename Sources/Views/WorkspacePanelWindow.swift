@@ -44,6 +44,17 @@ struct WorkspacePanelWindowView: View {
         // panel name (e.g. "Contacts", "Calendar") — same pattern as
         // `PlanWindowView.navigationTitle(plan.title)`.
         .navigationTitle(title)
+        .onChange(of: layout.isFloating(target.kind)) { _, isFloating in
+            // The panel left the floating set without going through this
+            // window's own Dock menu — i.e. it was drag-dropped into the
+            // main window's tiling grid. This window's job is done. Setting
+            // didDock first keeps the close observer from marking the panel
+            // closed — it lives on, docked, in the grid.
+            if !isFloating {
+                didDock = true
+                dismiss()
+            }
+        }
         #if os(macOS)
         .background(
             // Agent-chat panels need the same comfortable default size as the
@@ -108,6 +119,26 @@ struct WorkspacePanelWindowView: View {
 
     private var header: some View {
         HStack(spacing: 6) {
+            // Drag grip: drag this window into the main window's tiling grid.
+            // While dragging, every tile in the main window shows its neon
+            // drop-zone preview; releasing docks the panel in that position
+            // and this window closes itself (see the isFloating observer).
+            if layout.isLocked {
+                Image(systemName: "lock")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22, height: 20)
+                    .help("Workspace is locked")
+            } else {
+                PanelDragGrip(
+                    kind: target.kind,
+                    title: title,
+                    accent: theme.panelAccent(for: target.kind),
+                    toolTip: "Drag into the main window to dock this panel"
+                )
+                .frame(width: 22, height: 20)
+            }
+
             Image(systemName: target.kind.icon)
                 .font(.caption)
                 .foregroundStyle(theme.panelAccent(for: target.kind))

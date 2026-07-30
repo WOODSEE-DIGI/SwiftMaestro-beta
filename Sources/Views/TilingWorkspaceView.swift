@@ -23,6 +23,13 @@ struct TilingWorkspaceView: View {
                     )
                 }
             }
+            .overlay(
+                // Empty-workspace drop highlight: when every panel is floating,
+                // a panel dragged anywhere over this area docks as the root
+                // tile — show the neon outline across the whole workspace.
+                emptyWorkspaceDropHighlight
+                    .allowsHitTesting(false)
+            )
             .onChange(of: geometry.size.width) { _, newValue in
                 layout.updateAvailableWidth(newValue)
             }
@@ -34,11 +41,23 @@ struct TilingWorkspaceView: View {
             // Locking mid-state should never leave a drop highlight behind.
             if locked { dragState.endDrag() }
         }
-        .onDrop(of: [UTType.workspacePanel.identifier], isTargeted: .constant(false)) { providers in
-            // Global drop outside any tile: accept anything already handled by a tile;
-            // this outer view just resets drag state if a drop escaped.
-            dragState.endDrag()
-            return false
+        .onDrop(
+            of: [UTType.workspacePanel.identifier],
+            delegate: WorkspaceBackgroundDropDelegate(layout: layout, dragState: dragState)
+        )
+    }
+
+    @ViewBuilder
+    private var emptyWorkspaceDropHighlight: some View {
+        if !layout.isLocked, layout.root == nil, dragState.draggedKind != nil {
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(Color.cyan, lineWidth: 2.5)
+                .background(
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color.cyan.opacity(0.08))
+                )
+                .shadow(color: .cyan.opacity(0.9), radius: 8)
+                .padding(6)
         }
     }
 }
@@ -206,6 +225,10 @@ struct TilingTileView: View {
                     openWindow(id: "workspace-panel-window", value: WorkspacePanelWindowID(kind: kind))
                 }
             )
+            // Dim the tile being dragged so it's obvious it's the source and
+            // will vacate its spot. Restores the moment the drag ends.
+            .opacity(dragState.draggedKind == kind ? 0.5 : 1)
+            .animation(.easeInOut(duration: 0.15), value: dragState.draggedKind == kind)
             .onDrop(
                 of: [UTType.workspacePanel.identifier],
                 delegate: TilingDropDelegate(
@@ -216,29 +239,53 @@ struct TilingTileView: View {
                 )
             )
             .overlay(
+                droppableOutline
+                    .allowsHitTesting(false)
+            )
+            .overlay(
                 previewOverlay(size: geometry.size)
                     .allowsHitTesting(false)
             )
         }
     }
 
+    /// Faint dashed neon outline shown on every tile that CAN accept the
+    /// panel currently being dragged ("droppable here"). The tile actually
+    /// under the cursor gets the strong solid zone preview instead.
+    @ViewBuilder
+    private var droppableOutline: some View {
+        if !layout.isLocked,
+           let dragged = dragState.draggedKind,
+           dragged != kind,
+           dragState.targetKind != kind {
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [7, 5]))
+                .foregroundStyle(Color.cyan.opacity(0.4))
+                .padding(3)
+        }
+    }
+
+    /// The strong neon-blue zone preview on the tile under the cursor: left /
+    /// right / top / bottom halves or the center stack region.
+    @ViewBuilder
     private func previewOverlay(size: CGSize) -> some View {
         // Never show the drop highlight while the workspace is locked — a locked
         // workspace can't accept drags, and this also hides any preview left over
         // from a drag that ended without routing through performDrop/dropExited.
-        guard !layout.isLocked,
-              let zone = dragState.targetZone, dragState.targetKind == kind else {
-            return AnyView(EmptyView())
-        }
-        let rect = TilingDropZoneGeometry.previewRect(for: zone, in: size)
-        return AnyView(
-            Rectangle()
-                .fill(Color.clear)
-                .strokeBorder(Color.cyan.opacity(0.95), lineWidth: 2)
-                .background(Color.cyan.opacity(0.08))
-                .frame(width: rect.width, height: rect.height)
+        if !layout.isLocked,
+           let zone = dragState.targetZone, dragState.targetKind == kind {
+            let rect = TilingDropZoneGeometry.previewRect(for: zone, in: size)
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(Color.cyan, lineWidth: 2.5)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.cyan.opacity(0.10))
+                )
+                .shadow(color: .cyan.opacity(0.9), radius: 8)
+                .frame(width: max(0, rect.width - 5), height: max(0, rect.height - 5))
                 .position(x: rect.midX, y: rect.midY)
-        )
+                .animation(.easeInOut(duration: 0.12), value: dragState.targetZone)
+        }
     }
 
     private func title(for kind: WorkspacePanelKind) -> String {

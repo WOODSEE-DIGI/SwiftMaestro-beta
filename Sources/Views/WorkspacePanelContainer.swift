@@ -34,15 +34,12 @@ struct WorkspacePanelContainer<Content: View>: View {
 
     private var header: some View {
         HStack(spacing: 6) {
-            // Drag grip: the obvious handle for moving the whole tile.
+            // Drag grip: the obvious handle for moving the whole tile. AppKit-
+            // backed (`PanelDragGrip`) so the drag session's begin/end hooks
+            // are exact — SwiftUI's `.draggable` never delivers them.
             if isDraggable {
-                Image(systemName: "line.3.horizontal")
-                    .font(.caption)
-                    .foregroundStyle(theme.panelAccent(for: kind).opacity(0.85))
+                PanelDragGrip(kind: kind, title: title, accent: theme.panelAccent(for: kind))
                     .frame(width: 22, height: 20)
-                    .contentShape(Rectangle())
-                    .draggable(WorkspacePanelTransfer(kind: kind))
-                    .help("Drag to move this panel")
             } else {
                 Image(systemName: "lock")
                     .font(.caption)

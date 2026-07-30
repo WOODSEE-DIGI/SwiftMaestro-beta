@@ -67,6 +67,12 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
     /// search). Competes with Adobe Bridge / NeoFinder; see
     /// `docs/26.07.30-MaestroDAM-Architecture.md`.
     case damBrowser
+    /// MaestroDocs — native document viewer/editor (PDF, Word, RTF, ODT,
+    /// XLSX, PPTX, EPUB, iWork, text) on the MaestroDocs engine.
+    case maestroDocs
+    /// MaestroBooks — Xero-compatible invoicing (A4 tax invoice PDFs filed
+    /// in MaestroDAM, Xero CSV export, agent-driven).
+    case maestroBooks
 
     var icon: String {
         switch self {
@@ -98,6 +104,8 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .appLauncher: return "square.grid.2x2"
         case .webBrowser: return "globe"
         case .damBrowser: return "photo.on.rectangle.angled"
+        case .maestroDocs: return "doc.richtext"
+        case .maestroBooks: return "dollarsign.circle"
         }
     }
 
@@ -136,6 +144,8 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .appLauncher: return "appLauncher"
         case .webBrowser: return "webBrowser"
         case .damBrowser: return "damBrowser"
+        case .maestroDocs: return "maestroDocs"
+        case .maestroBooks: return "maestroBooks"
         }
     }
 
@@ -172,6 +182,8 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .appLauncher: return "Apps"
         case .webBrowser: return "Web Browser"
         case .damBrowser: return "MaestroDAM"
+        case .maestroDocs: return "MaestroDocs"
+        case .maestroBooks: return "MaestroBooks"
         }
     }
 
@@ -220,6 +232,8 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .appLauncher: return "appLauncher"
         case .webBrowser: return "webBrowser"
         case .damBrowser: return "damBrowser"
+        case .maestroDocs: return "maestroDocs"
+        case .maestroBooks: return "maestroBooks"
         }
     }
 }
@@ -593,6 +607,16 @@ final class WorkspaceLayoutState {
         case .bottom, .center:
             self.root = .split(axis: .vertical, ratio: 0.5, first: root, second: .leaf(kind))
         }
+        save()
+    }
+
+    /// Dock a panel as the root of an otherwise empty workspace — used by the
+    /// background drop target when every panel is floating. Handles both
+    /// floating sources (the normal case) and defensive re-insertion.
+    func dockAsRoot(_ kind: WorkspacePanelKind) {
+        guard root == nil else { return }
+        floatingPanels.remove(kind)
+        root = .leaf(kind)
         save()
     }
 

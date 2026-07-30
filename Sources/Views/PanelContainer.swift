@@ -40,7 +40,7 @@ struct PanelContainer<Content: View>: View {
     private var headerBar: some View {
         HStack(spacing: 6) {
             // Drag handle
-            Image(systemName: "line.3.horizontal")
+            Image(systemName: "circle.grid.2x2")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .onDrag {

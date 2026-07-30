@@ -5,25 +5,11 @@ import UniformTypeIdentifiers
 
 extension UTType {
     /// Drag type for a SwiftMaestro workspace panel being moved between tiles.
+    /// Declared as an exported UTI in `Info.plist`. Drag sources
+    /// (`PanelDragGrip`) write a JSON-encoded `WorkspacePanelKind` under this
+    /// type; drop destinations decode the same payload.
     static var workspacePanel: UTType {
         UTType(exportedAs: "com.woodseedigi.swiftmaestro.workspace-panel")
-    }
-}
-
-// MARK: - Transferable Payload
-
-/// Wrapper that makes a `WorkspacePanelKind` draggable using the exported
-/// `UTType.workspacePanel` type declared in `Info.plist`.
-struct WorkspacePanelTransfer: Transferable {
-    let kind: WorkspacePanelKind
-
-    static var transferRepresentation: some TransferRepresentation {
-        DataRepresentation(contentType: .workspacePanel) { transfer in
-            try JSONEncoder().encode(transfer.kind)
-        } importing: { data in
-            let kind = try JSONDecoder().decode(WorkspacePanelKind.self, from: data)
-            return WorkspacePanelTransfer(kind: kind)
-        }
     }
 }
 
