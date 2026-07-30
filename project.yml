@@ -82,7 +82,7 @@ targets:
         HEADER_SEARCH_PATHS: "$(inherited) /opt/homebrew/include $(SRCROOT)/Sources"
         LIBRARY_SEARCH_PATHS: "$(inherited) /opt/homebrew/lib"
         OTHER_SWIFT_FLAGS: "$(inherited) -Xcc -fmodule-map-file=$(SRCROOT)/Modules/LibUSB/module.modulemap -Xcc -I/opt/homebrew/include"
-        OTHER_LDFLAGS: "$(inherited) -L/opt/homebrew/lib -lusb-1.0"
+        OTHER_LDFLAGS: "$(inherited) -L/opt/homebrew/lib -lusb-1.0 -lraw"
         INFOPLIST_FILE: Sources/Resources/Info.plist
         CODE_SIGN_ENTITLEMENTS: Sources/Resources/SwiftMaestro.entitlements
         SWIFT_OBJC_BRIDGING_HEADER: Sources/Resources/SwiftMaestro-Bridging-Header.h
@@ -178,6 +178,7 @@ targets:
       - sdk: PencilKit.framework
       - sdk: IOKit.framework
       - sdk: WebKit.framework
+      - sdk: QuickLookThumbnailing.framework
     scheme:
       testTargets:
         - SwiftMaestroTests

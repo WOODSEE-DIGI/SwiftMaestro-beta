@@ -45,6 +45,14 @@ extension MaestroTools {
                 name: "create_directory", spec: fileToolSpecs[7],
                 category: ToolCategory.file.rawValue,
                 handler: { call in await createDirectory(call) }),
+            ToolDefinition(
+                name: "list_file_snapshots", spec: fileToolSpecs[8],
+                category: ToolCategory.file.rawValue,
+                handler: { call in await listFileSnapshots(call) }),
+            ToolDefinition(
+                name: "restore_file_snapshot", spec: fileToolSpecs[9],
+                category: ToolCategory.file.rawValue,
+                handler: { call in await restoreFileSnapshot(call) }),
         ])
     }
 
@@ -108,15 +116,31 @@ extension MaestroTools {
                     "destination": ["type": "string", "description": "Absolute path for the moved file (rename by changing the last component)."],
                 ], required: ["source", "destination"]),
             rawSpec("delete_file",
-                "Delete a file. The path must be inside an authorized folder. Use with caution.",
+                "Move a file to recoverable quarantine. Permanent deletion is DISABLED by "
+                + "data safeguards — the file is preserved and can be restored with "
+                + "restore_file_snapshot. The path must be inside an authorized folder.",
                 properties: [
-                    "path": ["type": "string", "description": "Absolute path to the file to delete."],
+                    "path": ["type": "string", "description": "Absolute path to the file to quarantine."],
                 ], required: ["path"]),
             rawSpec("create_directory",
                 "Create a directory and any intermediate directories. The path must be inside an authorized folder.",
                 properties: [
                     "path": ["type": "string", "description": "Absolute path of the directory to create."],
                 ], required: ["path"]),
+            rawSpec("list_file_snapshots",
+                "List the rollback history for a file: every agent change (writes, appends, "
+                + "moves, quarantined deletes) with snapshot IDs, kinds, and timestamps. "
+                + "Use restore_file_snapshot with an ID to roll a change back.",
+                properties: [
+                    "path": ["type": "string", "description": "Absolute path to the file."],
+                ], required: ["path"]),
+            rawSpec("restore_file_snapshot",
+                "Roll back a recorded change by its snapshot ID (from list_file_snapshots). "
+                + "Restores preserved bytes over the file, moves a quarantined/moved file back "
+                + "to its original path. The restore itself is snapshotted, so it is also reversible.",
+                properties: [
+                    "id": ["type": "integer", "description": "Snapshot ID from list_file_snapshots."],
+                ], required: ["id"]),
         ]
     }
 
@@ -471,6 +495,21 @@ extension MaestroTools {
         let url = URL(fileURLWithPath: resolved)
         let encoding = args.encoding?.lowercased() ?? "utf8"
 
+        // Data safeguard: preserve existing bytes before mutating. Fail
+        // closed — an unsnapshotable change is an unrollbackable change.
+        if FileManager.default.fileExists(atPath: resolved) {
+            do {
+                try ChangeGuard.shared.snapshotForMutation(
+                    path: resolved,
+                    kind: (args.append ?? false) ? .append : .overwrite,
+                    tool: "write_file")
+            } catch {
+                return errorJSON(
+                    "write blocked: could not create a rollback snapshot for '\(resolved)' "
+                    + "(\(error.localizedDescription)). Data safeguards require every change to be reversible.")
+            }
+        }
+
         do {
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -606,6 +645,16 @@ extension MaestroTools {
                 at: URL(fileURLWithPath: destination).deletingLastPathComponent(),
                 withIntermediateDirectories: true)
             if FileManager.default.fileExists(atPath: destination) {
+                // Data safeguard: preserve the file we're about to overwrite.
+                do {
+                    try ChangeGuard.shared.snapshotForMutation(
+                        path: destination, kind: .copyOverwrite,
+                        relatedPath: actualSource, tool: "copy_file")
+                } catch {
+                    return errorJSON(
+                        "copy blocked: could not snapshot existing destination '\(destination)' "
+                        + "(\(error.localizedDescription)). Data safeguards require every change to be reversible.")
+                }
                 try FileManager.default.removeItem(atPath: destination)
             }
             try FileManager.default.copyItem(atPath: actualSource, toPath: destination)
@@ -639,8 +688,28 @@ extension MaestroTools {
             try FileManager.default.createDirectory(
                 at: URL(fileURLWithPath: destination).deletingLastPathComponent(),
                 withIntermediateDirectories: true)
+            // Data safeguards: preserve an existing destination, and record
+            // the move itself (rollback = move back via restore_file_snapshot).
             if FileManager.default.fileExists(atPath: destination) {
+                do {
+                    try ChangeGuard.shared.snapshotForMutation(
+                        path: destination, kind: .copyOverwrite,
+                        relatedPath: actualSource, tool: "move_file")
+                } catch {
+                    return errorJSON(
+                        "move blocked: could not snapshot existing destination '\(destination)' "
+                        + "(\(error.localizedDescription)). Data safeguards require every change to be reversible.")
+                }
                 try FileManager.default.removeItem(atPath: destination)
+            }
+            do {
+                try ChangeGuard.shared.snapshotForMutation(
+                    path: actualSource, kind: .move,
+                    relatedPath: destination, tool: "move_file")
+            } catch {
+                return errorJSON(
+                    "move blocked: could not record the move for '\(actualSource)' "
+                    + "(\(error.localizedDescription)). Data safeguards require every change to be reversible.")
             }
             try FileManager.default.moveItem(atPath: actualSource, toPath: destination)
             return jsonString(["status": "moved", "source": actualSource, "destination": destination])
@@ -663,11 +732,70 @@ extension MaestroTools {
         guard FileManager.default.fileExists(atPath: actualPath, isDirectory: &isDir), !isDir.boolValue else {
             return errorJSON("no file at '\(resolved)'\(didYouMean(path: resolved, wantDirectory: false))")
         }
+        // Data safeguards: permanent deletion is disabled. The file is moved
+        // to a recoverable quarantine store and can be rolled back with
+        // restore_file_snapshot (or by the user from the ChangeGuard store).
         do {
-            try FileManager.default.removeItem(atPath: actualPath)
-            return jsonString(["status": "deleted", "path": actualPath])
+            let quarantinePath = try ChangeGuard.shared.quarantineDelete(
+                path: actualPath, tool: "delete_file")
+            return jsonString([
+                "status": "quarantined",
+                "path": actualPath,
+                "quarantine_path": quarantinePath,
+                "note": "File moved to recoverable quarantine. Permanent deletion is disabled "
+                    + "by data safeguards. Roll back with restore_file_snapshot.",
+            ])
         } catch {
-            return errorJSON("failed to delete '\(actualPath)': \(error.localizedDescription)")
+            return errorJSON("failed to quarantine '\(actualPath)': \(error.localizedDescription)")
+        }
+    }
+
+    static func listFileSnapshots(_ call: ToolCall) async -> String {
+        struct Args: Decodable { let path: String? }
+        guard let args = decodeArgs(call, as: Args.self),
+              let raw = args.path?.trimmingCharacters(in: .whitespaces), !raw.isEmpty else {
+            return errorJSON("list_file_snapshots requires 'path'")
+        }
+        guard let resolved = resolveAbsolute(raw) else {
+            return errorJSON("list_file_snapshots requires an absolute path (got '\(raw)')")
+        }
+        guard isAllowed(resolved, roots: authorizedRoots()) else { return denied(raw) }
+        let changes = ChangeGuard.shared.listChanges(forPath: resolved)
+        guard !changes.isEmpty else {
+            return jsonString(["path": resolved, "count": "0",
+                               "message": "No recorded changes for this file."])
+        }
+        let rows: [[String: String]] = changes.map { change in
+            var row: [String: String] = [
+                "id": "\(change.id ?? -1)",
+                "kind": change.kind.rawValue,
+                "when": ISO8601DateFormatter().string(from: change.createdAt),
+                "tool": change.tool,
+            ]
+            if let size = change.sizeBytes { row["bytes"] = "\(size)" }
+            if let related = change.relatedPath { row["related_path"] = related }
+            return row
+        }
+        let payload: [String: Any] = ["path": resolved, "count": rows.count, "changes": rows]
+        guard let data = try? JSONSerialization.data(
+            withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]),
+              let str = String(data: data, encoding: .utf8) else {
+            return errorJSON("failed to encode snapshot list")
+        }
+        return str
+    }
+
+    static func restoreFileSnapshot(_ call: ToolCall) async -> String {
+        struct Args: Decodable { let id: LenientInt? }
+        guard let args = decodeArgs(call, as: Args.self),
+              let id = args.id?.value else {
+            return errorJSON("restore_file_snapshot requires an integer 'id' (from list_file_snapshots)")
+        }
+        do {
+            let message = try ChangeGuard.shared.restore(changeId: Int64(id))
+            return jsonString(["status": "restored", "detail": message])
+        } catch {
+            return errorJSON("restore failed: \(error.localizedDescription)")
         }
     }
 

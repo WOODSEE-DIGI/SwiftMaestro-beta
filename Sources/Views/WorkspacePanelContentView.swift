@@ -96,6 +96,8 @@ struct WorkspacePanelContentView: View {
             AppsLauncherPanel()
         case .webBrowser:
             WebBrowserPanelView()
+        case .damBrowser:
+            DAMBrowserView()
         }
         }
     }

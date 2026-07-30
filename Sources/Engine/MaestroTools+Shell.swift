@@ -135,6 +135,22 @@ extension MaestroTools {
             )
         }
 
+        // 1.5. Data-safeguard screen: destructive commands (delete/overwrite/
+        // format) are denied unless the user has an explicit always-allow
+        // rule matching this command (Settings → Shell).
+        if Self.isDestructiveCommand(command) {
+            let explicitlyAllowed: Bool = await MainActor.run(body: {
+                ShellPolicyStore.shared.isExplicitlyAllowed(command)
+            })
+            if !explicitlyAllowed {
+                return errorJSON(
+                    "Blocked by data-safeguard policy: \"\(command)\" can delete or overwrite data. "
+                    + "Agents cannot run destructive commands. Ask the user to run it manually "
+                    + "in Terminal, or to add an explicit always-allow rule in Settings → Shell."
+                )
+            }
+        }
+
         // 2. Classify the command
         let classification: ShellClassification = await MainActor.run(body: {
             ShellPolicyStore.shared.classify(command)
@@ -173,6 +189,40 @@ extension MaestroTools {
 
         // 7. Execute (allowed, unknown, or approved)
         return await runShellCommand(command, cwd: args.cwd, timeout: args.timeout)
+    }
+
+    // MARK: - Destructive Command Screen
+
+    /// Patterns that can delete or overwrite data (file deletion, filesystem
+    /// formats, raw disk writes, destructive SQL, repo-destroying git).
+    /// Denied by default; the user can carve explicit exceptions with
+    /// always-allow rules in Settings → Shell.
+    private static let destructiveCommandPatterns: [NSRegularExpression] = {
+        let patterns = [
+            #"(^|[;&|]\s*)rm\s"#,
+            #"(^|[;&|]\s*)rmdir\b"#,
+            #"(^|[;&|]\s*)unlink\b"#,
+            #"(^|[;&|]\s*)shred\b"#,
+            #"(^|[;&|]\s*)srm\b"#,
+            #"(^|[;&|]\s*)trash\b"#,
+            #"(^|[;&|]\s*)mv\b[^\n]*\s+/dev/null\b"#,
+            #"\bdd\b[^\n]*\bof\s*=\s*/dev/"#,
+            #"\bmkfs[.\w-]*\b"#,
+            #"\bdiskutil\s+(erase|secureErase|delete|partition|raid)\b"#,
+            #"\b(find|fd)\b[^\n]*\s-delete\b"#,
+            #"\bxargs\b[^\n]*\brm\b"#,
+            #"\bsqlite3?\b[^\n]*\b(drop\s+table|delete\s+from|truncate\s+table)\b"#,
+            #"\bgit\s+clean\s+-"#,
+            #"\bgit\s+reset\s+--hard\b"#,
+        ]
+        return patterns.compactMap { try? NSRegularExpression(pattern: $0, options: [.caseInsensitive]) }
+    }()
+
+    static func isDestructiveCommand(_ command: String) -> Bool {
+        let range = NSRange(command.startIndex..<command.endIndex, in: command)
+        return destructiveCommandPatterns.contains {
+            $0.firstMatch(in: command, options: [], range: range) != nil
+        }
     }
 
     // MARK: - Approval Flow

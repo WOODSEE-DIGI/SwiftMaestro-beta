@@ -205,6 +205,13 @@ public final class ShellPolicyStore: ObservableObject {
         return policy.classify(command)
     }
 
+    /// Whether the user has an explicit always-allow rule matching this
+    /// command. Used by the data-safeguard screen to honor user-carved
+    /// exceptions for otherwise-denied destructive commands.
+    public func isExplicitlyAllowed(_ command: String) -> Bool {
+        policy.alwaysAllow.contains { $0.matches(command) }
+    }
+
     /// Add a rule to the specified list.
     public func addRule(_ rule: ShellPolicyRule, to list: PolicyListType) {
         switch list {

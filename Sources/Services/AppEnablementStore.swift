@@ -30,7 +30,7 @@ enum AppCategory: String, CaseIterable, Codable, Sendable {
         case .studio:
             return [.tethering, .streamIngest, .broadcast, .streamMixer, .ndiBrowser, .colorAdjustments, .scenes]
         case .swiftApps:
-            return [.whatsapp, .discord, .busMonitor, .audioControl, .notesMD, .canvas, .kanban, .terminal, .webBrowser]
+            return [.whatsapp, .discord, .busMonitor, .audioControl, .notesMD, .canvas, .kanban, .terminal, .webBrowser, .damBrowser]
         }
     }
 }
@@ -44,7 +44,7 @@ extension WorkspacePanelKind {
             return .appleApps
         case .tethering, .streamIngest, .broadcast, .streamMixer, .ndiBrowser, .colorAdjustments, .scenes:
             return .studio
-        case .whatsapp, .discord, .busMonitor, .audioControl, .notesMD, .canvas, .kanban, .terminal, .webBrowser:
+        case .whatsapp, .discord, .busMonitor, .audioControl, .notesMD, .canvas, .kanban, .terminal, .webBrowser, .damBrowser:
             return .swiftApps
         default:
             return nil

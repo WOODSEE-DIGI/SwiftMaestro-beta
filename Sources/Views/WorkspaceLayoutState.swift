@@ -63,6 +63,10 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
     case appLauncher
     /// Internal web browser with WebKit rendering and Chromium CDP automation.
     case webBrowser
+    /// MaestroDAM — digital asset management browser (catalog grid, ratings,
+    /// search). Competes with Adobe Bridge / NeoFinder; see
+    /// `docs/26.07.30-MaestroDAM-Architecture.md`.
+    case damBrowser
 
     var icon: String {
         switch self {
@@ -93,6 +97,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .agents: return "person.3"
         case .appLauncher: return "square.grid.2x2"
         case .webBrowser: return "globe"
+        case .damBrowser: return "photo.on.rectangle.angled"
         }
     }
 
@@ -130,6 +135,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .agents: return "agents"
         case .appLauncher: return "appLauncher"
         case .webBrowser: return "webBrowser"
+        case .damBrowser: return "damBrowser"
         }
     }
 
@@ -165,6 +171,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .agents: return "Agents"
         case .appLauncher: return "Apps"
         case .webBrowser: return "Web Browser"
+        case .damBrowser: return "MaestroDAM"
         }
     }
 
@@ -212,6 +219,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .agents: return "agents"
         case .appLauncher: return "appLauncher"
         case .webBrowser: return "webBrowser"
+        case .damBrowser: return "damBrowser"
         }
     }
 }
