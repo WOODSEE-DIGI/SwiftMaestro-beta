@@ -13,9 +13,18 @@ struct PlansSheet: View {
     /// When set, the initially-selected scope is this project (project agents).
     let defaultProjectName: String?
 
-    @State private var selectedScopeKey: String = ""
+    @State private var selectedScopeKey: String
     @State private var selectedPlanID: UUID?
     @State private var exporting = false
+
+    init(agentId: UUID, projects: [String], defaultProjectName: String?) {
+        self.agentId = agentId
+        self.projects = projects
+        self.defaultProjectName = defaultProjectName
+        let defaultScope = defaultProjectName.map { PlanScope.project($0).key }
+            ?? PlanScope.agent(agentId).key
+        self._selectedScopeKey = State(initialValue: defaultScope)
+    }
 
     private var scopes: [(label: String, scope: PlanScope)] {
         var out: [(String, PlanScope)] = [("Personal", .agent(agentId))]

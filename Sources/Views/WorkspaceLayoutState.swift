@@ -53,10 +53,16 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
     case colorAdjustments
     /// Multi-layer scene composer with sources and overlays.
     case scenes
+    /// The agent navigator list (Maestro + project agents). A normal tiling
+    /// panel so it can dock/float/move like every other panel instead of living
+    /// in a fixed left sidebar.
+    case agents
     /// A movable launcher containing the Apple Apps, Swift Apps, and Plugins
     /// sections from the sidebar. Users can dock it anywhere in the workspace
     /// grid (e.g. under Plans) when the sidebar is overcrowded.
     case appLauncher
+    /// Internal web browser with WebKit rendering and Chromium CDP automation.
+    case webBrowser
 
     var icon: String {
         switch self {
@@ -84,7 +90,9 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .ndiBrowser: return "network.badge.shield.half.filled"
         case .colorAdjustments: return "slider.horizontal.3"
         case .scenes: return "rectangle.stack"
+        case .agents: return "person.3"
         case .appLauncher: return "square.grid.2x2"
+        case .webBrowser: return "globe"
         }
     }
 
@@ -119,7 +127,9 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .ndiBrowser: return "ndiBrowser"
         case .colorAdjustments: return "colorAdjustments"
         case .scenes: return "scenes"
+        case .agents: return "agents"
         case .appLauncher: return "appLauncher"
+        case .webBrowser: return "webBrowser"
         }
     }
 
@@ -152,7 +162,9 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .ndiBrowser: return "NDI Browser"
         case .colorAdjustments: return "Color Adjustments"
         case .scenes: return "Scenes"
+        case .agents: return "Agents"
         case .appLauncher: return "Apps"
+        case .webBrowser: return "Web Browser"
         }
     }
 
@@ -197,7 +209,9 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .ndiBrowser: return "ndiBrowser"
         case .colorAdjustments: return "colorAdjustments"
         case .scenes: return "scenes"
+        case .agents: return "agents"
         case .appLauncher: return "appLauncher"
+        case .webBrowser: return "webBrowser"
         }
     }
 }
@@ -527,14 +541,49 @@ final class WorkspaceLayoutState {
         return .floated
     }
 
-    /// Dock a floating panel into the tree. By default it is placed below the
-    /// existing root as a new bottom row. The user can then drag it elsewhere.
-    func dock(_ kind: WorkspacePanelKind) {
+    /// Ensure the navigation "chrome" — the Agents navigator panel with the Apps
+    /// launcher beneath it — is docked as a left-hand column of movable tiles,
+    /// with the main workspace to its right. Called at launch. Only inserts the
+    /// chrome when it's missing, so an existing saved layout keeps its
+    /// right-hand panels untouched.
+    func ensureChromeLayout(navigatorID: UUID) {
+        let chrome = LayoutNode.split(
+            axis: .vertical, ratio: 0.55,
+            first: .leaf(.agents), second: .leaf(.appLauncher))
+
+        guard let current = root else {
+            root = .split(axis: .horizontal, ratio: 0.3,
+                          first: chrome, second: .leaf(.agentChat(navigatorID)))
+            save()
+            return
+        }
+        guard !current.contains(.agents) else { return }
+        root = .split(axis: .horizontal, ratio: 0.3, first: chrome, second: current)
+        save()
+    }
+
+    /// Dock a floating panel into the tree in a given direction relative to the
+    /// current root. `.left`/`.right` produce a horizontal (side-by-side column)
+    /// split; `.top`/`.bottom` produce a vertical (stacked row) split. Defaults
+    /// to `.bottom` to preserve the historical "new row underneath" behavior;
+    /// callers that want a column pass an explicit direction (e.g. the floating
+    /// window's "Dock to Right" action).
+    func dock(_ kind: WorkspacePanelKind, zone: TilingDropZone = .bottom) {
         guard floatingPanels.remove(kind) != nil else { return }
-        if let root {
-            self.root = .split(axis: .vertical, ratio: 0.5, first: root, second: .leaf(kind))
-        } else {
+        guard let root else {
             self.root = .leaf(kind)
+            save()
+            return
+        }
+        switch zone {
+        case .right:
+            self.root = .split(axis: .horizontal, ratio: 0.5, first: root, second: .leaf(kind))
+        case .left:
+            self.root = .split(axis: .horizontal, ratio: 0.5, first: .leaf(kind), second: root)
+        case .top:
+            self.root = .split(axis: .vertical, ratio: 0.5, first: .leaf(kind), second: root)
+        case .bottom, .center:
+            self.root = .split(axis: .vertical, ratio: 0.5, first: root, second: .leaf(kind))
         }
         save()
     }
@@ -720,4 +769,13 @@ extension Notification.Name {
     /// brought to the front. The notification's `object` should be the agent's
     /// `UUID`.
     static let bringAgentChatToFront = Notification.Name("com.woodseedigi.swiftmaestro.bringAgentChatToFront")
+
+    /// Posted by the Agents panel to request the "new project agent" sheet.
+    static let newAgentRequested = Notification.Name("com.woodseedigi.swiftmaestro.newAgentRequested")
+    /// Posted by the Agents panel to request the "change category" sheet for an
+    /// agent. The notification's `object` is the `AgentRecord`.
+    static let agentCategoryRequested = Notification.Name("com.woodseedigi.swiftmaestro.agentCategoryRequested")
+    /// Posted by the Agents panel to request removing an agent. The
+    /// notification's `object` is the `AgentRecord`.
+    static let removeAgentRequested = Notification.Name("com.woodseedigi.swiftmaestro.removeAgentRequested")
 }

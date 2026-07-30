@@ -706,24 +706,38 @@ final class MLXInferenceEngine {
                             // the same model and is trimmable. Common-prefix match
                             // against the previously-fed tokens, trim the cache to
                             // that prefix, and prefill only the changed suffix.
-                            let canReuse = pc.isReady
+                            let hasUsableCache = pc.isReady
                                 && pc.modelID == modelID
                                 && !pc.caches.isEmpty
-                                && pc.caches.allSatisfy { $0.isTrimmable }
                             var prefix = 0
-                            if canReuse {
+                            var canReuse = false
+                            if hasUsableCache {
                                 let minOffset = pc.caches.map { $0.offset }.min() ?? 0
-                                prefix = MLXInferenceEngine.commonPrefixLength(pc.tokens, fullTokens)
+                                let base = MLXInferenceEngine.commonPrefixLength(pc.tokens, fullTokens)
+                                // Pure append: the whole previous prompt is a prefix of the
+                                // new chat, so the tokens generated last round (cache offset
+                                // − stored prompt) are the assistant turn that immediately
+                                // follows — reusable with NO trim. This is the only way
+                                // non-trimmable MoE caches can ever be reused across rounds.
+                                let pureAppend = !pc.tokens.isEmpty
+                                    && base == pc.tokens.count
+                                    && minOffset >= pc.tokens.count
                                 // Clamp: keep ≥1 token to prefill, never exceed what
                                 // the cache actually holds (e.g. after a cancel).
-                                prefix = min(prefix, minOffset, fullTokens.count - 1)
+                                prefix = pureAppend
+                                    ? min(minOffset, fullTokens.count - 1)
+                                    : min(base, minOffset, fullTokens.count - 1)
                                 if prefix < 0 { prefix = 0 }
+                                // A cache trim is only needed when the conversation diverged.
+                                // For a pure append — the normal agent round — nothing is
+                                // trimmed, so non-trimmable MoE caches must NOT block reuse.
+                                canReuse = !(prefix < minOffset) || pc.caches.allSatisfy { $0.isTrimmable }
                             }
 
                             let inputForGen: LMInput
                             let cacheForGen: [KVCache]
                             if canReuse && prefix > 0 {
-                                for c in pc.caches { c.trim(c.offset - prefix) }
+                                for c in pc.caches { let amount = c.offset - prefix; if amount > 0 { c.trim(amount) } }
                                 let deltaInts = Array(fullTokens[prefix...]).map { Int32($0) }
                                 // Keep delta tokens 1-D. mlx-swift-lm's LLMModel.prepare and TokenIterator
                                 // internally add the batch axis via .newAxis; passing a 2-D array here
@@ -945,21 +959,37 @@ final class MLXInferenceEngine {
         let stream = try await container.perform { context in
             let lmInput = try await context.processor.prepare(input: capturedInput)
             let fullTokens = lmInput.text.tokens.asArray(Int.self)
-            let canReuse = pc.isReady
+            let hasUsableCache = pc.isReady
                 && pc.modelID == modelID
                 && !pc.caches.isEmpty
-                && pc.caches.allSatisfy { $0.isTrimmable }
             var prefix = 0
-            if canReuse {
+            var canReuse = false
+            if hasUsableCache {
                 let minOffset = pc.caches.map { $0.offset }.min() ?? 0
-                prefix = MLXInferenceEngine.commonPrefixLength(pc.tokens, fullTokens)
-                prefix = min(prefix, minOffset, fullTokens.count - 1)
+                let base = MLXInferenceEngine.commonPrefixLength(pc.tokens, fullTokens)
+                // Pure append: the whole previous prompt is a prefix of the new chat, so
+                // the tokens generated last round (cache offset − stored prompt) are the
+                // assistant turn that immediately follows — reusable with NO trim. This is
+                // the only way non-trimmable MoE caches can ever be reused across rounds;
+                // without it every round re-prefills the entire conversation.
+                let pureAppend = !pc.tokens.isEmpty
+                    && base == pc.tokens.count
+                    && minOffset >= pc.tokens.count
+                prefix = pureAppend
+                    ? min(minOffset, fullTokens.count - 1)
+                    : min(base, minOffset, fullTokens.count - 1)
                 if prefix < 0 { prefix = 0 }
+                // A cache trim is only required when the conversation diverged (common
+                // prefix is shorter than what the cache holds). For a pure append — the
+                // normal agent round — nothing is trimmed, so non-trimmable caches (most
+                // of a MoE model's layers) must NOT block prefix reuse. Only demand
+                // trimmability when a trim is actually needed.
+                canReuse = !(prefix < minOffset) || pc.caches.allSatisfy { $0.isTrimmable }
             }
             let inputForGen: LMInput
             let cacheForGen: [KVCache]
             if canReuse && prefix > 0 {
-                for c in pc.caches { c.trim(c.offset - prefix) }
+                for c in pc.caches { let amount = c.offset - prefix; if amount > 0 { c.trim(amount) } }
                 let deltaInts = Array(fullTokens[prefix...]).map { Int32($0) }
                 // Keep delta tokens 1-D. mlx-swift-lm's LLMModel.prepare and TokenIterator
                 // internally add the batch axis via .newAxis; passing a 2-D array here
@@ -1096,21 +1126,37 @@ final class MLXInferenceEngine {
         let stream = try await container.perform { context in
             let lmInput = try await context.processor.prepare(input: capturedInput)
             let fullTokens = lmInput.text.tokens.asArray(Int.self)
-            let canReuse = pc.isReady
+            let hasUsableCache = pc.isReady
                 && pc.modelID == modelID
                 && !pc.caches.isEmpty
-                && pc.caches.allSatisfy { $0.isTrimmable }
             var prefix = 0
-            if canReuse {
+            var canReuse = false
+            if hasUsableCache {
                 let minOffset = pc.caches.map { $0.offset }.min() ?? 0
-                prefix = MLXInferenceEngine.commonPrefixLength(pc.tokens, fullTokens)
-                prefix = min(prefix, minOffset, fullTokens.count - 1)
+                let base = MLXInferenceEngine.commonPrefixLength(pc.tokens, fullTokens)
+                // Pure append: the whole previous prompt is a prefix of the new chat, so
+                // the tokens generated last round (cache offset − stored prompt) are the
+                // assistant turn that immediately follows — reusable with NO trim. This is
+                // the only way non-trimmable MoE caches can ever be reused across rounds;
+                // without it every round re-prefills the entire conversation.
+                let pureAppend = !pc.tokens.isEmpty
+                    && base == pc.tokens.count
+                    && minOffset >= pc.tokens.count
+                prefix = pureAppend
+                    ? min(minOffset, fullTokens.count - 1)
+                    : min(base, minOffset, fullTokens.count - 1)
                 if prefix < 0 { prefix = 0 }
+                // A cache trim is only required when the conversation diverged (common
+                // prefix is shorter than what the cache holds). For a pure append — the
+                // normal agent round — nothing is trimmed, so non-trimmable caches (most
+                // of a MoE model's layers) must NOT block prefix reuse. Only demand
+                // trimmability when a trim is actually needed.
+                canReuse = !(prefix < minOffset) || pc.caches.allSatisfy { $0.isTrimmable }
             }
             let inputForGen: LMInput
             let cacheForGen: [KVCache]
             if canReuse && prefix > 0 {
-                for c in pc.caches { c.trim(c.offset - prefix) }
+                for c in pc.caches { let amount = c.offset - prefix; if amount > 0 { c.trim(amount) } }
                 let deltaInts = Array(fullTokens[prefix...]).map { Int32($0) }
                 // Keep delta tokens 1-D. mlx-swift-lm's LLMModel.prepare and TokenIterator
                 // internally add the batch axis via .newAxis; passing a 2-D array here
@@ -1212,21 +1258,34 @@ final class MLXInferenceEngine {
         let stream = try await container.perform { context in
             let lmInput = try await context.processor.prepare(input: capturedInput)
             let fullTokens = lmInput.text.tokens.asArray(Int.self)
-            let canReuse = pc.isReady
+            let hasUsableCache = pc.isReady
                 && pc.modelID == proxyModel.id
                 && !pc.caches.isEmpty
-                && pc.caches.allSatisfy { $0.isTrimmable }
             var prefix = 0
-            if canReuse {
+            var canReuse = false
+            if hasUsableCache {
                 let minOffset = pc.caches.map { $0.offset }.min() ?? 0
-                prefix = MLXInferenceEngine.commonPrefixLength(pc.tokens, fullTokens)
-                prefix = min(prefix, minOffset, fullTokens.count - 1)
+                let base = MLXInferenceEngine.commonPrefixLength(pc.tokens, fullTokens)
+                // Pure append: the whole previous prompt is a prefix of the new chat, so
+                // the tokens generated last round (cache offset − stored prompt) are the
+                // assistant turn that immediately follows — reusable with NO trim. This is
+                // the only way non-trimmable MoE caches can ever be reused across rounds;
+                // without it every round re-prefills the entire conversation.
+                let pureAppend = !pc.tokens.isEmpty
+                    && base == pc.tokens.count
+                    && minOffset >= pc.tokens.count
+                prefix = pureAppend
+                    ? min(minOffset, fullTokens.count - 1)
+                    : min(base, minOffset, fullTokens.count - 1)
                 if prefix < 0 { prefix = 0 }
+                // See note above: only require trimmability when a trim is actually
+                // needed (diverged conversation); pure appends reuse regardless.
+                canReuse = !(prefix < minOffset) || pc.caches.allSatisfy { $0.isTrimmable }
             }
             let inputForGen: LMInput
             let cacheForGen: [KVCache]
             if canReuse && prefix > 0 {
-                for c in pc.caches { c.trim(c.offset - prefix) }
+                for c in pc.caches { let amount = c.offset - prefix; if amount > 0 { c.trim(amount) } }
                 let deltaInts = Array(fullTokens[prefix...]).map { Int32($0) }
                 // Keep delta tokens 1-D. mlx-swift-lm's LLMModel.prepare and TokenIterator
                 // internally add the batch axis via .newAxis; passing a 2-D array here

@@ -52,6 +52,8 @@ targets:
       - path: Sources
         exclude:
           - "**/.gitignore"
+          - "Resources/browser-start.html"
+          - "Resources/swiftmaestro-clipper.js"
       - path: Sources/App
       - path: Sources/Views
       - path: Sources/ViewModels
@@ -64,6 +66,9 @@ targets:
       # + its own relative css/js) rather than individual flattened file refs.
       - path: Sources/Resources/Plugins
         type: folder
+    resources:
+      - Sources/Resources/browser-start.html
+      - Sources/Resources/swiftmaestro-clipper.js
     settings:
       base:
         DEFINES_MODULE: YES
@@ -172,6 +177,7 @@ targets:
       - sdk: PaperKit.framework
       - sdk: PencilKit.framework
       - sdk: IOKit.framework
+      - sdk: WebKit.framework
     scheme:
       testTargets:
         - SwiftMaestroTests

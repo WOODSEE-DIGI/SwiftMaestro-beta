@@ -70,6 +70,16 @@ enum ThinkingTagStripper {
             }
         }
 
+        // 2b. Collapse runs of the bare reasoning marker `thought` repeated with no
+        //     spaces (e.g. `<channel>thought<channel>thought<channel>thought` ->
+        //     "thoughtthoughtthought"). This is a Gemma thinking-tag remnant, not
+        //     legitimate prose (real text separates repeated words), so removing it
+        //     is safe. Single "thought", "thoughtful", "afterthought", etc. are kept.
+        if let regex = try? NSRegularExpression(pattern: #"(?i)(?:thought){2,}"#, options: []) {
+            let range = NSRange(result.startIndex..., in: result)
+            result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "")
+        }
+
         // 3. Collapse stray lines that are only thinking markers or their remnants.
         //    This catches `<channel>thought` becoming `thought` after tag stripping.
         let lines = result.components(separatedBy: .newlines)

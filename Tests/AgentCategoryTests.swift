@@ -129,21 +129,21 @@ final class AgentCategoryTests: XCTestCase {
 
     // MARK: - Budgets
 
-    func testResearchHasLimitedRounds() {
-        XCTAssertEqual(AgentCategory.research.maxRounds, 6)
+    func testResearchHasGenerousRoundBackstop() {
+        XCTAssertEqual(AgentCategory.research.maxRounds, 100)
     }
 
-    func testResearchCapsWebSearchCalls() {
-        XCTAssertEqual(AgentCategory.research.maxToolCallsPerTool["web_search"], 3)
+    func testResearchHasGenerousWebSearchBackstop() {
+        XCTAssertEqual(AgentCategory.research.maxToolCallsPerTool["web_search"], 25)
     }
 
     func testCodingHasNoPerToolCaps() {
         XCTAssertTrue(AgentCategory.coding.maxToolCallsPerTool.isEmpty)
     }
 
-    func testResearchPromptIncludesWebSearchCap() {
+    func testResearchPromptHasNoHardSearchBudget() {
         let prompt = AgentCategory.research.promptSection(agentName: "Researcher", modelID: "mlx-community/gemma-4-26B-A4B-8bit")
-        XCTAssertTrue(prompt?.contains("Web search limit") == true)
-        XCTAssertTrue(prompt?.contains("web_search more than 3 times") == true)
+        XCTAssertTrue(prompt?.contains("no fixed search budget") == true)
+        XCTAssertFalse(prompt?.contains("more than 3 times") == true)
     }
 }

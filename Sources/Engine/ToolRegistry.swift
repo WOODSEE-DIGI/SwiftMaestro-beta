@@ -36,6 +36,8 @@ extension MaestroTools {
         await registerMetaTools()
         await registerTimeTools()
         await registerWebTools()
+        await registerDeepWebTools()
+        await registerBrowserTools()
         await registerBlueskyTools()
 
         // Tool providers — plugins that register their own tools.

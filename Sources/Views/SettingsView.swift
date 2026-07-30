@@ -147,6 +147,8 @@ struct SettingsView: View {
                 .tabItem { Label("Vision Proxy", systemImage: "eye") }
             AppearanceSettingsTab()
                 .tabItem { Label("Appearance", systemImage: "paintpalette") }
+            AppsSettingsTab()
+                .tabItem { Label("Apps", systemImage: "square.grid.2x2") }
             RulesSettingsTab()
                 .tabItem { Label("Rules", systemImage: "list.bullet.rectangle") }
             ContextSettingsTab()
@@ -235,6 +237,7 @@ struct AppearanceSettingsTab: View {
         .busMonitor, .notesMD, .appleNotes, .calendar, .reminders, .contacts,
         .canvas, .kanban, .numbers, .whatsapp, .terminal,
         .tethering, .streamIngest, .broadcast, .streamMixer, .ndiBrowser, .colorAdjustments, .scenes,
+        .webBrowser,
     ]
 
     // Collapsible section state. "Appearance" and "App Panels" open by
@@ -1235,7 +1238,7 @@ struct ModelsSettingsTab: View {
 struct TuningSettingsTab: View {
     @Environment(ModelCatalog.self) private var catalog
 
-    @State private var selectedModelID: String = ""
+    @State private var selectedModelID: String = ModelCatalog.defaultModelID
     @State private var temperature: Double = 1.0
     @State private var topP: Double = 0.95
     @State private var repetitionPenalty: Double = 1.05

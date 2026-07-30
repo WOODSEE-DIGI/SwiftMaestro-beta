@@ -137,13 +137,15 @@ final class AgentExecutor: Sendable {
                     // attached images use the multimodal content-array form.
                     var convo: [[String: Any]] = messages.map { Self.wireMessage($0) }
 
-                    // No iteration budget: local inference has no token cost, so
-                    // the agentic loop runs until the model stops requesting tools.
-                    // Termination is user-driven (Stop button -> Task cancellation).
-                    // HARD CAP: even the main agent gets max 8 rounds to prevent
-                    // infinite narration/gather loops on small models.
+                    // No iteration budget: local inference has no token cost and we
+                    // are fully offline, so the agentic loop runs until the model
+                    // stops requesting tools. Termination is user-driven (Stop
+                    // button -> Task cancellation). `hardMaxRounds` is NOT a research
+                    // limiter — it is a high runaway backstop that only fires on a
+                    // pathological loop, so legitimate multi-round research/browse/
+                    // crawl chains are never cut off early.
                     var round = 0
-                    let hardMaxRounds = 4
+                    let hardMaxRounds = 100
                     var didUseTool = false       // any tool ran this turn
                     var usedMutator = false      // a todo/plan/message/workspace/delegation tool ran
                     var autoNudges = 0           // CONSECUTIVE unproductive nudges
@@ -155,9 +157,23 @@ final class AgentExecutor: Sendable {
                     let perToolBudget = maxToolCallsPerTool ?? [:]
                     var toolCallCounts: [String: Int] = [:]
                     var toolBudgetExceededNames = Set<String>()
-                    // Context budget: configurable via UserDefaults; default raised from
-                    // 80K to 200K so large indexing/file ops don't trip prematurely.
-                    let tokenBudget = UserDefaults.standard.object(forKey: "agent.contextTokenBudget") as? Int ?? 200_000
+                    // Consecutive-identical-FAILURE circuit breaker (stability only, not
+                    // a work budget): stops a pathological loop where a small model keeps
+                    // re-calling a tool it keeps malforming, failing the same way each
+                    // time. Never fires on productive/varied/successful tool use.
+                    var lastFailureSignature: String?
+                    var consecutiveFailures = 0
+                    // Tools hard-disabled this turn by the failure breaker. executeTool
+                    // resolves against a global registry (not the per-round schema), so the
+                    // only reliable stop is to intercept the call in the loop and skip it.
+                    var disabledLoopTools = Set<String>()
+                    // Context budget: configurable via UserDefaults. This is a near-
+                    // overflow backstop, not a research cut-off — the real context-
+                    // window limit is handled by compaction (ChatViewModel) at the
+                    // model's tunedContextLength. Default sits just under the largest
+                    // supported context window (262K) so it only guards genuine runaway
+                    // context growth within the loop.
+                    let tokenBudget = UserDefaults.standard.object(forKey: "agent.contextTokenBudget") as? Int ?? 256_000
                     iterations: while !Task.isCancelled {
                         // Mid-generation steering: pull any user messages queued
                         // while the previous round was streaming or executing
@@ -379,6 +395,21 @@ final class AgentExecutor: Sendable {
                         // Execute each tool and feed the result back.
                         for tc in effectiveToolCalls {
                             continuation.yield(.toolCall(name: tc.name))
+                            // Failure-breaker hard stop: a tool disabled after repeated
+                            // identical failures is intercepted here (executeTool resolves
+                            // against a global registry, so it would still run otherwise).
+                            // Return a synthetic error instead of executing so the loop ends.
+                            if disabledLoopTools.contains(tc.name) {
+                                NSLog("[AGENT] FAILURE BREAKER: intercepted call to disabled \(tc.name)")
+                                convo.append([
+                                    "role": "tool",
+                                    "tool_call_id": tc.id,
+                                    "content": "{\"error\":\"\(tc.name) is disabled for the rest of this turn "
+                                        + "after repeated identical failures. Do NOT call it again — move on to the "
+                                        + "next step or give your final answer.\"}",
+                                ])
+                                continue
+                            }
                             let result = await executeTool(
                                 tc, mcp: mcp, project: project,
                                 workingDirectory: workingDirectory, agentID: agentID)
@@ -394,8 +425,39 @@ final class AgentExecutor: Sendable {
                                 convo.append([
                                     "role": "tool",
                                     "tool_call_id": tc.id,
-                                    "content": result,
+                                    "content": Self.truncatedToolResult(result),
                                 ])
+                            }
+                            // Consecutive-identical-failure circuit breaker. If the same
+                            // tool keeps returning the same error, first nudge with a
+                            // corrective message, then remove it so the agent must move on.
+                            if result.hasPrefix("{\"error\"") {
+                                let signature = tc.name + "|" + String(result.prefix(80))
+                                consecutiveFailures = (signature == lastFailureSignature) ? consecutiveFailures + 1 : 1
+                                lastFailureSignature = signature
+                                if consecutiveFailures == 4 {
+                                    convo.append([
+                                        "role": "user",
+                                        "content":
+                                            "SYSTEM: \(tc.name) has failed \(consecutiveFailures) times in a row "
+                                            + "with the SAME error. Your arguments are malformed. Do NOT keep "
+                                            + "retrying the identical call — read the error, fix the argument "
+                                            + "format, and try ONCE more, or skip this step and continue.",
+                                    ])
+                                } else if consecutiveFailures >= 6, !disabledLoopTools.contains(tc.name) {
+                                    disabledLoopTools.insert(tc.name)
+                                    NSLog("[AGENT] FAILURE BREAKER: disabled \(tc.name) after \(consecutiveFailures) consecutive identical failures")
+                                    convo.append([
+                                        "role": "user",
+                                        "content":
+                                            "SYSTEM: \(tc.name) kept failing with the same error and has been disabled "
+                                            + "for the rest of this turn. Stop calling it. Continue with the remaining "
+                                            + "steps or give your final answer now.",
+                                    ])
+                                }
+                            } else {
+                                consecutiveFailures = 0
+                                lastFailureSignature = nil
                             }
                             // AUTO-SAVE TRIGGER: Track file operations and inject
                             // save reminder after threshold is reached.
@@ -1057,6 +1119,25 @@ final class AgentExecutor: Sendable {
         )
     }
 
+    /// Hard cap on a single tool result's size before it enters the conversation.
+    /// This is a STABILITY guard, not a budget: an uncapped result (e.g. a 189 KB
+    /// deep_fetch page) became a ~63K-token prefill delta that pushed the context to
+    /// ~100K and made MLX throw a 1.3 TB metal::malloc allocation error, killing the
+    /// round. Capping each result keeps per-round deltas small so prompt-cache reuse
+    /// stays effective and total context stays within what compaction can manage.
+    private static let maxToolResultChars = 20000
+
+    /// Truncate an oversized tool result to `maxToolResultChars`, appending a clear
+    /// marker so the model knows content was cut (and how much). Results within the
+    /// limit are returned unchanged. VLM image payloads are handled separately and
+    /// never pass through here.
+    private static func truncatedToolResult(_ result: String) -> String {
+        guard result.count > maxToolResultChars else { return result }
+        let kept = result.prefix(maxToolResultChars)
+        NSLog("[AGENT] truncated oversized tool result: \(result.count) -> \(maxToolResultChars) chars")
+        return kept + "\n\n…[truncated: showing \(maxToolResultChars) of \(result.count) chars]"
+    }
+
     /// Inject the agent's working directory as `cwd` for execute_command when the
     /// model didn't supply one, so shell commands run in the right place.
     private static func injectCwd(
@@ -1292,7 +1373,7 @@ final class AgentExecutor: Sendable {
                 project: proj.isEmpty ? nil : proj,
                 workingDirectory: effectiveWD,
                 agentID: target.id.uuidString,
-                maxRounds: 4,
+                maxRounds: 100,
                 maxTokens: subMaxTokens
             ) {
                 switch output {
@@ -1422,7 +1503,7 @@ final class AgentExecutor: Sendable {
                 project: proj.isEmpty ? nil : proj,
                 workingDirectory: workingDirectory,
                 agentID: target.id.uuidString,
-                maxRounds: 4,
+                maxRounds: 100,
                 maxTokens: subMaxTokens
             ) {
                 switch output {

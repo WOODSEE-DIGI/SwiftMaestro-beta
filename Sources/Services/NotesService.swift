@@ -92,6 +92,18 @@ actor NotesService {
         return target
     }
 
+    /// Create a clipped note in the given folder, generating a unique filename
+    /// and writing the supplied Markdown content.
+    func createClippedNote(title: String, content: String, in folder: URL) throws -> URL {
+        let safeTitle = sanitized(title)
+        let baseName = safeTitle.isEmpty ? "Clipped" : safeTitle
+        let datePrefix = ISO8601DateFormatter().string(from: Date())
+        let fileName = "\(datePrefix) \(baseName).md"
+        let target = folder.appendingPathComponent(fileName)
+        try writeFile(at: target, content: content)
+        return target
+    }
+
     /// Create a new folder in the given parent folder.
     func createFolder(named name: String, in folder: URL) throws -> URL {
         let safeName = sanitized(name)

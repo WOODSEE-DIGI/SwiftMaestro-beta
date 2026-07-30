@@ -30,6 +30,10 @@ struct TilingWorkspaceView: View {
                 layout.updateAvailableWidth(geometry.size.width)
             }
         }
+        .onChange(of: layout.isLocked) { _, locked in
+            // Locking mid-state should never leave a drop highlight behind.
+            if locked { dragState.endDrag() }
+        }
         .onDrop(of: [UTType.workspacePanel.identifier], isTargeted: .constant(false)) { providers in
             // Global drop outside any tile: accept anything already handled by a tile;
             // this outer view just resets drag state if a drop escaped.
@@ -219,7 +223,11 @@ struct TilingTileView: View {
     }
 
     private func previewOverlay(size: CGSize) -> some View {
-        guard let zone = dragState.targetZone, dragState.targetKind == kind else {
+        // Never show the drop highlight while the workspace is locked — a locked
+        // workspace can't accept drags, and this also hides any preview left over
+        // from a drag that ended without routing through performDrop/dropExited.
+        guard !layout.isLocked,
+              let zone = dragState.targetZone, dragState.targetKind == kind else {
             return AnyView(EmptyView())
         }
         let rect = TilingDropZoneGeometry.previewRect(for: zone, in: size)

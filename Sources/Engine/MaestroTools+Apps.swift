@@ -343,14 +343,22 @@ extension MaestroTools {
 
     static func writeNote(_ call: ToolCall) async -> String {
         guard let args = decodeArgs(call, as: WriteNoteArgs.self),
-              var path = args.path?.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty,
+              let rawPath = args.path,
               let content = args.content
         else { return errorJSON("write_note requires 'path' and 'content'") }
+        // Normalize the Gemma quote token and any surrounding quotes on the path
+        // (paths are never legitimately quote-wrapped), but don't strip brackets,
+        // which could be part of a real folder name.
+        var path = sanitizeModelInline(rawPath).trimmingCharacters(in: .whitespacesAndNewlines)
+        while path.hasPrefix("\"") { path.removeFirst() }
+        while path.hasSuffix("\"") { path.removeLast() }
+        guard !path.isEmpty else { return errorJSON("write_note requires 'path'") }
+        let cleanContent = sanitizeModelInline(content)
         if !path.lowercased().hasSuffix(".md") { path += ".md" }
         let vaultURL = await resolveNotesVaultURL()
         let fileURL = vaultURL.appendingPathComponent(path)
         do {
-            try await notesService().writeFile(at: fileURL, content: content)
+            try await notesService().writeFile(at: fileURL, content: cleanContent)
             return jsonString(["status": "saved", "path": path])
         } catch {
             return errorJSON(error.localizedDescription)
@@ -468,7 +476,7 @@ extension MaestroTools {
 
     static func createKanbanBoard(_ call: ToolCall) async -> String {
         guard let args = decodeArgs(call, as: KanbanBoardArgs.self),
-              let name = args.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty
+              let name = args.name.map({ sanitizeModelText($0) }), !name.isEmpty
         else { return errorJSON("create_kanban_board requires 'name'") }
         return await MainActor.run {
             let board = sharedKanbanStore.createBoard(name: name)
@@ -496,9 +504,9 @@ extension MaestroTools {
 
     static func createKanbanCard(_ call: ToolCall) async -> String {
         guard let args = decodeArgs(call, as: KanbanCreateCardArgs.self),
-              let boardKey = args.board?.trimmingCharacters(in: .whitespacesAndNewlines), !boardKey.isEmpty,
-              let columnKey = args.column?.trimmingCharacters(in: .whitespacesAndNewlines), !columnKey.isEmpty,
-              let title = args.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty
+              let boardKey = args.board.map({ sanitizeModelText($0) }), !boardKey.isEmpty,
+              let columnKey = args.column.map({ sanitizeModelText($0) }), !columnKey.isEmpty,
+              let title = args.title.map({ sanitizeModelText($0) }), !title.isEmpty
         else { return errorJSON("create_kanban_card requires 'board', 'column', and 'title'") }
         return await MainActor.run {
             guard let board = findBoard(sharedKanbanStore, boardKey) else {
@@ -511,7 +519,7 @@ extension MaestroTools {
             let priority = args.priority.flatMap { KanbanPriority(rawValue: $0.lowercased()) } ?? .none
             let card = KanbanCard(
                 title: title,
-                description: args.description ?? "",
+                description: sanitizeModelInline(args.description ?? ""),
                 priority: priority,
                 tags: args.tags ?? []
             )
@@ -555,10 +563,10 @@ extension MaestroTools {
                 return errorJSON("no card matching \"\(cardKey)\" on board \"\(board.name)\".")
             }
             var updated = existing
-            if let title = args.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+            if let title = args.title.map({ sanitizeModelText($0) }), !title.isEmpty {
                 updated.title = title
             }
-            if let description = args.description { updated.description = description }
+            if let description = args.description { updated.description = sanitizeModelInline(description) }
             if let priority = args.priority.flatMap({ KanbanPriority(rawValue: $0.lowercased()) }) {
                 updated.priority = priority
             }

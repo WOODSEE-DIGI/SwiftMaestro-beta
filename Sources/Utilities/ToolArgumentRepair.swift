@@ -22,7 +22,12 @@ enum ToolArgumentRepair {
         let trimmed = json.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return "{}" }
 
-        let unwrapped = unwrapStringLiteral(trimmed) ?? trimmed
+        // Small models often split one argument object into fragments like
+        // `{"a":1}`,`{"b":2}` or `{"a":1}`,`"b":2`, which won't parse as a single
+        // JSON object. Collapse those fragment boundaries first.
+        let merged = mergeFragmentedObjects(trimmed)
+
+        let unwrapped = unwrapStringLiteral(merged) ?? merged
 
         guard let data = unwrapped.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -55,6 +60,24 @@ enum ToolArgumentRepair {
 
     // MARK: - Private helpers
 
+    /// Collapse fragmented argument objects. Small models often emit one argument
+    /// object as two fragments — `{"a":1}`,`{"b":2}` or `{"a":1}`,`"b":2` — which
+    /// won't parse as a single JSON object. This merges them back into one.
+    private static func mergeFragmentedObjects(_ text: String) -> String {
+        // Fast path: already valid JSON.
+        if (try? JSONSerialization.jsonObject(with: Data(text.utf8))) != nil { return text }
+        var result = text
+        // `}`,`{` between two objects -> `,`  ({"a":1},{"b":2} -> {"a":1,"b":2}).
+        result = result.replacingOccurrences(of: "},{", with: ",")
+        // A `}` followed by `,` then a new key (`{"a":1}`,`"b":2`) — the `}` closed
+        // the object prematurely, so drop it.
+        if let regex = try? NSRegularExpression(pattern: #"\}\s*,\s*(?=[\"\\'\w])"#) {
+            result = regex.stringByReplacingMatches(
+                in: result, range: NSRange(result.startIndex..., in: result), withTemplate: ",")
+        }
+        return result
+    }
+
     private static func unwrapStringLiteral(_ json: String) -> String? {
         guard json.count >= 2,
               json.hasPrefix("\""),
@@ -72,15 +95,17 @@ enum ToolArgumentRepair {
         return trimmed
     }
 
+    /// Strip the junk small models wrap argument keys in: the Gemma `<|"|>` escape
+    /// token, surrounding quotes (regular or backslash-escaped), braces, brackets,
+    /// and stray punctuation. Keys are identifiers, so this only ever removes
+    /// wrapper characters, never real content.
     private static func cleanKey(_ key: String) -> String {
-        guard key.contains("\"") || key.contains("{") || key.contains("}") || key.contains(" ") else {
-            return key
-        }
-        var cleaned = key
-        while let first = cleaned.first, ["\"", "{", " "].contains(first) {
+        var cleaned = key.replacingOccurrences(of: "<|\"|>", with: "")
+        let junk: [Character] = ["\"", "'", "\\", "{", "}", "[", "]", "<", "|", ">", " "]
+        while let first = cleaned.first, junk.contains(first) {
             cleaned.removeFirst()
         }
-        while let last = cleaned.last, ["\"", "}", " "].contains(last) {
+        while let last = cleaned.last, junk.contains(last) {
             cleaned.removeLast()
         }
         return cleaned

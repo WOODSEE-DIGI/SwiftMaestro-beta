@@ -671,7 +671,9 @@ enum MaestroTools {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             agent_id = try? c.decodeIfPresent(String.self, forKey: .agent_id)
             let list = (try? c.decodeIfPresent(StringList.self, forKey: .items)) ?? nil
-            items = list?.values ?? []
+            items = (list?.values ?? [])
+                .map { MaestroTools.sanitizeModelText($0) }
+                .filter { !$0.isEmpty }
         }
         enum CodingKeys: String, CodingKey { case items, agent_id }
     }
@@ -684,7 +686,8 @@ enum MaestroTools {
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             agent_id = try? c.decodeIfPresent(String.self, forKey: .agent_id)
-            title = try? c.decodeIfPresent(String.self, forKey: .title)
+            title = (try? c.decodeIfPresent(String.self, forKey: .title))
+                .map { MaestroTools.sanitizeModelText($0) }
             let b = (try? c.decodeIfPresent(LenientBool.self, forKey: .done)) ?? nil
             done = b?.value
             let i = (try? c.decodeIfPresent(LenientInt.self, forKey: .index)) ?? nil
@@ -724,29 +727,94 @@ enum MaestroTools {
         }
     }
 
-    /// Accepts an int as a number or a numeric string.
+    /// Accepts an int as a number or a numeric string. Small models mangle the value
+    /// (e.g. `"3}"`, `\"3\"`), so clean it before parsing and, as a last resort, pull
+    /// the leading integer run out of whatever's left.
     internal struct LenientInt: Decodable {
         let value: Int?
         init(from decoder: Decoder) throws {
             let c = try decoder.singleValueContainer()
             if let i = try? c.decode(Int.self) { value = i; return }
-            if let s = try? c.decode(String.self) { value = Int(s); return }
+            if let s = try? c.decode(String.self) {
+                let cleaned = MaestroTools.cleanScalarString(s)
+                if let i = Int(cleaned) { value = i; return }
+                let digits = cleaned.prefix(while: { $0 == "-" || $0 == "+" || $0.isNumber })
+                value = Int(digits)
+                return
+            }
             value = nil
         }
     }
 
-    /// Accepts a bool as a boolean or a string like "true"/"false".
+    /// Accepts a bool as a boolean or a string like "true"/"false" (also 1/0, yes/no).
+    /// Cleans small-model mangling (e.g. `"true\"}"`) before parsing.
     internal struct LenientBool: Decodable {
         let value: Bool?
         init(from decoder: Decoder) throws {
             let c = try decoder.singleValueContainer()
             if let b = try? c.decode(Bool.self) { value = b; return }
-            if let s = try? c.decode(String.self) { value = Bool(s.lowercased()); return }
+            if let s = try? c.decode(String.self) {
+                switch MaestroTools.cleanScalarString(s).lowercased() {
+                case "true", "1", "yes", "y": value = true
+                case "false", "0", "no", "n": value = false
+                default: value = nil
+                }
+                return
+            }
             value = nil
         }
     }
 
-    static func agentUUID(_ raw: String?) -> UUID? { raw.flatMap { UUID(uuidString: $0) } }
+    /// Parse a UUID from a model-supplied string, tolerating the small-model
+    /// artifacts that otherwise break `UUID(uuidString:)`: the Gemma `<|"|>`
+    /// escape token, escaped slashes, and stray surrounding quotes/braces/commas
+    /// (e.g. `AB0BE3B2-…"}`). Used for agent_id, tab_id, plan_id, etc.
+    static func agentUUID(_ raw: String?) -> UUID? {
+        guard let raw else { return nil }
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        s = s.replacingOccurrences(of: "<|\"|>", with: "")
+        s = s.replacingOccurrences(of: "\\/", with: "/")
+        while let last = s.last, ["\"", "'", "}", "]", ","].contains(last) { s.removeLast() }
+        while let first = s.first, ["\"", "'", "{", "[", ","].contains(first) { s.removeFirst() }
+        s = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        return UUID(uuidString: s)
+    }
+
+    /// Strip small-model mangling from a scalar argument VALUE (int/bool): the Gemma
+    /// `<|"|>` escape token, backslashes (escape residue), and surrounding
+    /// quotes/braces/brackets/commas. Only used for scalar parsing, where none of
+    /// these characters are ever legitimate — not for free-form strings.
+    static func cleanScalarString(_ raw: String) -> String {
+        var s = raw.replacingOccurrences(of: "<|\"|>", with: "")
+        s = s.replacingOccurrences(of: "\\", with: "")
+        let junk: [Character] = ["\"", "'", "{", "}", "[", "]", ",", " "]
+        while let first = s.first, junk.contains(first) { s.removeFirst() }
+        while let last = s.last, junk.contains(last) { s.removeLast() }
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Normalize a model-supplied short string (title/label) for display. This is
+    /// a NON-destructive safety net: the Gemma 4 escape token `<|"|>` is now
+    /// decoded properly by the tool-call parser (mlx-swift-lm GemmaFunctionParser),
+    /// so well-formed arguments arrive clean. This only (a) converts any residual
+    /// `<|"|>` token to a real quote and (b) unwraps surrounding double quotes —
+    /// it never strips brackets or unwraps arrays, so a legitimately bracketed or
+    /// quoted title (e.g. "[Draft] Foo") is left intact.
+    static func sanitizeModelText(_ raw: String) -> String {
+        var text = raw.replacingOccurrences(of: "<|\"|>", with: "\"")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        while text.hasPrefix("\""), text.hasSuffix("\""), text.count > 2 {
+            text = String(text.dropFirst().dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return text
+    }
+
+    /// Normalize the Gemma `<|"|>` escape token to a real quote inside free-form
+    /// content (notes, plan bodies, descriptions). Non-destructive: only the token
+    /// is converted; all other structure, whitespace, and punctuation is preserved.
+    static func sanitizeModelInline(_ raw: String) -> String {
+        raw.replacingOccurrences(of: "<|\"|>", with: "\"")
+    }
 
     private static func todoCreate(_ call: ToolCall, replace: Bool) async -> String {
         guard let args = decodeArgs(call, as: TodoCreateArgs.self) else {
@@ -810,7 +878,7 @@ enum MaestroTools {
     private static func renderTodos(_ items: [TodoItem]) -> String {
         guard !items.isEmpty else { return "Task list is empty." }
         let lines = items.enumerated().map { i, item in
-            "\(i + 1). [\(item.done ? "x" : " ")] \(item.title)"
+            "\(i + 1). [\(item.done ? "x" : " ")] \(sanitizeModelText(item.title))"
         }
         let doneCount = items.filter { $0.done }.count
         return "Task list (\(doneCount)/\(items.count) done):\n" + lines.joined(separator: "\n")
@@ -875,9 +943,9 @@ enum MaestroTools {
         guard let scope = planScope(agentID: args.agent_id, project: args.project) else {
             return errorJSON("missing agent context (agent_id is injected automatically; just call the tool again)")
         }
-        let title = (args.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = sanitizeModelText(args.title ?? "")
         guard !title.isEmpty else { return errorJSON("'title' is required") }
-        let content = args.content ?? ""
+        let content = sanitizeModelInline(args.content ?? "")
         return await MainActor.run {
             guard let store = planStore else { return errorJSON("plan store unavailable") }
             let plan = store.create(title: title, content: content, in: scope)
@@ -892,7 +960,7 @@ enum MaestroTools {
         guard let scope = planScope(agentID: args.agent_id, project: args.project) else {
             return errorJSON("missing agent context (agent_id is injected automatically; just call the tool again)")
         }
-        let key = (args.plan_id ?? args.title)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = (args.plan_id ?? args.title).map { sanitizeModelText($0) }
         guard let key, !key.isEmpty else {
             return errorJSON("provide 'plan_id' or 'title' to identify the plan")
         }
@@ -905,6 +973,8 @@ enum MaestroTools {
                 + "to rewrite it, set content = the full new text.")
         }
         let append = args.append ?? false
+        let sanitizedNewTitle = args.new_title.map { sanitizeModelText($0) }
+        let sanitizedContent = args.content.map { sanitizeModelInline($0) }
         return await MainActor.run {
             guard let store = planStore else { return errorJSON("plan store unavailable") }
             // Find the plan: try specified scope first, then search all scopes.
@@ -927,7 +997,7 @@ enum MaestroTools {
                 return errorJSON("no plan matching \"\(key)\".\n" + renderPlanList(store.plans(in: scope)))
             }
             guard let updated = store.update(
-                id: target.id, title: args.new_title, content: args.content,
+                id: target.id, title: sanitizedNewTitle, content: sanitizedContent,
                 append: append, in: foundScope)
             else { return errorJSON("failed to update plan") }
             let action = hasContent ? (append ? "appended to" : "rewrote") : "renamed"
@@ -1183,8 +1253,8 @@ enum MaestroTools {
             // Prevent duplicate agents: fuzzy match — if any agent name contains
             // the requested name (or vice versa), treat it as a duplicate.
             // Strip spurious wrapping quotes the model sometimes emits.
-            let cleanAgent = args.agent.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-            let cleanProject = args.project.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            let cleanAgent = sanitizeModelText(args.agent)
+            let cleanProject = sanitizeModelText(args.project)
             let lowerAgent = cleanAgent.lowercased()
             if let existing = ws.agents.first(where: {
                 let existingName = $0.name.lowercased()

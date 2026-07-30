@@ -261,11 +261,11 @@ extension MaestroTools {
 
     static func createNoteTool(_ call: ToolCall) async -> String {
         guard let a = decodeArgs(call, as: NoteArgs.self),
-              let title = a.title?.trimmingCharacters(in: .whitespaces), !title.isEmpty,
+              let title = a.title.map({ sanitizeModelText($0) }), !title.isEmpty,
               let body = a.body else {
             return errorJSON("create_note requires 'title' and 'body'")
         }
-        do { return try await MacOSIntegration.createNote(title: title, body: body) }
+        do { return try await MacOSIntegration.createNote(title: title, body: sanitizeModelInline(body)) }
         catch { return errorJSON(error.localizedDescription) }
     }
 

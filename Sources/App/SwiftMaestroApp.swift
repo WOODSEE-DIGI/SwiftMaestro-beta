@@ -102,6 +102,7 @@ struct SwiftMaestroApp: App {
     @State private var pluginService = PluginService()
     @State private var busWorker: BusWorker? = nil
     @State private var sparkleUpdater = SparkleUpdaterService.shared
+    @State private var webBrowserStore = WebBrowserStore.shared
     private let mcpService = MCPClientService()
 
 
@@ -131,6 +132,7 @@ struct SwiftMaestroApp: App {
                 .environment(discordService)
                 .environment(pluginService)
                 .environment(sparkleUpdater)
+                .environment(webBrowserStore)
                 .task {
                     appDelegate.mcpService = mcpService
                     appDelegate.whatsAppService = whatsAppService
@@ -198,7 +200,7 @@ struct SwiftMaestroApp: App {
                     // Expose the workspace layout so tools can open/focus panels.
                     MaestroTools.workspaceLayout = WorkspaceLayoutState.shared
                     // Wire client-side MCP tools into the inference engine and
-                    // spawn the user-enabled servers (permissioned by MCP flags).
+                    // spawn the user-enabled MCP servers (permissioned by MCP flags).
                     engine.mcpService = mcpService
                     await mcpService.startEnabledServers()
                     // Expose the model catalog so tools (bus worker, etc.) can resolve
@@ -235,6 +237,8 @@ struct SwiftMaestroApp: App {
                 }
         }
         .defaultSize(width: 1100, height: 760)
+        .windowResizability(.contentMinSize)
+
 
         // Standalone, resizable reading window for a single plan. Data-driven so
         // `openWindow(id:value:)` from the Plans browser opens (or fronts) the
@@ -303,14 +307,16 @@ struct SwiftMaestroApp: App {
                     .environment(kanbanStore)
                     .environment(numbersService)
                     .environment(mapsService)
-                    .environment(photosService)
-                    .environment(whatsAppService)
-                    .environment(discordService)
-                    .environment(pluginService)
+                .environment(photosService)
+                .environment(whatsAppService)
+                .environment(discordService)
+                .environment(pluginService)
+                .environment(webBrowserStore)
             }
         }
         .defaultSize(width: 500, height: 700)
         .windowResizability(.contentMinSize)
+
 
         #if os(macOS)
         Settings {
@@ -327,6 +333,10 @@ struct SwiftMaestroApp: App {
                 .environment(whisperService)
                 .environment(\.mcpClientService, mcpService)
                 .environment(sparkleUpdater)
+                // The Settings → Apps tab lists installed plugins, so it needs the
+                // same PluginService the main window uses (the single @State instance
+                // already populated by loadPlugins() at launch).
+                .environment(pluginService)
         }
         .defaultSize(width: 900, height: 960)
         // Settings scenes default to `.contentSize`, which pins the window to the

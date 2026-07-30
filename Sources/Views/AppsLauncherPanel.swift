@@ -1,55 +1,39 @@
 import SwiftUI
 
-/// The movable "Apple Apps / Swift Apps / Plugins" launcher used when the
-/// lower sidebar section is moved into the workspace grid.
+/// The movable "Apple Apps / Studio / Swift Apps / Plugins" launcher, rendered
+/// as a normal tiling panel. Each section is collapsible. Studio rows show a
+/// lock badge while the Studio add-on is disabled.
 struct AppsLauncherPanel: View {
     @Environment(PluginService.self) private var pluginService
     @Environment(ThemeStore.self) private var theme
     private var workspaceLayout = WorkspaceLayoutState.shared
+    private var appEnablement = AppEnablementStore.shared
+
+    /// Titles of the sections the user has collapsed (expanded by default).
+    @State private var collapsed: Set<String> = []
 
     var body: some View {
         List {
-            Section {
-                sidebarRow("Apple Notes", kind: .appleNotes)
-                sidebarRow("Calendar", kind: .calendar)
-                sidebarRow("Reminders", kind: .reminders)
-                sidebarRow("Contacts", kind: .contacts)
-                sidebarRow("Numbers", kind: .numbers)
-                sidebarRow("Maps", kind: .maps)
-                sidebarRow("Photos", kind: .photos)
-            } header: {
-                Text("Apple Apps")
+            // Categories and their apps come from AppCategory (the single source
+            // of truth) and are filtered by AppEnablementStore — a disabled
+            // category/app hides its row, and a section with no visible apps is
+            // omitted entirely so no empty headers linger.
+            ForEach(AppCategory.allCases, id: \.self) { category in
+                let visible = appEnablement.visibleKinds(in: category)
+                if !visible.isEmpty {
+                    collapsibleSection(category.title) {
+                        ForEach(visible, id: \.self) { kind in
+                            sidebarRow(kind.staticDisplayName ?? kind.themeStorageKey, kind: kind)
+                        }
+                    }
+                }
             }
-            Section {
-                sidebarRow("Cameras", kind: .tethering)
-                sidebarRow("Stream Ingest", kind: .streamIngest)
-                sidebarRow("Broadcast", kind: .broadcast)
-                sidebarRow("Stream Mixer", kind: .streamMixer)
-                sidebarRow("NDI Browser", kind: .ndiBrowser)
-                sidebarRow("Color Adjustments", kind: .colorAdjustments)
-                sidebarRow("Scenes", kind: .scenes)
-            } header: {
-                Text("Studio")
-            }
-            Section {
-                sidebarRow("WhatsApp", kind: .whatsapp)
-                sidebarRow("Discord", kind: .discord)
-                sidebarRow("Bus Monitor", kind: .busMonitor)
-                sidebarRow("Audio Control", kind: .audioControl)
-                sidebarRow("Notes.md", kind: .notesMD)
-                sidebarRow("Canvas", kind: .canvas)
-                sidebarRow("Kanban", kind: .kanban)
-                sidebarRow("Terminal", kind: .terminal)
-            } header: {
-                Text("Swift Apps")
-            }
-            if !pluginService.plugins.isEmpty {
-                Section {
-                    ForEach(pluginService.plugins) { manifest in
+            let visiblePlugins = pluginService.plugins.filter { appEnablement.showsPlugin($0.id) }
+            if !visiblePlugins.isEmpty {
+                collapsibleSection("Plugins") {
+                    ForEach(visiblePlugins) { manifest in
                         sidebarRow(manifest.name, kind: .plugin(manifest.id), icon: manifest.icon)
                     }
-                } header: {
-                    Text("Plugins")
                 }
             }
         }
@@ -58,12 +42,44 @@ struct AppsLauncherPanel: View {
         .background(theme.sidebarOverridden ? theme.sidebarBackground : Color.clear)
     }
 
+    /// A section whose rows can be collapsed/expanded by tapping its header.
+    @ViewBuilder
+    private func collapsibleSection<Content: View>(
+        _ title: String, @ViewBuilder content: () -> Content
+    ) -> some View {
+        Section {
+            if !collapsed.contains(title) {
+                content()
+            }
+        } header: {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    if collapsed.contains(title) { collapsed.remove(title) } else { collapsed.insert(title) }
+                }
+            } label: {
+                HStack {
+                    Text(title)
+                    Spacer()
+                    Image(systemName: collapsed.contains(title) ? "chevron.right" : "chevron.down")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
     private func sidebarRow(_ title: String, kind: WorkspacePanelKind, icon: String? = nil) -> some View {
         HStack {
             Label(title, systemImage: icon ?? kind.icon)
                 .foregroundStyle(theme.sidebarText)
             Spacer()
-            if workspaceLayout.isOpen(kind) {
+            if kind.isStudioApp && !StudioAddon.shared.isAvailable {
+                Image(systemName: "lock.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else if workspaceLayout.isOpen(kind) {
                 Circle()
                     .fill(theme.accent)
                     .frame(width: 6, height: 6)

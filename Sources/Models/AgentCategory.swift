@@ -59,24 +59,26 @@ enum AgentCategory: String, Codable, CaseIterable, Identifiable, Hashable, Senda
         }
     }
 
-    /// Maximum number of tool rounds this category's agents are allowed before
-    /// the executor forces a final-answer wrap-up. Coding agents get more headroom
-    /// because read→edit→build→verify chains need more steps than a typical
-    /// chat or research turn.
+    /// Tool-round backstop for this category's agents. This is NOT a research
+    /// limiter — we are fully offline with no token cost, so it is set high and
+    /// only forces a final-answer wrap-up on a pathological loop. All categories
+    /// share the same generous value so legitimate read→edit→build→verify and
+    /// multi-site research/crawl chains are never cut off early.
     var maxRounds: Int {
         switch self {
-        case .coding, .testing, .devops: return 16
-        case .research, .analysis, .data: return 6
-        default: return 4
+        case .coding, .testing, .devops: return 100
+        case .research, .analysis, .data: return 100
+        default: return 100
         }
     }
 
-    /// Per-tool hard call limits for this category. Empty means no per-tool cap.
-    /// Research agents are capped on web_search so small models cannot loop
-    /// indefinitely on the same query with minor variations.
+    /// Per-tool loop backstops. Empty means no per-tool cap. These only fire on a
+    /// genuine same-tool runaway, not on normal research — so the values are
+    /// deliberately generous (a real crawl/research session can legitimately need
+    /// many searches) rather than hard research blockers.
     var maxToolCallsPerTool: [String: Int] {
         switch self {
-        case .research: return ["web_search": 3]
+        case .research: return ["web_search": 25]
         default: return [:]
         }
     }
@@ -222,9 +224,9 @@ extension AgentCategory {
                 You are a research agent. Gather information from the web, local files, and \
                 memory. Always cite sources, distinguish facts from speculation, and summarize \
                 findings concisely. Use web_search, read_file, and memory tools heavily.
-                Web search limit: do NOT call web_search more than 3 times for a single question. \
-                If the first search is not useful, try a rephrased query once, then give the best \
-                answer you can from the results you already have.
+                Search guidance: avoid redundant searches — if a query is not useful, rephrase \
+                it rather than repeating the same one. Search as many times as you genuinely need \
+                to answer well; there is no fixed search budget.
                 Make web_search queries specific enough to avoid ambiguous results. For \
                 example, if the topic is the Swift programming language, query "Apple Swift \
                 programming language" or "site:swift.org Swift 6.3", not just "Swift". \

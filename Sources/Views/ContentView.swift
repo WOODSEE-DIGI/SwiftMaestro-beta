@@ -18,11 +18,6 @@ struct ContentView: View {
     /// agent chat, Notes.md, Apple Notes, Contacts, etc. can all be open side
     /// by side at once instead of one screen replacing another.
     @State private var workspaceLayout = WorkspaceLayoutState.shared
-    /// Which sidebar row is currently highlighted. Decoupled from what's
-    /// actually open in `workspaceLayout` — selecting a row opens/focuses
-    /// that panel, but closing a panel via its own × doesn't have to change
-    /// this highlight.
-    @State private var focusedKind: WorkspacePanelKind?
     /// Per-agent chat view-models, kept alive so switching agents preserves the
     /// in-flight view state (history itself is persisted by ChatHistoryStore).
     @State private var chatCache = ChatViewModelCache()
@@ -62,11 +57,7 @@ struct ContentView: View {
     var body: some View {
         @Bindable var catalog = catalog
 
-        NavigationSplitView {
-            sidebar
-        } detail: {
-            detail
-        }
+        TilingWorkspaceView()
         .toolbar {
             ToolbarItem(placement: .automatic) {
                 HStack(spacing: 4) {
@@ -81,6 +72,14 @@ struct ContentView: View {
                     .frame(width: 165)
                 }
                 .help("Global default model — used by any agent whose model is set to “Default (global)”.")
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    activeSheet = .newAgent
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .help("New project agent")
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -123,18 +122,23 @@ struct ContentView: View {
                 agentCategorySheet(for: agent)
             }
         }
-        .onChange(of: focusedKind) { _, newValue in
-            guard let newValue else { return }
-            openPanel(newValue)
-        }
         .onReceive(NotificationCenter.default.publisher(for: .openWorkspacePanel)) { notification in
             guard let kind = notification.object as? WorkspacePanelKind else { return }
             openPanel(kind)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .newAgentRequested)) { _ in
+            activeSheet = .newAgent
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .agentCategoryRequested)) { notification in
+            guard let agent = notification.object as? AgentRecord else { return }
+            activeSheet = .agentCategory(agent)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .removeAgentRequested)) { notification in
+            guard let agent = notification.object as? AgentRecord else { return }
+            removeAgent(agent)
+        }
         .onAppear {
-            if workspaceLayout.root == nil && workspaceLayout.floatingPanels.isEmpty {
-                openPanel(.agentChat(workspace.navigator.id))
-            }
+            workspaceLayout.ensureChromeLayout(navigatorID: workspace.navigator.id)
             // Explicitly (re)present every panel that was floating when the
             // app last quit, rather than relying SOLELY on macOS to
             // automatically restore data-driven WindowGroup windows — that
@@ -163,7 +167,6 @@ struct ContentView: View {
                     openWindow(id: "workspace-panel-window", value: WorkspacePanelWindowID(kind: kind))
                 }
             }
-            if focusedKind == nil { focusedKind = workspaceLayout.allOpenPanels.first }
             // ChatViewModelCache.shared is set by its own init() now (see that
             // type's doc comment) — it must be valid before this view's very
             // first body evaluation, which is earlier than .onAppear ever runs.
@@ -216,282 +219,12 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Sidebar (Agents / Apps / Loaded)
 
-    private var sidebar: some View {
-        VStack(spacing: 0) {
-            agentsSidebar
-                .frame(minHeight: 120)
 
-            Divider()
-                .padding(.horizontal, 8)
 
-            movableAppsSidebar
-                .frame(minHeight: 120, maxHeight: .infinity)
-        }
-        .navigationTitle("SwiftMaestro")
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button { activeSheet = .newAgent } label: {
-                    Image(systemName: "plus")
-                }
-                .help("New project agent")
-            }
-        }
-    }
 
-    private var agentsSidebar: some View {
-        VStack(spacing: 0) {
-            List(selection: $focusedKind) {
-                Section {
-                    agentRow(
-                        title: workspace.navigator.name,
-                        systemImage: "point.3.connected.trianglepath.dotted",
-                        id: workspace.navigator.id
-                    )
-                    .tag(WorkspacePanelKind.agentChat(workspace.navigator.id))
-                } header: {
-                    Text("Agents")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(theme.sidebarText.opacity(0.7))
-                }
-                ForEach(workspace.projectAgentsByCategory(), id: \.category) { group in
-                    Section {
-                        ForEach(group.agents) { agent in
-                            let projectName = workspace.projectName(for: agent)
-                            agentRow(
-                                title: agent.name,
-                                subtitle: projectName,
-                                systemImage: workspace.resolvedCategory(for: agent).systemImage,
-                                id: agent.id
-                            )
-                            .tag(WorkspacePanelKind.agentChat(agent.id))
-                            .contextMenu {
-                                Button("Clear Chat") {
-                                    chatCache.viewModel(for: agent, projectName: projectName)
-                                        .clearChat()
-                                }
-                                Button("Change Category") {
-                                    activeSheet = .agentCategory(agent)
-                                }
-                                Button("Remove Agent", role: .destructive) {
-                                    removeAgent(agent)
-                                }
-                            }
-                        }
-                    } header: {
-                        HStack(spacing: 4) {
-                            Image(systemName: group.category.systemImage)
-                                .font(.system(size: 10))
-                            Text(group.category.displayName)
-                        }
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(theme.sidebarText.opacity(0.7))
-                    }
-                }
-            }
-            .listStyle(.sidebar)
-            .scrollContentBackground(theme.sidebarOverridden ? .hidden : .automatic)
-            .background(theme.sidebarOverridden ? theme.sidebarBackground : Color.clear)
 
-            agentsActivityFooter
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-        }
-    }
 
-    private var appsSidebar: some View {
-        List(selection: $focusedKind) {
-            Section {
-                sidebarRow("Apple Notes", kind: .appleNotes)
-                sidebarRow("Calendar", kind: .calendar)
-                sidebarRow("Reminders", kind: .reminders)
-                sidebarRow("Contacts", kind: .contacts)
-                sidebarRow("Numbers", kind: .numbers)
-                sidebarRow("Maps", kind: .maps)
-                sidebarRow("Photos", kind: .photos)
-            } header: {
-                Text("Apple Apps")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(theme.sidebarText.opacity(0.7))
-            }
-            Section {
-                sidebarRow("Cameras", kind: .tethering)
-                sidebarRow("Stream Ingest", kind: .streamIngest)
-                sidebarRow("Broadcast", kind: .broadcast)
-                sidebarRow("Stream Mixer", kind: .streamMixer)
-                sidebarRow("NDI Browser", kind: .ndiBrowser)
-                sidebarRow("Color Adjustments", kind: .colorAdjustments)
-                sidebarRow("Scenes", kind: .scenes)
-            } header: {
-                Text("Studio")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(theme.sidebarText.opacity(0.7))
-            }
-            Section {
-                sidebarRow("WhatsApp", kind: .whatsapp)
-                sidebarRow("Discord", kind: .discord)
-                sidebarRow("Bus Monitor", kind: .busMonitor)
-                sidebarRow("Audio Control", kind: .audioControl)
-                sidebarRow("Notes.md", kind: .notesMD)
-                sidebarRow("Canvas", kind: .canvas)
-                sidebarRow("Kanban", kind: .kanban)
-                sidebarRow("Terminal", kind: .terminal)
-            } header: {
-                Text("Swift Apps")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(theme.sidebarText.opacity(0.7))
-            }
-            if !pluginService.plugins.isEmpty {
-                Section {
-                    ForEach(pluginService.plugins) { manifest in
-                        sidebarRow(manifest.name, kind: .plugin(manifest.id), icon: manifest.icon)
-                    }
-                } header: {
-                    Text("Plugins")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(theme.sidebarText.opacity(0.7))
-                }
-            }
-        }
-        .listStyle(.sidebar)
-        .scrollContentBackground(theme.sidebarOverridden ? .hidden : .automatic)
-        .background(theme.sidebarOverridden ? theme.sidebarBackground : Color.clear)
-    }
-
-    /// The bottom section of the sidebar: either the full Apple Apps/Swift Apps/Plugins
-    /// list, or a compact bar when it has been moved into the workspace as a panel.
-    @ViewBuilder
-    private var movableAppsSidebar: some View {
-        if workspaceLayout.isOpen(.appLauncher) {
-            HStack {
-                Label("Apps in workspace", systemImage: "square.grid.2x2")
-                    .foregroundStyle(theme.sidebarText)
-                Spacer()
-                Button("Return to Sidebar") {
-                    workspaceLayout.close(.appLauncher)
-                }
-                .buttonStyle(.plain)
-                .font(.caption)
-                .foregroundStyle(theme.accent)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-        } else {
-            VStack(spacing: 0) {
-                HStack {
-                    Spacer()
-                    Button("Move to Workspace") {
-                        openPanel(.appLauncher)
-                    }
-                    .buttonStyle(.plain)
-                    .font(.caption)
-                    .foregroundStyle(theme.accent)
-                }
-                .padding(.horizontal, 12)
-                .padding(.top, 8)
-
-                appsSidebar
-            }
-        }
-    }
-
-    /// A non-agent sidebar row. Shows a small filled dot when the panel is
-    /// currently open in the workspace, since with multiple panels open at
-    /// once the row highlight alone no longer tells you what's visible.
-    /// `icon` defaults to `kind.icon`; data-driven kinds like `.plugin` pass
-    /// their own real icon since the enum itself only knows a generic fallback.
-    private func sidebarRow(_ title: String, kind: WorkspacePanelKind, icon: String? = nil) -> some View {
-        HStack {
-            Label(title, systemImage: icon ?? kind.icon)
-                .foregroundStyle(theme.sidebarText)
-            Spacer()
-            if workspaceLayout.isOpen(kind) {
-                Circle()
-                    .fill(theme.accent)
-                    .frame(width: 6, height: 6)
-            }
-        }
-        .tag(kind)
-        .accessibilityAction(.default) {
-            // Expose the row as an AXPress target for screen readers / UI
-            // automation without changing the normal List selection behavior.
-            openPanel(kind)
-        }
-    }
-
-    /// Compact model + process activity shown directly under the Agents section.
-    /// Nests the status monitors under the conductor so the sidebar top section is
-    /// useful and the bottom of the sidebar is not crowded.
-    private var agentsActivityFooter: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            EngineStatusBar()
-            ProcessResourceMonitor()
-        }
-        .padding(.top, 4)
-        .padding(.bottom, 8)
-    }
-
-    /// A sidebar agent row showing its name plus a red unread-message badge.
-    @ViewBuilder
-    private func agentRow(
-        title: String,
-        subtitle: String? = nil,
-        systemImage: String?,
-        id: UUID
-    ) -> some View {
-        let isSelected = focusedKind == .agentChat(id)
-        let isOpen = workspaceLayout.isOpen(.agentChat(id))
-        HStack {
-            VStack(alignment: .leading, spacing: 1) {
-                Group {
-                    if let systemImage {
-                        Label(title, systemImage: systemImage)
-                    } else {
-                        Text(title)
-                    }
-                }
-                .font(.system(size: 13))
-                if let subtitle {
-                    Text(subtitle)
-                        .font(.system(size: 10))
-                        .foregroundStyle(isSelected ? Color.white.opacity(0.8) : theme.sidebarText.opacity(0.6))
-                        .lineLimit(1)
-                }
-            }
-            // Selected rows keep the system's white-on-accent highlight; others
-            // use the themed sidebar text (default `.primary`, full brightness)
-            // instead of the muted vibrant sidebar label.
-            .foregroundStyle(isSelected ? Color.white : theme.sidebarText)
-            Spacer()
-            let unread = (messageStore.inboxes[id] ?? []).filter { !$0.read }.count
-            if unread > 0 {
-                Text("\(unread)")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 6).padding(.vertical, 1)
-                    .background(Capsule().fill(.red))
-            } else if isOpen {
-                Circle()
-                    .fill(theme.accent)
-                    .frame(width: 6, height: 6)
-            }
-        }
-        .accessibilityAction(.default) {
-            // Expose the row as an AXPress target so screen readers and UI
-            // automation can activate it. This is separate from the regular
-            // mouse/tap selection that SwiftUI's List already handles, so it
-            // will not double-fire for normal interaction.
-            openPanel(.agentChat(id))
-        }
-    }
-
-    // MARK: - Workspace (multi-panel, multi-row detail area)
-
-    @ViewBuilder
-    private var detail: some View {
-        TilingWorkspaceView()
-    }
 
 
     // MARK: - New project agent sheet
@@ -598,7 +331,6 @@ struct ContentView: View {
         )
         let kind = WorkspacePanelKind.agentChat(created.id)
         openPanel(kind)
-        focusedKind = kind
         resetNewAgent()
     }
 
@@ -618,7 +350,6 @@ struct ContentView: View {
         if workspaceLayout.root == nil && workspaceLayout.floatingPanels.isEmpty {
             let navigatorKind = WorkspacePanelKind.agentChat(workspace.navigator.id)
             openPanel(navigatorKind)
-            focusedKind = navigatorKind
         }
     }
 }

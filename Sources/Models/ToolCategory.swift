@@ -29,6 +29,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     case whatsapp
     case discord
     case web
+    case browser
     case bluesky
     case vault
 
@@ -55,7 +56,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             return false
         case .file, .shell, .server, .index, .system, .sqlite,
              .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news,
-             .whatsapp, .discord, .web, .bluesky, .vault:
+             .whatsapp, .discord, .web, .browser, .bluesky, .vault:
             return true
         }
     }
@@ -86,6 +87,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .whatsapp: return "WhatsApp"
         case .discord: return "Discord"
         case .web: return "Web"
+        case .browser: return "Browser"
         case .bluesky: return "Bluesky"
         case .vault: return "Vault"
         }
@@ -117,6 +119,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .whatsapp: return "message"
         case .discord: return "bubble.left.and.text.bubble.right"
         case .web: return "globe"
+        case .browser: return "safari"
         case .bluesky: return "at"
         case .vault: return "lock.square"
         }
@@ -214,7 +217,13 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
                 "archive_discord_channel", "send_discord_message",
             ]
         case .web:
-            return ["web_search", "fetch_url"]
+            return ["web_search", "fetch_url", "deep_fetch", "web_crawl", "site_map"]
+        case .browser:
+            return [
+                "browser_open", "browser_list", "browser_focus", "browser_close",
+                "browser_navigate", "browser_read", "browser_current", "browser_clip",
+                "browser_eval", "browser_screenshot", "browser_links",
+            ]
         case .bluesky:
             return [
                 "search_bluesky_posts", "get_bluesky_profile", "get_bluesky_author_feed",
@@ -232,12 +241,12 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         switch kind {
         case .navigator:
             return [
-                .workspace, .memory, .bus, .system, .rules, .time, .web, .vault,
+                .workspace, .memory, .bus, .system, .rules, .time, .web, .browser, .vault,
                 .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .whatsapp, .discord, .bluesky,
             ]
         case .project:
             return [
-                .file, .shell, .server, .index, .memory, .messaging, .bus, .system, .mcp, .sqlite, .web, .vault,
+                .file, .shell, .server, .index, .memory, .messaging, .bus, .system, .mcp, .sqlite, .web, .browser, .vault,
                 .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .whatsapp, .discord, .bluesky,
             ]
         }

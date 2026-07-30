@@ -13,7 +13,12 @@ struct WorkspacePanelContentView: View {
     @Environment(DiscordService.self) private var discordService
 
     var body: some View {
-        switch kind {
+        // Studio add-on panels render a locked placeholder until the add-on is
+        // enabled (Settings → Add-ons). Everything else resolves normally.
+        if kind.isStudioApp && !StudioAddon.shared.isAvailable {
+            StudioAddonLockedView()
+        } else {
+            switch kind {
         case .notesMD:
             NotesView(viewModel: notesViewModel)
         case .appleNotes:
@@ -85,8 +90,13 @@ struct WorkspacePanelContentView: View {
                     description: Text("This agent no longer exists")
                 )
             }
+        case .agents:
+            AgentsPanelView()
         case .appLauncher:
             AppsLauncherPanel()
+        case .webBrowser:
+            WebBrowserPanelView()
+        }
         }
     }
 }

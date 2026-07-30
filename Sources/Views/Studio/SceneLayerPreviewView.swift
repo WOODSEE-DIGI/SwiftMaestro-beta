@@ -138,6 +138,7 @@ private struct ReassignCameraSheet: View {
                 .font(.title3.bold())
 
             Picker("Camera", selection: $selectedSourceID) {
+                Text("No camera selected").tag("")
                 ForEach(Array(service.availableSources.enumerated()), id: \.offset) { _, source in
                     Text(source.name).tag(source.id.rawValue)
                 }

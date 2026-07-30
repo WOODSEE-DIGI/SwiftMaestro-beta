@@ -12,10 +12,15 @@ struct TilingDropDelegate: DropDelegate {
     let dragState: TilingDragState
     let tileSize: CGSize
 
+    /// Only a panel drag is valid here, and only when the workspace is unlocked.
+    /// Checking `hasItemsConforming` (rather than relying on shared drag state set
+    /// at drag-start) makes the drop robust regardless of how the drag began.
+    func validateDrop(info: DropInfo) -> Bool {
+        !layout.isLocked && info.hasItemsConforming(to: [UTType.workspacePanel])
+    }
+
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        guard !layout.isLocked else { return DropProposal(operation: .forbidden) }
-        guard let source = dragState.draggedKind else { return DropProposal(operation: .forbidden) }
-        guard source != targetKind || layout.isFloating(targetKind) else { return DropProposal(operation: .forbidden) }
+        guard validateDrop(info: info) else { return DropProposal(operation: .forbidden) }
 
         let zone = TilingDropZoneGeometry.zone(for: info.location, in: tileSize)
         dragState.updateTarget(kind: targetKind, zone: zone)
@@ -27,24 +32,34 @@ struct TilingDropDelegate: DropDelegate {
     }
 
     func performDrop(info: DropInfo) -> Bool {
-        guard !layout.isLocked else { return false }
-        guard let source = dragState.draggedKind else { return false }
-        guard source != targetKind || layout.isFloating(targetKind) else { return false }
+        // Clear the drop highlight immediately, before any validation, so it can
+        // never linger after the mouse is released — even if the drop is rejected
+        // (locked workspace, wrong payload) or routed here instead of a tile.
+        dragState.endDrag()
+
+        guard validateDrop(info: info) else { return false }
 
         let zone = TilingDropZoneGeometry.zone(for: info.location, in: tileSize)
-        layout.movePanel(source, to: targetKind, zone: zone)
-        dragState.endDrag()
+        let providers = info.itemProviders(for: [UTType.workspacePanel])
+        guard let provider = providers.first else { return false }
+
+        // Hoist into Sendable locals so the @Sendable completion handler doesn't
+        // capture `self` (whose `layout`/`dragState` members are non-Sendable).
+        let target = targetKind
+
+        // The payload is a JSON-encoded `WorkspacePanelKind` produced by the
+        // `.draggable(WorkspacePanelTransfer)` drag source. Loading it is async,
+        // so the actual tree mutation runs in the completion handler.
+        provider.loadDataRepresentation(forTypeIdentifier: UTType.workspacePanel.identifier) { data, _ in
+            guard let data,
+                  let source = try? JSONDecoder().decode(WorkspacePanelKind.self, from: data)
+            else { return }
+            Task { @MainActor in
+                let layout = WorkspaceLayoutState.shared
+                guard source != target || layout.isFloating(target) else { return }
+                layout.movePanel(source, to: target, zone: zone)
+            }
+        }
         return true
-    }
-}
-
-// MARK: - NSItemProvider Convenience
-
-extension NSItemProvider {
-    /// Returns a provider carrying a JSON-encoded `WorkspacePanelKind`.
-    static func workspacePanel(_ kind: WorkspacePanelKind) -> NSItemProvider {
-        let data = (try? JSONEncoder().encode(kind)) ?? Data()
-        let provider = NSItemProvider(item: data as NSData, typeIdentifier: UTType.workspacePanel.identifier)
-        return provider
     }
 }

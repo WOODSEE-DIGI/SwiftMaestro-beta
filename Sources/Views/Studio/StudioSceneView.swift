@@ -24,6 +24,11 @@ struct StudioSceneView: View {
             layerSidebar
                 .frame(minWidth: 260, maxWidth: 320)
         }
+        .onChange(of: selectedLayerID) { _, newValue in
+            // Keep the transform overlay and inspector in sync with the selected
+            // layer so clicking a different layer moves the handles to it.
+            transformLayerID = newValue
+        }
     }
 
     @State private var layerListHeight: CGFloat = 200
@@ -84,8 +89,26 @@ struct StudioSceneView: View {
 
             List(selection: $service.selectedSceneID) {
                 ForEach(service.scenes) { scene in
-                    Text(scene.name)
-                        .tag(scene.id)
+                    HStack {
+                        Text(scene.name)
+                        Spacer()
+                        Button {
+                            service.removeScene(id: scene.id)
+                        } label: {
+                            Image(systemName: "trash")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(.secondary)
+                        .help("Delete scene")
+                    }
+                    .tag(scene.id)
+                    .contentShape(Rectangle())
+                    .contextMenu {
+                        Button("Delete", role: .destructive) {
+                            service.removeScene(id: scene.id)
+                        }
+                    }
                 }
                 .onDelete { indexSet in
                     for index in indexSet {
@@ -120,6 +143,9 @@ struct StudioSceneView: View {
                         Color.black
                         ForEach(scene.layers.sorted(by: { $0.zIndex < $1.zIndex })) { layer in
                             layerPreview(layer, in: geometry.size, scene: scene)
+                        }
+                        if let transformLayer = scene.layers.first(where: { $0.id == transformLayerID }) {
+                            transformOverlayLayer(for: transformLayer, in: geometry.size, scene: scene)
                         }
                         MouseTrackingCanvas(
                             onMouseDown: { point in canvasMouseDown(at: point, scene: scene, containerSize: geometry.size) },
@@ -415,42 +441,82 @@ struct StudioSceneView: View {
         var width = state.startWidth
         var height = state.startHeight
 
+        let minDimension: Double = 10
+
         switch handle {
-        case .topLeft:
-            x = state.startX + deltaX
-            y = state.startY + deltaY
-            width = state.startWidth - deltaX
-            height = state.startHeight - deltaY
+        case .topLeft, .topRight, .bottomLeft, .bottomRight:
+            // Corner handles scale the layer proportionally by distance from the
+            // opposite (anchored) corner, so width and height always scale by the
+            // same factor while keeping the anchored corner fixed.
+            let signX: Double
+            let signY: Double
+            let anchorX: Double
+            let anchorY: Double
+            let anchorIsLeft: Bool
+            let anchorIsTop: Bool
+            switch handle {
+            case .topLeft:
+                signX = -1
+                signY = -1
+                anchorX = state.startX + state.startWidth
+                anchorY = state.startY + state.startHeight
+                anchorIsLeft = false
+                anchorIsTop = false
+            case .topRight:
+                signX = 1
+                signY = -1
+                anchorX = state.startX
+                anchorY = state.startY + state.startHeight
+                anchorIsLeft = true
+                anchorIsTop = false
+            case .bottomLeft:
+                signX = -1
+                signY = 1
+                anchorX = state.startX + state.startWidth
+                anchorY = state.startY
+                anchorIsLeft = false
+                anchorIsTop = true
+            case .bottomRight:
+                signX = 1
+                signY = 1
+                anchorX = state.startX
+                anchorY = state.startY
+                anchorIsLeft = true
+                anchorIsTop = true
+            default:
+                fatalError("Non-corner transform handle routed into corner branch")
+            }
+            let startDiagonal = sqrt(state.startWidth * state.startWidth + state.startHeight * state.startHeight)
+            let currentDiagonal = sqrt(
+                (state.startWidth + signX * deltaX) * (state.startWidth + signX * deltaX) +
+                (state.startHeight + signY * deltaY) * (state.startHeight + signY * deltaY)
+            )
+            let minScale = max(minDimension / state.startWidth, minDimension / state.startHeight)
+            let scale = max(currentDiagonal / startDiagonal, minScale)
+            width = state.startWidth * scale
+            height = state.startHeight * scale
+            x = anchorIsLeft ? anchorX : anchorX - width
+            y = anchorIsTop ? anchorY : anchorY - height
+
         case .top:
             y = state.startY + deltaY
             height = state.startHeight - deltaY
-        case .topRight:
-            y = state.startY + deltaY
-            width = state.startWidth + deltaX
-            height = state.startHeight - deltaY
+        case .bottom:
+            height = state.startHeight + deltaY
         case .left:
             x = state.startX + deltaX
             width = state.startWidth - deltaX
         case .right:
             width = state.startWidth + deltaX
-        case .bottomLeft:
-            x = state.startX + deltaX
-            width = state.startWidth - deltaX
-            height = state.startHeight + deltaY
-        case .bottom:
-            height = state.startHeight + deltaY
-        case .bottomRight:
-            width = state.startWidth + deltaX
-            height = state.startHeight + deltaY
         }
 
-        if width < 10 {
-            x = layer.x + (layer.width - 10) / 2
-            width = 10
+        if width < minDimension {
+            x = layer.x + (layer.width - minDimension) / 2
+            width = minDimension
         }
-        if height < 10 {
-            y = layer.y + (layer.height - 10) / 2
-            height = 10
+        if height < minDimension {
+            y = layer.y + (layer.height - minDimension) / 2
+            height = minDimension
         }
         return (round(x), round(y), round(width), round(height))
     }
@@ -525,10 +591,8 @@ struct StudioSceneView: View {
         let handleSize: Double = 24
         let half = handleSize / 2
 
-        if let crop = cropHandleAt(point, for: layer, handleSize: handleSize) {
-            return .crop(crop)
-        }
-
+        // Check transform handles first so the yellow layer transform dots win
+        // over crop handles when they overlap (e.g. default full-frame crop).
         let positions: [(TransformHandle, CGPoint)] = [
             (.topLeft, CGPoint(x: layer.x, y: layer.y)),
             (.top, CGPoint(x: layer.x + layer.width / 2, y: layer.y)),
@@ -544,6 +608,10 @@ struct StudioSceneView: View {
             if rect.contains(point) {
                 return .transform(handle)
             }
+        }
+
+        if let crop = cropHandleAt(point, for: layer, handleSize: handleSize) {
+            return .crop(crop)
         }
         return nil
     }
@@ -581,54 +649,55 @@ struct StudioSceneView: View {
         let width = layer.width * Double(scaleX)
         let height = layer.height * Double(scaleY)
         let isSelected = selectedLayerID == layer.id
-        let isTransform = transformLayerID == layer.id
 
         return SceneLayerPreviewView(layer: layer, sceneSize: CGSize(width: scene.width, height: scene.height))
             .frame(width: width, height: height)
             .position(x: x + width / 2, y: y + height / 2)
             .border(isSelected ? Color.yellow : (layer.isVisible ? Color.accentColor : Color.clear), width: isSelected ? 2 : 1)
-            .overlay {
-                if isTransform {
-                    transformOverlay(for: layer, width: width, height: height)
-                }
-            }
     }
 
     @ViewBuilder
-    private func transformOverlay(for layer: SceneLayer, width: Double, height: Double) -> some View {
-        GeometryReader { _ in
-            ZStack {
-                // Outer transform border
-                Rectangle()
-                    .stroke(Color.yellow, lineWidth: 2)
+    private func transformOverlayLayer(for layer: SceneLayer, in containerSize: CGSize, scene: StudioScene) -> some View {
+        let scaleX = containerSize.width / CGFloat(scene.width)
+        let scaleY = containerSize.height / CGFloat(scene.height)
+        let x = layer.x * Double(scaleX)
+        let y = layer.y * Double(scaleY)
+        let width = layer.width * Double(scaleX)
+        let height = layer.height * Double(scaleY)
+        let cropX = layer.crop.x * width
+        let cropY = layer.crop.y * height
+        let cropW = layer.crop.width * width
+        let cropH = layer.crop.height * height
 
-                // Crop box
-                let cropX = layer.crop.x * width
-                let cropY = layer.crop.y * height
-                let cropW = layer.crop.width * width
-                let cropH = layer.crop.height * height
-                Rectangle()
-                    .stroke(Color.white, style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                    .frame(width: max(0, cropW), height: max(0, cropH))
-                    .position(x: cropX + cropW / 2, y: cropY + cropH / 2)
+        ZStack {
+            // Outer transform border
+            Rectangle()
+                .stroke(Color.yellow, lineWidth: 2)
 
-                // Transform handles
-                transformHandle(.topLeft, at: CGPoint(x: 0, y: 0))
-                transformHandle(.top, at: CGPoint(x: width / 2, y: 0))
-                transformHandle(.topRight, at: CGPoint(x: width, y: 0))
-                transformHandle(.left, at: CGPoint(x: 0, y: height / 2))
-                transformHandle(.right, at: CGPoint(x: width, y: height / 2))
-                transformHandle(.bottomLeft, at: CGPoint(x: 0, y: height))
-                transformHandle(.bottom, at: CGPoint(x: width / 2, y: height))
-                transformHandle(.bottomRight, at: CGPoint(x: width, y: height))
+            // Crop box
+            Rectangle()
+                .stroke(Color.white, style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                .frame(width: max(0, cropW), height: max(0, cropH))
+                .position(x: cropX + cropW / 2, y: cropY + cropH / 2)
 
-                // Crop handles
-                cropHandle(.topLeft, at: CGPoint(x: cropX, y: cropY))
-                cropHandle(.topRight, at: CGPoint(x: cropX + cropW, y: cropY))
-                cropHandle(.bottomLeft, at: CGPoint(x: cropX, y: cropY + cropH))
-                cropHandle(.bottomRight, at: CGPoint(x: cropX + cropW, y: cropY + cropH))
-            }
+            // Transform handles
+            transformHandle(.topLeft, at: CGPoint(x: 0, y: 0))
+            transformHandle(.top, at: CGPoint(x: width / 2, y: 0))
+            transformHandle(.topRight, at: CGPoint(x: width, y: 0))
+            transformHandle(.left, at: CGPoint(x: 0, y: height / 2))
+            transformHandle(.right, at: CGPoint(x: width, y: height / 2))
+            transformHandle(.bottomLeft, at: CGPoint(x: 0, y: height))
+            transformHandle(.bottom, at: CGPoint(x: width / 2, y: height))
+            transformHandle(.bottomRight, at: CGPoint(x: width, y: height))
+
+            // Crop handles
+            cropHandle(.topLeft, at: CGPoint(x: cropX, y: cropY))
+            cropHandle(.topRight, at: CGPoint(x: cropX + cropW, y: cropY))
+            cropHandle(.bottomLeft, at: CGPoint(x: cropX, y: cropY + cropH))
+            cropHandle(.bottomRight, at: CGPoint(x: cropX + cropW, y: cropY + cropH))
         }
+        .frame(width: width, height: height)
+        .position(x: x + width / 2, y: y + height / 2)
         .allowsHitTesting(false)
     }
 
@@ -1343,6 +1412,7 @@ private struct MouseTrackingCanvas: NSViewRepresentable {
         var onDoubleClick: ((CGPoint) -> Void)?
 
         override var isFlipped: Bool { true }
+        override var acceptsFirstResponder: Bool { true }
 
         override func mouseDown(with event: NSEvent) {
             let point = convert(event.locationInWindow, from: nil)

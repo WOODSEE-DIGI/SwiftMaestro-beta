@@ -604,7 +604,7 @@ struct ChatView: View {
                         HStack(alignment: .top, spacing: 8) {
                             Image(systemName: item.done ? "checkmark.circle.fill" : "circle")
                                 .foregroundStyle(item.done ? .green : .secondary)
-                            Text(item.title)
+                            Text(MaestroTools.sanitizeModelText(item.title))
                                 .strikethrough(item.done, color: .secondary)
                                 .foregroundStyle(item.done ? Color.secondary : theme.tasksText)
                                 .fixedSize(horizontal: false, vertical: true)

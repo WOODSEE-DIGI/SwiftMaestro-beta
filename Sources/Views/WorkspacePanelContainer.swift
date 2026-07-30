@@ -21,7 +21,6 @@ struct WorkspacePanelContainer<Content: View>: View {
     var onFloat: ((WorkspacePanelKind) -> Void)? = nil
 
     @State private var layout = WorkspaceLayoutState.shared
-    @State private var dragState = TilingDragState.shared
     @Environment(ThemeStore.self) private var theme
 
     var body: some View {
@@ -42,10 +41,7 @@ struct WorkspacePanelContainer<Content: View>: View {
                     .foregroundStyle(theme.panelAccent(for: kind).opacity(0.85))
                     .frame(width: 22, height: 20)
                     .contentShape(Rectangle())
-                    .onDrag {
-                        dragState.beginDrag(kind)
-                        return NSItemProvider.workspacePanel(kind)
-                    }
+                    .draggable(WorkspacePanelTransfer(kind: kind))
                     .help("Drag to move this panel")
             } else {
                 Image(systemName: "lock")

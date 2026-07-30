@@ -270,7 +270,8 @@ extension MaestroTools {
     /// Converts HTML to approximate markdown. Handles common tags: headings,
     /// paragraphs, links, bold, italic, code, lists, and images. Strips scripts
     /// and styles. Not a full parser — good enough for readable content extraction.
-    private static func htmlToMarkdown(_ html: String) -> String {
+    /// Internal (not private) so the deep-web tools can reuse it for static fetch.
+    static func htmlToMarkdown(_ html: String) -> String {
         var text = html
 
         // Remove script and style blocks entirely

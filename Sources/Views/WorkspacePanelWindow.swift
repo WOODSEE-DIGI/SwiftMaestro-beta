@@ -21,6 +21,7 @@ struct WorkspacePanelWindowView: View {
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(PluginService.self) private var pluginService
     @Environment(ThemeStore.self) private var theme
+    @Environment(WebBrowserStore.self) private var webBrowserStore
     @Environment(\.dismiss) private var dismiss
     @State private var layout = WorkspaceLayoutState.shared
     /// Set right before we dismiss the window ourselves (via "Dock"), so the
@@ -97,6 +98,14 @@ struct WorkspacePanelWindowView: View {
         return target.kind.staticDisplayName ?? "Panel"
     }
 
+    /// Dock this floating panel into the main window in the given direction
+    /// (side-by-side for left/right, stacked for bottom), then close this window.
+    private func dockPanel(_ zone: TilingDropZone) {
+        didDock = true
+        layout.dock(target.kind, zone: zone)
+        dismiss()
+    }
+
     private var header: some View {
         HStack(spacing: 6) {
             Image(systemName: target.kind.icon)
@@ -128,16 +137,31 @@ struct WorkspacePanelWindowView: View {
                 ? "Stop keeping this window in front of all others"
                 : "Keep this window in front of all others")
 
-            Button {
-                didDock = true
-                layout.dock(target.kind)
-                dismiss()
+            Menu {
+                Button {
+                    dockPanel(.right)
+                } label: {
+                    Label("Dock to Right", systemImage: "rectangle.split.2x1")
+                }
+                Button {
+                    dockPanel(.left)
+                } label: {
+                    Label("Dock to Left", systemImage: "rectangle.split.2x1")
+                }
+                Divider()
+                Button {
+                    dockPanel(.bottom)
+                } label: {
+                    Label("Dock Below", systemImage: "rectangle.split.1x2")
+                }
             } label: {
                 Label("Dock", systemImage: "rectangle.on.rectangle")
                     .font(.caption2)
             }
-            .buttonStyle(.plain)
-            .help("Dock into the main window")
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Dock into the main window — choose a side or below")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)

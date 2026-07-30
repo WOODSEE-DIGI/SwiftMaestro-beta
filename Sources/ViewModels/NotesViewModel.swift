@@ -72,9 +72,8 @@ final class NotesViewModel {
         }
     }
 
-    /// Re-evaluates the vault URL based on the current iCloud default. Used when
-    /// the onboarding sheet changes the default sync preference.
-    private static func resolveVaultURL() -> URL {
+    /// Re-evaluates the vault URL based on the current iCloud default.
+    static func resolveVaultURL() -> URL {
         let savedPath = UserDefaults.standard.string(forKey: NotesViewModel.vaultPathKey)
         if let savedPath, !savedPath.isEmpty {
             return URL(fileURLWithPath: savedPath)
