@@ -123,9 +123,15 @@ if [ "${UPLOAD:-0}" = "1" ]; then
     # The upload script only handles .dmg files, so we upload the appcast directly.
     echo ""
     echo "--- Uploading appcast.xml ---"
-    SFTP_USER="${SM_SFTP_USER:-***REMOVED***}"
-    SFTP_HOST="${SM_SFTP_HOST:-***REMOVED***}"
+    # No host/user is hardcoded — they must come from the environment / Secrets
+    # so personal infrastructure details never live in the repo.
+    SFTP_USER="${SM_SFTP_USER:-}"
+    SFTP_HOST="${SM_SFTP_HOST:-}"
     SFTP_PORT="${SM_SFTP_PORT:-2222}"
+    if [ -z "$SFTP_USER" ] || [ -z "$SFTP_HOST" ]; then
+        echo "SFTP host/user not configured. Set SM_SFTP_HOST and SM_SFTP_USER (see Settings → Secrets)."
+        exit 1
+    fi
     REMOTE_DIR="htdocs/download"
     if [ -z "${SM_SFTP_PASS:-}" ]; then
         SM_SFTP_PASS="$(security find-generic-password -s 'swiftmaestro-1984-sftp' -a "$SFTP_USER" -w 2>/dev/null || true)"

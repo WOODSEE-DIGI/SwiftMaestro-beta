@@ -40,7 +40,7 @@ extension MaestroTools {
                 "script_path": [
                     "type": "string",
                     "description": "Optional absolute path to upload-release.sh. "
-                    + "Defaults to ***REMOVED***/Documents/swiftmaestro-site/upload-release.sh.",
+                    + "Defaults to ~/Documents/swiftmaestro-site/upload-release.sh.",
                 ],
                 "dry_run": [
                     "type": "boolean",
@@ -78,11 +78,15 @@ extension MaestroTools {
         let message: String
     }
 
-    private static let defaultUploadScript = "***REMOVED***/Documents/swiftmaestro-site/upload-release.sh"
+    // No host/user/path is hardcoded: the SFTP host and username come from
+    // SwiftMaestro secrets (Keychain) or the environment, and the upload script
+    // path is derived from the current user's home directory at runtime. This
+    // keeps personal infrastructure details out of the source tree.
+    private static let defaultUploadScript = NSHomeDirectory() + "/Documents/swiftmaestro-site/upload-release.sh"
     private static let sftpUserSecret = "1984_SFTP_USER"
+    private static let sftpHostSecret = "1984_SFTP_HOST"
     private static let sftpPasswordSecret = "1984_SFTP_PASSWORD"
     private static let fallbackSftpPasswordSecret = "swiftmaestro-1984-sftp-password"
-    private static let fallbackSftpAccount = "***REMOVED***"
     private static let fallbackSftpProject = "woodsee-site"
 
     static func uploadRelease(_ call: ToolCall) async -> String {
@@ -113,9 +117,20 @@ extension MaestroTools {
             )
         }
 
-        let sftpUser = SecretsStore.resolveValue(name: sftpUserSecret, currentProject: nil)
-            ?? envValue("SM_SFTP_USER")
-            ?? fallbackSftpAccount
+        guard let sftpUser = SecretsStore.resolveValue(name: sftpUserSecret, currentProject: nil)
+            ?? envValue("SM_SFTP_USER"), !sftpUser.isEmpty else {
+            return errorJSON(
+                "SFTP username not configured. Add the global secret '1984_SFTP_USER' "
+                + "in Settings → Secrets (or set the SM_SFTP_USER environment variable)."
+            )
+        }
+        guard let sftpHost = SecretsStore.resolveValue(name: sftpHostSecret, currentProject: nil)
+            ?? envValue("SM_SFTP_HOST"), !sftpHost.isEmpty else {
+            return errorJSON(
+                "SFTP host not configured. Add the global secret '1984_SFTP_HOST' "
+                + "in Settings → Secrets (or set the SM_SFTP_HOST environment variable)."
+            )
+        }
 
         let password: String
         if let globalPassword = SecretsStore.resolveValue(name: sftpPasswordSecret, currentProject: nil),
@@ -145,7 +160,7 @@ extension MaestroTools {
         var env = ProcessInfo.processInfo.environment
         env["SM_SFTP_PASS"] = password
         env["SM_SFTP_USER"] = sftpUser
-        env["SM_SFTP_HOST"] = env["SM_SFTP_HOST"] ?? "***REMOVED***"
+        env["SM_SFTP_HOST"] = sftpHost
         env["SM_SFTP_PORT"] = env["SM_SFTP_PORT"] ?? "2222"
 
         let result = runUploadCommand(command, cwd: NSHomeDirectory(), env: env)
