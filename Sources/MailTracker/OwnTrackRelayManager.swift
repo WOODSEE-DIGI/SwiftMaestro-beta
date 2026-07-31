@@ -96,13 +96,31 @@ final class OwnTrackRelayManager {
     /// storing a fresh random one on first use. Local-only (not iCloud
     /// synchronizable): tokens signed on this machine are verified by this
     /// machine's relay.
+    ///
+    /// Falls back to a UserDefaults-persisted secret when the Keychain is
+    /// unavailable (locked keychain in xctest hosts, ad-hoc-signature churn
+    /// across rebuilds). The secret only signs localhost tracking tokens, so
+    /// degraded storage is acceptable — a hard failure would kill tracking
+    /// entirely in those environments.
     private func loadOrCreateSigningSecret() throws -> String {
-        if let existing = try KeychainService.read(account: Self.signingSecretAccount, allowUI: false),
-           !existing.isEmpty {
-            return existing
+        do {
+            if let existing = try KeychainService.read(account: Self.signingSecretAccount, allowUI: false),
+               !existing.isEmpty {
+                return existing
+            }
+            let generated = UUID().uuidString + UUID().uuidString
+            try KeychainService.store(account: Self.signingSecretAccount, value: generated, synchronizable: false)
+            return generated
+        } catch {
+            if let fallback = UserDefaults.standard.string(forKey: Self.signingSecretFallbackKey),
+               !fallback.isEmpty {
+                return fallback
+            }
+            let generated = UUID().uuidString + UUID().uuidString
+            UserDefaults.standard.set(generated, forKey: Self.signingSecretFallbackKey)
+            return generated
         }
-        let generated = UUID().uuidString + UUID().uuidString
-        try KeychainService.store(account: Self.signingSecretAccount, value: generated, synchronizable: false)
-        return generated
     }
+
+    private static let signingSecretFallbackKey = "owntrack.signingSecret.fallback"
 }

@@ -196,6 +196,11 @@ targets:
       GENERATE_INFOPLIST_FILE: YES
       PRODUCT_BUNDLE_IDENTIFIER: com.woodseedigi.swiftmaestrotests
       CODE_SIGN_IDENTITY: "-"
+      # Match the app target so the Objective-C bridging header's
+      # Tethering/DAM imports resolve during test-target module scanning,
+      # and C++ interop matches the app's objcxx mode.
+      HEADER_SEARCH_PATHS: "$(inherited) /opt/homebrew/include $(SRCROOT)/Sources"
+      SWIFT_OBJC_INTEROP_MODE: objcxx
 
 defaultLanguage: Swift
 platforms: []
