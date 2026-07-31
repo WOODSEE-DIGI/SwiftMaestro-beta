@@ -6,7 +6,7 @@ struct SimpleMemoryStore: Sendable {
     private let baseDir: URL
     
     /// Maps MaestroURI kinds to the shared memory directory structure.
-    /// Default: ~/.ai-context/memory/ (shared with Warp, Qwen Code, LM Studio, Claude Code)
+    /// Default: ~/.ai-context/memory/ (shared with Qwen Code, LM Studio, Claude Code)
     private static let kindDirectoryMap: [MaestroURI.Kind: String] = [
         .memory: "conversations/swiftmaestro",
         .knowledge: "knowledge",

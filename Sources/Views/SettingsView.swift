@@ -733,7 +733,7 @@ struct StorageSettingsTab: View {
                 }
                 GroupBox("About") {
                     Text("SwiftMaestro keeps everything in one app root under Application Support. "
-                        + "Shared memory still lives in ~/.ai-context/memory/ so Warp, Qwen Code, and other tools can read it.")
+                        + "Shared memory still lives in ~/.ai-context/memory/ so Qwen Code and other tools can read it.")
                         .font(.caption).foregroundStyle(.secondary).padding(8)
                 }
                 Spacer()

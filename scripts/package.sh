@@ -27,6 +27,10 @@ if [ ! -d "$APP_PATH" ]; then
     exit 1
 fi
 
+# Bundle + re-sign Homebrew dylibs (libusb/libraw chain) or a hardened-runtime
+# install dies at launch with "different Team IDs".
+"$(dirname "$0")/bundle-dylibs.sh"
+
 # Default the DMG version to the app's own CFBundleShortVersionString so the
 # installer and the app bundle can never drift.
 VERSION="${VERSION:-$(defaults read "$PWD/$APP_PATH/Contents/Info.plist" CFBundleShortVersionString)}"

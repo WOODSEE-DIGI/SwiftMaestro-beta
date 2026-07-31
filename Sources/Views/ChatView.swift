@@ -724,8 +724,9 @@ struct ChatView: View {
     }
 
     /// Persistent, compact "agent is working" line shown for the whole turn
-    /// (Warp-style), so the user always sees progress even across many tool
-    /// rounds. Reflects the live activity (e.g. "Running read_notes…").
+    /// (terminal-style live status), so the user always sees progress even
+    /// across many tool rounds. Reflects the live activity (e.g. "Running
+    /// read_notes…").
     @ViewBuilder
     private var streamingStatus: some View {
         if vm.isStreaming {
