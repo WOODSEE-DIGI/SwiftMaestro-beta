@@ -51,16 +51,16 @@ extension MaestroTools {
             ToolDefinition(name: "open_apple_news", spec: appleAppsToolSpecs[8], category: ToolCategory.news.rawValue,
                 handler: { call in await openAppleNewsTool(call) }),
 
-            // MARK: Mail
-            ToolDefinition(name: "open_mail", spec: appleAppsToolSpecs[11], category: ToolCategory.mail.rawValue,
+            // MARK: Mail (Apple Mail.app — NOT MaestroMail, the standalone app)
+            ToolDefinition(name: "open_apple_mail", spec: appleAppsToolSpecs[11], category: ToolCategory.mail.rawValue,
                 handler: { _ in await openMailTool() }),
-            ToolDefinition(name: "open_mail_panel", spec: appleAppsToolSpecs[12], category: ToolCategory.mail.rawValue,
+            ToolDefinition(name: "open_apple_mail_panel", spec: appleAppsToolSpecs[12], category: ToolCategory.mail.rawValue,
                 handler: { _ in await openMailPanelTool() }),
-            ToolDefinition(name: "compose_mail", spec: appleAppsToolSpecs[13], category: ToolCategory.mail.rawValue,
+            ToolDefinition(name: "compose_apple_mail", spec: appleAppsToolSpecs[13], category: ToolCategory.mail.rawValue,
                 handler: { call in await composeMailTool(call) }),
-            ToolDefinition(name: "mail_selected_message", spec: appleAppsToolSpecs[14], category: ToolCategory.mail.rawValue,
+            ToolDefinition(name: "apple_mail_selected_message", spec: appleAppsToolSpecs[14], category: ToolCategory.mail.rawValue,
                 handler: { _ in await mailSelectedMessageTool() }),
-            ToolDefinition(name: "mail_tracking_summary", spec: appleAppsToolSpecs[15], category: ToolCategory.mail.rawValue,
+            ToolDefinition(name: "apple_mail_tracking_summary", spec: appleAppsToolSpecs[15], category: ToolCategory.mail.rawValue,
                 handler: { call in await mailTrackingSummaryTool(call) }),
         ])
     }
@@ -134,15 +134,15 @@ extension MaestroTools {
                     "search": ["type": "string", "description": "Search term to open in News."],
                 ], required: []),
 
-            // MARK: Mail
-            rawSpec("open_mail",
-                "Open the macOS Mail app.",
+            // MARK: Mail (Apple Mail.app — NOT MaestroMail, the standalone app)
+            rawSpec("open_apple_mail",
+                "Open Apple's Mail.app (the macOS system email client). This is NOT MaestroMail, the standalone email app.",
                 properties: [:], required: []),
-            rawSpec("open_mail_panel",
-                "Open the SwiftMaestro in-app Mail panel (compose + OwnTrack tracking inspector). This is the embedded Mail panel, not the standalone Mail app.",
+            rawSpec("open_apple_mail_panel",
+                "Open the SwiftMaestro in-app Mail panel (compose into Mail.app + OwnTrack tracking inspector for Mail.app messages).",
                 properties: [:], required: []),
-            rawSpec("compose_mail",
-                "Compose a new email draft. By default creates a visible draft inside Mail.app (requires Automation permission); set use_mail_app=false to open a mailto: URL in the user's default email client instead.",
+            rawSpec("compose_apple_mail",
+                "Compose a new email draft in Apple's Mail.app. By default creates a visible draft inside Mail.app (requires Automation permission); set use_mail_app=false to open a mailto: URL in the user's default email client instead (which may not be Mail.app).",
                 properties: [
                     "to": ["type": "string", "description": "Recipient address(es), comma separated."],
                     "cc": ["type": "string", "description": "Optional CC address(es), comma separated."],
@@ -150,13 +150,13 @@ extension MaestroTools {
                     "body": ["type": "string", "description": "Plain-text message body."],
                     "use_mail_app": ["type": "boolean", "description": "true (default) = draft in Mail.app via automation; false = mailto: in default client."],
                 ], required: ["to"]),
-            rawSpec("mail_selected_message",
-                "Read the message currently selected in Mail's front viewer: subject, sender, Message-ID, recipients. Requires Automation permission for Mail.",
+            rawSpec("apple_mail_selected_message",
+                "Read the message currently selected in Mail.app's front viewer: subject, sender, Message-ID, recipients. Requires Automation permission for Mail.",
                 properties: [:], required: []),
-            rawSpec("mail_tracking_summary",
-                "Fetch OwnTrack open/click/reply tracking stats for a message from the local tracking relay. Pass a Message-ID, or omit it to use the message currently selected in Mail.",
+            rawSpec("apple_mail_tracking_summary",
+                "Fetch OwnTrack open/click/reply tracking stats for a message sent from Mail.app, from the embedded tracking relay. Pass a Message-ID, or omit it to use the message currently selected in Mail.app.",
                 properties: [
-                    "message_id": ["type": "string", "description": "RFC 822 Message-ID (angle brackets optional). Omit to use Mail's current selection."],
+                    "message_id": ["type": "string", "description": "RFC 822 Message-ID (angle brackets optional). Omit to use Mail.app's current selection."],
                 ], required: []),
         ]
     }
@@ -473,7 +473,7 @@ extension MaestroTools {
     static func composeMailTool(_ call: ToolCall) async -> String {
         guard let args = decodeArgs(call, as: ComposeMailArgs.self),
               let to = args.to?.trimmingCharacters(in: .whitespaces), !to.isEmpty else {
-            return errorJSON("compose_mail requires 'to'")
+            return errorJSON("compose_apple_mail requires 'to'")
         }
         let subject = args.subject ?? ""
         let body = args.body ?? ""
@@ -536,7 +536,7 @@ extension MaestroTools {
             }
         }
         guard let rawID = messageID, !rawID.isEmpty else {
-            return errorJSON("mail_tracking_summary needs 'message_id' or a selected message in Mail")
+            return errorJSON("apple_mail_tracking_summary needs 'message_id' or a selected message in Mail.app")
         }
         let normalized = AppleMailService.normalizeMessageID(rawID)
 

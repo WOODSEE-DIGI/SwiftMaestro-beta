@@ -89,7 +89,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .photos: return "Photos"
         case .stocks: return "Stocks"
         case .news: return "News"
-        case .mail: return "Mail"
+        case .mail: return "Apple Mail"
         case .whatsapp: return "WhatsApp"
         case .discord: return "Discord"
         case .web: return "Web"
@@ -227,8 +227,8 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             ]
         case .mail:
             return [
-                "open_mail", "open_mail_panel", "compose_mail",
-                "mail_selected_message", "mail_tracking_summary",
+                "open_apple_mail", "open_apple_mail_panel", "compose_apple_mail",
+                "apple_mail_selected_message", "apple_mail_tracking_summary",
             ]
         case .whatsapp:
             return [
