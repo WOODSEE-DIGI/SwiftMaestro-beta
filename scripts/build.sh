@@ -41,6 +41,10 @@ if [ "${UNSIGNED:-0}" = "1" ]; then
         build
 else
     echo "Building Developer ID signed (team $TEAM_ID)…"
+    # Remap absolute build paths out of the shipped binary. C/C++ assert
+    # macros bake __FILE__ (including the local username's home directory)
+    # into the binary otherwise — a PII leak in every public release DMG.
+    PATH_REMAP="-ffile-prefix-map=$BUILD_ROOT/DerivedData/SourcePackages/checkouts/=pkgs/ -ffile-prefix-map=$PWD/=app/"
     xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration "$CONFIG" \
         -destination 'platform=macOS,arch=arm64' \
         -derivedDataPath "$BUILD_ROOT/DerivedData" \
@@ -48,6 +52,8 @@ else
         CODE_SIGN_STYLE=Manual \
         DEVELOPMENT_TEAM="$TEAM_ID" \
         CODE_SIGN_IDENTITY="$SIGN_IDENTITY" \
+        OTHER_CFLAGS="$PATH_REMAP" \
+        OTHER_CPLUSPLUSFLAGS="$PATH_REMAP" \
         build
 fi
 

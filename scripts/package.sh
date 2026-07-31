@@ -31,6 +31,10 @@ fi
 # install dies at launch with "different Team IDs".
 "$(dirname "$0")/bundle-dylibs.sh"
 
+# Sign every nested Mach-O (mcp-servers venvs, ffmpeg, etc.) or notarization
+# rejects on missing secure timestamps.
+"$(dirname "$0")/sign-nested-binaries.sh"
+
 # Default the DMG version to the app's own CFBundleShortVersionString so the
 # installer and the app bundle can never drift.
 VERSION="${VERSION:-$(defaults read "$PWD/$APP_PATH/Contents/Info.plist" CFBundleShortVersionString)}"
