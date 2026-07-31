@@ -209,35 +209,73 @@ struct MailView: View {
 
             Divider()
 
-            if let mailboxError {
-                Text(mailboxError)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            if envelope.needsFullDiskAccess && !envelope.isAvailable {
+                fullDiskAccessPrompt
+            } else {
+                if let mailboxError {
+                    Text(mailboxError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
 
-            List(selection: $selectedMessageID) {
-                ForEach(messages) { message in
-                    messageRow(message)
-                        .tag(message.id)
-                        .contextMenu { messageContextMenu(message) }
-                }
-                if messages.count >= listLimit {
-                    Button("Load older messages…") {
-                        listLimit += 50
-                        Task { await loadMessages() }
+                List(selection: $selectedMessageID) {
+                    ForEach(messages) { message in
+                        messageRow(message)
+                            .tag(message.id)
+                            .contextMenu { messageContextMenu(message) }
                     }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity)
+                    if messages.count >= listLimit {
+                        Button("Load older messages…") {
+                            listLimit += 50
+                            Task { await loadMessages() }
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                    }
                 }
-            }
-            .listStyle(.plain)
-            .onChange(of: selectedMessageID) { _, _ in
-                Task { await loadDetail() }
+                .listStyle(.plain)
+                .onChange(of: selectedMessageID) { _, _ in
+                    Task { await loadDetail() }
+                }
             }
         }
+    }
+
+    /// Shown when macOS privacy (TCC) blocks reads of Mail's data folder.
+    /// Full Disk Access is the only public remedy; it applies at process
+    /// start, so the app must be relaunched after granting.
+    private var fullDiskAccessPrompt: some View {
+        VStack(spacing: 14) {
+            Spacer()
+            Image(systemName: "lock.shield")
+                .font(.system(size: 36))
+                .foregroundStyle(.secondary)
+            Text("Full Disk Access Required")
+                .font(.headline)
+            Text("SwiftMaestro reads Mail's message index locally (instant lists, even while Mail is busy). "
+                + "macOS blocks that folder until you grant Full Disk Access.\n\n"
+                + "Enable SwiftMaestro in the list, then quit and relaunch the app.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 320)
+            Button("Open Full Disk Access Settings") {
+                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            Button("Retry") {
+                Task { await refreshMailbox() }
+            }
+            .font(.caption)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+        .padding()
     }
 
     private func messageRow(_ message: MailEnvelopeIndex.MessageRow) -> some View {
@@ -675,10 +713,15 @@ struct MailView: View {
     private func refreshMailbox() async {
         if !envelope.isAvailable {
             if !envelope.open() {
-                mailboxError = "Mail's Envelope Index isn't readable: \(envelope.lastError ?? "unknown"). Grant access and relaunch."
+                if !envelope.needsFullDiskAccess {
+                    mailboxError = "Mail's Envelope Index isn't readable: \(envelope.lastError ?? "unknown")."
+                } else {
+                    mailboxError = nil // the Full Disk Access prompt explains it
+                }
                 return
             }
         }
+        mailboxError = nil
         await loadStructureCounts()
         await loadMessages()
     }

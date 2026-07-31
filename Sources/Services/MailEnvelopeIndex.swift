@@ -72,6 +72,12 @@ final class MailEnvelopeIndex {
     private(set) var isAvailable = false
     private(set) var lastError: String?
 
+    /// True when the failure looks like TCC denying access to Mail's data
+    /// folder (SQLite AUTH/CANTOPEN from EPERM/EACCES). The only remedy on
+    /// modern macOS is Full Disk Access — there is no narrower public
+    /// permission for ~/Library/Mail.
+    private(set) var needsFullDiskAccess = false
+
     private var dbQueue: DatabaseQueue?
 
     private static var indexURL: URL {
@@ -99,8 +105,29 @@ final class MailEnvelopeIndex {
             dbQueue = nil
             isAvailable = false
             lastError = error.localizedDescription
+            needsFullDiskAccess = Self.looksLikeAccessDenied(error)
         }
         return isAvailable
+    }
+
+    /// SQLite error 23 (AUTH) or 14 (CANTOPEN with an underlying EPERM) are
+    /// how TCC denial surfaces through GRDB; NSFileReadNoPermission (257) is
+    /// the Foundation equivalent.
+    private static func looksLikeAccessDenied(_ error: Error) -> Bool {
+        let description = String(describing: error).lowercased()
+        if description.contains("authorization denied")
+            || description.contains("authorisation denied")
+            || description.contains("sqlite error 23")
+            || description.contains("error 23")
+            || description.contains("operation not permitted")
+            || description.contains("eperm") {
+            return true
+        }
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain, nsError.code == 257 { return true }
+        // GRDB wraps SQLite errors with the code in the message.
+        if description.contains("cantopen") || description.contains("can't open") { return true }
+        return false
     }
 
     // MARK: - Mailboxes
