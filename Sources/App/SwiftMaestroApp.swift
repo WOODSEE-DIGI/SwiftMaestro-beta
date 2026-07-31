@@ -159,6 +159,11 @@ struct SwiftMaestroApp: App {
                     // Migrate any pre-centralized app data into the single
                     // SwiftMaestro app root (data/, models/, logs/, backups/).
                     SwiftMaestroPaths.migrateFromFlatLayout()
+                    // Start the embedded OwnTrack tracking relay when the user
+                    // hasn't turned auto-start off (Settings → Mail).
+                    if OwnTrackRelayManager.shared.autoStartRelay {
+                        OwnTrackRelayManager.shared.startRelay()
+                    }
                     // Create the shared ~/.ai-context scaffold up front so a fresh,
                     // self-contained install has its data directory before first use.
                     SimpleMemoryStore.ensureScaffold()

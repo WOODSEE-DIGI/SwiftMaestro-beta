@@ -131,40 +131,129 @@ enum SwiftMaestroSettingsStore {
     }
 }
 
+// MARK: - Settings tab strip
+
+/// The Settings window's tabs. A plain `TabView`'s macOS toolbar strip clips
+/// once the tab count outgrows the window width, so this is a custom strip:
+/// a wrapping grid that flows onto a second (and third) row instead. Order
+/// here is the strip's left-to-right, top-to-bottom order.
+enum SettingsTab: String, CaseIterable, Identifiable {
+    case models
+    case tuning
+    case visionProxy
+    case appearance
+    case apps
+    case mail
+    case rules
+    case context
+    case mcp
+    case storage
+    case secrets
+    case whisper
+    case shell
+    case about
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .models: return "Models"
+        case .tuning: return "Tuning"
+        case .visionProxy: return "Vision Proxy"
+        case .appearance: return "Appearance"
+        case .apps: return "Apps"
+        case .mail: return "Mail"
+        case .rules: return "Rules"
+        case .context: return "Context"
+        case .mcp: return "MCP"
+        case .storage: return "Storage"
+        case .secrets: return "Secrets"
+        case .whisper: return "Whisper"
+        case .shell: return "Shell"
+        case .about: return "About"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .models: return "cpu"
+        case .tuning: return "slider.horizontal.3"
+        case .visionProxy: return "eye"
+        case .appearance: return "paintpalette"
+        case .apps: return "square.grid.2x2"
+        case .mail: return "envelope"
+        case .rules: return "list.bullet.rectangle"
+        case .context: return "folder"
+        case .mcp: return "server.rack"
+        case .storage: return "externaldrive"
+        case .secrets: return "key.fill"
+        case .whisper: return "mic.fill"
+        case .shell: return "terminal"
+        case .about: return "info.circle"
+        }
+    }
+}
+
+/// Wrapping icon grid backing the Settings window's tab strip. Selected tab
+/// gets an accent wash; the grid wraps to additional rows automatically as
+/// the tab count grows.
+private struct SettingsTabStrip: View {
+    @Environment(ThemeStore.self) private var theme
+    @Binding var selection: SettingsTab
+
+    private let columns = [GridItem(.adaptive(minimum: 88), spacing: 4)]
+
+    var body: some View {
+        LazyVGrid(columns: columns, spacing: 6) {
+            ForEach(SettingsTab.allCases) { tab in
+                let isSelected = selection == tab
+                Button {
+                    selection = tab
+                } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: tab.icon)
+                            .font(.title3)
+                            .frame(height: 22)
+                        Text(tab.title)
+                            .font(.caption)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                    .background(
+                        isSelected ? theme.accent.opacity(0.22) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(isSelected ? theme.accent.opacity(0.6) : Color.clear))
+                    .foregroundStyle(isSelected ? theme.accent : .secondary)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+}
+
 struct SettingsView: View {
     @Environment(ModelCatalog.self) private var catalog
     @Environment(MLXInferenceEngine.self) private var engine
     @Environment(VisionProxyService.self) private var visionProxy
     @Environment(ThemeStore.self) private var theme
 
+    @AppStorage("settings.selectedTab") private var selectedTab: SettingsTab = .models
+
     var body: some View {
-        TabView {
-            ModelsSettingsTab()
-                .tabItem { Label("Models", systemImage: "cpu") }
-            TuningSettingsTab()
-                .tabItem { Label("Tuning", systemImage: "slider.horizontal.3") }
-            VisionProxySettingsTab()
-                .tabItem { Label("Vision Proxy", systemImage: "eye") }
-            AppearanceSettingsTab()
-                .tabItem { Label("Appearance", systemImage: "paintpalette") }
-            AppsSettingsTab()
-                .tabItem { Label("Apps", systemImage: "square.grid.2x2") }
-            RulesSettingsTab()
-                .tabItem { Label("Rules", systemImage: "list.bullet.rectangle") }
-            ContextSettingsTab()
-                .tabItem { Label("Context", systemImage: "folder") }
-            MCPSettingsTab()
-                .tabItem { Label("MCP", systemImage: "server.rack") }
-            StorageSettingsTab()
-                .tabItem { Label("Storage", systemImage: "externaldrive") }
-            SecretsSettingsTab()
-                .tabItem { Label("Secrets", systemImage: "key.fill") }
-            WhisperKitSettingsTab()
-                .tabItem { Label("Whisper", systemImage: "mic.fill") }
-            ShellSettingsTab()
-                .tabItem { Label("Shell", systemImage: "terminal") }
-            AboutSettingsTab()
-                .tabItem { Label("About", systemImage: "info.circle") }
+        VStack(spacing: 0) {
+            SettingsTabStrip(selection: $selectedTab)
+                .padding(.horizontal, 12)
+                .padding(.top, 10)
+                .padding(.bottom, 8)
+
+            Divider()
+
+            tabContent
         }
         // Grow to fill whatever size the user resizes the window to (maxWidth/
         // maxHeight: .infinity), while keeping a sensible minimum so controls stay
@@ -185,6 +274,26 @@ struct SettingsView: View {
             )
         )
         #endif
+    }
+
+    @ViewBuilder
+    private var tabContent: some View {
+        switch selectedTab {
+        case .models: ModelsSettingsTab()
+        case .tuning: TuningSettingsTab()
+        case .visionProxy: VisionProxySettingsTab()
+        case .appearance: AppearanceSettingsTab()
+        case .apps: AppsSettingsTab()
+        case .mail: MailSettingsTab()
+        case .rules: RulesSettingsTab()
+        case .context: ContextSettingsTab()
+        case .mcp: MCPSettingsTab()
+        case .storage: StorageSettingsTab()
+        case .secrets: SecretsSettingsTab()
+        case .whisper: WhisperKitSettingsTab()
+        case .shell: ShellSettingsTab()
+        case .about: AboutSettingsTab()
+        }
     }
 }
 

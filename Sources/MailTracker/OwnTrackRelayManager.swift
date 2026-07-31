@@ -18,6 +18,12 @@ final class OwnTrackRelayManager {
     /// Whether the embedded listener is currently bound and serving.
     private(set) var isRunning = false
 
+    /// Whether the embedded relay starts itself at app launch. Persisted;
+    /// defaults to true so tracking "just works" with no setup.
+    var autoStartRelay: Bool {
+        didSet { UserDefaults.standard.set(autoStartRelay, forKey: Self.autoStartKey) }
+    }
+
     /// Last startup/bind failure, shown in the Mail panel when startup fails
     /// (e.g. another relay instance already holds port 8087).
     private(set) var lastError: String?
@@ -40,12 +46,14 @@ final class OwnTrackRelayManager {
     private var server: RelayHTTPServer?
 
     private static let signingSecretAccount = "owntrack-signing-secret"
+    private static let autoStartKey = "owntrack.autoStartRelay"
 
     private init() {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         storeURL = appSupport
             .appendingPathComponent("SwiftMaestro/mailtracker", isDirectory: true)
             .appendingPathComponent("relay-store.json")
+        autoStartRelay = UserDefaults.standard.object(forKey: Self.autoStartKey) as? Bool ?? true
     }
 
     // MARK: - Lifecycle
