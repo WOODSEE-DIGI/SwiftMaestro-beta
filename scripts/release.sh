@@ -108,7 +108,7 @@ grep -E "<enclosure|<title|sparkle:version|sparkle:channel" "$DIST_DIR/appcast.x
 
 # Optional upload to swiftmaestro.com via the dedicated upload script.
 if [ "${UPLOAD:-0}" = "1" ]; then
-    UPLOAD_SCRIPT="${UPLOAD_SCRIPT:-$HOME/Documents/swiftmaestro-site/upload-release.sh}"
+    UPLOAD_SCRIPT="${UPLOAD_SCRIPT:-$HOME/GitHub/FUSV/Websites/swiftmaestro-site/upload-release.sh}"
     if [ ! -x "$UPLOAD_SCRIPT" ]; then
         echo "Upload script not found at $UPLOAD_SCRIPT"
         exit 1
