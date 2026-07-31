@@ -61,7 +61,7 @@
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>SwiftMaestro creates calendar events when you ask it to.</string>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>SwiftMaestro uses automation to create notes in the Notes app when you ask it to.</string>
+	<string>SwiftMaestro uses automation to create notes in the Notes app and to compose drafts and read message details in Mail when you ask it to.</string>
 	<key>NSContactsUsageDescription</key>
 	<string>SwiftMaestro reads and manages your contacts when you ask it to, so it can act as a local CRM and personal assistant.</string>
 	<key>NSPhotoLibraryUsageDescription</key>

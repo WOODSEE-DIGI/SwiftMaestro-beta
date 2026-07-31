@@ -2,7 +2,7 @@ import Foundation
 import MLXLMCommon
 import SwiftMaestroKit
 
-// MARK: - Native Apple app tools: Maps, Photos, Stocks, News
+// MARK: - Native Apple app tools: Maps, Photos, Stocks, News, Mail
 //
 // Exposes the additional native Apple apps the user asked for. Each service
 // follows the same pattern as AppleNotesService / NumbersService: a
@@ -13,6 +13,8 @@ import SwiftMaestroKit
 //   - Photos: PhotoKit album and asset metadata listing.
 //   - Stocks: app launcher (no public API).
 //   - News: app/URL launcher (no public API).
+//   - Mail: launch Mail, compose drafts (JXA or mailto:), read the selected
+//     message, and query OwnTrack open/click stats from the local relay.
 extension MaestroTools {
 
     /// Each of these tools belongs to its own category so users can enable
@@ -48,6 +50,18 @@ extension MaestroTools {
             // MARK: News
             ToolDefinition(name: "open_apple_news", spec: appleAppsToolSpecs[8], category: ToolCategory.news.rawValue,
                 handler: { call in await openAppleNewsTool(call) }),
+
+            // MARK: Mail
+            ToolDefinition(name: "open_mail", spec: appleAppsToolSpecs[11], category: ToolCategory.mail.rawValue,
+                handler: { _ in await openMailTool() }),
+            ToolDefinition(name: "open_mail_panel", spec: appleAppsToolSpecs[12], category: ToolCategory.mail.rawValue,
+                handler: { _ in await openMailPanelTool() }),
+            ToolDefinition(name: "compose_mail", spec: appleAppsToolSpecs[13], category: ToolCategory.mail.rawValue,
+                handler: { call in await composeMailTool(call) }),
+            ToolDefinition(name: "mail_selected_message", spec: appleAppsToolSpecs[14], category: ToolCategory.mail.rawValue,
+                handler: { _ in await mailSelectedMessageTool() }),
+            ToolDefinition(name: "mail_tracking_summary", spec: appleAppsToolSpecs[15], category: ToolCategory.mail.rawValue,
+                handler: { call in await mailTrackingSummaryTool(call) }),
         ])
     }
 
@@ -119,6 +133,31 @@ extension MaestroTools {
                     "url": ["type": "string", "description": "Apple News URL (https://apple.news/...) or applenews:// URL."],
                     "search": ["type": "string", "description": "Search term to open in News."],
                 ], required: []),
+
+            // MARK: Mail
+            rawSpec("open_mail",
+                "Open the macOS Mail app.",
+                properties: [:], required: []),
+            rawSpec("open_mail_panel",
+                "Open the SwiftMaestro in-app Mail panel (compose + OwnTrack tracking inspector). This is the embedded Mail panel, not the standalone Mail app.",
+                properties: [:], required: []),
+            rawSpec("compose_mail",
+                "Compose a new email draft. By default creates a visible draft inside Mail.app (requires Automation permission); set use_mail_app=false to open a mailto: URL in the user's default email client instead.",
+                properties: [
+                    "to": ["type": "string", "description": "Recipient address(es), comma separated."],
+                    "cc": ["type": "string", "description": "Optional CC address(es), comma separated."],
+                    "subject": ["type": "string", "description": "Subject line."],
+                    "body": ["type": "string", "description": "Plain-text message body."],
+                    "use_mail_app": ["type": "boolean", "description": "true (default) = draft in Mail.app via automation; false = mailto: in default client."],
+                ], required: ["to"]),
+            rawSpec("mail_selected_message",
+                "Read the message currently selected in Mail's front viewer: subject, sender, Message-ID, recipients. Requires Automation permission for Mail.",
+                properties: [:], required: []),
+            rawSpec("mail_tracking_summary",
+                "Fetch OwnTrack open/click/reply tracking stats for a message from the local tracking relay. Pass a Message-ID, or omit it to use the message currently selected in Mail.",
+                properties: [
+                    "message_id": ["type": "string", "description": "RFC 822 Message-ID (angle brackets optional). Omit to use Mail's current selection."],
+                ], required: []),
         ]
     }
 
@@ -135,6 +174,9 @@ extension MaestroTools {
 
     @MainActor
     private static let sharedNewsService = AppleNewsService()
+
+    @MainActor
+    private static let sharedMailService = AppleMailService.shared
 
     // MARK: - Maps argument types
 
@@ -377,5 +419,172 @@ extension MaestroTools {
         return ok
             ? jsonString(["status": "opened", "url": args?.url, "search": args?.search])
             : errorJSON("could not open Apple News")
+    }
+
+    // MARK: - Mail argument types
+
+    /// Bool decoder that also accepts "true"/"false" strings and 0/1 — models
+    /// don't always emit strict JSON booleans for boolean parameters.
+    private struct FlexibleBool: Codable {
+        let value: Bool
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            if let bool = try? container.decode(Bool.self) {
+                value = bool
+            } else if let string = try? container.decode(String.self) {
+                value = (string as NSString).boolValue
+            } else if let int = try? container.decode(Int.self) {
+                value = int != 0
+            } else {
+                throw DecodingError.typeMismatch(
+                    Bool.self,
+                    DecodingError.Context(codingPath: decoder.codingPath,
+                                          debugDescription: "Expected Bool, String, or Int"))
+            }
+        }
+    }
+
+    private struct ComposeMailArgs: Codable {
+        let to: String?
+        let cc: String?
+        let subject: String?
+        let body: String?
+        let use_mail_app: FlexibleBool?
+    }
+    private struct MailTrackingArgs: Codable { let message_id: String? }
+
+    // MARK: - Mail implementations
+
+    static func openMailTool() async -> String {
+        let ok = await sharedMailService.openMail()
+        return ok ? jsonString(["status": "opened"]) : errorJSON("could not open Mail")
+    }
+
+    /// Open the SwiftMaestro in-app Mail panel by updating the workspace layout
+    /// and posting a notification so the main UI presents it.
+    static func openMailPanelTool() async -> String {
+        return await MainActor.run(resultType: String.self) {
+            let result = WorkspaceLayoutState.shared.open(.mail)
+            NotificationCenter.default.post(name: .openWorkspacePanel, object: WorkspacePanelKind.mail)
+            return jsonString(["status": "opened", "panel": "mail", "placement": String(describing: result)])
+        }
+    }
+
+    static func composeMailTool(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: ComposeMailArgs.self),
+              let to = args.to?.trimmingCharacters(in: .whitespaces), !to.isEmpty else {
+            return errorJSON("compose_mail requires 'to'")
+        }
+        let subject = args.subject ?? ""
+        let body = args.body ?? ""
+        let cc = args.cc ?? ""
+        let useMailApp = args.use_mail_app?.value ?? true
+
+        if useMailApp {
+            func splitAddresses(_ raw: String) -> [String] {
+                raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            }
+            do {
+                let draftID = try await sharedMailService.composeInMailApp(
+                    to: splitAddresses(to),
+                    cc: splitAddresses(cc),
+                    subject: subject,
+                    content: body
+                )
+                return jsonString(["status": "draft_created", "client": "Mail.app", "draftID": draftID])
+            } catch {
+                return errorJSON("Mail.app compose failed: \(error.localizedDescription)")
+            }
+        } else {
+            let ok = await sharedMailService.compose(to: to, cc: cc, subject: subject, body: body)
+            return ok
+                ? jsonString(["status": "handed_off", "client": "default email client (mailto:)"])
+                : errorJSON("could not open mailto: URL")
+        }
+    }
+
+    static func mailSelectedMessageTool() async -> String {
+        do {
+            guard let message = try await sharedMailService.selectedMessage() else {
+                return "No message selected in Mail (or Mail has no viewer open)."
+            }
+            var dict: [String: Any] = [:]
+            if let messageID = message.messageID {
+                dict["messageID"] = messageID
+                dict["normalizedMessageID"] = AppleMailService.normalizeMessageID(messageID)
+            }
+            if let subject = message.subject { dict["subject"] = subject }
+            if let sender = message.sender { dict["sender"] = sender }
+            if let dateSent = message.dateSent { dict["dateSent"] = dateSent }
+            dict["toRecipients"] = message.toRecipients
+            return jsonString(dict)
+        } catch {
+            return errorJSON("could not read Mail's selection: \(error.localizedDescription)")
+        }
+    }
+
+    static func mailTrackingSummaryTool(_ call: ToolCall) async -> String {
+        let args = decodeArgs(call, as: MailTrackingArgs.self)
+        var messageID = args?.message_id?.trimmingCharacters(in: .whitespaces)
+
+        if messageID?.isEmpty != false {
+            // Fall back to Mail's current selection.
+            do {
+                messageID = try await sharedMailService.selectedMessage()?.messageID
+            } catch {
+                return errorJSON("no message_id given and Mail selection unreadable: \(error.localizedDescription)")
+            }
+        }
+        guard let rawID = messageID, !rawID.isEmpty else {
+            return errorJSON("mail_tracking_summary needs 'message_id' or a selected message in Mail")
+        }
+        let normalized = AppleMailService.normalizeMessageID(rawID)
+
+        guard await sharedMailService.ensureRelayRunning() else {
+            return errorJSON("No OwnTrack relay reachable at \(await sharedMailService.relayBaseURLString) and the embedded relay failed to start")
+        }
+
+        do {
+            async let summaryFetch = sharedMailService.trackingSummary(messageID: normalized)
+            async let eventsFetch = sharedMailService.trackingEvents(messageID: normalized)
+            let summary = try await summaryFetch
+            let events = try await eventsFetch
+
+            // Built piecemeal — a single large dictionary literal trips the
+            // type-checker's expression-time limit.
+            let recentEvents: [[String: Any]] = events
+                .sorted(by: { $0.timestamp > $1.timestamp })
+                .prefix(10)
+                .map { event in
+                    var dict: [String: Any] = [
+                        "type": event.type.rawValue,
+                        "timestamp": event.timestamp.timeIntervalSince1970,
+                    ]
+                    if let recipient = event.recipient { dict["recipient"] = recipient }
+                    if let quality = event.attributes["openQuality"] { dict["openQuality"] = quality }
+                    return dict
+                }
+
+            var result: [String: Any] = [
+                "messageID": summary.messageID,
+                "subject": summary.subject ?? "",
+                "recipients": summary.recipients,
+                "sent": summary.sentCount,
+                "opens": summary.openCount,
+                "clicks": summary.clickCount,
+                "replies": summary.replyCount,
+                "uniqueOpenRecipients": summary.uniqueOpenRecipients,
+                "uniqueClickRecipients": summary.uniqueClickRecipients,
+                "openQuality": summary.openQualityCounts,
+                "recentEvents": recentEvents,
+            ]
+            if let firstOpened = summary.firstOpenedAt { result["firstOpenedAt"] = firstOpened.timeIntervalSince1970 }
+            if let lastOpened = summary.lastOpenedAt { result["lastOpenedAt"] = lastOpened.timeIntervalSince1970 }
+            if let firstClicked = summary.firstClickedAt { result["firstClickedAt"] = firstClicked.timeIntervalSince1970 }
+            if let firstReplied = summary.firstRepliedAt { result["firstRepliedAt"] = firstReplied.timeIntervalSince1970 }
+            return jsonString(result)
+        } catch {
+            return errorJSON("tracking lookup failed for \(normalized): \(error.localizedDescription)")
+        }
     }
 }

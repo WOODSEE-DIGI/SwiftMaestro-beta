@@ -97,6 +97,7 @@ struct SwiftMaestroApp: App {
     @State private var numbersService = NumbersService()
     @State private var mapsService = AppleMapsService.shared
     @State private var photosService = ApplePhotosService()
+    @State private var mailService = AppleMailService.shared
     @State private var whatsAppService = WhatsAppService()
     @State private var discordService = DiscordService()
     @State private var pluginService = PluginService()
@@ -128,6 +129,7 @@ struct SwiftMaestroApp: App {
                 .environment(numbersService)
                 .environment(mapsService)
                 .environment(photosService)
+                .environment(mailService)
                 .environment(whatsAppService)
                 .environment(discordService)
                 .environment(pluginService)
@@ -308,6 +310,7 @@ struct SwiftMaestroApp: App {
                     .environment(numbersService)
                     .environment(mapsService)
                 .environment(photosService)
+                .environment(mailService)
                 .environment(whatsAppService)
                 .environment(discordService)
                 .environment(pluginService)

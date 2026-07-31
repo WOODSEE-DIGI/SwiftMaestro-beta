@@ -26,7 +26,7 @@ enum AppCategory: String, CaseIterable, Codable, Sendable {
     var kinds: [WorkspacePanelKind] {
         switch self {
         case .appleApps:
-            return [.appleNotes, .calendar, .reminders, .contacts, .numbers, .maps, .photos]
+            return [.appleNotes, .calendar, .reminders, .contacts, .numbers, .maps, .photos, .mail]
         case .studio:
             return [.tethering, .streamIngest, .broadcast, .streamMixer, .ndiBrowser, .colorAdjustments, .scenes]
         case .swiftApps:
@@ -40,7 +40,7 @@ extension WorkspacePanelKind {
     /// chrome (agents, appLauncher, agentChat, plugin) which can't be toggled.
     var appCategory: AppCategory? {
         switch self {
-        case .appleNotes, .calendar, .reminders, .contacts, .numbers, .maps, .photos:
+        case .appleNotes, .calendar, .reminders, .contacts, .numbers, .maps, .photos, .mail:
             return .appleApps
         case .tethering, .streamIngest, .broadcast, .streamMixer, .ndiBrowser, .colorAdjustments, .scenes:
             return .studio

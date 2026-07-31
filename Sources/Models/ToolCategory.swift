@@ -28,6 +28,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     case photos
     case stocks
     case news
+    case mail
     case whatsapp
     case discord
     case web
@@ -58,7 +59,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             return false
         case .file, .documents, .books, .shell, .server, .index, .system, .sqlite,
              .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news,
-             .whatsapp, .discord, .web, .browser, .bluesky, .vault:
+             .mail, .whatsapp, .discord, .web, .browser, .bluesky, .vault:
             return true
         }
     }
@@ -88,6 +89,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .photos: return "Photos"
         case .stocks: return "Stocks"
         case .news: return "News"
+        case .mail: return "Mail"
         case .whatsapp: return "WhatsApp"
         case .discord: return "Discord"
         case .web: return "Web"
@@ -122,6 +124,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .photos: return "photo.stack"
         case .stocks: return "chart.line.uptrend.xyaxis"
         case .news: return "newspaper"
+        case .mail: return "envelope"
         case .whatsapp: return "message"
         case .discord: return "bubble.left.and.text.bubble.right"
         case .web: return "globe"
@@ -222,6 +225,11 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             return [
                 "open_apple_news",
             ]
+        case .mail:
+            return [
+                "open_mail", "open_mail_panel", "compose_mail",
+                "mail_selected_message", "mail_tracking_summary",
+            ]
         case .whatsapp:
             return [
                 "whatsapp_status", "start_whatsapp_bridge", "stop_whatsapp_bridge",
@@ -258,12 +266,12 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .navigator:
             return [
                 .workspace, .memory, .bus, .system, .rules, .time, .web, .browser, .vault, .documents, .books,
-                .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .whatsapp, .discord, .bluesky,
+                .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky,
             ]
         case .project:
             return [
                 .file, .documents, .books, .shell, .server, .index, .memory, .messaging, .bus, .system, .mcp, .sqlite, .web, .browser, .vault,
-                .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .whatsapp, .discord, .bluesky,
+                .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky,
             ]
         }
     }

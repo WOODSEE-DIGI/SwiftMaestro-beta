@@ -20,6 +20,9 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
     case numbers
     case maps
     case photos
+    /// Apple Mail bridge: launch Mail, compose drafts, and inspect OwnTrack
+    /// open/click stats from the local tracking relay.
+    case mail
     case whatsapp
     case discord
     /// A WKWebView UI plugin, identified by its manifest id (see
@@ -87,6 +90,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .numbers: return "tablecells"
         case .maps: return "map"
         case .photos: return "photo.stack"
+        case .mail: return "envelope"
         case .whatsapp: return "message"
         case .discord: return "bubble.left.and.text.bubble.right.fill"
         case .plugin: return "puzzlepiece.extension"
@@ -127,6 +131,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .numbers: return "numbers"
         case .maps: return "maps"
         case .photos: return "photos"
+        case .mail: return "mail"
         case .whatsapp: return "whatsapp"
         case .discord: return "discord"
         case .plugin: return "plugin"
@@ -165,6 +170,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .numbers: return "Numbers"
         case .maps: return "Maps"
         case .photos: return "Photos"
+        case .mail: return "Mail"
         case .whatsapp: return "WhatsApp"
         case .discord: return "Discord"
         case .plugin: return nil
@@ -215,6 +221,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .numbers: return "numbers"
         case .maps: return "maps"
         case .photos: return "photos"
+        case .mail: return "mail"
         case .whatsapp: return "whatsapp"
         case .discord: return "discord"
         case .plugin(let id): return "plugin:\(id)"

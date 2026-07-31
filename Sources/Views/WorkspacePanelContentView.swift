@@ -43,6 +43,8 @@ struct WorkspacePanelContentView: View {
             MapsView()
         case .photos:
             PhotosView()
+        case .mail:
+            MailView()
         case .whatsapp:
             WhatsAppView()
         case .discord:
