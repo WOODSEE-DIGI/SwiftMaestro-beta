@@ -18,16 +18,22 @@ struct MailView: View {
     @Environment(AppleMailService.self) private var service
     @Environment(ThemeStore.self) private var theme
     @State private var reader = AppleMailReader.shared
+    @State private var envelope = MailEnvelopeIndex.shared
 
     @State private var mode: Mode = .mailbox
 
     // Mailbox state
     @State private var selectedMailbox: AppleMailReader.MailboxRef? = .unified(.inbox)
-    @State private var messages: [AppleMailReader.MessageSummary] = []
+    @State private var messages: [MailEnvelopeIndex.MessageRow] = []
+    @State private var sqlMailboxes: [MailEnvelopeIndex.MailboxRow] = []
+    @State private var accountSectionNames: [String: String] = [:]  // account UUID → display name
+    @State private var unifiedUnread: [AppleMailReader.UnifiedKind: Int] = [:]
     @State private var selectedMessageID: Int?
     @State private var detail: AppleMailReader.MessageDetail?
     @State private var searchText = ""
+    @State private var searchTask: Task<Void, Never>?
     @State private var listLimit = 50
+    @State private var listOffset = 0
     @State private var isLoadingList = false
     @State private var isLoadingDetail = false
     @State private var mailboxError: String?
@@ -124,23 +130,22 @@ struct MailView: View {
                     mailboxRow(
                         title: kind.title,
                         icon: kind.icon,
-                        unread: reader.unified?.unread(for: kind)
+                        unread: unifiedUnread[kind]
                     )
                     .tag(AppleMailReader.MailboxRef.unified(kind))
                 }
             }
-            if !reader.accounts.isEmpty {
+            if !groupedSQLMailboxes.isEmpty {
                 Section("Accounts") {
-                    ForEach(reader.accounts) { account in
-                        Section(account.name) {
-                            ForEach(account.mailboxes, id: \.name) { mailbox in
+                    ForEach(groupedSQLMailboxes, id: \.uuid) { group in
+                        Section(accountSectionNames[group.uuid] ?? "Account") {
+                            ForEach(group.mailboxes) { mailbox in
                                 mailboxRow(
-                                    title: mailbox.name,
+                                    title: mailbox.displayName,
                                     icon: "folder",
-                                    unread: mailbox.unread
+                                    unread: mailbox.unreadCount
                                 )
-                                .tag(AppleMailReader.MailboxRef.account(
-                                    accountName: account.name, mailboxName: mailbox.name))
+                                .tag(AppleMailReader.MailboxRef.sql(id: mailbox.id, name: mailbox.displayName))
                             }
                         }
                     }
@@ -151,13 +156,17 @@ struct MailView: View {
         .onChange(of: selectedMailbox) { _, _ in
             selectedMessageID = nil
             detail = nil
+            listOffset = 0
             Task { await loadMessages() }
         }
-        .overlay {
-            if reader.isLoadingStructure {
-                ProgressView().controlSize(.small)
-            }
-        }
+    }
+
+    /// SQL mailboxes grouped by account UUID, ordered by display path.
+    private var groupedSQLMailboxes: [(uuid: String, mailboxes: [MailEnvelopeIndex.MailboxRow])] {
+        let grouped = Dictionary(grouping: sqlMailboxes) { $0.accountUUID }
+        return grouped
+            .map { (uuid: $0.key, mailboxes: $0.value.sorted { $0.displayPath < $1.displayPath }) }
+            .sorted { $0.uuid < $1.uuid }
     }
 
     private func mailboxRow(title: String, icon: String, unread: Int?) -> some View {
@@ -175,14 +184,6 @@ struct MailView: View {
 
     // MARK: Message list
 
-    private var filteredMessages: [AppleMailReader.MessageSummary] {
-        let query = searchText.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !query.isEmpty else { return messages }
-        return messages.filter {
-            $0.subject.lowercased().contains(query) || $0.sender.lowercased().contains(query)
-        }
-    }
-
     private var messageList: some View {
         VStack(spacing: 0) {
             HStack(spacing: 6) {
@@ -195,6 +196,16 @@ struct MailView: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
             .background(theme.secondaryBackground.opacity(0.5))
+            .onChange(of: searchText) { _, _ in
+                // Debounced server-side search.
+                searchTask?.cancel()
+                searchTask = Task {
+                    try? await Task.sleep(for: .milliseconds(350))
+                    guard !Task.isCancelled else { return }
+                    listOffset = 0
+                    await loadMessages()
+                }
+            }
 
             Divider()
 
@@ -207,7 +218,7 @@ struct MailView: View {
             }
 
             List(selection: $selectedMessageID) {
-                ForEach(filteredMessages) { message in
+                ForEach(messages) { message in
                     messageRow(message)
                         .tag(message.id)
                         .contextMenu { messageContextMenu(message) }
@@ -229,7 +240,7 @@ struct MailView: View {
         }
     }
 
-    private func messageRow(_ message: AppleMailReader.MessageSummary) -> some View {
+    private func messageRow(_ message: MailEnvelopeIndex.MessageRow) -> some View {
         HStack(alignment: .top, spacing: 6) {
             Circle()
                 .fill(message.isRead ? Color.clear : theme.accent)
@@ -237,7 +248,7 @@ struct MailView: View {
                 .padding(.top, 5)
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
-                    Text(displayName(from: message.sender))
+                    Text(message.senderDisplay)
                         .font(.callout.weight(message.isRead ? .regular : .semibold))
                         .lineLimit(1)
                     Spacer()
@@ -246,7 +257,7 @@ struct MailView: View {
                             .font(.caption2)
                             .foregroundStyle(.orange)
                     }
-                    Text(message.date.map(Self.dateLabel) ?? "")
+                    Text(Self.dateLabel(message.date))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -283,28 +294,28 @@ struct MailView: View {
 
     private var actionBar: some View {
         HStack(spacing: 12) {
-            Button { performMessageAction { try await reader.reply(in: $0, id: $1, toAll: false) } } label: {
+            Button { performMessageAction { try await reader.reply(globalID: $0, mailboxPathHint: $1, toAll: false) } } label: {
                 Image(systemName: "arrowshape.turn.up.left")
             }.help("Reply")
-            Button { performMessageAction { try await reader.reply(in: $0, id: $1, toAll: true) } } label: {
+            Button { performMessageAction { try await reader.reply(globalID: $0, mailboxPathHint: $1, toAll: true) } } label: {
                 Image(systemName: "arrowshape.turn.up.left.2")
             }.help("Reply All")
-            Button { performMessageAction { try await reader.forward(in: $0, id: $1) } } label: {
+            Button { performMessageAction { try await reader.forward(globalID: $0, mailboxPathHint: $1) } } label: {
                 Image(systemName: "arrowshape.turn.up.right")
             }.help("Forward")
             Divider().frame(height: 16)
-            Button { performMessageAction(refreshes: false) { ref, id in
-                try await reader.setFlagged(!(detail?.isFlagged ?? false), in: ref, id: id)
+            Button { performMessageAction(refreshes: false) { id, hint in
+                try await reader.setFlagged(!(detail?.isFlagged ?? false), globalID: id, mailboxPathHint: hint)
             } } label: {
                 Image(systemName: detail?.isFlagged == true ? "flag.fill" : "flag")
             }.help(detail?.isFlagged == true ? "Unflag" : "Flag")
-            Button { performMessageAction { ref, id in
-                try await reader.archive(in: ref, id: id)
+            Button { performMessageAction { id, hint in
+                try await reader.archive(globalID: id, mailboxPathHint: hint)
             } } label: {
                 Image(systemName: "archivebox")
             }.help("Archive")
-            Button { performMessageAction { ref, id in
-                try await reader.delete(in: ref, id: id)
+            Button { performMessageAction { id, hint in
+                try await reader.delete(globalID: id, mailboxPathHint: hint)
             } } label: {
                 Image(systemName: "trash")
             }.help("Move to Trash")
@@ -602,62 +613,58 @@ struct MailView: View {
         return date.formatted(date: .abbreviated, time: .omitted)
     }
 
-    /// "Jane Doe <jane@example.com>" → "Jane Doe"
-    private func displayName(from sender: String) -> String {
-        guard let angle = sender.firstIndex(of: "<") else { return sender }
-        let name = sender[..<angle].trimmingCharacters(in: .whitespaces)
-        return name.isEmpty ? sender : name
-    }
-
     // MARK: - Actions
 
-    private func messageContextMenu(_ message: AppleMailReader.MessageSummary) -> some View {
+    private func messageContextMenu(_ message: MailEnvelopeIndex.MessageRow) -> some View {
         Group {
-            Button("Reply") { performMessageAction(id: message.id) { try await reader.reply(in: $0, id: $1, toAll: false) } }
-            Button("Reply All") { performMessageAction(id: message.id) { try await reader.reply(in: $0, id: $1, toAll: true) } }
-            Button("Forward") { performMessageAction(id: message.id) { try await reader.forward(in: $0, id: $1) } }
+            Button("Reply") { performMessageAction(id: message.id, hint: message.mailboxURL) { try await reader.reply(globalID: $0, mailboxPathHint: $1, toAll: false) } }
+            Button("Reply All") { performMessageAction(id: message.id, hint: message.mailboxURL) { try await reader.reply(globalID: $0, mailboxPathHint: $1, toAll: true) } }
+            Button("Forward") { performMessageAction(id: message.id, hint: message.mailboxURL) { try await reader.forward(globalID: $0, mailboxPathHint: $1) } }
             Divider()
-            Button(message.isRead ? "Mark as Unread" : "Mark as Read") { performMessageAction(id: message.id) {
-                try await reader.setRead(!message.isRead, in: $0, id: $1)
+            Button(message.isRead ? "Mark as Unread" : "Mark as Read") { performMessageAction(id: message.id, hint: message.mailboxURL) {
+                try await reader.setRead(!message.isRead, globalID: $0, mailboxPathHint: $1)
             } }
-            Button(message.isFlagged ? "Unflag" : "Flag") { performMessageAction(id: message.id) {
-                try await reader.setFlagged(!message.isFlagged, in: $0, id: $1)
+            Button(message.isFlagged ? "Unflag" : "Flag") { performMessageAction(id: message.id, hint: message.mailboxURL) {
+                try await reader.setFlagged(!message.isFlagged, globalID: $0, mailboxPathHint: $1)
             } }
             Divider()
-            Button("Archive") { performMessageAction(id: message.id) { try await reader.archive(in: $0, id: $1) } }
-            Button("Move to Trash", role: .destructive) { performMessageAction(id: message.id) {
-                try await reader.delete(in: $0, id: $1)
+            Button("Archive") { performMessageAction(id: message.id, hint: message.mailboxURL) { try await reader.archive(globalID: $0, mailboxPathHint: $1) } }
+            Button("Move to Trash", role: .destructive) { performMessageAction(id: message.id, hint: message.mailboxURL) {
+                try await reader.delete(globalID: $0, mailboxPathHint: $1)
             } }
         }
     }
 
-    /// Runs a message action against the current mailbox and refreshes the
-    /// list afterwards (deletes/archives remove rows, read/flag restyle them).
+    /// Runs a message action (JXA, by global id + mailbox hint) and refreshes
+    /// the list afterwards — deletes/archives remove rows, read/flag restyle
+    /// them. `hint` is the message's mailbox URL; only its display-name
+    /// segment is used.
     private func performMessageAction(
         id: Int? = nil,
+        hint: String = "",
         refreshes: Bool = true,
-        action: @escaping (AppleMailReader.MailboxRef, Int) async throws -> Void
+        action: @escaping (Int, String?) async throws -> Void
     ) {
-        guard let ref = selectedMailbox else { return }
         let targetID = id ?? selectedMessageID
         guard let targetID else { return }
+        let pathHint = hint.split(separator: "/").last.map(String.init)
+            .flatMap { $0.removingPercentEncoding }
         Task {
             do {
-                try await action(ref, targetID)
+                try await action(targetID, pathHint)
                 if refreshes {
                     await loadMessages()
-                    await reader.loadStructure()
-                } else if refreshes == false, selectedMessageID == targetID {
+                    await loadStructureCounts()
+                } else if selectedMessageID == targetID, var current = detail {
                     // Reflect flag toggles without a full reload.
-                    if var current = detail {
-                        // detail is re-fetched on next selection; update locally
-                        detail = AppleMailReader.MessageDetail(
-                            subject: current.subject, sender: current.sender,
-                            to: current.to, cc: current.cc, date: current.date,
-                            messageID: current.messageID, content: current.content,
-                            isRead: current.isRead, isFlagged: !current.isFlagged
-                        )
-                    }
+                    detail = AppleMailReader.MessageDetail(
+                        subject: current.subject, sender: current.sender,
+                        to: current.to, cc: current.cc, date: current.date,
+                        messageID: current.messageID, content: current.content,
+                        isRead: current.isRead, isFlagged: !current.isFlagged
+                    )
+                    current = detail!
+                    _ = current
                 }
             } catch {
                 mailboxError = error.localizedDescription
@@ -666,8 +673,53 @@ struct MailView: View {
     }
 
     private func refreshMailbox() async {
-        await reader.loadStructure()
+        if !envelope.isAvailable {
+            if !envelope.open() {
+                mailboxError = "Mail's Envelope Index isn't readable: \(envelope.lastError ?? "unknown"). Grant access and relaunch."
+                return
+            }
+        }
+        await loadStructureCounts()
         await loadMessages()
+    }
+
+    /// Reloads sidebar mailboxes + unread badges from the Envelope Index, and
+    /// resolves account section names against the JXA account list.
+    private func loadStructureCounts() async {
+        do {
+            sqlMailboxes = try envelope.mailboxes()
+            // Unified unread = sum of matching mailboxes' unread counts.
+            var unread: [AppleMailReader.UnifiedKind: Int] = [:]
+            for kind in AppleMailReader.UnifiedKind.allCases {
+                let ids = try envelope.mailboxIDs(matchingFragments: kind.urlFragments)
+                let idSet = Set(ids)
+                unread[kind] = sqlMailboxes.filter { idSet.contains($0.id) }
+                    .reduce(0) { $0 + $1.unreadCount }
+            }
+            unifiedUnread = unread
+        } catch {
+            mailboxError = "Envelope Index error: \(error.localizedDescription)"
+        }
+
+        // Resolve account section display names: match each SQL account
+        // group's mailbox name-set against the JXA accounts' name-sets.
+        if accountSectionNames.isEmpty {
+            await reader.loadStructure()
+            var resolved: [String: String] = [:]
+            for group in groupedSQLMailboxes {
+                let sqlNames = Set(group.mailboxes.map { $0.displayName })
+                var best: (name: String, score: Int)? = nil
+                for account in reader.accounts {
+                    let jxaNames = Set(account.mailboxes.map { $0.name })
+                    let score = sqlNames.intersection(jxaNames).count
+                    if score > 0, score > (best?.score ?? 0) {
+                        best = (account.name, score)
+                    }
+                }
+                resolved[group.uuid] = best?.name
+            }
+            accountSectionNames = resolved
+        }
     }
 
     private func refreshAll() async {
@@ -694,11 +746,28 @@ struct MailView: View {
 
     private func loadMessages() async {
         guard let ref = selectedMailbox else { return }
+        guard envelope.isAvailable else {
+            mailboxError = "Mail's Envelope Index isn't readable."
+            return
+        }
         isLoadingList = true
         defer { isLoadingList = false }
         mailboxError = nil
         do {
-            messages = try await reader.loadMessages(for: ref, limit: listLimit)
+            let ids: [Int64]
+            switch ref {
+            case .unified(let kind):
+                ids = try envelope.mailboxIDs(matchingFragments: kind.urlFragments)
+            case .sql(let id, _):
+                ids = [id]
+            }
+            let query = searchText.trimmingCharacters(in: .whitespaces)
+            messages = try envelope.messages(
+                mailboxIDs: ids,
+                search: query.isEmpty ? nil : query,
+                limit: listLimit,
+                offset: listOffset
+            )
         } catch {
             messages = []
             mailboxError = "Could not load messages: \(error.localizedDescription)"
@@ -706,16 +775,30 @@ struct MailView: View {
     }
 
     private func loadDetail() async {
-        guard let ref = selectedMailbox, let id = selectedMessageID else {
+        guard let id = selectedMessageID else {
             detail = nil
             return
         }
         isLoadingDetail = true
         defer { isLoadingDetail = false }
+        let hint = messages.first(where: { $0.id == id })?.mailboxURL
+            .split(separator: "/").last.map(String.init)
+            .flatMap { $0.removingPercentEncoding }
         do {
-            detail = try await reader.loadMessageDetail(in: ref, id: id)
+            detail = try await reader.loadMessageDetail(globalID: id, mailboxPathHint: hint)
             if detail == nil {
-                mailboxError = "Message not found (it may have moved)."
+                mailboxError = "Message not found in Mail (it may have moved)."
+            } else {
+                // Body fetch marked it read — reflect locally without a reload.
+                if let index = messages.firstIndex(where: { $0.id == id }), !messages[index].isRead {
+                    let m = messages[index]
+                    messages[index] = MailEnvelopeIndex.MessageRow(
+                        id: m.id, subject: m.subject,
+                        senderAddress: m.senderAddress, senderName: m.senderName,
+                        date: m.date, isRead: true, isFlagged: m.isFlagged,
+                        mailboxURL: m.mailboxURL
+                    )
+                }
             }
         } catch {
             mailboxError = "Could not load message: \(error.localizedDescription)"

@@ -42,18 +42,32 @@ final class AppleMailReader {
             case .trash: return "trash"
             }
         }
+
+        /// Envelope Index URL fragments identifying this unified mailbox
+        /// across accounts (matched case-insensitively with LIKE %fragment%).
+        var urlFragments: [String] {
+            switch self {
+            case .inbox: return ["/inbox"]
+            case .drafts: return ["drafts"]
+            case .sent: return ["sent"]
+            case .junk: return ["junk", "spam"]
+            case .trash: return ["trash", "deleted"]
+            }
+        }
     }
 
     /// Where a message/mailbox lives: a unified pseudo-mailbox or a concrete
-    /// account mailbox. Passed to every JXA script to resolve the target.
+    /// mailbox from the Envelope Index (identified by its ROWID). Passed to
+    /// every JXA script to resolve the target.
     enum MailboxRef: Hashable, Sendable {
         case unified(UnifiedKind)
-        case account(accountName: String, mailboxName: String)
+        /// A concrete mailbox row from the Envelope Index.
+        case sql(id: Int64, name: String)
 
         var displayName: String {
             switch self {
             case .unified(let kind): return kind.title
-            case .account(_, let mailboxName): return mailboxName
+            case .sql(_, let name): return name
             }
         }
     }
@@ -177,11 +191,15 @@ final class AppleMailReader {
         let accounts: [AccountInfo]
     }
 
-    // MARK: - Message list
+    // MARK: - Message list (JXA fallback — primary path is MailEnvelopeIndex)
 
-    /// Fetches the newest `limit` messages of a mailbox (summaries only —
-    /// subject/sender/date/flags, no bodies). Bulk JXA property fetches keep
-    /// this to a handful of Apple Events even for 50+ rows.
+    /// Fetches the newest `limit` messages of a mailbox (summaries only).
+    ///
+    /// NOTE: Mail's element order is NEWEST FIRST, and JXA by-range
+    /// specifiers (`slice`) throw "Invalid index" — so this iterates indices
+    /// directly. That means ~6 Apple Events per message: fine as a fallback
+    /// for small limits, but the Envelope Index (SQL) is the primary list
+    /// source precisely because this doesn't scale.
     func loadMessages(for ref: MailboxRef, limit: Int = 50) async throws -> [MessageSummary] {
         let (kind, unified, account, mailbox) = refParts(ref)
         let script = """
@@ -193,43 +211,21 @@ final class AppleMailReader {
             const msgs = mb.messages
             const n = msgs.length
             if (n === 0) return '[]'
-            const start = Math.max(0, n - limit)
             const out = []
-            try {
-                // Fast path: one Apple Event per property over a by-range slice.
-                const slice = msgs.slice(start, n)
-                const ids = slice.id()
-                const subjects = slice.subject()
-                const senders = slice.sender()
-                const dates = slice.dateReceived()
-                const reads = slice.readStatus()
-                const flags = slice.flaggedStatus()
-                for (let i = 0; i < ids.length; i++) {
+            const upper = Math.min(limit, n)
+            for (let i = 0; i < upper; i++) {  // newest-first ordering
+                const m = msgs[i]
+                try {
+                    const d = m.dateReceived()
                     out.push({
-                        id: ids[i],
-                        subject: subjects[i] || '(no subject)',
-                        sender: senders[i] || '',
-                        date: dates[i] ? dates[i].toISOString() : null,
-                        read: !!reads[i],
-                        flagged: !!flags[i]
+                        id: m.id(),
+                        subject: m.subject() || '(no subject)',
+                        sender: m.sender() || '',
+                        date: d ? d.toISOString() : null,
+                        read: !!m.readStatus(),
+                        flagged: !!m.flaggedStatus()
                     })
-                }
-            } catch (e) {
-                // Fallback: per-message property fetch.
-                for (let i = start; i < n; i++) {
-                    const m = msgs[i]
-                    try {
-                        const d = m.dateReceived()
-                        out.push({
-                            id: m.id(),
-                            subject: m.subject() || '(no subject)',
-                            sender: m.sender() || '',
-                            date: d ? d.toISOString() : null,
-                            read: !!m.readStatus(),
-                            flagged: !!m.flaggedStatus()
-                        })
-                    } catch (e2) {}
-                }
+                } catch (e) {}
             }
             return JSON.stringify(out)
         }
@@ -241,24 +237,22 @@ final class AppleMailReader {
         )
         guard let data = output.data(using: .utf8) else { return [] }
         let summaries = try Self.messageDecoder.decode([MessageSummary].self, from: data)
-        // Newest first regardless of Mail's on-disk ordering.
         return summaries.sorted { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }
     }
 
     // MARK: - Message body
 
-    /// Fetches one message's full headers + body. Marks it read (like viewing
-    /// it in Mail.app does).
-    func loadMessageDetail(in ref: MailboxRef, id: Int) async throws -> MessageDetail? {
-        let (kind, unified, account, mailbox) = refParts(ref)
+    /// Fetches one message's full headers + body by its global message id
+    /// (matches the Envelope Index `global_message_id`). `mailboxPathHint`
+    /// (display name of the mailbox the row came from) lets the resolver try
+    /// the right mailbox first instead of scanning every account mailbox.
+    /// Marks the message read, like viewing it in Mail.app does.
+    func loadMessageDetail(globalID: Int, mailboxPathHint: String?) async throws -> MessageDetail? {
         let script = """
         function run(argv) {
             const Mail = Application('Mail')
-            const mb = resolveMailbox(Mail, argv[0], argv[1], argv[2], argv[3])
-            if (!mb) return 'null'
-            const found = mb.messages.whose({ id: parseInt(argv[4]) })
-            if (found.length === 0) return 'null'
-            const m = found[0]
+            const m = findMessage(Mail, parseInt(argv[0]), argv[1])
+            if (!m) return 'null'
             const d = m.dateReceived()
             const result = {
                 subject: m.subject() || '(no subject)',
@@ -278,10 +272,10 @@ final class AppleMailReader {
             return JSON.stringify(result)
         }
 
-        \(Self.resolveMailboxJS)
+        \(Self.findMessageJS)
         """
         let output = try await AppleScriptRunner.run(
-            script, arguments: [kind, unified, account, mailbox, String(id)]
+            script, arguments: [String(globalID), mailboxPathHint ?? ""]
         )
         guard output != "null", let data = output.data(using: .utf8) else { return nil }
         return try Self.messageDecoder.decode(MessageDetail.self, from: data)
@@ -289,27 +283,30 @@ final class AppleMailReader {
 
     // MARK: - Actions
 
-    func setRead(_ read: Bool, in ref: MailboxRef, id: Int) async throws {
+    func setRead(_ read: Bool, globalID: Int, mailboxPathHint: String?) async throws {
         try await runActionScript(
             body: "m.readStatus = \(read)",
-            ref: ref, id: id
+            globalID: globalID, mailboxPathHint: mailboxPathHint
         )
     }
 
-    func setFlagged(_ flagged: Bool, in ref: MailboxRef, id: Int) async throws {
+    func setFlagged(_ flagged: Bool, globalID: Int, mailboxPathHint: String?) async throws {
         try await runActionScript(
             body: "m.flaggedStatus = \(flagged)",
-            ref: ref, id: id
+            globalID: globalID, mailboxPathHint: mailboxPathHint
         )
     }
 
     /// Moves the message to the trash (Mail.app semantics).
-    func delete(in ref: MailboxRef, id: Int) async throws {
-        try await runActionScript(body: "Mail.delete(m)", ref: ref, id: id)
+    func delete(globalID: Int, mailboxPathHint: String?) async throws {
+        try await runActionScript(
+            body: "Mail.delete(m)",
+            globalID: globalID, mailboxPathHint: mailboxPathHint
+        )
     }
 
     /// Moves the message to the account's Archive mailbox.
-    func archive(in ref: MailboxRef, id: Int) async throws {
+    func archive(globalID: Int, mailboxPathHint: String?) async throws {
         try await runActionScript(
             body: """
             const acct = m.mailbox().account()
@@ -320,23 +317,23 @@ final class AppleMailReader {
             if (!target) throw new Error('No Archive mailbox on this account')
             Mail.move(m, { to: target })
             """,
-            ref: ref, id: id
+            globalID: globalID, mailboxPathHint: mailboxPathHint
         )
     }
 
     /// Opens a reply draft window in Mail.app.
-    func reply(in ref: MailboxRef, id: Int, toAll: Bool) async throws {
+    func reply(globalID: Int, mailboxPathHint: String?, toAll: Bool) async throws {
         try await runActionScript(
             body: "Mail.reply(m, { openingWindow: true, replyToAll: \(toAll) })",
-            ref: ref, id: id
+            globalID: globalID, mailboxPathHint: mailboxPathHint
         )
     }
 
     /// Opens a forward draft window in Mail.app.
-    func forward(in ref: MailboxRef, id: Int) async throws {
+    func forward(globalID: Int, mailboxPathHint: String?) async throws {
         try await runActionScript(
             body: "Mail.forward(m, { openingWindow: true })",
-            ref: ref, id: id
+            globalID: globalID, mailboxPathHint: mailboxPathHint
         )
     }
 
@@ -354,8 +351,8 @@ final class AppleMailReader {
 
     // MARK: - JXA plumbing
 
-    /// Shared mailbox resolver used by every script: unified pseudo-mailbox
-    /// by kind, or account mailbox by names.
+    /// Shared mailbox resolver for the (fallback) list fetch: unified
+    /// pseudo-mailbox by kind, or account mailbox by names.
     private static let resolveMailboxJS = """
     function resolveMailbox(Mail, kind, unifiedName, accountName, mailboxName) {
         if (kind === 'unified') {
@@ -369,32 +366,67 @@ final class AppleMailReader {
             return map[unifiedName] || null
         }
         try {
-            return Mail.accounts.byName(accountName).mailboxes.byName(mailboxName)
+            if (accountName && accountName.length > 0) {
+                return Mail.accounts.byName(accountName).mailboxes.byName(mailboxName)
+            }
+            // No account given: first mailbox with this name across accounts.
+            for (const acct of Mail.accounts()) {
+                for (const mb of acct.mailboxes()) {
+                    if (mb.name() === mailboxName) return mb
+                }
+            }
+            return null
         } catch (e) {
             return null
         }
     }
     """
 
-    /// Runs a script that locates one message and applies `body` to it as `m`.
-    private func runActionScript(body: String, ref: MailboxRef, id: Int) async throws {
-        let (kind, unified, account, mailbox) = refParts(ref)
+    /// Locates one message by global id: the hinted mailbox name across all
+    /// accounts first, then every mailbox as a fallback. whose-by-id is fast
+    /// on a healthy Mail (short-circuits at the first match).
+    private static let findMessageJS = """
+    function findMessage(Mail, globalID, hint) {
+        if (hint && hint.length > 0) {
+            for (const acct of Mail.accounts()) {
+                for (const mb of acct.mailboxes()) {
+                    if (mb.name() === hint) {
+                        try {
+                            const found = mb.messages.whose({ id: globalID })
+                            if (found.length) return found[0]
+                        } catch (e) {}
+                    }
+                }
+            }
+        }
+        for (const acct of Mail.accounts()) {
+            for (const mb of acct.mailboxes()) {
+                try {
+                    const found = mb.messages.whose({ id: globalID })
+                    if (found.length) return found[0]
+                } catch (e) {}
+            }
+        }
+        return null
+    }
+    """
+
+    /// Runs a script that locates one message by global id and applies `body`
+    /// to it as `m`.
+    private func runActionScript(body: String, globalID: Int, mailboxPathHint: String?) async throws {
         let script = """
         function run(argv) {
             const Mail = Application('Mail')
-            const mb = resolveMailbox(Mail, argv[0], argv[1], argv[2], argv[3])
-            if (!mb) throw new Error('Mailbox not found')
-            const found = mb.messages.whose({ id: parseInt(argv[4]) })
-            if (found.length === 0) throw new Error('Message not found')
-            const m = found[0]
+            const m = findMessage(Mail, parseInt(argv[0]), argv[1])
+            if (!m) throw new Error('Message not found (id \(globalID))')
             \(body)
             return 'ok'
         }
 
-        \(Self.resolveMailboxJS)
+        \(Self.findMessageJS)
         """
         _ = try await AppleScriptRunner.run(
-            script, arguments: [kind, unified, account, mailbox, String(id)]
+            script, arguments: [String(globalID), mailboxPathHint ?? ""]
         )
     }
 
@@ -402,8 +434,10 @@ final class AppleMailReader {
         switch ref {
         case .unified(let kind):
             return ("unified", kind.rawValue, "", "")
-        case .account(let accountName, let mailboxName):
-            return ("account", "", accountName, mailboxName)
+        case .sql(_, let name):
+            // The JXA fallback path resolves SQL-backed mailboxes by display
+            // name across accounts (same matching the hint resolver uses).
+            return ("account", "", "", name)
         }
     }
 
