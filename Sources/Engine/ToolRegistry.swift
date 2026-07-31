@@ -22,6 +22,8 @@ extension MaestroTools {
         await registerReleaseTools()
         await registerMemoryTools()
         await registerFileTools()
+        await registerDocumentTools()
+        await registerBooksTools()
         await registerCodingTools()
         await registerIndexTools()
         await registerSystemTools()

@@ -98,6 +98,10 @@ struct WorkspacePanelContentView: View {
             WebBrowserPanelView()
         case .damBrowser:
             DAMBrowserView()
+        case .maestroDocs:
+            MaestroDocsView()
+        case .maestroBooks:
+            MaestroBooksView()
         }
         }
     }

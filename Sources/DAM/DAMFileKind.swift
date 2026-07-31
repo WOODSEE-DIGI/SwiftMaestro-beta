@@ -72,4 +72,52 @@ enum DAMFileKind {
     static func shouldSkipImageIO(_ url: URL) -> Bool {
         isLibRAWOnly(url) || isZIPPackage(url)
     }
+
+    // MARK: - Document families (MaestroDocs engine)
+
+    private static func ext(_ url: URL) -> String {
+        url.pathExtension.lowercased()
+    }
+
+    /// PDF — rendered natively via PDFKit at any size (deterministic,
+    /// in-process, no QL zombie mode).
+    static func isPDF(_ url: URL) -> Bool {
+        ext(url) == "pdf"
+    }
+
+    /// Text-flow documents rendered as a page of text: Word/RTF/ODT via
+    /// TextKit (NSAttributedString), plain markup as bounded source text.
+    static let textKitExtensions: Set<String> = [
+        "doc", "docx", "rtf", "rtfd", "odt",
+        "txt", "md", "markdown", "html", "htm",
+        "json", "xml", "yaml", "yml", "log",
+    ]
+    static func isTextKitDocument(_ url: URL) -> Bool {
+        textKitExtensions.contains(ext(url))
+    }
+
+    /// Delimited text rendered as a table grid.
+    static func isDelimitedText(_ url: URL) -> Bool {
+        ext(url) == "csv" || ext(url) == "tsv"
+    }
+
+    /// XLSX family — embedded docProps thumbnail is fine at grid size;
+    /// larger previews render the first sheet as a native table.
+    static func isXLSXFamily(_ url: URL) -> Bool {
+        ext(url) == "xlsx" || ext(url) == "xlsm"
+    }
+
+    /// ZIP-package documents that can carry an embedded preview we extract
+    /// with `unzip` (no parsing frameworks):
+    ///   ODF (ods/odp/odg)     → Thumbnails/thumbnail.png (spec-mandated)
+    ///   OOXML (pptx/pptm)     → docProps/thumbnail.(jpeg|png)
+    ///   iWork (pages/numbers/key) → preview.pdf (vector — any size!)
+    ///   EPUB                  → cover image heuristic
+    static let embeddedPreviewExtensions: Set<String> = [
+        "ods", "odp", "odg", "pptx", "pptm",
+        "pages", "numbers", "key", "epub",
+    ]
+    static func isEmbeddedPreviewCandidate(_ url: URL) -> Bool {
+        embeddedPreviewExtensions.contains(ext(url))
+    }
 }

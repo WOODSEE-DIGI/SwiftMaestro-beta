@@ -6,6 +6,8 @@ import Foundation
 /// enabled categories shown as a compact row of toggles in the chat title bar.
 enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     case file
+    case documents
+    case books
     case shell
     case server
     case index
@@ -54,7 +56,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         switch self {
         case .workspace, .memory, .messaging, .bus, .rules, .time, .mcp:
             return false
-        case .file, .shell, .server, .index, .system, .sqlite,
+        case .file, .documents, .books, .shell, .server, .index, .system, .sqlite,
              .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news,
              .whatsapp, .discord, .web, .browser, .bluesky, .vault:
             return true
@@ -64,6 +66,8 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     var displayName: String {
         switch self {
         case .file: return "Files"
+        case .documents: return "Documents"
+        case .books: return "Books"
         case .shell: return "Shell"
         case .server: return "Server"
         case .index: return "Index"
@@ -96,6 +100,8 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     var icon: String {
         switch self {
         case .file: return "doc.text"
+        case .documents: return "doc.richtext"
+        case .books: return "dollarsign.circle"
         case .shell: return "terminal"
         case .server: return "network"
         case .index: return "magnifyingglass.circle"
@@ -131,6 +137,16 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         switch self {
         case .file:
             return ["read_file", "write_file", "list_dir", "ocr_image", "glob_files", "grep_code", "edit_file"]
+        case .documents:
+            return ["document_read", "document_create", "document_info"]
+        case .books:
+            return [
+                "client_create", "client_list", "client_import", "invoice_create",
+                "invoice_list", "invoice_read", "invoice_status", "invoice_payment",
+                "invoice_publish", "product_create", "product_list",
+                "xero_status", "xero_sync", "xero_disconnect",
+                "expense_create", "expense_list",
+            ]
         case .shell:
             return ["execute_command", "list_background_processes", "stop_background_process", "upload_release", "git_status", "git_diff", "git_log", "git_branch"]
         case .server:
@@ -241,12 +257,12 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         switch kind {
         case .navigator:
             return [
-                .workspace, .memory, .bus, .system, .rules, .time, .web, .browser, .vault,
+                .workspace, .memory, .bus, .system, .rules, .time, .web, .browser, .vault, .documents, .books,
                 .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .whatsapp, .discord, .bluesky,
             ]
         case .project:
             return [
-                .file, .shell, .server, .index, .memory, .messaging, .bus, .system, .mcp, .sqlite, .web, .browser, .vault,
+                .file, .documents, .books, .shell, .server, .index, .memory, .messaging, .bus, .system, .mcp, .sqlite, .web, .browser, .vault,
                 .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .whatsapp, .discord, .bluesky,
             ]
         }

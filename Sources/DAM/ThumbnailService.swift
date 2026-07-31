@@ -217,6 +217,50 @@ actor ThumbnailService {
             return image
         }
 
+        // Document family — BEFORE the EIP ZIP check: office/iWork/ODF
+        // packages are ZIP archives too and must NEVER reach the RAW path.
+        // Every engine here is native (the MaestroDocs engine): PDFKit,
+        // TextKit, table painters, embedded-preview extraction — no
+        // QuickLook, no XPC, no zombie mode on any of these paths.
+        if DAMFileKind.isPDF(url) {
+            return try await docWithSlots {
+                try DocumentThumbService.pdfRender(url: url, pixelSize: pixelSize, key: key)
+            }
+        }
+        if DAMFileKind.isXLSXFamily(url) {
+            // Grid cells take the package's own thumbnail when present;
+            // previews always render the first sheet natively.
+            if pixelSize <= previewThreshold,
+               let embedded = try? DocumentThumbService.embeddedPreview(
+                url: url, pixelSize: pixelSize, key: key) {
+                return embedded
+            }
+            return try await docWithSlots {
+                try DocumentThumbService.tableRender(url: url, pixelSize: pixelSize, key: key)
+            }
+        }
+        if DAMFileKind.isDelimitedText(url) {
+            return try await docWithSlots {
+                try DocumentThumbService.tableRender(url: url, pixelSize: pixelSize, key: key)
+            }
+        }
+        if DAMFileKind.isTextKitDocument(url) {
+            return try await docWithSlots {
+                try DocumentThumbService.textKitRender(url: url, pixelSize: pixelSize, key: key)
+            }
+        }
+        if DAMFileKind.isEmbeddedPreviewCandidate(url) {
+            do {
+                return try await docWithSlots {
+                    try DocumentThumbService.embeddedPreview(url: url, pixelSize: pixelSize, key: key)
+                }
+            } catch {
+                // No usable embedded preview (old iWork bundle, stamp-sized
+                // thumbnail) — QuickLook is the last resort for these.
+                return try await quickLookAndCache(url, pixelSize: pixelSize, key: key)
+            }
+        }
+
         // Capture One .eip (ZIP): extract inner RAW, LibRaw decode.
         if DAMFileKind.isZIPPackage(url) {
             return try await rawDecodeAndCache(url, pixelSize: pixelSize, key: key, isPackagedEIP: true)
@@ -490,7 +534,35 @@ actor ThumbnailService {
         return data
     }
 
+    /// Concurrency cap for the local document engines (PDFKit/TextKit/
+    /// table painters) — shares the ImageIO pool: all are synchronous CPU
+    /// work running in the detached render task.
+    private nonisolated static func docWithSlots(
+        _ work: () throws -> NSImage
+    ) async throws -> NSImage {
+        try await imageIOSlots.acquire()
+        do {
+            let image = try work()
+            await imageIOSlots.release()
+            return image
+        } catch {
+            await imageIOSlots.release()
+            throw error
+        }
+    }
+
     // MARK: - Cache plumbing
+
+    /// JPEG disk-cache write shared by every engine, including the
+    /// MaestroDocs document renderers (DocumentThumbService).
+    nonisolated static func writeDiskCache(_ image: NSImage, key: String) {
+        if let tiff = image.tiffRepresentation,
+           let bitmap = NSBitmapImageRep(data: tiff),
+           let jpeg = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.85]),
+           let cacheURL = try? cacheDirectory().appendingPathComponent("\(key).jpg") {
+            try? jpeg.write(to: cacheURL, options: .atomic)
+        }
+    }
 
     private nonisolated static func cacheDirectory() throws -> URL {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
