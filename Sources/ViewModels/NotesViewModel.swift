@@ -39,6 +39,23 @@ final class NotesViewModel {
     /// Whether the current note has unsaved changes.
     var isDirty = false
 
+    /// Whether a save is in flight (drives the "Saving…" toolbar state).
+    private(set) var isSaving = false
+
+    /// Whether edits are written back automatically after a short pause.
+    /// Persisted; defaults to ON. Toggle lives in the editor toolbar.
+    var autosaveEnabled: Bool {
+        get { UserDefaults.standard.object(forKey: NotesViewModel.autosaveKey) as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: NotesViewModel.autosaveKey) }
+    }
+
+    /// Pending debounced autosave (cancelled on each new keystroke).
+    private var autosaveTask: Task<Void, Never>?
+
+    /// Set before programmatic editorText changes (note load/clear) so the
+    /// resulting onChange doesn't count as a user edit and trigger autosave.
+    private var suppressDirtyOnce = false
+
     /// Current search query.
     var searchQuery = "" {
         didSet { Task { await performSearch() } }
@@ -56,6 +73,7 @@ final class NotesViewModel {
     /// summaries into the vault) can resolve the current vault path without
     /// needing a `NotesViewModel` instance injected.
     nonisolated static let vaultPathKey = "notes.vaultPath"
+    nonisolated static let autosaveKey = "notes.autosaveEnabled"
     private nonisolated static let defaultVaultName = "notes"
 
     init() {
@@ -119,12 +137,15 @@ final class NotesViewModel {
 
     /// Select a note and load its contents into the editor.
     func loadSelectedNote() async {
+        autosaveTask?.cancel()
         guard let item = selectedItem, item.isNote else {
+            suppressDirtyOnce = true
             editorText = ""
             isDirty = false
             return
         }
         do {
+            suppressDirtyOnce = true
             editorText = try await service.readFile(at: item.url)
             isDirty = false
             errorMessage = nil
@@ -136,7 +157,10 @@ final class NotesViewModel {
 
     /// Save the current editor text back to the selected note.
     func saveCurrentNote() async {
+        autosaveTask?.cancel()
         guard let item = selectedItem, item.isNote else { return }
+        isSaving = true
+        defer { isSaving = false }
         do {
             try await service.writeFile(at: item.url, content: editorText)
             isDirty = false
@@ -284,7 +308,28 @@ final class NotesViewModel {
 
     /// Mark the editor as dirty when the user types.
     func markDirty() {
+        // Programmatic loads (note switch/clear) flow through the same
+        // onChange — swallow exactly one of those per load.
+        if suppressDirtyOnce {
+            suppressDirtyOnce = false
+            return
+        }
         isDirty = true
+        scheduleAutosave()
+    }
+
+    // MARK: - Autosave
+
+    /// Debounced write-back: saves 1.5s after the user stops typing.
+    /// Cancelled by further edits, note switches, and manual saves.
+    private func scheduleAutosave() {
+        guard autosaveEnabled else { return }
+        autosaveTask?.cancel()
+        autosaveTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(1500))
+            guard !Task.isCancelled else { return }
+            await saveCurrentNote()
+        }
     }
 
     // MARK: - Private

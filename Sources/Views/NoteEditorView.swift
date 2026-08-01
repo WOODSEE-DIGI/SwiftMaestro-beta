@@ -60,16 +60,26 @@ struct NoteEditorView: View {
             .fixedSize()
             .help("Switch between editor, split, and preview layouts")
 
+            Toggle(isOn: $viewModel.autosaveEnabled) {
+                Text("Autosave")
+                    .font(.caption)
+            }
+            .toggleStyle(.checkbox)
+            .fixedSize()
+            .help("Save automatically 1.5s after you stop typing")
+
             Button {
                 Task { await viewModel.saveCurrentNote() }
             } label: {
                 Label(
-                    viewModel.isDirty ? "Save" : "Saved",
-                    systemImage: viewModel.isDirty ? "arrow.down.circle.fill" : "checkmark.circle"
+                    viewModel.isSaving ? "Saving…" : (viewModel.isDirty ? "Save" : "Saved"),
+                    systemImage: viewModel.isSaving
+                        ? "ellipsis.circle"
+                        : (viewModel.isDirty ? "arrow.down.circle.fill" : "checkmark.circle")
                 )
             }
             .keyboardShortcut("s", modifiers: .command)
-            .disabled(!viewModel.isDirty)
+            .disabled(!viewModel.isDirty || viewModel.isSaving)
         }
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 12)
