@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import ApplicationServices
 
 // MARK: - Apple Mail service
 
@@ -36,6 +37,38 @@ final class AppleMailService {
     /// Mail.app on first use; there is no up-front API to request it.
     func requestAuthorization() {
         status = .authorized
+    }
+
+    // MARK: - Automation permission preflight
+
+    enum AutomationPermission: Equatable {
+        case authorized
+        case denied
+        case notDetermined
+    }
+
+    /// Checks Apple Events permission for Mail.app WITHOUT triggering the
+    /// prompt (askUserIfNeeded=false). Lets the UI fail fast with a useful
+    /// message instead of waiting out a JXA timeout when the user denied
+    /// (or hasn't yet answered) the automation prompt.
+    nonisolated static func mailAutomationPermission() -> AutomationPermission {
+        let descriptor = NSAppleEventDescriptor(bundleIdentifier: "com.apple.mail")
+        guard let aeDesc = descriptor.aeDesc else { return .notDetermined }
+        let status = AEDeterminePermissionToAutomateTarget(
+            aeDesc, typeWildCard, typeWildCard, false
+        )
+        switch Int(status) {
+        case 0: return .authorized
+        case -1743: return .denied // errAEEventNotPermitted
+        default: return .notDetermined
+        }
+    }
+
+    /// Deep link to System Settings → Privacy & Security → Automation.
+    static func openAutomationSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     // MARK: - Launching Mail

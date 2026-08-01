@@ -246,8 +246,10 @@ final class AppleMailReader {
     /// (matches the Envelope Index `global_message_id`). `mailboxPathHint`
     /// (display name of the mailbox the row came from) lets the resolver try
     /// the right mailbox first instead of scanning every account mailbox.
-    /// Marks the message read, like viewing it in Mail.app does.
-    func loadMessageDetail(globalID: Int, mailboxPathHint: String?) async throws -> MessageDetail? {
+    /// When `markRead` is true, marks the message read (like viewing it in
+    /// Mail.app does) — pass false for background prefetches so prefetching
+    /// never changes mailbox state.
+    func loadMessageDetail(globalID: Int, mailboxPathHint: String?, markRead: Bool = true) async throws -> MessageDetail? {
         let script = """
         function run(argv) {
             const Mail = Application('Mail')
@@ -265,7 +267,7 @@ final class AppleMailReader {
                 read: !!m.readStatus(),
                 flagged: !!m.flaggedStatus()
             }
-            if (!result.read) {
+            if (argv[2] === '1' && !result.read) {
                 try { m.readStatus = true } catch (e) {}
                 result.read = true
             }
@@ -275,7 +277,7 @@ final class AppleMailReader {
         \(Self.findMessageJS)
         """
         let output = try await AppleScriptRunner.run(
-            script, arguments: [String(globalID), mailboxPathHint ?? ""]
+            script, arguments: [String(globalID), mailboxPathHint ?? "", markRead ? "1" : "0"]
         )
         guard output != "null", let data = output.data(using: .utf8) else { return nil }
         return try Self.messageDecoder.decode(MessageDetail.self, from: data)

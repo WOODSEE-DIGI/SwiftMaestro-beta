@@ -32,6 +32,7 @@ struct MailView: View {
     @State private var detail: AppleMailReader.MessageDetail?
     @State private var detailCache: [Int: AppleMailReader.MessageDetail] = [:]
     @State private var detailError: String?
+    @State private var detailNeedsAutomation = false
     @State private var prefetchTask: Task<Void, Never>?
     @State private var searchText = ""
     @State private var searchTask: Task<Void, Never>?
@@ -115,11 +116,11 @@ struct MailView: View {
     private var mailboxMode: some View {
         HSplitView {
             mailboxSidebar
-                .frame(minWidth: 180, idealWidth: 210, maxWidth: 260)
+                .frame(minWidth: 150, idealWidth: 190, maxWidth: 300)
             messageList
-                .frame(minWidth: 260, idealWidth: 340)
+                .frame(minWidth: 200, idealWidth: 300)
             readingPane
-                .frame(minWidth: 380)
+                .frame(minWidth: 280)
                 .layoutPriority(1)
         }
     }
@@ -323,15 +324,32 @@ struct MailView: View {
                 messageHeaders(detail)
                 Divider()
                 messageBody(detail)
+            } else if isLoadingDetail {
+                Spacer()
+                ProgressView()
+                    .controlSize(.regular)
+                Text("Loading message…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 8)
+                Spacer()
             } else if let detailError {
                 Spacer()
                 ContentUnavailableView(
                     "Couldn't Load Message",
                     systemImage: "exclamationmark.triangle",
-                    description: Text(detailError + "\nMail.app may be busy syncing — try again in a moment.")
+                    description: Text(detailError)
                 )
-                Button("Retry") {
-                    Task { await loadDetail() }
+                HStack(spacing: 12) {
+                    if detailNeedsAutomation {
+                        Button("Open Automation Settings") {
+                            AppleMailService.openAutomationSettings()
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                    Button("Retry") {
+                        Task { await loadDetail() }
+                    }
                 }
                 .padding(.top, 8)
                 Spacer()
@@ -849,7 +867,7 @@ struct MailView: View {
                 let hint = messages.first(where: { $0.id == id })?.mailboxURL
                     .split(separator: "/").last.map(String.init)
                     .flatMap { $0.removingPercentEncoding }
-                if let fetched = try? await reader.loadMessageDetail(globalID: id, mailboxPathHint: hint) {
+                if let fetched = try? await reader.loadMessageDetail(globalID: id, mailboxPathHint: hint, markRead: false) {
                     detailCache[id] = fetched
                     if selectedMessageID == id, detail == nil {
                         detail = fetched
@@ -876,8 +894,18 @@ struct MailView: View {
         }
         detail = nil
         detailError = nil
+        detailNeedsAutomation = false
         isLoadingDetail = true
         defer { isLoadingDetail = false }
+
+        // Fail fast with a useful message when Mail automation is denied —
+        // a JXA call would otherwise stall out the full timeout first.
+        if AppleMailService.mailAutomationPermission() == .denied {
+            detailError = "SwiftMaestro doesn't have permission to control Mail. Enable it under SwiftMaestro in System Settings → Privacy & Security → Automation, then relaunch the app."
+            detailNeedsAutomation = true
+            return
+        }
+
         let hint = messages.first(where: { $0.id == id })?.mailboxURL
             .split(separator: "/").last.map(String.init)
             .flatMap { $0.removingPercentEncoding }
@@ -885,7 +913,7 @@ struct MailView: View {
         var lastError: Error?
         for attempt in 1...2 {
             do {
-                let fetched = try await reader.loadMessageDetail(globalID: id, mailboxPathHint: hint)
+                let fetched = try await reader.loadMessageDetail(globalID: id, mailboxPathHint: hint, markRead: true)
                 if let fetched {
                     detailCache[id] = fetched
                     detail = fetched
@@ -915,6 +943,11 @@ struct MailView: View {
             }
         }
         detailError = lastError?.localizedDescription ?? "Could not load message."
+        if let description = lastError?.localizedDescription.lowercased(),
+           description.contains("not permitted") || description.contains("not authorized") || description.contains("1743") {
+            detailNeedsAutomation = true
+            detailError = "macOS blocked SwiftMaestro from controlling Mail. Enable it under SwiftMaestro in System Settings → Privacy & Security → Automation, then relaunch the app."
+        }
     }
 
     private func composeInMail() async {
