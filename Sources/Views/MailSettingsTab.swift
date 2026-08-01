@@ -12,6 +12,7 @@ struct MailSettingsTab: View {
     @State private var relayManager = OwnTrackRelayManager.shared
     @State private var envelope = MailEnvelopeIndex.shared
     @State private var health: Bool?
+    @AppStorage("appleMail.loadRemoteImages") private var loadRemoteImages = false
 
     var body: some View {
         ScrollView {
@@ -110,6 +111,10 @@ struct MailSettingsTab: View {
                         Text("SwiftMaestro drives Mail.app via macOS automation (Apple Events). The first "
                             + "time you compose a draft or read a message, macOS asks for permission to "
                             + "control Mail — grant it once and it sticks.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Toggle("Load remote images in emails", isOn: $loadRemoteImages)
+                        Text("Off by default: remote images are also tracking pixels. You can still load "
+                            + "them per message from the banner above an email's body.")
                             .font(.caption).foregroundStyle(.secondary)
                         Button("Open Mail") { mailService.openMail() }
                     }
