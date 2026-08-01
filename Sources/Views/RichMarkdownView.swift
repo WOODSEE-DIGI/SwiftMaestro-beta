@@ -165,46 +165,6 @@ enum MarkdownParser {
         return result
     }
 
-    /// Parse text into alternating plain text and markdown link segments.
-    /// Handles `[label](url)` markdown links and `<url>` autolinks. Everything
-    /// else is returned as plain text. URLs are NOT auto-linked here — that is
-    /// done by `autoLinkURLs` before this function is called.
-    fileprivate static func parseLinkedText(_ text: String) -> [TextPiece] {
-        var pieces: [TextPiece] = []
-        var remaining = text
-        // Markdown link: [label](url)  OR  autolink: <url>
-        let combined = #"\[([^\]]+)\]\(([^\)]+)\)|<((?:https?|mailto)://[^>]+)>"#
-        guard let regex = try? NSRegularExpression(pattern: combined, options: []) else {
-            return [.plain(text)]
-        }
-        while let match = regex.firstMatch(
-            in: remaining,
-            options: [],
-            range: NSRange(remaining.startIndex..<remaining.endIndex, in: remaining)
-        ) {
-            guard let matchRange = Range(match.range, in: remaining) else { break }
-            let prefix = String(remaining[..<matchRange.lowerBound])
-            if !prefix.isEmpty { pieces.append(.plain(prefix)) }
-
-            if let labelRange = Range(match.range(at: 1), in: remaining),
-               let urlRange = Range(match.range(at: 2), in: remaining),
-               let url = URL(string: String(remaining[urlRange])),
-               !url.absoluteString.isEmpty {
-                pieces.append(.link(label: String(remaining[labelRange]), url: url))
-            } else if let urlRange = Range(match.range(at: 3), in: remaining),
-                      let url = URL(string: String(remaining[urlRange])),
-                      !url.absoluteString.isEmpty {
-                pieces.append(.link(label: url.absoluteString, url: url))
-            } else {
-                pieces.append(.plain(String(remaining[matchRange])))
-            }
-
-            remaining = String(remaining[matchRange.upperBound...])
-        }
-        if !remaining.isEmpty { pieces.append(.plain(remaining)) }
-        return pieces
-    }
-
     /// Check if a trimmed line is an opening fence (3+ backticks or tildes, optionally with language).
     private static func isFenceOpen(_ trimmed: String) -> Bool {
         guard let first = trimmed.first, first == "`" || first == "~" else { return false }
@@ -234,43 +194,21 @@ struct TextSegmentView: View {
     let content: String
     let isUser: Bool
 
-    var body: some View {
-        // Render text with clickable links. Plain URLs are auto-linked, and
-        // existing markdown links [text](url) are rendered as native Link views.
-        LinkedText(content: MarkdownParser.autoLinkURLs(content), textColor: theme.chatText)
-            .font(.body)
-            .textSelection(.enabled)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-/// Splits text into alternating plain text and markdown link segments.
-private struct LinkedText: View {
-    let content: String
-    let textColor: Color
-
-    private var pieces: [TextPiece] {
-        MarkdownParser.parseLinkedText(content)
+    private var blocks: [MarkdownBlock] {
+        MarkdownBlockParser.parse(MarkdownParser.autoLinkURLs(content))
     }
 
     var body: some View {
-        // Build a single line of text by concatenating plain text and Link views.
-        pieces.reduce(Text("")) { partial, piece in
-            switch piece {
-            case .plain(let text):
-                return partial + Text(text).foregroundStyle(textColor)
-            case .link(let label, let url):
-                // SwiftUI Text cannot embed a Link; use a styled Text with the
-                // URL as a run attribute. The environment's `openURL` handler
-                // will make it clickable on both macOS and iOS.
-                var attributed = AttributedString(label)
-                attributed.link = url
-                attributed.foregroundColor = .accentColor
-                return partial + Text(attributed)
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(blocks) { block in
+                MarkdownBlockView(block: block, textColor: theme.chatText)
             }
         }
+        .font(.body)
+        .textSelection(.enabled)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .environment(\.openURL, OpenURLAction { url in
             NSWorkspace.shared.open(url)
             return .handled
@@ -278,9 +216,214 @@ private struct LinkedText: View {
     }
 }
 
-fileprivate enum TextPiece {
-    case plain(String)
-    case link(label: String, url: URL)
+// MARK: - Markdown Blocks
+
+enum MarkdownBlock: Identifiable {
+    case heading(id: Int, level: Int, text: String)
+    case paragraph(id: Int, text: String)
+    case blockquote(id: Int, text: String)
+    case bullet(id: Int, text: String, indent: Int, checked: Bool?)
+    case numbered(id: Int, index: Int, text: String, indent: Int)
+    case rule(id: Int)
+
+    var id: Int {
+        switch self {
+        case .heading(let id, _, _), .paragraph(let id, _), .blockquote(let id, _),
+             .bullet(let id, _, _, _), .numbered(let id, _, _, _), .rule(let id):
+            return id
+        }
+    }
+}
+
+/// Block-level markdown parsing: headings, blockquotes, lists (incl. task
+/// checkboxes), thematic breaks, and paragraphs. Inline formatting (bold,
+/// italic, inline code, links) is handled per-block by AttributedString(markdown:).
+enum MarkdownBlockParser {
+
+    static func parse(_ text: String) -> [MarkdownBlock] {
+        var blocks: [MarkdownBlock] = []
+        var paragraph: [String] = []
+        var quote: [String] = []
+        var nextID = 0
+
+        func flushParagraph() {
+            guard !paragraph.isEmpty else { return }
+            blocks.append(.paragraph(id: nextID, text: paragraph.joined(separator: " ")))
+            nextID += 1
+            paragraph.removeAll()
+        }
+        func flushQuote() {
+            guard !quote.isEmpty else { return }
+            blocks.append(.blockquote(id: nextID, text: quote.joined(separator: "\n")))
+            nextID += 1
+            quote.removeAll()
+        }
+
+        for rawLine in text.components(separatedBy: .newlines) {
+            let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
+
+            if trimmed.isEmpty {
+                flushParagraph(); flushQuote()
+                continue
+            }
+            // Thematic break (---, ***, ___)
+            if trimmed.allSatisfy({ $0 == "-" || $0 == "*" || $0 == "_" }),
+               let ch = trimmed.first, trimmed.count >= 3,
+               trimmed.allSatisfy({ $0 == ch }) {
+                flushParagraph(); flushQuote()
+                blocks.append(.rule(id: nextID)); nextID += 1
+                continue
+            }
+            // Heading: 1-6 '#' followed by a space
+            if let (level, headingText) = parseHeading(trimmed) {
+                flushParagraph(); flushQuote()
+                blocks.append(.heading(id: nextID, level: level, text: headingText)); nextID += 1
+                continue
+            }
+            // Blockquote: consecutive '>' lines group into one quote
+            if trimmed.hasPrefix(">") {
+                flushParagraph()
+                quote.append(String(trimmed.dropFirst()).trimmingCharacters(in: .whitespaces))
+                continue
+            } else {
+                flushQuote()
+            }
+            // Bullets (-, *, +) with optional task checkbox
+            if let bullet = parseBullet(rawLine, id: nextID) {
+                flushParagraph()
+                blocks.append(bullet); nextID += 1
+                continue
+            }
+            // Numbered lists (1. / 2) )
+            if let numbered = parseNumbered(rawLine, id: nextID) {
+                flushParagraph()
+                blocks.append(numbered); nextID += 1
+                continue
+            }
+            paragraph.append(trimmed)
+        }
+        flushParagraph(); flushQuote()
+        return blocks
+    }
+
+    private static func parseHeading(_ line: String) -> (Int, String)? {
+        var level = 0
+        for ch in line {
+            if ch == "#" { level += 1 } else { break }
+        }
+        guard level >= 1, level <= 6 else { return nil }
+        let rest = line.dropFirst(level)
+        guard rest.first == " " else { return nil }  // "#hashtag" is not a heading
+        return (level, rest.trimmingCharacters(in: .whitespaces))
+    }
+
+    private static func parseBullet(_ line: String, id: Int) -> MarkdownBlock? {
+        let leadingSpaces = line.prefix(while: { $0 == " " }).count
+        let indent = leadingSpaces / 2
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard trimmed.count >= 2 else { return nil }
+        let marker = trimmed.prefix(1)
+        guard marker == "-" || marker == "*" || marker == "+",
+              trimmed.dropFirst(1).first == " " else { return nil }
+        var text = String(trimmed.dropFirst(2))
+        // Task list: [ ] / [x] / [X]
+        var checked: Bool? = nil
+        if text.hasPrefix("[ ] ") {
+            checked = false
+            text = String(text.dropFirst(4))
+        } else if text.hasPrefix("[x] ") || text.hasPrefix("[X] ") {
+            checked = true
+            text = String(text.dropFirst(4))
+        }
+        return .bullet(id: id, text: text, indent: indent, checked: checked)
+    }
+
+    private static func parseNumbered(_ line: String, id: Int) -> MarkdownBlock? {
+        let leadingSpaces = line.prefix(while: { $0 == " " }).count
+        let indent = leadingSpaces / 2
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        var digits = ""
+        var rest = trimmed[...]
+        while let ch = rest.first, ch.isNumber {
+            digits.append(ch)
+            rest = rest.dropFirst()
+        }
+        guard !digits.isEmpty, let index = Int(digits) else { return nil }
+        guard rest.first == "." || rest.first == ")" else { return nil }
+        let afterMarker = rest.dropFirst()
+        guard afterMarker.first == " " else { return nil }
+        return .numbered(id: id, index: index, text: afterMarker.trimmingCharacters(in: .whitespaces), indent: indent)
+    }
+}
+
+// MARK: - Markdown Block View
+
+struct MarkdownBlockView: View {
+    let block: MarkdownBlock
+    let textColor: Color
+
+    var body: some View {
+        switch block {
+        case .heading(_, let level, let text):
+            inlineText(text)
+                .font(fontFor(level))
+                .fontWeight(.semibold)
+                .padding(.top, level == 1 ? 10 : 6)
+        case .paragraph(_, let text):
+            inlineText(text)
+        case .blockquote(_, let text):
+            HStack(alignment: .top, spacing: 8) {
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(.quaternary)
+                    .frame(width: 3)
+                inlineText(text)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.leading, 4)
+        case .bullet(_, let text, let indent, let checked):
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if let checked {
+                    Image(systemName: checked ? "checkmark.square" : "square")
+                        .foregroundStyle(checked ? .green : .secondary)
+                } else {
+                    Text("•")
+                }
+                inlineText(text)
+            }
+            .padding(.leading, CGFloat(indent) * 14 + 8)
+        case .numbered(_, let index, let text, let indent):
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("\(index).")
+                    .monospacedDigit()
+                inlineText(text)
+            }
+            .padding(.leading, CGFloat(indent) * 14 + 8)
+        case .rule:
+            Divider().padding(.vertical, 4)
+        }
+    }
+
+    private func fontFor(_ level: Int) -> Font {
+        switch level {
+        case 1: return .title
+        case 2: return .title2
+        case 3: return .title3
+        case 4: return .headline
+        default: return .subheadline
+        }
+    }
+
+    /// Inline markdown (bold, italic, inline code, links) via Foundation's
+    /// parser; falls back to literal text on any parse failure.
+    private func inlineText(_ text: String) -> Text {
+        if let attributed = try? AttributedString(
+            markdown: text,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        ) {
+            return Text(attributed).foregroundStyle(textColor)
+        }
+        return Text(text).foregroundStyle(textColor)
+    }
 }
 
 // MARK: - Code Block View
