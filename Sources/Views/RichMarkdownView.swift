@@ -413,16 +413,142 @@ struct MarkdownBlockView: View {
         }
     }
 
-    /// Inline markdown (bold, italic, inline code, links) via Foundation's
-    /// parser; falls back to literal text on any parse failure.
+    /// Inline markdown (bold, italic, inline code, links) plus Obsidian-style
+    /// extensions: ==highlights== and <span style="color/background-color:…">.
+    /// Falls back to literal text on any parse failure.
     private func inlineText(_ text: String) -> Text {
+        Text(MarkdownInlineRenderer.render(text)).foregroundStyle(textColor)
+    }
+}
+
+// MARK: - Markdown Inline Renderer
+
+/// Recursive inline renderer: Foundation markdown for bold/italic/code/links,
+/// with Obsidian-style extensions on top — `==highlight==`, `<mark>`, and
+/// `<span style="color:… / background-color:…">` (the Obsidian HTML way of
+/// doing text colors). Special constructs split the string; markdown is
+/// parsed recursively inside them so `**bold**` still works within a span.
+enum MarkdownInlineRenderer {
+
+    static func render(_ text: String) -> AttributedString {
+        guard let special = firstSpecial(in: text) else {
+            return baseMarkdown(text)
+        }
+        var result = render(String(text[..<special.range.lowerBound]))
+        var inner = render(special.inner)
+        special.apply(to: &inner)
+        result.append(inner)
+        result.append(render(String(text[special.range.upperBound...])))
+        return result
+    }
+
+    // MARK: Special constructs
+
+    private struct Special {
+        enum Kind {
+            case highlight                 // ==text==
+            case mark                      // <mark>text</mark>
+            case span(color: NSColor?, background: NSColor?)
+        }
+        let kind: Kind
+        let range: Range<String.Index>
+        let inner: String
+
+        func apply(to attributed: inout AttributedString) {
+            switch kind {
+            case .highlight, .mark:
+                attributed.backgroundColor = NSColor.systemYellow.withAlphaComponent(0.35)
+            case .span(let color, let background):
+                if let color { attributed.foregroundColor = color }
+                if let background { attributed.backgroundColor = background.withAlphaComponent(0.35) }
+            }
+        }
+    }
+
+    private static func firstSpecial(in text: String) -> Special? {
+        let candidates: [Special?] = [
+            matchHighlight(in: text),
+            matchMark(in: text),
+            matchSpan(in: text),
+        ]
+        return candidates
+            .compactMap { $0 }
+            .min(by: { $0.range.lowerBound < $1.range.lowerBound })
+    }
+
+    private static func matchHighlight(in text: String) -> Special? {
+        guard let regex = try? NSRegularExpression(pattern: #"==([^=\n]+)=="#),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let full = Range(match.range, in: text),
+              let inner = Range(match.range(at: 1), in: text) else { return nil }
+        return Special(kind: .highlight, range: full, inner: String(text[inner]))
+    }
+
+    private static func matchMark(in text: String) -> Special? {
+        guard let regex = try? NSRegularExpression(pattern: #"<mark>(.*?)</mark>"#, options: [.dotMatchesLineSeparators]),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let full = Range(match.range, in: text),
+              let inner = Range(match.range(at: 1), in: text) else { return nil }
+        return Special(kind: .mark, range: full, inner: String(text[inner]))
+    }
+
+    private static func matchSpan(in text: String) -> Special? {
+        guard let regex = try? NSRegularExpression(pattern: #"<span\s+style=\"([^\"]*)\">(.*?)</span>"#, options: [.dotMatchesLineSeparators]),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let full = Range(match.range, in: text),
+              let style = Range(match.range(at: 1), in: text),
+              let inner = Range(match.range(at: 2), in: text) else { return nil }
+        var color: NSColor? = nil
+        var background: NSColor? = nil
+        for declaration in text[style].split(separator: ";") {
+            let parts = declaration.split(separator: ":").map { $0.trimmingCharacters(in: .whitespaces) }
+            guard parts.count == 2 else { continue }
+            switch parts[0].lowercased() {
+            case "color":            color = parseColor(parts[1])
+            case "background-color": background = parseColor(parts[1])
+            default: break
+            }
+        }
+        return Special(kind: .span(color: color, background: background), range: full, inner: String(text[inner]))
+    }
+
+    /// Hex (#rgb/#rrggbb) plus a small named-color table (Obsidian-friendly).
+    private static func parseColor(_ value: String) -> NSColor? {
+        let v = value.trimmingCharacters(in: .whitespaces).lowercased()
+        if v.hasPrefix("#") {
+            var hex = String(v.dropFirst())
+            if hex.count == 3 { hex = hex.map { "\($0)\($0)" }.joined() }
+            guard hex.count == 6, let int = UInt32(hex, radix: 16) else { return nil }
+            return NSColor(
+                red: CGFloat((int >> 16) & 0xFF) / 255,
+                green: CGFloat((int >> 8) & 0xFF) / 255,
+                blue: CGFloat(int & 0xFF) / 255,
+                alpha: 1
+            )
+        }
+        switch v {
+        case "red": return .systemRed
+        case "orange": return .systemOrange
+        case "yellow": return .systemYellow
+        case "green": return .systemGreen
+        case "blue": return .systemBlue
+        case "purple": return .systemPurple
+        case "pink": return .systemPink
+        case "gray", "grey": return .systemGray
+        case "black": return .black
+        case "white": return .white
+        default: return nil
+        }
+    }
+
+    private static func baseMarkdown(_ text: String) -> AttributedString {
         if let attributed = try? AttributedString(
             markdown: text,
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         ) {
-            return Text(attributed).foregroundStyle(textColor)
+            return attributed
         }
-        return Text(text).foregroundStyle(textColor)
+        return AttributedString(text)
     }
 }
 

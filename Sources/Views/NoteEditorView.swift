@@ -27,6 +27,8 @@ struct NoteEditorView: View {
     }
 
     @State private var layoutMode: LayoutMode = .split
+    @State private var editorController = MarkdownEditorController()
+    @State private var editorFont: MarkdownEditorFont = MarkdownEditorFont.fromDefaults()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -111,14 +113,21 @@ struct NoteEditorView: View {
         VStack(spacing: 0) {
             paneHeader(title: "Editor", icon: "square.and.pencil")
             Divider()
-            TextEditor(text: $viewModel.editorText)
-                .font(.system(.body, design: .monospaced))
-                .scrollContentBackground(.hidden)
-                .background(theme.background)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .onChange(of: viewModel.editorText) { _, _ in
-                    viewModel.markDirty()
-                }
+            MarkdownFormatToolbar(
+                controller: editorController,
+                editorFont: $editorFont,
+                onCommand: { viewModel.markDirty() }
+            )
+            .background(theme.secondaryBackground.opacity(0.5))
+            Divider()
+            MarkdownTextEditor(
+                text: $viewModel.editorText,
+                font: editorFont.nsFont,
+                controller: editorController,
+                onChange: { viewModel.markDirty() }
+            )
+            .background(theme.background)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(theme.background)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
