@@ -165,4 +165,9 @@ Then:
 - Secrets are stored only in the macOS Keychain.
 
 ## License
-MIT License — see [LICENSE](LICENSE).
+**PolyForm Noncommercial 1.0.0** — see [LICENSE](LICENSE).
+
+Free to use, copy, modify, and share for **non-commercial** purposes.
+Commercial use of any kind (selling, charging for, or commercially
+redistributing SwiftMaestro or derivatives) requires a commercial license
+from the author — contact via [swiftmaestro.com](https://swiftmaestro.com/contact.html).

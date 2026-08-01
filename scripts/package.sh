@@ -35,6 +35,12 @@ fi
 # rejects on missing secure timestamps.
 "$(dirname "$0")/sign-nested-binaries.sh"
 
+# Ship the third-party notices inside the app bundle (license obligation for
+# several bundled components, and good practice for all of them).
+cp Sources/Resources/THIRD-PARTY-NOTICES.md "$APP_PATH/Contents/Resources/THIRD-PARTY-NOTICES.md"
+codesign --force --sign "$SIGN_IDENTITY" --timestamp --options runtime \
+    --entitlements Sources/Resources/SwiftMaestro.entitlements "$APP_PATH"
+
 # Default the DMG version to the app's own CFBundleShortVersionString so the
 # installer and the app bundle can never drift.
 VERSION="${VERSION:-$(defaults read "$PWD/$APP_PATH/Contents/Info.plist" CFBundleShortVersionString)}"
