@@ -165,7 +165,7 @@ final class MailBodyStore {
         let entity = try MIMEEntity.parse(raw)
         let headers = entity.headersDictionary()
 
-        let bodyText = Self.extractBody(from: entity)
+        let (bodyText, bodyIsHTML) = Self.extractBody(from: entity)
 
         return AppleMailReader.MessageDetail(
             subject: Self.decodeRFC2047(headers["subject"]?.first ?? message.subject),
@@ -179,24 +179,27 @@ final class MailBodyStore {
             date: message.date,
             messageID: headers["message-id"]?.first ?? "",
             content: bodyText,
+            contentIsHTML: bodyIsHTML,
             isRead: message.isRead,
             isFlagged: message.isFlagged
         )
     }
 
     /// Prefers the first text/html part; falls back to text/plain; descends
-    /// multipart trees depth-first like every mail client.
-    private static func extractBody(from entity: MIMEEntity) -> String {
+    /// multipart trees depth-first like every mail client. Returns whether the
+    /// chosen part was text/html so the view never has to re-sniff the markup
+    /// (table-only emails with no <html>/<body> wrapper fool tag sniffers).
+    private static func extractBody(from entity: MIMEEntity) -> (text: String, isHTML: Bool) {
         if let html = firstPart(of: entity, contentType: "text/html") {
-            return html.decodedTextBody()
+            return (html.decodedTextBody(), true)
         }
         if let plain = firstPart(of: entity, contentType: "text/plain") {
-            return plain.decodedTextBody()
+            return (plain.decodedTextBody(), false)
         }
         if !entity.isMultipart {
-            return entity.decodedTextBody()
+            return (entity.decodedTextBody(), false)
         }
-        return ""
+        return ("", false)
     }
 
     private static func firstPart(of entity: MIMEEntity, contentType: String) -> MIMEEntity? {

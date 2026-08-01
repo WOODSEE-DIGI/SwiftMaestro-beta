@@ -26,7 +26,9 @@ struct MailHTMLBodyView: NSViewRepresentable {
         // Transparent so the theme background shows behind unstyled margins;
         // sender-supplied backgrounds still paint over it.
         webView.setValue(false, forKey: "drawsBackground")
-        webView.setValue(context.coordinator, forKey: "coordinatorHolder")
+        // NOTE: no KVC coordinator-holder here — WKWebView is not KVC-compliant
+        // for arbitrary keys (setValue(forKey:) throws NSUnknownKeyException).
+        // SwiftUI retains the Coordinator for the representable's lifetime.
         applyRemoteContentRule(block: !remoteContentAllowed, to: webView, coordinator: context.coordinator)
         context.coordinator.loadedHTML = html
         webView.loadHTMLString(html, baseURL: nil)

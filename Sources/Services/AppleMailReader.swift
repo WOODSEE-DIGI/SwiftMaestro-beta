@@ -124,11 +124,15 @@ final class AppleMailReader {
         let date: Date?
         let messageID: String
         let content: String
+        /// Whether `content` came from a text/html MIME part. Optional so
+        /// JXA-decoded details (no MIME knowledge) can leave it nil and the
+        /// view falls back to sniffing. Nil-decodes safely from older JSON.
+        let contentIsHTML: Bool?
         let isRead: Bool
         let isFlagged: Bool
 
         enum CodingKeys: String, CodingKey {
-            case subject, sender, to, cc, date, messageID, content
+            case subject, sender, to, cc, date, messageID, content, contentIsHTML
             case isRead = "read"
             case isFlagged = "flagged"
         }

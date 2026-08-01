@@ -439,7 +439,9 @@ struct MailView: View {
 
     private func messageBody(_ detail: AppleMailReader.MessageDetail) -> some View {
         let key = detail.messageID.isEmpty ? detail.subject : detail.messageID
-        let isHTML = Self.looksLikeHTML(detail.content)
+        // MIME-truth first (body store knows the part's content type);
+        // tag sniffing is only a fallback for JXA-sourced details.
+        let isHTML = detail.contentIsHTML ?? Self.looksLikeHTML(detail.content)
         let remoteAllowed = loadRemoteImagesByDefault || remoteContentAllowedIDs.contains(key)
         return VStack(spacing: 0) {
             if isHTML {
@@ -447,16 +449,33 @@ struct MailView: View {
                     remoteContentBanner(key: key)
                 }
                 // Sender-intent rendering: the email's own styling, colors,
-                // and backgrounds (the "paper") — like Apple Mail.
+                // and backgrounds (the "paper") — like Apple Mail. The webview
+                // itself stays transparent; this white card is the paper for
+                // emails that assume one, and sender backgrounds paint over it.
                 MailHTMLBodyView(html: detail.content, remoteContentAllowed: remoteAllowed)
+                    .background(Self.paperColor)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(.quaternary, lineWidth: 0.5)
+                    )
+                    .padding(12)
             } else {
                 ScrollView {
                     Text(AttributedString(detail.content))
                         .font(.body)
+                        .foregroundStyle(Self.paperTextColor)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(16)
                 }
+                .background(Self.paperColor)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(.quaternary, lineWidth: 0.5)
+                )
+                .padding(12)
             }
         }
     }
@@ -486,10 +505,20 @@ struct MailView: View {
     @State private var remoteContentAllowedIDs: Set<String> = []
     @AppStorage("appleMail.loadRemoteImages") private var loadRemoteImagesByDefault = false
 
+    /// The "paper" card behind email bodies — white like Apple Mail's message
+    /// preview, so HTML emails designed for a light page render as intended.
+    nonisolated private static var paperColor: Color { Color.white }
+    /// Text color for plain-text emails on the paper card.
+    nonisolated private static var paperTextColor: Color { Color.black.opacity(0.85) }
+
     nonisolated private static func looksLikeHTML(_ content: String) -> Bool {
-        content.range(of: "<html", options: .caseInsensitive) != nil
-            || content.range(of: "<body", options: .caseInsensitive) != nil
-            || content.range(of: "</div>", options: .caseInsensitive) != nil
+        // Match any common structural tag — table-only emails (no <html>/<body>
+        // wrapper) must still classify as HTML.
+        guard let regex = try? NSRegularExpression(
+            pattern: #"</?(html|head|body|table|thead|tbody|tr|td|th|div|p|span|a|img|style|meta|link|br|hr|ul|ol|li|h[1-6]|strong|em|font|center)(\s[^>]*)?/?>"#,
+            options: .caseInsensitive
+        ) else { return false }
+        return regex.firstMatch(in: content, range: NSRange(content.startIndex..., in: content)) != nil
     }
 
     // MARK: Tracking mode
@@ -742,6 +771,7 @@ struct MailView: View {
                         subject: current.subject, sender: current.sender,
                         to: current.to, cc: current.cc, date: current.date,
                         messageID: current.messageID, content: current.content,
+                        contentIsHTML: current.contentIsHTML,
                         isRead: current.isRead, isFlagged: !current.isFlagged
                     )
                     current = detail!
