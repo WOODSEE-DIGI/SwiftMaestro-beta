@@ -278,12 +278,12 @@ private struct RewriteStats {
     var notes: [String] = []
 }
 
-private struct MIMEHeader {
+struct MIMEHeader {
     var name: String
     var value: String
 }
 
-private struct MIMEEntity {
+struct MIMEEntity {
     var headers: [MIMEHeader]
     var body: String
     var children: [MIMEEntity]
@@ -370,7 +370,7 @@ private struct MIMEEntity {
     }
 }
 
-private extension MIMEEntity {
+extension MIMEEntity {
     static func parse(_ raw: String, defaultNewline: String) throws -> MIMEEntity {
         guard let split = splitHeaderBody(raw, newline: defaultNewline) else {
             throw RelayMessageRewriterError.malformedMessage

@@ -52,8 +52,12 @@ final class MailEnvelopeIndex {
 
     struct MessageRow: Identifiable, Sendable {
         /// Mail's global message id — matches the AppleScript `id` property,
-        /// so JXA body fetches / actions can address this exact message.
+        /// so JXA actions can address this exact message.
         let id: Int
+        /// messages.ROWID — equals the message's .emlx filename on disk, so
+        /// bodies can be read straight from ~/Library/Mail with no Mail.app
+        /// involvement (see MailBodyStore).
+        let rowID: Int64
         let subject: String
         let senderAddress: String
         let senderName: String
@@ -167,6 +171,7 @@ final class MailEnvelopeIndex {
 
         var sql = """
             SELECT m.global_message_id AS globalID,
+                   m.ROWID AS rowID,
                    COALESCE(s.subject, '(no subject)') AS subject,
                    COALESCE(a.address, '') AS senderAddress,
                    COALESCE(a.comment, '') AS senderName,
@@ -200,6 +205,7 @@ final class MailEnvelopeIndex {
             return rows.map { row in
                 MessageRow(
                     id: row["globalID"],
+                    rowID: row["rowID"],
                     subject: row["subject"],
                     senderAddress: row["senderAddress"],
                     senderName: row["senderName"],

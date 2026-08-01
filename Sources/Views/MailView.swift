@@ -19,6 +19,7 @@ struct MailView: View {
     @Environment(ThemeStore.self) private var theme
     @State private var reader = AppleMailReader.shared
     @State private var envelope = MailEnvelopeIndex.shared
+    @State private var bodyStore = MailBodyStore.shared
 
     @State private var mode: Mode = .mailbox
 
@@ -866,28 +867,24 @@ struct MailView: View {
         }
     }
 
-    /// Gently preloads bodies for the top of the list in the background —
-    /// one JXA call at a time, paused between calls, so Mail.app's event
-    /// queue is never hammered. Cached bodies make row clicks feel instant.
+    /// Gently preloads bodies for the top of the list in the background.
+    /// File-backed (MailBodyStore) — no Mail.app involvement, so prefetch is
+    /// both fast and unable to wedge Mail's event queue.
     private func prefetchBodies(count: Int = 8) {
         prefetchTask?.cancel()
-        let ids = messages.prefix(count).map(\.id).filter { detailCache[$0] == nil }
-        guard !ids.isEmpty else { return }
+        let rows = messages.prefix(count).filter { detailCache[$0.id] == nil }
+        guard !rows.isEmpty else { return }
         prefetchTask = Task {
-            for id in ids {
+            for row in rows {
                 if Task.isCancelled { return }
-                if detailCache[id] != nil { continue }
-                let hint = messages.first(where: { $0.id == id })?.mailboxURL
-                    .split(separator: "/").last.map(String.init)
-                    .flatMap { $0.removingPercentEncoding }
-                if let fetched = try? await reader.loadMessageDetail(globalID: id, mailboxPathHint: hint, markRead: false) {
-                    detailCache[id] = fetched
-                    if selectedMessageID == id, detail == nil {
+                if detailCache[row.id] != nil { continue }
+                if let fetched = try? await bodyStore.detail(for: row) {
+                    detailCache[row.id] = fetched
+                    if selectedMessageID == row.id, detail == nil {
                         detail = fetched
                         detailError = nil
                     }
                 }
-                try? await Task.sleep(for: .milliseconds(600))
             }
         }
     }
@@ -923,6 +920,22 @@ struct MailView: View {
             .split(separator: "/").last.map(String.init)
             .flatMap { $0.removingPercentEncoding }
 
+        // 1) File-backed body — reads the .emlx straight from disk. Instant
+        //    and immune to Mail.app's automation state.
+        if let row = messages.first(where: { $0.id == id }) {
+            do {
+                let fetched = try await bodyStore.detail(for: row)
+                detailCache[id] = fetched
+                detail = fetched
+                detailError = nil
+                markReadLikeMail(row: row)
+                return
+            } catch {
+                // Fall through to the JXA fallback below.
+            }
+        }
+
+        // 2) JXA fallback — needs Mail.app running and responsive.
         var lastError: Error?
         for attempt in 1...2 {
             do {
@@ -935,7 +948,7 @@ struct MailView: View {
                     if let index = messages.firstIndex(where: { $0.id == id }), !messages[index].isRead {
                         let m = messages[index]
                         messages[index] = MailEnvelopeIndex.MessageRow(
-                            id: m.id, subject: m.subject,
+                            id: m.id, rowID: m.rowID, subject: m.subject,
                             senderAddress: m.senderAddress, senderName: m.senderName,
                             date: m.date, isRead: true, isFlagged: m.isFlagged,
                             mailboxURL: m.mailboxURL
@@ -960,6 +973,29 @@ struct MailView: View {
            description.contains("not permitted") || description.contains("not authorized") || description.contains("1743") {
             detailNeedsAutomation = true
             detailError = "macOS blocked SwiftMaestro from controlling Mail. Enable it under SwiftMaestro in System Settings → Privacy & Security → Automation, then relaunch the app."
+        }
+    }
+
+    /// Mirrors Mail.app behavior: viewing a message marks it read. Done as a
+    /// background JXA write (short timeout, failure ignored — the body is
+    /// already on screen from the file read, so Mail's responsiveness is not
+    /// on the critical path).
+    private func markReadLikeMail(row: MailEnvelopeIndex.MessageRow) {
+        let hint = row.mailboxURL
+            .split(separator: "/").last.map(String.init)
+            .flatMap { $0.removingPercentEncoding }
+        Task {
+            try? await reader.setRead(true, globalID: row.id, mailboxPathHint: hint)
+        }
+        // Reflect locally without waiting for Mail.app.
+        if let index = messages.firstIndex(where: { $0.id == row.id }), !messages[index].isRead {
+            let m = messages[index]
+            messages[index] = MailEnvelopeIndex.MessageRow(
+                id: m.id, rowID: m.rowID, subject: m.subject,
+                senderAddress: m.senderAddress, senderName: m.senderName,
+                date: m.date, isRead: true, isFlagged: m.isFlagged,
+                mailboxURL: m.mailboxURL
+            )
         }
     }
 
