@@ -73,6 +73,10 @@ final class FloatingWindowCascadeManager {
             }
 
             self.cascadePoint = nextPoint
+            // cascadeTopLeft(from:) only RETURNS the point — it never moves
+            // the window. Without this call every panel window opens wherever
+            // SwiftUI centers it (screen center = header halfway down).
+            window.setFrameTopLeftPoint(nextPoint)
         }
     }
 }
