@@ -30,6 +30,9 @@ struct MailView: View {
     @State private var unifiedUnread: [AppleMailReader.UnifiedKind: Int] = [:]
     @State private var selectedMessageID: Int?
     @State private var detail: AppleMailReader.MessageDetail?
+    @State private var detailCache: [Int: AppleMailReader.MessageDetail] = [:]
+    @State private var detailError: String?
+    @State private var prefetchTask: Task<Void, Never>?
     @State private var searchText = ""
     @State private var searchTask: Task<Void, Never>?
     @State private var listLimit = 50
@@ -156,7 +159,9 @@ struct MailView: View {
         .onChange(of: selectedMailbox) { _, _ in
             selectedMessageID = nil
             detail = nil
+            detailError = nil
             listOffset = 0
+            prefetchTask?.cancel()
             Task { await loadMessages() }
         }
     }
@@ -318,6 +323,18 @@ struct MailView: View {
                 messageHeaders(detail)
                 Divider()
                 messageBody(detail)
+            } else if let detailError {
+                Spacer()
+                ContentUnavailableView(
+                    "Couldn't Load Message",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text(detailError + "\nMail.app may be busy syncing — try again in a moment.")
+                )
+                Button("Retry") {
+                    Task { await loadDetail() }
+                }
+                .padding(.top, 8)
+                Spacer()
             } else {
                 Spacer()
                 ContentUnavailableView(
@@ -811,41 +828,93 @@ struct MailView: View {
                 limit: listLimit,
                 offset: listOffset
             )
+            prefetchBodies()
         } catch {
             messages = []
             mailboxError = "Could not load messages: \(error.localizedDescription)"
         }
     }
 
+    /// Gently preloads bodies for the top of the list in the background —
+    /// one JXA call at a time, paused between calls, so Mail.app's event
+    /// queue is never hammered. Cached bodies make row clicks feel instant.
+    private func prefetchBodies(count: Int = 8) {
+        prefetchTask?.cancel()
+        let ids = messages.prefix(count).map(\.id).filter { detailCache[$0] == nil }
+        guard !ids.isEmpty else { return }
+        prefetchTask = Task {
+            for id in ids {
+                if Task.isCancelled { return }
+                if detailCache[id] != nil { continue }
+                let hint = messages.first(where: { $0.id == id })?.mailboxURL
+                    .split(separator: "/").last.map(String.init)
+                    .flatMap { $0.removingPercentEncoding }
+                if let fetched = try? await reader.loadMessageDetail(globalID: id, mailboxPathHint: hint) {
+                    detailCache[id] = fetched
+                    if selectedMessageID == id, detail == nil {
+                        detail = fetched
+                        detailError = nil
+                    }
+                }
+                try? await Task.sleep(for: .milliseconds(600))
+            }
+        }
+    }
+
     private func loadDetail() async {
         guard let id = selectedMessageID else {
             detail = nil
+            detailError = nil
             return
         }
+        // Cached body wins instantly; otherwise clear the stale body so an
+        // old message never shows under a new selection.
+        if let cached = detailCache[id] {
+            detail = cached
+            detailError = nil
+            return
+        }
+        detail = nil
+        detailError = nil
         isLoadingDetail = true
         defer { isLoadingDetail = false }
         let hint = messages.first(where: { $0.id == id })?.mailboxURL
             .split(separator: "/").last.map(String.init)
             .flatMap { $0.removingPercentEncoding }
-        do {
-            detail = try await reader.loadMessageDetail(globalID: id, mailboxPathHint: hint)
-            if detail == nil {
-                mailboxError = "Message not found in Mail (it may have moved)."
-            } else {
-                // Body fetch marked it read — reflect locally without a reload.
-                if let index = messages.firstIndex(where: { $0.id == id }), !messages[index].isRead {
-                    let m = messages[index]
-                    messages[index] = MailEnvelopeIndex.MessageRow(
-                        id: m.id, subject: m.subject,
-                        senderAddress: m.senderAddress, senderName: m.senderName,
-                        date: m.date, isRead: true, isFlagged: m.isFlagged,
-                        mailboxURL: m.mailboxURL
-                    )
+
+        var lastError: Error?
+        for attempt in 1...2 {
+            do {
+                let fetched = try await reader.loadMessageDetail(globalID: id, mailboxPathHint: hint)
+                if let fetched {
+                    detailCache[id] = fetched
+                    detail = fetched
+                    detailError = nil
+                    // Body fetch marked it read — reflect locally.
+                    if let index = messages.firstIndex(where: { $0.id == id }), !messages[index].isRead {
+                        let m = messages[index]
+                        messages[index] = MailEnvelopeIndex.MessageRow(
+                            id: m.id, subject: m.subject,
+                            senderAddress: m.senderAddress, senderName: m.senderName,
+                            date: m.date, isRead: true, isFlagged: m.isFlagged,
+                            mailboxURL: m.mailboxURL
+                        )
+                    }
+                } else {
+                    detailError = "Message not found in Mail (it may have moved)."
+                }
+                return
+            } catch {
+                lastError = error
+                // One retry after a beat — Mail.app being momentarily busy is
+                // the common failure, and it usually answers on the second go.
+                if attempt == 1 {
+                    try? await Task.sleep(for: .seconds(4))
+                    guard !Task.isCancelled, selectedMessageID == id else { return }
                 }
             }
-        } catch {
-            mailboxError = "Could not load message: \(error.localizedDescription)"
         }
+        detailError = lastError?.localizedDescription ?? "Could not load message."
     }
 
     private func composeInMail() async {
