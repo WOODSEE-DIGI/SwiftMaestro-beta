@@ -437,12 +437,20 @@ struct MailView: View {
     }
 
     private func messageBody(_ detail: AppleMailReader.MessageDetail) -> some View {
-        ScrollView {
+        let key = detail.messageID.isEmpty ? detail.subject : detail.messageID
+        let cached = renderedBodies[key]
+        return ScrollView {
             Group {
-                if isLoadingDetail {
+                if let cached {
+                    Text(cached)
+                        .font(.body)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else if Self.looksLikeHTML(detail.content) {
+                    // HTML is rendering off-main in the .task below.
                     ProgressView().padding()
                 } else {
-                    Text(renderedBody(for: detail))
+                    Text(AttributedString(detail.content))
                         .font(.body)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -450,38 +458,43 @@ struct MailView: View {
             }
             .padding(16)
         }
+        .task(id: key) {
+            // Rendering happens off the view-evaluation path — writing to
+            // renderedBodies during body() is what triggered "Modifying state
+            // during view update".
+            guard renderedBodies[key] == nil else { return }
+            renderedBodies[key] = await Self.renderHTML(detail.content)
+        }
     }
 
     // MARK: Body rendering (HTML → AttributedString, cached)
 
-    @State private var renderedBodies: [Int: AttributedString] = [:]
+    @State private var renderedBodies: [String: AttributedString] = [:]
 
-    private func renderedBody(for detail: AppleMailReader.MessageDetail) -> AttributedString {
-        let key = detail.messageID.hashValue
-        if let cached = renderedBodies[key] { return cached }
-        let content = detail.content
-        let looksHTML = content.range(of: "<html", options: .caseInsensitive) != nil
+    nonisolated private static func looksLikeHTML(_ content: String) -> Bool {
+        content.range(of: "<html", options: .caseInsensitive) != nil
             || content.range(of: "<body", options: .caseInsensitive) != nil
             || content.range(of: "</div>", options: .caseInsensitive) != nil
-        let rendered: AttributedString
-        if looksHTML, let data = content.data(using: .utf8),
-           let nsAttr = try? NSAttributedString(
-               data: data,
-               options: [.documentType: NSAttributedString.DocumentType.html,
-                         .characterEncoding: String.Encoding.utf8.rawValue],
-               documentAttributes: nil) {
-            // Strip explicit foreground colors from the HTML so body text
-            // follows the app theme — sender-supplied black text would be
-            // invisible on our dark background. Links keep their underline
-            // and remain tappable; only the color is dropped.
+    }
+
+    /// Parses the HTML body off the main thread and returns the styled
+    /// string. Sender-supplied foreground colors are stripped so text follows
+    /// the app theme (black marketing text would be invisible on dark).
+    nonisolated private static func renderHTML(_ content: String) async -> AttributedString {
+        await Task.detached(priority: .userInitiated) {
+            guard looksLikeHTML(content), let data = content.data(using: .utf8),
+                  let nsAttr = try? NSAttributedString(
+                      data: data,
+                      options: [.documentType: NSAttributedString.DocumentType.html,
+                                .characterEncoding: String.Encoding.utf8.rawValue],
+                      documentAttributes: nil) else {
+                return AttributedString(content)
+            }
             let mutable = NSMutableAttributedString(attributedString: nsAttr)
             mutable.removeAttribute(.foregroundColor, range: NSRange(location: 0, length: mutable.length))
-            rendered = (try? AttributedString(mutable as NSAttributedString, including: \.appKit)) ?? AttributedString(mutable.string)
-        } else {
-            rendered = AttributedString(content)
-        }
-        renderedBodies[key] = rendered
-        return rendered
+            return (try? AttributedString(mutable as NSAttributedString, including: \.appKit))
+                ?? AttributedString(mutable.string)
+        }.value
     }
 
     // MARK: Tracking mode
