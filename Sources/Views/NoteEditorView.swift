@@ -1,0 +1,163 @@
+import SwiftUI
+
+// MARK: - Note editor view
+
+/// Split editor/preview for a single Markdown note. The layout can be switched
+/// between Editor-only, Split, and Preview-only. Panes share the available
+/// detail-column space equally; each pane clips its content so it cannot push
+/// the split outside the window.
+struct NoteEditorView: View {
+    @Bindable var viewModel: NotesViewModel
+    @Environment(ThemeStore.self) private var theme
+
+    enum LayoutMode: String, CaseIterable, Identifiable {
+        case editor = "Editor"
+        case split = "Split"
+        case preview = "Preview"
+
+        var id: String { rawValue }
+
+        var icon: String {
+            switch self {
+            case .editor: return "square.and.pencil"
+            case .split: return "rectangle.split.1x2"
+            case .preview: return "eye"
+            }
+        }
+    }
+
+    @State private var layoutMode: LayoutMode = .split
+
+    var body: some View {
+        VStack(spacing: 0) {
+            toolbar
+            Divider()
+            editorContent
+        }
+        .background(theme.background)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: - Toolbar
+
+    private var toolbar: some View {
+        HStack(spacing: 12) {
+            Text(viewModel.selectedItem?.title ?? "No note selected")
+                .font(.headline)
+                .lineLimit(1)
+                .layoutPriority(1)
+
+            Spacer()
+
+            Picker("Layout", selection: $layoutMode) {
+                ForEach(LayoutMode.allCases) { mode in
+                    Label(mode.rawValue, systemImage: mode.icon)
+                        .tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            .help("Switch between editor, split, and preview layouts")
+
+            Button {
+                Task { await viewModel.saveCurrentNote() }
+            } label: {
+                Label(
+                    viewModel.isDirty ? "Save" : "Saved",
+                    systemImage: viewModel.isDirty ? "arrow.down.circle.fill" : "checkmark.circle"
+                )
+            }
+            .keyboardShortcut("s", modifiers: .command)
+            .disabled(!viewModel.isDirty)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(theme.secondaryBackground)
+    }
+
+    // MARK: - Content
+
+    private var editorContent: some View {
+        HStack(spacing: 0) {
+            if layoutMode != .preview {
+                editorPane
+            }
+
+            if layoutMode == .split {
+                Divider()
+            }
+
+            if layoutMode != .editor {
+                previewPane
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
+    }
+
+    private var editorPane: some View {
+        VStack(spacing: 0) {
+            paneHeader(title: "Editor", icon: "square.and.pencil")
+            Divider()
+            TextEditor(text: $viewModel.editorText)
+                .font(.system(.body, design: .monospaced))
+                .scrollContentBackground(.hidden)
+                .background(theme.background)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .onChange(of: viewModel.editorText) { _, _ in
+                    viewModel.markDirty()
+                }
+        }
+        .background(theme.background)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .layoutPriority(1)
+        .clipped()
+    }
+
+    private var previewPane: some View {
+        VStack(spacing: 0) {
+            paneHeader(title: "Preview", icon: "eye")
+            Divider()
+            ScrollView {
+                RichMarkdownView(
+                    text: viewModel.editorText,
+                    isUser: false
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+            }
+            .background(theme.secondaryBackground)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .background(theme.secondaryBackground)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .layoutPriority(1)
+        .clipped()
+    }
+
+    private func paneHeader(title: String, icon: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(theme.secondaryBackground)
+    }
+}
+
+// MARK: - Preview
+
+#Preview {
+    let vm = NotesViewModel()
+    vm.editorText = "# Hello Notes\n\nThis is a **test** note.\n\n```swift\nprint(\"hi\")\n```"
+    return NoteEditorView(viewModel: vm)
+        .frame(width: 900, height: 500)
+}

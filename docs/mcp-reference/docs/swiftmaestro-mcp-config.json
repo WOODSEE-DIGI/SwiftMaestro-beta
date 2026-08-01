@@ -1,0 +1,78 @@
+{
+  "version": "1.0",
+  "description": "SwiftMaestro MCP Server Configuration - Local Servers",
+  "working_directory": "~/SM-BU-publish",
+  "mcp_servers": {
+    "ai-context-bridge": {
+      "command": "node",
+      "args": ["~/SM-BU-publish/mcp-local/ai-context-bridge/server.js"],
+      "type": "stdio",
+      "enabled": true
+    },
+    "crawlkit-mcp": {
+      "command": "node",
+      "args": ["~/SM-BU-publish/mcp-local/crawlkit-mcp/server.js"],
+      "type": "stdio",
+      "enabled": true
+    },
+    "firecrawl-mcp": {
+      "command": "node",
+      "args": ["~/SM-BU-publish/mcp-local/firecrawl-mcp/index.js"],
+      "type": "stdio",
+      "enabled": true
+    },
+    "playwright-mcp": {
+      "command": "node",
+      "args": ["~/SM-BU-publish/mcp-local/playwright-mcp/cli.js"],
+      "type": "stdio",
+      "enabled": true
+    },
+    "swift-terminals": {
+      "command": "node",
+      "args": ["~/SM-BU-publish/mcp-local/swift-terminals/index.js"],
+      "type": "stdio",
+      "enabled": true
+    },
+    "webclaw-mcp": {
+      "command": "node",
+      "args": ["~/SM-BU-publish/mcp-local/webclaw-mcp/server.js"],
+      "type": "stdio",
+      "enabled": true
+    },
+    "read-website-fast": {
+      "command": "node",
+      "args": ["~/SM-BU-publish/mcp-local/read-website-fast/server.js"],
+      "type": "stdio",
+      "enabled": true
+    },
+    "whatsapp-mcp": {
+      "command": "~/SM-BU-publish/mcp-local/whatsapp-mcp/whatsapp-mcp-server/.venv/bin/python",
+      "args": ["~/SM-BU-publish/mcp-local/whatsapp-mcp/whatsapp-mcp-server/main.py"],
+      "type": "stdio",
+      "enabled": true
+    },
+    "xcodebuildmcp": {
+      "command": "node",
+      "args": ["~/SM-BU-publish/mcp-local/xcodebuildmcp/cli.js"],
+      "type": "stdio",
+      "enabled": true
+    },
+    "swiftmaestro-mcp": {
+      "command": "~/SM-BU-publish/mcp-local/swiftmaestro-mcp/swiftmaestro-mcp-server",
+      "args": [],
+      "type": "stdio",
+      "enabled": true
+    },
+    "sm-bu": {
+      "command": "node",
+      "args": ["~/SM-BU-publish/mcp-local/sm-bu/server.js"],
+      "type": "stdio",
+      "enabled": true
+    }
+  },
+  "node_path": "/usr/local/bin/node",
+  "environment": {
+    "NODE_ENV": "production"
+  }
+}
+FILEEOF ; echo "__SWIFTMAESTRO_CWD__=$(pwd)"

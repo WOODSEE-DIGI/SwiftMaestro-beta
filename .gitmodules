@@ -1,0 +1,6 @@
+[submodule ".obsbot-research/nod"]
+	path = .obsbot-research/nod
+	url = https://github.com/me-tony/nod.git
+[submodule ".obsbot-research/obsbot-mcp"]
+	path = .obsbot-research/obsbot-mcp
+	url = https://github.com/lxman/obsbot-mcp.git

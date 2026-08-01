@@ -1,0 +1,13 @@
+{
+  "name": "swiftmaestro-mcp-template",
+  "version": "1.0.0",
+  "description": "Minimal example MCP server, written for SwiftMaestro's MCP integration",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}
