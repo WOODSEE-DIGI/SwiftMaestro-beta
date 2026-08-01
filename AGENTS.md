@@ -22,7 +22,7 @@ These are mandatory working agreements for this repo. Follow them every session.
 
 - **App:** SwiftMaestro — native macOS SwiftUI AI assistant powered by local models running fully in-process on Apple MLX (mlx-swift-lm)
 - **Bundle ID:** `com.woodseedigi.swiftmaestro`
-- **Repo path:** `~/GitHub/AI-ML-Agents/SwiftMaestro`
+- **Repo path:** `~/GitHub/FUSV/SwiftMaestro`
 - **Distribution:** GitHub + .dmg (no App Store — no sandbox restrictions)
 
 ---
@@ -63,12 +63,11 @@ Run `~/.ai-context/scripts/sync-mcp.sh` to push config to all tools.
 | **ChatViewModel** | `Sources/ViewModels/ChatViewModel.swift` | Chat logic (streaming, file attachments) |
 | **MLXInferenceEngine** | `Sources/Engine/MLXInferenceEngine.swift` | Primary native MLX inference path |
 | **InProcessMLXBackend** | `Sources/Adapters/InProcessMLXBackend.swift` | The sole generation backend (in-process MLX) |
-| **OMLXAgentExecutor** | `Sources/Adapters/OMLXAgentExecutor.swift` | Backend-agnostic agentic loop (name retained; not oMLX) |
+| **AgentExecutor** | `Sources/Adapters/AgentExecutor.swift` | Backend-agnostic agentic loop (formerly OMLXAgentExecutor; renamed) |
 | **SettingsView** | `Sources/Views/SettingsView.swift` | Settings tabs: Models, Tuning, Vision Proxy, Appearance, Rules, Context, MCP, Storage, Secrets, Whisper, Shell |
 | **WindowSizeConfigurator** | `Sources/Views/WindowSizeConfigurator.swift` | AppKit bridge enforcing min/default window sizes |
 | **SimpleMemoryStore** | `Sources/Memory/SimpleMemoryStore.swift` | File-based shared memory (→ `~/.ai-context/memory/`) |
 | **MaestroURI** | `Sources/MaestroURI.swift` | Memory URI scheme |
-| **ModelRouter** | `Sources/Services/ModelRouter.swift` | Model selection (35B/122B) |
 | **KeychainService** | `Sources/Services/KeychainService.swift` | macOS Keychain wrapper (legacy login keychain; iCloud-sync aware) |
 | **SecretsStore** | `Sources/Services/SecretsStore.swift` | Secret metadata index, `secret://` resolution, redaction |
 
@@ -84,7 +83,7 @@ Verified core models:
 
 Experimental models (tool support may be limited): Qwen 3.6, DeepSeek R1, Hermes 4, Magistral, Nemotron, Hub models.
 
-Models stored at: `~/Library/Application Support/SwiftMaestro/models` by default; configurable in **Settings → Models**.
+Models stored at: `~/Ai-models/models` by default; configurable in **Settings → Models**.
 
 ---
 
