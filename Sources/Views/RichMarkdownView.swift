@@ -288,16 +288,22 @@ enum MarkdownBlockParser {
             } else {
                 flushQuote()
             }
-            // Bullets (-, *, +) with optional task checkbox
-            if let bullet = parseBullet(rawLine, id: nextID) {
+            // Bullets (-, *, +) with optional task checkbox.
+            // Parse the payload FIRST, flush the pending paragraph, THEN
+            // assign the id — assigning before the flush gave the bullet and
+            // the flushed paragraph the same id (duplicate-ID ForEach
+            // warnings + undefined rendering).
+            if let (text, indent, checked) = parseBullet(rawLine) {
                 flushParagraph()
-                blocks.append(bullet); nextID += 1
+                blocks.append(.bullet(id: nextID, text: text, indent: indent, checked: checked))
+                nextID += 1
                 continue
             }
             // Numbered lists (1. / 2) )
-            if let numbered = parseNumbered(rawLine, id: nextID) {
+            if let (index, text, indent) = parseNumbered(rawLine) {
                 flushParagraph()
-                blocks.append(numbered); nextID += 1
+                blocks.append(.numbered(id: nextID, index: index, text: text, indent: indent))
+                nextID += 1
                 continue
             }
             paragraph.append(trimmed)
@@ -317,7 +323,11 @@ enum MarkdownBlockParser {
         return (level, rest.trimmingCharacters(in: .whitespaces))
     }
 
-    private static func parseBullet(_ line: String, id: Int) -> MarkdownBlock? {
+    /// Payload of a bullet line (text, indent, checkbox state), or nil when
+    /// the line isn't a bullet. The caller assigns the block id AFTER any
+    /// pending paragraph is flushed — see parse() for why that ordering
+    /// matters (duplicate ids otherwise).
+    private static func parseBullet(_ line: String) -> (String, Int, Bool?)? {
         let leadingSpaces = line.prefix(while: { $0 == " " }).count
         let indent = leadingSpaces / 2
         let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -335,10 +345,11 @@ enum MarkdownBlockParser {
             checked = true
             text = String(text.dropFirst(4))
         }
-        return .bullet(id: id, text: text, indent: indent, checked: checked)
+        return (text, indent, checked)
     }
 
-    private static func parseNumbered(_ line: String, id: Int) -> MarkdownBlock? {
+    /// Payload of a numbered-list line (index, text, indent), or nil.
+    private static func parseNumbered(_ line: String) -> (Int, String, Int)? {
         let leadingSpaces = line.prefix(while: { $0 == " " }).count
         let indent = leadingSpaces / 2
         let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -352,7 +363,7 @@ enum MarkdownBlockParser {
         guard rest.first == "." || rest.first == ")" else { return nil }
         let afterMarker = rest.dropFirst()
         guard afterMarker.first == " " else { return nil }
-        return .numbered(id: id, index: index, text: afterMarker.trimmingCharacters(in: .whitespaces), indent: indent)
+        return (index, afterMarker.trimmingCharacters(in: .whitespaces), indent)
     }
 }
 
