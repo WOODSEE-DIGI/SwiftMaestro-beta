@@ -78,6 +78,7 @@ extension MaestroDBDatabase {
                     arguments: [row.id, fieldID, value])
             }
         }
+        Self.postDidChange()
         return row
     }
 
@@ -100,12 +101,14 @@ extension MaestroDBDatabase {
                 sql: "UPDATE db_row SET updated_at = ? WHERE id = ?",
                 arguments: [Date().timeIntervalSince1970, rowID])
         }
+        Self.postDidChange()
     }
 
     func deleteRow(_ rowID: String) throws {
         try dbQueue.write { db in
             try db.execute(sql: "DELETE FROM db_row WHERE id = ?", arguments: [rowID])
         }
+        Self.postDidChange()
     }
 
     /// Persist a full-row order after a drag/reorder or kanban card move.
@@ -117,6 +120,7 @@ extension MaestroDBDatabase {
                     arguments: [index, id])
             }
         }
+        Self.postDidChange()
     }
 
     // MARK: - Query helpers (agent tools + kanban bridge)

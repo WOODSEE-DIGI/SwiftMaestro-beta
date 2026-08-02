@@ -8,6 +8,15 @@ import GRDB
 // field types from day one so relation/attachment need no migration.
 // Row/cell CRUD lives in MaestroDBDatabase+Rows.swift.
 
+extension Notification.Name {
+    /// Posted (from any thread) after every MaestroDB write — base, table,
+    /// field, row, or cell — so open MaestroDB panels reload changes they
+    /// didn't make themselves (agent db_* tools, the kanban write-through
+    /// bridge, another panel's edits).
+    static let maestroDBDidChange = Notification.Name(
+        "com.woodseedigi.swiftmaestro.maestroDBDidChange")
+}
+
 final class MaestroDBDatabase: Sendable {
 
     nonisolated(unsafe) private(set) static var isDemoMode = false
@@ -57,7 +66,9 @@ final class MaestroDBDatabase: Sendable {
 
     let dbQueue: DatabaseQueue
 
-    private static func open(_ url: URL) -> MaestroDBDatabase {
+    /// Internal (not private) so @testable suites can open throwaway
+    /// databases in temp directories without touching the shared singleton.
+    static func open(_ url: URL) -> MaestroDBDatabase {
         do {
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -140,6 +151,7 @@ final class MaestroDBDatabase: Sendable {
                 sql: "INSERT INTO db_base (id, name, icon, created_at) VALUES (?, ?, ?, ?)",
                 arguments: [base.id, base.name, base.icon, base.createdAt.timeIntervalSince1970])
         }
+        Self.postDidChange()
         return base
     }
 
@@ -147,12 +159,14 @@ final class MaestroDBDatabase: Sendable {
         try dbQueue.write { db in
             try db.execute(sql: "UPDATE db_base SET name = ? WHERE id = ?", arguments: [name, baseID])
         }
+        Self.postDidChange()
     }
 
     func deleteBase(_ baseID: String) throws {
         try dbQueue.write { db in
             try db.execute(sql: "DELETE FROM db_base WHERE id = ?", arguments: [baseID])
         }
+        Self.postDidChange()
     }
 
     // MARK: - Tables
@@ -183,6 +197,7 @@ final class MaestroDBDatabase: Sendable {
                 sql: "INSERT INTO db_table (id, base_id, name, position) VALUES (?, ?, ?, ?)",
                 arguments: [table.id, table.baseID, table.name, table.position])
         }
+        Self.postDidChange()
         return table
     }
 
@@ -190,12 +205,14 @@ final class MaestroDBDatabase: Sendable {
         try dbQueue.write { db in
             try db.execute(sql: "UPDATE db_table SET name = ? WHERE id = ?", arguments: [name, tableID])
         }
+        Self.postDidChange()
     }
 
     func deleteTable(_ tableID: String) throws {
         try dbQueue.write { db in
             try db.execute(sql: "DELETE FROM db_table WHERE id = ?", arguments: [tableID])
         }
+        Self.postDidChange()
     }
 
     // MARK: - Fields
@@ -224,6 +241,7 @@ final class MaestroDBDatabase: Sendable {
             position: try nextPosition("db_field", "table_id", tableID),
             options: options, config: config)
         try insertField(field)
+        Self.postDidChange()
         return field
     }
 
@@ -237,12 +255,14 @@ final class MaestroDBDatabase: Sendable {
                     field.id,
                 ])
         }
+        Self.postDidChange()
     }
 
     func deleteField(_ fieldID: String) throws {
         try dbQueue.write { db in
             try db.execute(sql: "DELETE FROM db_field WHERE id = ?", arguments: [fieldID])
         }
+        Self.postDidChange()
     }
 
     /// Add an option to a select/multiSelect field (deduped, appended).
@@ -254,6 +274,12 @@ final class MaestroDBDatabase: Sendable {
     }
 
     // MARK: - Helpers (internal for the Rows extension)
+
+    /// Notify observers (open MaestroDB panels) that data changed. Safe from
+    /// any thread; the view model debounces bursts into one reload.
+    static func postDidChange() {
+        NotificationCenter.default.post(name: .maestroDBDidChange, object: nil)
+    }
 
     func insertField(_ field: DBField) throws {
         try dbQueue.write { db in

@@ -35,6 +35,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     case browser
     case bluesky
     case vault
+    case database
 
     var id: String { rawValue }
 
@@ -59,7 +60,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             return false
         case .file, .documents, .books, .shell, .server, .index, .system, .sqlite,
              .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news,
-             .mail, .whatsapp, .discord, .web, .browser, .bluesky, .vault:
+             .mail, .whatsapp, .discord, .web, .browser, .bluesky, .vault, .database:
             return true
         }
     }
@@ -96,6 +97,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .browser: return "Browser"
         case .bluesky: return "Bluesky"
         case .vault: return "Vault"
+        case .database: return "Database"
         }
     }
 
@@ -131,6 +133,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .browser: return "safari"
         case .bluesky: return "at"
         case .vault: return "lock.square"
+        case .database: return "cylinder"
         }
     }
 
@@ -255,6 +258,12 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             ]
         case .vault:
             return ["obsidian_search_vault", "obsidian_read_note", "obsidian_write_note", "obsidian_list_vault"]
+        case .database:
+            return [
+                "db_list_bases", "db_create_base", "db_list_tables", "db_create_table",
+                "db_table_schema", "db_add_field", "db_list_rows", "db_add_row",
+                "db_update_row", "db_delete_row", "db_import_csv", "db_export_csv",
+            ]
         case .mcp:
             return []
         }
@@ -266,12 +275,12 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .navigator:
             return [
                 .workspace, .memory, .bus, .system, .rules, .time, .web, .browser, .vault, .documents, .books,
-                .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky,
+                .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky, .database,
             ]
         case .project:
             return [
                 .file, .documents, .books, .shell, .server, .index, .memory, .messaging, .bus, .system, .mcp, .sqlite, .web, .browser, .vault,
-                .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky,
+                .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky, .database,
             ]
         }
     }

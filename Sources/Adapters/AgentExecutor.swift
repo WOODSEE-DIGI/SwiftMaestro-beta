@@ -1877,6 +1877,7 @@ final class AgentExecutor: Sendable {
         "index_directory", "spotlight_search",
         "index_document", "search_chunks", "read_chunk",
         "execute_sqlite",
+        "db_import_csv", "db_export_csv",
         "glob_files", "grep_code", "edit_file",
         "git_status", "git_diff", "git_log", "git_branch",
     ]

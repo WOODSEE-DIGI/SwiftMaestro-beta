@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 // MARK: - MaestroDB View
 //
@@ -32,6 +33,9 @@ struct MaestroDBView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task { await viewModel.loadAll() }
+        .onReceive(NotificationCenter.default.publisher(for: .maestroDBDidChange)) { _ in
+            viewModel.scheduleExternalReload()
+        }
     }
 
     // MARK: - Sidebar
@@ -131,6 +135,9 @@ struct MaestroDBView: View {
             if let error = viewModel.errorMessage {
                 Text(error).font(.caption).foregroundStyle(.red).lineLimit(1)
             }
+            if let notice = viewModel.noticeMessage {
+                Text(notice).font(.caption).foregroundStyle(.green).lineLimit(1)
+            }
 
             Button { Task { await viewModel.addRow() } } label: {
                 Label("Row", systemImage: "plus")
@@ -141,6 +148,18 @@ struct MaestroDBView: View {
                 Label("Field", systemImage: "plus.rectangle.on.rectangle")
             }
             .disabled(viewModel.selectedTableID == nil)
+
+            Menu {
+                Button("Import CSV…") { importCSV() }
+                Button("Export CSV…") { exportCSV() }
+                    .disabled(viewModel.fields.isEmpty)
+            } label: {
+                Image(systemName: "square.and.arrow.up.on.square")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .disabled(viewModel.selectedTableID == nil)
+            .help("Import or export this table as CSV")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -175,5 +194,27 @@ struct MaestroDBView: View {
                 MaestroDBBoardView(viewModel: viewModel)
             }
         }
+    }
+
+    // MARK: - CSV panels
+
+    private func importCSV() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.commaSeparatedText, .plainText]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.message = "Import rows into the selected table"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { await viewModel.importCSV(from: url) }
+    }
+
+    private func exportCSV() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.commaSeparatedText]
+        let tableName = viewModel.tables.first(where: { $0.id == viewModel.selectedTableID })?.name ?? "Table"
+        panel.nameFieldStringValue = "\(tableName).csv"
+        panel.message = "Export the full table as CSV"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { await viewModel.exportCSV(to: url) }
     }
 }

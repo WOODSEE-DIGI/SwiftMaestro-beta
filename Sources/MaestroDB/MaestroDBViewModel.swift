@@ -49,6 +49,10 @@ final class MaestroDBViewModel {
 
     var errorMessage: String?
 
+    /// Transient success notice (CSV import/export results), shown green in
+    /// the header alongside the red error text.
+    var noticeMessage: String?
+
     var isDemoMode: Bool { MaestroDBDatabase.isDemoMode }
 
     // MARK: - Load
@@ -119,6 +123,24 @@ final class MaestroDBViewModel {
             rows = result
         } catch {
             errorMessage = "Could not load rows: \(error.localizedDescription)"
+        }
+    }
+
+    /// Debounce task for external-change reloads: a bulk mutation (CSV
+    /// import, kanban drag burst) posts many notifications — collapse them
+    /// into one reload 300ms after the last one.
+    private var externalReloadTask: Task<Void, Never>?
+
+    /// Called when the database changed outside this view model (agent db_*
+    /// tools, the kanban write-through bridge, another panel). Reloads the
+    /// whole navigation state after a short debounce; selection is preserved
+    /// (loadAll only re-picks when the saved selection no longer exists).
+    func scheduleExternalReload() {
+        externalReloadTask?.cancel()
+        externalReloadTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled, let self else { return }
+            await self.loadAll()
         }
     }
 
@@ -246,6 +268,44 @@ final class MaestroDBViewModel {
         Task {
             do { try database.setCell(rowID: rowID, fieldID: fieldID, value: value) }
             catch { errorMessage = "Could not save cell: \(error.localizedDescription)" }
+        }
+    }
+
+    // MARK: - CSV import / export
+
+    /// Append a CSV file's rows to the selected table (headers matched to
+    /// fields, unknown columns become new fields with inferred types).
+    func importCSV(from url: URL) async {
+        guard let tableID = selectedTableID else { return }
+        do {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            let parsed = try MaestroDBCSV.parse(text)
+            let report = try MaestroDBCSV.importRows(parsed, into: tableID, database: database)
+            noticeMessage = "Imported \(report.rowsAdded) rows"
+                + (report.fieldsCreated.isEmpty ? "" : ", added \(report.fieldsCreated.count) fields")
+                + (report.cellsSkipped == 0 ? "" : ", skipped \(report.cellsSkipped) values")
+            errorMessage = nil
+            await loadTableContent()
+        } catch {
+            errorMessage = "CSV import failed: \(error.localizedDescription)"
+            noticeMessage = nil
+        }
+    }
+
+    /// Write the selected table out as CSV (round-trips through importCSV).
+    /// Always exports the FULL table, not the current search-filtered view.
+    func exportCSV(to url: URL) async {
+        guard let tableID = selectedTableID else { return }
+        do {
+            let allRows = try database.rows(tableID: tableID)
+            let csv = MaestroDBCSV.exportCSV(
+                fields: try database.fields(tableID: tableID), rows: allRows)
+            try csv.write(to: url, atomically: true, encoding: .utf8)
+            noticeMessage = "Exported \(allRows.count) rows to \(url.lastPathComponent)"
+            errorMessage = nil
+        } catch {
+            errorMessage = "CSV export failed: \(error.localizedDescription)"
+            noticeMessage = nil
         }
     }
 

@@ -999,6 +999,20 @@ class ChatViewModel: ObservableObject {
         - Do NOT use read_file on SQLite databases — it returns binary gibberish. \
         ALWAYS use execute_sqlite for .db/.sqlite files.
         - Limit results with the 'limit' parameter (default 100, max 1000).
+
+        MAESTRODB (the user's own in-app database):
+        - MaestroDB is the user's Airtable-style database app inside SwiftMaestro. \
+        Use the db_* tools for it — NOT execute_sqlite (that's for arbitrary files).
+        - Discovery: db_list_bases → db_list_tables → db_table_schema. Always call \
+        db_table_schema before db_add_row so you use the exact field names.
+        - Bases and tables resolve by NAME or id. Row values go in a 'values' JSON \
+        object string keyed by FIELD NAME; values are coerced to each field's type.
+        - Row ids come from db_list_rows (first column) for db_update_row/db_delete_row.
+        - Spreadsheets: db_import_csv brings a CSV in (create='true' makes a new table \
+        with inferred column types; otherwise rows append to an existing table), and \
+        db_export_csv writes a table back out. Paths must be inside authorized folders.
+        - When the user says "my database", "my bases", or references a table they \
+        built in the app, they mean MaestroDB.
         """
 
     /// Routing guidance so the model uses the Xcode-aware xcodebuildmcp tools for
