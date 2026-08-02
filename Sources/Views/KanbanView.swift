@@ -195,7 +195,7 @@ struct KanbanView: View {
 
 // MARK: - Board view
 
-private struct KanbanBoardView: View {
+struct KanbanBoardView: View {
     @Environment(KanbanStore.self) private var store
     @Environment(ThemeStore.self) private var theme
     let board: KanbanBoard
@@ -248,7 +248,7 @@ private struct KanbanBoardView: View {
 
 // MARK: - Column view
 
-private struct KanbanColumnView: View {
+struct KanbanColumnView: View {
     @Environment(KanbanStore.self) private var store
     @Environment(ThemeStore.self) private var theme
     let boardId: UUID
@@ -345,7 +345,7 @@ private struct KanbanColumnView: View {
 
 // MARK: - Card view
 
-private struct KanbanCardView: View {
+struct KanbanCardView: View {
     @Environment(KanbanStore.self) private var store
     @Environment(ThemeStore.self) private var theme
     let boardId: UUID
@@ -421,7 +421,7 @@ private struct KanbanCardView: View {
 
 // MARK: - Card edit request
 
-private struct CardEditRequest: Identifiable {
+struct CardEditRequest: Identifiable {
     let id = UUID()
     let card: KanbanCard
     let columnId: UUID
@@ -430,7 +430,7 @@ private struct CardEditRequest: Identifiable {
 
 // MARK: - Card editor sheet
 
-private struct KanbanCardEditorSheet: View {
+struct KanbanCardEditorSheet: View {
     @Environment(KanbanStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     let boardId: UUID?

@@ -9,8 +9,13 @@ import Foundation
 @MainActor
 final class KanbanStore {
 
+    /// Merged display array: regular JSON boards + MaestroDB-linked
+    /// projections (see KanbanStore+MaestroDB.swift). Read-only to views.
     private(set) var boards: [KanbanBoard] = []
     private(set) var error: String?
+
+    /// JSON-persisted boards only — never includes MaestroDB projections.
+    private var regularBoards: [KanbanBoard] = []
 
     private let memoryStore = SimpleMemoryStore()
     private let decoder = JSONDecoder()
@@ -30,20 +35,21 @@ final class KanbanStore {
         do {
             if let json = try memoryStore.load(boardsURI),
                let data = json.data(using: .utf8) {
-                boards = (try? decoder.decode([KanbanBoard].self, from: data)) ?? []
+                regularBoards = (try? decoder.decode([KanbanBoard].self, from: data)) ?? []
             } else {
-                boards = []
+                regularBoards = []
             }
             error = nil
         } catch {
             self.error = error.localizedDescription
             NSLog("[KANBAN] load failed: \(error)")
         }
+        rebuildBoards()
     }
 
     private func persist() {
         do {
-            let data = try encoder.encode(boards)
+            let data = try encoder.encode(regularBoards)
             guard let json = String(data: data, encoding: .utf8) else { return }
             try memoryStore.save(json, at: boardsURI)
             error = nil
@@ -51,6 +57,13 @@ final class KanbanStore {
             self.error = error.localizedDescription
             NSLog("[KANBAN] persist failed: \(error)")
         }
+    }
+
+    /// Rebuild the merged display array: regular boards followed by fresh
+    /// MaestroDB projections. Called after every mutation (regular or bridge).
+    func rebuildBoards() {
+        let projections = loadMaestroLinks().compactMap { maestroProject($0) }
+        boards = regularBoards + projections
     }
 
     // MARK: - Board CRUD
@@ -65,29 +78,40 @@ final class KanbanStore {
             created: now,
             modified: now
         )
-        boards.insert(board, at: 0)
+        regularBoards.insert(board, at: 0)
         persist()
+        rebuildBoards()
         return board
     }
 
     func saveBoard(_ board: KanbanBoard) {
-        guard let index = boards.firstIndex(where: { $0.id == board.id }) else {
+        // MaestroDB-linked boards are projections — nothing to persist here.
+        guard maestroLink(for: board.id) == nil else { return }
+        guard let index = regularBoards.firstIndex(where: { $0.id == board.id }) else {
             var updated = board
             updated.modified = Date()
-            boards.insert(updated, at: 0)
+            regularBoards.insert(updated, at: 0)
             persist()
+            rebuildBoards()
             return
         }
         var updated = board
         updated.modified = Date()
-        boards[index] = updated
-        boards.sort { $0.modified > $1.modified }
+        regularBoards[index] = updated
+        regularBoards.sort { $0.modified > $1.modified }
         persist()
+        rebuildBoards()
     }
 
     func delete(_ id: UUID) {
-        boards.removeAll { $0.id == id }
+        // Deleting a linked board unlinks it — the table data stays in MaestroDB.
+        if maestroLink(for: id) != nil {
+            unlinkMaestroBoard(id)
+            return
+        }
+        regularBoards.removeAll { $0.id == id }
         persist()
+        rebuildBoards()
     }
 
     @discardableResult
@@ -110,16 +134,21 @@ final class KanbanStore {
             }
             return c
         }
-        boards.insert(copy, at: 0)
+        regularBoards.insert(copy, at: 0)
         persist()
+        rebuildBoards()
         return copy
     }
 
     // MARK: - Column helpers
 
     func addColumn(to boardId: UUID, title: String, color: KanbanColumnColor? = nil) {
-        guard let index = boards.firstIndex(where: { $0.id == boardId }) else { return }
-        var board = boards[index]
+        if let link = maestroLink(for: boardId) {
+            maestroAddColumn(title: title.trimmingCharacters(in: .whitespacesAndNewlines), link: link)
+            return
+        }
+        guard let index = regularBoards.firstIndex(where: { $0.id == boardId }) else { return }
+        var board = regularBoards[index]
         board.columns.append(KanbanColumn(
             title: title.trimmingCharacters(in: .whitespacesAndNewlines),
             color: color
@@ -128,16 +157,30 @@ final class KanbanStore {
     }
 
     func updateColumn(_ column: KanbanColumn, in boardId: UUID) {
-        guard let boardIndex = boards.firstIndex(where: { $0.id == boardId }) else { return }
-        var board = boards[boardIndex]
+        if let link = maestroLink(for: boardId) {
+            let oldTitle = boards.first(where: { $0.id == boardId })?
+                .columns.first(where: { $0.id == column.id })?.title ?? column.title
+            if oldTitle != column.title {
+                maestroRenameColumn(from: oldTitle, to: column.title, link: link)
+            }
+            return
+        }
+        guard let boardIndex = regularBoards.firstIndex(where: { $0.id == boardId }) else { return }
+        var board = regularBoards[boardIndex]
         guard let columnIndex = board.columns.firstIndex(where: { $0.id == column.id }) else { return }
         board.columns[columnIndex] = column
         saveBoard(board)
     }
 
     func deleteColumn(_ columnId: UUID, from boardId: UUID) {
-        guard let boardIndex = boards.firstIndex(where: { $0.id == boardId }) else { return }
-        var board = boards[boardIndex]
+        if let link = maestroLink(for: boardId) {
+            guard let title = boards.first(where: { $0.id == boardId })?
+                .columns.first(where: { $0.id == columnId })?.title else { return }
+            maestroDeleteColumn(title: title, link: link)
+            return
+        }
+        guard let boardIndex = regularBoards.firstIndex(where: { $0.id == boardId }) else { return }
+        var board = regularBoards[boardIndex]
         board.columns.removeAll { $0.id == columnId }
         saveBoard(board)
     }
@@ -145,16 +188,26 @@ final class KanbanStore {
     // MARK: - Card helpers
 
     func addCard(_ card: KanbanCard, toColumn columnId: UUID, in boardId: UUID) {
-        guard let boardIndex = boards.firstIndex(where: { $0.id == boardId }) else { return }
-        var board = boards[boardIndex]
+        if let link = maestroLink(for: boardId) {
+            let title = boards.first(where: { $0.id == boardId })?
+                .columns.first(where: { $0.id == columnId })?.title ?? ""
+            maestroAddCard(card, columnTitle: title, link: link)
+            return
+        }
+        guard let boardIndex = regularBoards.firstIndex(where: { $0.id == boardId }) else { return }
+        var board = regularBoards[boardIndex]
         guard let columnIndex = board.columns.firstIndex(where: { $0.id == columnId }) else { return }
         board.columns[columnIndex].cards.append(card)
         saveBoard(board)
     }
 
     func updateCard(_ card: KanbanCard, in boardId: UUID) {
-        guard let boardIndex = boards.firstIndex(where: { $0.id == boardId }) else { return }
-        var board = boards[boardIndex]
+        if let link = maestroLink(for: boardId) {
+            maestroUpdateCard(card, link: link)
+            return
+        }
+        guard let boardIndex = regularBoards.firstIndex(where: { $0.id == boardId }) else { return }
+        var board = regularBoards[boardIndex]
         for columnIndex in board.columns.indices {
             if let cardIndex = board.columns[columnIndex].cards.firstIndex(where: { $0.id == card.id }) {
                 var updated = card
@@ -167,8 +220,12 @@ final class KanbanStore {
     }
 
     func deleteCard(_ cardId: UUID, from boardId: UUID) {
-        guard let boardIndex = boards.firstIndex(where: { $0.id == boardId }) else { return }
-        var board = boards[boardIndex]
+        if let link = maestroLink(for: boardId) {
+            maestroDeleteCard(cardId, link: link)
+            return
+        }
+        guard let boardIndex = regularBoards.firstIndex(where: { $0.id == boardId }) else { return }
+        var board = regularBoards[boardIndex]
         for columnIndex in board.columns.indices {
             let before = board.columns[columnIndex].cards.count
             board.columns[columnIndex].cards.removeAll { $0.id == cardId }
@@ -186,8 +243,14 @@ final class KanbanStore {
         toIndex targetIndex: Int,
         in boardId: UUID
     ) {
-        guard let boardIndex = boards.firstIndex(where: { $0.id == boardId }) else { return }
-        var board = boards[boardIndex]
+        if let link = maestroLink(for: boardId) {
+            guard let title = boards.first(where: { $0.id == boardId })?
+                .columns.first(where: { $0.id == targetColumnId })?.title else { return }
+            maestroMoveCard(cardId, toColumnTitle: title, link: link)
+            return
+        }
+        guard let boardIndex = regularBoards.firstIndex(where: { $0.id == boardId }) else { return }
+        var board = regularBoards[boardIndex]
 
         guard let sourceColumnIndex = board.columns.firstIndex(where: { $0.id == sourceColumnId }),
               let cardIndex = board.columns[sourceColumnIndex].cards.firstIndex(where: { $0.id == cardId })
@@ -210,8 +273,14 @@ final class KanbanStore {
         toIndex targetIndex: Int,
         in boardId: UUID
     ) {
-        guard let boardIndex = boards.firstIndex(where: { $0.id == boardId }) else { return }
-        let board = boards[boardIndex]
+        if let link = maestroLink(for: boardId) {
+            guard let title = boards.first(where: { $0.id == boardId })?
+                .columns.first(where: { $0.id == targetColumnId })?.title else { return }
+            maestroMoveCard(cardId, toColumnTitle: title, link: link)
+            return
+        }
+        guard let boardIndex = regularBoards.firstIndex(where: { $0.id == boardId }) else { return }
+        let board = regularBoards[boardIndex]
 
         guard let sourceColumnId = board.columns.first(where: { $0.cards.contains(where: { $0.id == cardId }) })?.id
         else { return }
