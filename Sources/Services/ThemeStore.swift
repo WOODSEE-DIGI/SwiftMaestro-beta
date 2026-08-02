@@ -37,6 +37,14 @@ final class ThemeStore {
     static let userBubbleTextKey = "theme.userBubbleTextHex"
     static let chatBackgroundKey = "theme.chatBackgroundHex"
     static let chatTextKey = "theme.chatTextHex"
+    /// Global luminance tier: when set, every surface without its own override
+    /// derives from these (0 black – 1 white). Nil = follow skin/system.
+    static let globalBackgroundLuminanceKey = "theme.globalBackgroundLuminance"
+    static let globalTextLuminanceKey = "theme.globalTextLuminance"
+    /// When true (default), the text luminance is COMPUTED against the
+    /// background luminance so contrast is guaranteed; manual text slider
+    /// turns this off.
+    static let globalTextFollowsContrastKey = "theme.globalTextFollowsContrast"
     static let sidebarKey = "theme.sidebarHex"
     static let sidebarTextKey = "theme.sidebarTextHex"
     static let plansPanelKey = "theme.plansPanelHex"
@@ -79,6 +87,12 @@ final class ThemeStore {
     private var tasksTextOverride: Color?
     private var backgroundOverride: Color?
     private var secondaryBackgroundOverride: Color?
+
+    /// Global luminance tier (nil = follow skin/system). See effective colors.
+    var globalBackgroundLuminance: Double?
+    var globalTextLuminance: Double?
+    /// Auto-contrast toggle: text luminance computed from background (default on).
+    var globalTextFollowsContrast = true
     /// Per-panel-kind overrides, keyed by `WorkspacePanelKind.themeStorageKey`.
     /// Absent key => that panel uses the shared `accent` color (see
     /// `panelAccent(for:)`). Internal so `SkinStore` can snapshot current colors.
@@ -93,6 +107,9 @@ final class ThemeStore {
         userBubbleTextOverride = defaults.string(forKey: Self.userBubbleTextKey).flatMap(Color.init(hex:))
         chatBackgroundOverride = defaults.string(forKey: Self.chatBackgroundKey).flatMap(Color.init(hex:))
         chatTextOverride = defaults.string(forKey: Self.chatTextKey).flatMap(Color.init(hex:))
+        globalBackgroundLuminance = defaults.object(forKey: Self.globalBackgroundLuminanceKey) as? Double
+        globalTextLuminance = defaults.object(forKey: Self.globalTextLuminanceKey) as? Double
+        globalTextFollowsContrast = (defaults.object(forKey: Self.globalTextFollowsContrastKey) as? Bool) ?? true
         sidebarOverride = defaults.string(forKey: Self.sidebarKey).flatMap(Color.init(hex:))
         sidebarTextOverride = defaults.string(forKey: Self.sidebarTextKey).flatMap(Color.init(hex:))
         plansPanelOverride = defaults.string(forKey: Self.plansPanelKey).flatMap(Color.init(hex:))
@@ -115,6 +132,9 @@ final class ThemeStore {
         userBubbleTextOverride = defaults.string(forKey: Self.userBubbleTextKey).flatMap(Color.init(hex:))
         chatBackgroundOverride = defaults.string(forKey: Self.chatBackgroundKey).flatMap(Color.init(hex:))
         chatTextOverride = defaults.string(forKey: Self.chatTextKey).flatMap(Color.init(hex:))
+        globalBackgroundLuminance = defaults.object(forKey: Self.globalBackgroundLuminanceKey) as? Double
+        globalTextLuminance = defaults.object(forKey: Self.globalTextLuminanceKey) as? Double
+        globalTextFollowsContrast = (defaults.object(forKey: Self.globalTextFollowsContrastKey) as? Bool) ?? true
         sidebarOverride = defaults.string(forKey: Self.sidebarKey).flatMap(Color.init(hex:))
         sidebarTextOverride = defaults.string(forKey: Self.sidebarTextKey).flatMap(Color.init(hex:))
         plansPanelOverride = defaults.string(forKey: Self.plansPanelKey).flatMap(Color.init(hex:))
@@ -144,34 +164,34 @@ final class ThemeStore {
     /// Main chat area background. Defaults to the real system window background
     /// (not `.clear`) so the color picker opens on the actual color instead of a
     /// black/transparent swatch, while still matching the system look.
-    var chatBackground: Color { chatBackgroundOverride ?? Color(nsColor: .windowBackgroundColor) }
+    var chatBackground: Color { chatBackgroundOverride ?? globalBackgroundColor ?? Color(nsColor: .windowBackgroundColor) }
     /// Main chat text color for assistant messages. Defaults to `.primary` so it
     /// follows the system light/dark mode when no skin overrides it.
-    var chatText: Color { chatTextOverride ?? .primary }
+    var chatText: Color { chatTextOverride ?? globalTextColor ?? .primary }
     /// Agent sidebar background. Defaults to the system window background for the
     /// picker; the view only replaces the list's material when `sidebarOverridden`.
-    var sidebarBackground: Color { sidebarOverride ?? Color(nsColor: .windowBackgroundColor) }
+    var sidebarBackground: Color { sidebarOverride ?? globalBackgroundColor ?? Color(nsColor: .windowBackgroundColor) }
     /// Whether a custom sidebar color is set.
     var sidebarOverridden: Bool { sidebarOverride != nil }
     /// Sidebar row (agent name) text. Defaults to full-strength `.primary` so it
     /// reads at the same brightness as content text instead of the muted vibrant
     /// label macOS applies to sidebar lists by default.
-    var sidebarText: Color { sidebarTextOverride ?? .primary }
+    var sidebarText: Color { sidebarTextOverride ?? globalTextColor ?? .primary }
     /// Plans side panel background. Defaults to the subtle neutral tint.
-    var plansPanel: Color { plansPanelOverride ?? Self.defaultPanelTint }
+    var plansPanel: Color { plansPanelOverride ?? globalBackgroundColor ?? Self.defaultPanelTint }
     /// Plan card title text. Cards are accent-colored pills, so this defaults to
     /// white for contrast.
-    var plansCardText: Color { plansTextOverride ?? .white }
+    var plansCardText: Color { plansTextOverride ?? globalTextColor ?? .white }
     /// Tasks side panel background. Defaults to the subtle neutral tint.
-    var tasksPanel: Color { tasksPanelOverride ?? Self.defaultPanelTint }
+    var tasksPanel: Color { tasksPanelOverride ?? globalBackgroundColor ?? Self.defaultPanelTint }
     /// Task (todo) title text for open items. Defaults to `.primary`.
-    var tasksText: Color { tasksTextOverride ?? .primary }
+    var tasksText: Color { tasksTextOverride ?? globalTextColor ?? .primary }
     /// Generic view background (e.g. Notes editor). Defaults to the system window
     /// background so it matches the rest of the app chrome.
-    var background: Color { backgroundOverride ?? Color(nsColor: .windowBackgroundColor) }
+    var background: Color { backgroundOverride ?? globalBackgroundColor ?? Color(nsColor: .windowBackgroundColor) }
     /// Generic secondary background (e.g. Notes toolbar/search bar). Defaults to
     /// the system control background for subtle contrast.
-    var secondaryBackground: Color { secondaryBackgroundOverride ?? Color(nsColor: .controlBackgroundColor) }
+    var secondaryBackground: Color { secondaryBackgroundOverride ?? globalBackgroundColor ?? Color(nsColor: .controlBackgroundColor) }
 
     /// The tint a floating panel's header bar should use: that panel kind's
     /// own override if the user set one, else the shared `accent`. Every
@@ -249,6 +269,109 @@ final class ThemeStore {
     func setUserBubbleText(_ color: Color) { userBubbleTextOverride = color; persist(Self.userBubbleTextKey, color) }
     func setChatBackground(_ color: Color) { chatBackgroundOverride = color; persist(Self.chatBackgroundKey, color) }
     func setChatText(_ color: Color) { chatTextOverride = color; persist(Self.chatTextKey, color) }
+
+    // MARK: - Global luminance dials
+    //
+    // The GLOBAL tier: sliders write theme.globalBackgroundLuminance /
+    // globalTextLuminance. Every surface getter falls back to these when it
+    // has no override of its own, so one pair of dials moves the whole app;
+    // panel groups below keep their individual overrides and can Reset to
+    // the global any time.
+
+    static func grayColor(_ luminance: Double) -> Color {
+        let clamped = min(max(luminance, 0), 1)
+        return Color(nsColor: NSColor(calibratedWhite: clamped, alpha: 1))
+    }
+
+    static func relativeLuminance(of color: Color) -> Double {
+        guard let rgb = NSColor(color).usingColorSpace(.deviceRGB) else { return 0.5 }
+        // Rec. 601 luma — plenty for a brightness dial.
+        return Double(0.299 * rgb.redComponent + 0.587 * rgb.greenComponent + 0.114 * rgb.blueComponent)
+    }
+
+    /// Computed global colors (nil when the tier is off = follow skin/system).
+    var globalBackgroundColor: Color? { globalBackgroundLuminance.map { Self.grayColor($0) } }
+    var globalTextColor: Color? { globalTextLuminance.map { Self.grayColor($0) } }
+
+    /// Global background brightness (0 black – 1 white).
+    var backgroundLuminance: Double {
+        globalBackgroundLuminance ?? Self.relativeLuminance(of: chatBackground)
+    }
+    /// Global text brightness (0 black – 1 white). When auto-contrast is on
+    /// (default), this is COMPUTED from the background so text can never
+    /// blend into it — moving the background slider moves text the other way.
+    var textLuminance: Double {
+        if globalTextFollowsContrast {
+            return Self.contrastingTextLuminance(for: backgroundLuminance)
+        }
+        return globalTextLuminance ?? Self.relativeLuminance(of: chatText)
+    }
+
+    /// Guaranteed-contrast text luminance for a given background luminance.
+    static func contrastingTextLuminance(for background: Double) -> Double {
+        background > 0.55 ? 0.10 : 0.90
+    }
+
+    var backgroundLuminanceBinding: Binding<Double> {
+        Binding(get: { self.backgroundLuminance }, set: { self.setGlobalBackgroundLuminance($0) })
+    }
+    var textLuminanceBinding: Binding<Double> {
+        Binding(get: { self.textLuminance }, set: { self.setGlobalTextLuminance($0) })
+    }
+
+    func setGlobalBackgroundLuminance(_ value: Double) {
+        globalBackgroundLuminance = min(max(value, 0), 1)
+        UserDefaults.standard.set(globalBackgroundLuminance, forKey: Self.globalBackgroundLuminanceKey)
+    }
+    func setGlobalTextLuminance(_ value: Double) {
+        globalTextLuminance = min(max(value, 0), 1)
+        // Manually driving the text slider opts out of auto-contrast.
+        globalTextFollowsContrast = false
+        UserDefaults.standard.set(false, forKey: Self.globalTextFollowsContrastKey)
+        UserDefaults.standard.set(globalTextLuminance, forKey: Self.globalTextLuminanceKey)
+    }
+
+    /// Re-enable auto-contrast (text computed from background).
+    func setTextFollowsContrast(_ enabled: Bool) {
+        globalTextFollowsContrast = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.globalTextFollowsContrastKey)
+    }
+
+    var textFollowsContrastBinding: Binding<Bool> {
+        Binding(get: { self.globalTextFollowsContrast }, set: { self.setTextFollowsContrast($0) })
+    }
+
+    /// Turn the global tier OFF (panels fall back to skin/system defaults).
+    func resetGlobalSurfaceColors() {
+        globalBackgroundLuminance = nil
+        globalTextLuminance = nil
+        setTextFollowsContrast(true)
+        UserDefaults.standard.removeObject(forKey: Self.globalBackgroundLuminanceKey)
+        UserDefaults.standard.removeObject(forKey: Self.globalTextLuminanceKey)
+    }
+
+    // MARK: - Per-group resets (fall back to the global tier)
+
+    func resetSidebarColors() {
+        sidebarOverride = nil; sidebarTextOverride = nil
+        UserDefaults.standard.removeObject(forKey: Self.sidebarKey)
+        UserDefaults.standard.removeObject(forKey: Self.sidebarTextKey)
+    }
+    func resetPlansColors() {
+        plansPanelOverride = nil; plansTextOverride = nil
+        UserDefaults.standard.removeObject(forKey: Self.plansPanelKey)
+        UserDefaults.standard.removeObject(forKey: Self.plansTextKey)
+    }
+    func resetChatColors() {
+        chatBackgroundOverride = nil; chatTextOverride = nil
+        UserDefaults.standard.removeObject(forKey: Self.chatBackgroundKey)
+        UserDefaults.standard.removeObject(forKey: Self.chatTextKey)
+    }
+    func resetTasksColors() {
+        tasksPanelOverride = nil; tasksTextOverride = nil
+        UserDefaults.standard.removeObject(forKey: Self.tasksPanelKey)
+        UserDefaults.standard.removeObject(forKey: Self.tasksTextKey)
+    }
     func setSidebar(_ color: Color) { sidebarOverride = color; persist(Self.sidebarKey, color) }
     func setSidebarText(_ color: Color) { sidebarTextOverride = color; persist(Self.sidebarTextKey, color) }
     func setPlansPanel(_ color: Color) { plansPanelOverride = color; persist(Self.plansPanelKey, color) }

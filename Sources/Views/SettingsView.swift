@@ -227,7 +227,7 @@ private struct SettingsTabStrip: View {
                     .overlay(
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
                             .strokeBorder(isSelected ? theme.accent.opacity(0.6) : Color.clear))
-                    .foregroundStyle(isSelected ? theme.accent : .secondary)
+                    .foregroundStyle(isSelected ? theme.accent : theme.chatText.opacity(0.75))
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -383,6 +383,34 @@ struct AppearanceSettingsTab: View {
                             + "default header color for any panel below that hasn't been customized.")
                             .font(.caption).foregroundStyle(.secondary)
                         Divider()
+                        LuminanceSliderRow(
+                            title: "Background",
+                            binding: theme.backgroundLuminanceBinding
+                        )
+                        LuminanceSliderRow(
+                            title: "Text",
+                            binding: theme.textLuminanceBinding
+                        )
+                        .disabled(theme.globalTextFollowsContrast)
+                        .opacity(theme.globalTextFollowsContrast ? 0.45 : 1)
+                        HStack {
+                            Text("Global brightness for the content surface — chat, MaestroDB grid, "
+                                + "Notes preview. Panels keep their own overrides; hue fine-tuning "
+                                + "lives in the Chat group below.")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Spacer()
+                            Toggle(isOn: theme.textFollowsContrastBinding) {
+                                Text("Auto contrast")
+                                    .font(.caption)
+                            }
+                            .toggleStyle(.checkbox)
+                            .help("Text luminance is computed against the background so it always contrasts. Turn off to drive the Text slider manually.")
+                            Button("Reset") { theme.resetGlobalSurfaceColors() }
+                                .font(.caption)
+                                .buttonStyle(.borderless)
+                                .foregroundStyle(theme.accent)
+                        }
+                        Divider()
                         skinSection
                     }
                     .padding(.top, 8)
@@ -398,6 +426,7 @@ struct AppearanceSettingsTab: View {
                         ColorPicker("Text", selection: theme.sidebarTextBinding, supportsOpacity: false)
                         Text("Agent list on the left. Leave the background unset to follow the system.")
                             .font(.caption).foregroundStyle(.secondary)
+                        ResetToGlobalButton(action: theme.resetSidebarColors)
                     }
                     .padding(.top, 8)
                 }
@@ -407,6 +436,7 @@ struct AppearanceSettingsTab: View {
                     VStack(alignment: .leading, spacing: 12) {
                         ColorPicker("Background", selection: theme.plansPanelBinding, supportsOpacity: false)
                         ColorPicker("Card text", selection: theme.plansTextBinding, supportsOpacity: false)
+                        ResetToGlobalButton(action: theme.resetPlansColors)
                     }
                     .padding(.top, 8)
                 }
@@ -420,6 +450,7 @@ struct AppearanceSettingsTab: View {
                         ColorPicker("Your message text", selection: theme.userBubbleTextBinding, supportsOpacity: false)
                         Text("Leave the background unset to follow the system.")
                             .font(.caption).foregroundStyle(.secondary)
+                        ResetToGlobalButton(action: theme.resetChatColors)
                     }
                     .padding(.top, 8)
                 }
@@ -429,6 +460,7 @@ struct AppearanceSettingsTab: View {
                     VStack(alignment: .leading, spacing: 12) {
                         ColorPicker("Background", selection: theme.tasksPanelBinding, supportsOpacity: false)
                         ColorPicker("Text", selection: theme.tasksTextBinding, supportsOpacity: false)
+                        ResetToGlobalButton(action: theme.resetTasksColors)
                     }
                     .padding(.top, 8)
                 }
@@ -2255,5 +2287,53 @@ struct AboutSettingsTab: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(theme.background)
+    }
+}
+
+// MARK: - Luminance slider row
+
+/// Brightness dial (0 black – 1 white) with dark/light end glyphs and a live
+/// percentage label. Drives ThemeStore's global surface luminance bindings.
+private struct LuminanceSliderRow: View {
+    let title: String
+    @Binding var binding: Double
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(title)
+                .frame(width: 90, alignment: .leading)
+            Image(systemName: "circle.fill")
+                .font(.caption2)
+                .foregroundStyle(.black)
+                .overlay(Circle().stroke(.quaternary, lineWidth: 0.5))
+            Slider(value: $binding, in: 0...1)
+            Image(systemName: "circle.fill")
+                .font(.caption2)
+                .foregroundStyle(.white)
+                .overlay(Circle().stroke(.quaternary, lineWidth: 0.5))
+            Text("\(Int(binding * 100))%")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 38, alignment: .trailing)
+        }
+    }
+}
+
+// MARK: - Reset to global button
+
+/// Per-panel-group reset: clears that group's overrides so it falls back to
+/// the global luminance tier (or skin/system when the tier is off).
+private struct ResetToGlobalButton: View {
+    @Environment(ThemeStore.self) private var theme
+    let action: () -> Void
+
+    var body: some View {
+        HStack {
+            Spacer()
+            Button("Reset to global", action: action)
+                .font(.caption)
+                .buttonStyle(.borderless)
+                .foregroundStyle(theme.accent)
+        }
     }
 }
