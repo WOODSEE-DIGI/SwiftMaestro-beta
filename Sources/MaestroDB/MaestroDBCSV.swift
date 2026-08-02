@@ -162,10 +162,22 @@ enum MaestroDBCSV {
 
     /// Render a table as CSV: header row of field NAMES, one line per row,
     /// values in the round-trippable text form from MaestroDBCoercion.
-    static func exportCSV(fields: [DBField], rows: [DBRow]) -> String {
+    /// `relationTitles` (fieldID → rowID → title) renders relation cells as
+    /// the linked row's title; ids with no title fall back to the raw id.
+    static func exportCSV(
+        fields: [DBField], rows: [DBRow],
+        relationTitles: [String: [String: String]] = [:]
+    ) -> String {
         let headers = fields.map(\.name)
         let body = rows.map { row in
-            fields.map { MaestroDBCoercion.csvText(row.value(for: $0.id), for: $0.type) }
+            fields.map { field in
+                let stored = row.value(for: field.id)
+                if field.type == .relation, !stored.isEmpty,
+                   let title = relationTitles[field.id]?[stored] {
+                    return title
+                }
+                return MaestroDBCoercion.csvText(stored, for: field.type)
+            }
         }
         return serialize(headers: headers, rows: body)
     }
@@ -242,6 +254,19 @@ enum MaestroDBCSV {
                 guard var field = columnFields[columnIndex] else { continue }
                 let raw = cell.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !raw.isEmpty else { continue }
+
+                // Relations resolve title/id → row id (first title match);
+                // unresolved links are skipped like any other bad value.
+                if field.type == .relation {
+                    if let resolved = try MaestroDBRelations.resolveRowID(
+                        raw, field: field, database: database), !resolved.isEmpty {
+                        values[field.id] = resolved
+                    } else {
+                        report.cellsSkipped += 1
+                    }
+                    continue
+                }
+
                 guard let canonical = MaestroDBCoercion.canonical(raw, for: field.type) else {
                     report.cellsSkipped += 1
                     continue

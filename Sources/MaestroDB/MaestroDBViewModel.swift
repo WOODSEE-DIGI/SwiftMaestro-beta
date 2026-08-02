@@ -33,6 +33,12 @@ final class MaestroDBViewModel {
     private(set) var fields: [DBField] = []
     private(set) var rows: [DBRow] = []
 
+    /// Resolution contexts for the current table's relation fields, keyed by
+    /// FIELD id. Loaded alongside the table content (and reloaded by the
+    /// external-change observer) so relation cells can display and pick by
+    /// title instead of raw row ids.
+    private(set) var relationData: [String: MaestroDBRelations.Context] = [:]
+
     /// Text search across all cell values.
     var searchQuery = "" {
         didSet { Task { await loadRows() } }
@@ -93,9 +99,10 @@ final class MaestroDBViewModel {
     }
 
     func loadTableContent() async {
-        guard let tableID = selectedTableID else { fields = []; rows = []; return }
+        guard let tableID = selectedTableID else { fields = []; rows = []; relationData = [:]; return }
         do {
             fields = try database.fields(tableID: tableID)
+            relationData = MaestroDBRelations.contexts(forFields: fields, database: database)
             await loadRows()
             errorMessage = nil
         } catch {
@@ -219,10 +226,12 @@ final class MaestroDBViewModel {
 
     // MARK: - Fields
 
-    func addField(named name: String, type: DBFieldType, options: [String] = []) async {
+    func addField(named name: String, type: DBFieldType, options: [String] = [],
+                  config: [String: String] = [:]) async {
         guard let tableID = selectedTableID else { return }
         do {
-            _ = try database.addField(tableID: tableID, name: name, type: type, options: options)
+            _ = try database.addField(tableID: tableID, name: name, type: type,
+                                      options: options, config: config)
             await loadTableContent()
         } catch { errorMessage = "Could not add field: \(error.localizedDescription)" }
     }
@@ -293,15 +302,21 @@ final class MaestroDBViewModel {
     }
 
     /// Write the selected table out as CSV (round-trips through importCSV).
-    /// Always exports the FULL table, not the current search-filtered view.
-    func exportCSV(to url: URL) async {
+    /// `filtered: true` exports the current search/sort view (the rows array);
+    /// `false` exports the FULL table regardless of the active filter.
+    func exportCSV(to url: URL, filtered: Bool = false) async {
         guard let tableID = selectedTableID else { return }
         do {
-            let allRows = try database.rows(tableID: tableID)
+            let exportRows = filtered ? rows : try database.rows(tableID: tableID)
+            let exportFields = try database.fields(tableID: tableID)
             let csv = MaestroDBCSV.exportCSV(
-                fields: try database.fields(tableID: tableID), rows: allRows)
+                fields: exportFields, rows: exportRows,
+                relationTitles: MaestroDBRelations.contexts(
+                    forFields: exportFields, database: database)
+                    .mapValues { $0.titles })
             try csv.write(to: url, atomically: true, encoding: .utf8)
-            noticeMessage = "Exported \(allRows.count) rows to \(url.lastPathComponent)"
+            noticeMessage = "Exported \(exportRows.count) rows to \(url.lastPathComponent)"
+                + (filtered ? " (filtered view)" : "")
             errorMessage = nil
         } catch {
             errorMessage = "CSV export failed: \(error.localizedDescription)"
@@ -310,11 +325,8 @@ final class MaestroDBViewModel {
     }
 
     /// Title-ish value for a row: first text-ish field's value, else "Row N".
+    /// Thin wrapper over the shared MaestroDBRelations derivation.
     func title(for row: DBRow) -> String {
-        if let titleField = fields.first(where: { [.text, .url, .email, .phone].contains($0.type) }) {
-            let value = row.value(for: titleField.id)
-            if !value.isEmpty { return value }
-        }
-        return "Row \(row.position + 1)"
+        MaestroDBRelations.title(for: row, fields: fields)
     }
 }

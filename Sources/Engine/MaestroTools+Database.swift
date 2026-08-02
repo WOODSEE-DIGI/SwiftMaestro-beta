@@ -71,7 +71,8 @@ extension MaestroTools {
         + "{\"Job\": \"Website redesign\", \"Priority\": 4, \"Delivered\": true}. "
         + "Values are coerced to each field's type (checkbox: true/false/yes/1; "
         + "date: ISO8601 or yyyy-MM-dd; rating: 1-5; multiSelect: JSON array or "
-        + "semicolon-separated). Unknown field names are reported, not stored."
+        + "semicolon-separated; relation: the linked row's TITLE or row id; "
+        + "attachment: an absolute file path). Unknown field names are reported, not stored."
 
     static var databaseToolSpecs: [ToolSpec] {
         [
@@ -108,14 +109,16 @@ extension MaestroTools {
                 required: ["table"]),
             rawSpec("db_add_field",
                 "Add a field (column) to a table. Types: text, longText, number, "
-                + "checkbox, date, select, multiSelect, url, email, phone, rating. "
-                + "For select/multiSelect pass options too.",
+                + "checkbox, date, select, multiSelect, url, email, phone, rating, "
+                + "relation (single link to a row in another table — pass link_table), "
+                + "attachment (file reference). For select/multiSelect pass options too.",
                 properties: [
                     "table": ["type": "string", "description": tableRefDesc],
                     "base": ["type": "string", "description": baseRefDesc],
                     "name": ["type": "string"],
                     "type": ["type": "string"],
                     "options": ["type": "string", "description": "select/multiSelect options: JSON array or semicolon-separated"],
+                    "link_table": ["type": "string", "description": "relation only: target table NAME or id (may be the same table for self-links)"],
                 ],
                 required: ["table", "name", "type"]),
             rawSpec("db_list_rows",
@@ -185,7 +188,7 @@ extension MaestroTools {
         let table, base, query: String?
         let limit, offset: Int?
     }
-    private struct AddFieldArgs: Codable { let table, base, name, type, options: String? }
+    private struct AddFieldArgs: Codable { let table, base, name, type, options, link_table: String? }
     private struct RowValuesArgs: Codable { let table, base, values, row_id: String? }
     private struct ImportCSVArgs: Codable { let path, base, table, create: String? }
     private struct ExportCSVArgs: Codable { let table, base, path: String? }
@@ -280,6 +283,20 @@ extension MaestroTools {
                 continue
             }
             var field = mutableFields[index]
+
+            // Relations resolve against the target table (row id OR title),
+            // not through the string coercion used by every other type.
+            if field.type == .relation {
+                guard let resolved = try MaestroDBRelations.resolveRowID(
+                    raw, field: field, database: database) else {
+                    let targetName = (try? database.table(field.config["table"] ?? ""))?.name ?? "?"
+                    errors.append("'\(raw)' matches no row in '\(targetName)' (use a row title or id)")
+                    continue
+                }
+                cells[field.id] = resolved
+                continue
+            }
+
             guard let canonical = MaestroDBCoercion.canonical(raw, for: field.type) else {
                 errors.append("'\(raw)' is not a valid \(field.type.rawValue) value for '\(field.name)'")
                 continue
@@ -417,9 +434,6 @@ extension MaestroTools {
                 "unknown type '\(typeRaw)'. Types: "
                 + DBFieldType.uiSupported.map(\.rawValue).joined(separator: ", "))
         }
-        guard type != .relation, type != .attachment else {
-            return errorJSON("'\(typeRaw)' fields are schema-ready but have no editor yet — coming in a later phase.")
-        }
         do {
             let database = MaestroDBDatabase.shared
             guard let table = try resolveTable(tableRef, baseRef: args.base, database: database) else {
@@ -429,8 +443,19 @@ extension MaestroTools {
             if let optionsRaw = args.options, !optionsRaw.isEmpty {
                 options = MaestroDBCoercion.coerceMulti(optionsRaw) ?? []
             }
+            var config: [String: String] = [:]
+            if type == .relation {
+                guard let linkRef = args.link_table?.trimmingCharacters(in: .whitespaces),
+                      !linkRef.isEmpty else {
+                    return errorJSON("relation fields require 'link_table' (target table NAME or id)")
+                }
+                guard let target = try resolveTable(linkRef, baseRef: args.base, database: database) else {
+                    return errorJSON("no table named '\(linkRef)' to link to. Tables: \(try tableNameList(database))")
+                }
+                config["table"] = target.id
+            }
             let field = try database.addField(
-                tableID: table.id, name: name, type: type, options: options)
+                tableID: table.id, name: name, type: type, options: options, config: config)
             return jsonString([
                 "status": "created", "field_id": field.id, "name": field.name,
                 "type": field.type.rawValue, "table": table.name,
@@ -454,6 +479,8 @@ extension MaestroTools {
             let limit = min(args.limit ?? 50, 200)
             let offset = max(args.offset ?? 0, 0)
             let page = Array(allRows.dropFirst(offset).prefix(limit))
+            // Relation cells display as the linked row's TITLE, not its raw id.
+            let relationContexts = MaestroDBRelations.contexts(forFields: fields, database: database)
 
             if page.isEmpty {
                 return "0 rows in '\(table.name)'\(query.isEmpty ? "" : " matching '\(query)'")"
@@ -468,7 +495,13 @@ extension MaestroTools {
             for row in page {
                 var cells = [row.id]
                 for field in fields {
-                    var value = row.display(for: field)
+                    var value: String
+                    if field.type == .relation, let ctx = relationContexts[field.id] {
+                        let linked = row.value(for: field.id)
+                        value = linked.isEmpty ? "" : (ctx.title(for: linked) ?? "⚠︎ missing row")
+                    } else {
+                        value = row.display(for: field)
+                    }
                     if value.count > 80 { value = String(value.prefix(77)) + "…" }
                     cells.append(
                         value.replacingOccurrences(of: "|", with: "\\|")

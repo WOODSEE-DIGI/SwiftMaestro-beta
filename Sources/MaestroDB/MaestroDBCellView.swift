@@ -9,6 +9,8 @@ import SwiftUI
 struct MaestroDBCellView: View {
     let field: DBField
     let row: DBRow
+    /// Resolution context for .relation fields (nil for every other type).
+    var relation: MaestroDBRelations.Context? = nil
     let onCommit: (String) -> Void
 
     @State private var draft: String?
@@ -42,10 +44,10 @@ struct MaestroDBCellView: View {
             multiSelectEditor
         case .rating:
             ratingEditor
-        case .relation, .attachment:
-            Text(row.display(for: field))
-                .font(.callout)
-                .foregroundStyle(theme.chatText.opacity(0.35))
+        case .relation:
+            relationEditor
+        case .attachment:
+            attachmentEditor
         }
     }
 
@@ -242,6 +244,99 @@ struct MaestroDBCellView: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
+    }
+
+    // MARK: Relation
+
+    /// Single-link picker: a menu of the target table's rows shown by TITLE
+    /// (ids stay invisible), plus clear. Value stored is always the row id.
+    private var relationEditor: some View {
+        let linkedID = row.value(for: field.id)
+        return Menu {
+            if let relation {
+                ForEach(relation.rows) { candidate in
+                    Button {
+                        onCommit(candidate.id)
+                    } label: {
+                        Label(
+                            relation.titles[candidate.id] ?? "Row \(candidate.position + 1)",
+                            systemImage: candidate.id == linkedID ? "checkmark" : "")
+                    }
+                }
+                if !linkedID.isEmpty {
+                    Divider()
+                    Button("Clear link") { onCommit("") }
+                }
+            } else {
+                Text("Link target unavailable")
+            }
+        } label: {
+            HStack(spacing: 4) {
+                if linkedID.isEmpty {
+                    Text("Link…")
+                        .font(.callout)
+                        .foregroundStyle(theme.chatText.opacity(0.35))
+                } else {
+                    Label(
+                        relation?.title(for: linkedID) ?? "Missing row",
+                        systemImage: "arrow.triangle.branch")
+                        .font(.callout)
+                        .lineLimit(1)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(theme.accent.opacity(0.15))
+                        .clipShape(Capsule())
+                }
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 8))
+                    .foregroundStyle(theme.chatText.opacity(0.35))
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+
+    // MARK: Attachment
+
+    /// File reference cell: empty shows an Attach button; set shows the file
+    /// name (click opens it, context menu reveals/clears). Value is the
+    /// absolute path — MaestroDAM integration layers on top later.
+    private var attachmentEditor: some View {
+        let path = row.value(for: field.id)
+        return Group {
+            if path.isEmpty {
+                Button {
+                    let panel = NSOpenPanel()
+                    panel.canChooseDirectories = false
+                    panel.allowsMultipleSelection = false
+                    guard panel.runModal() == .OK, let url = panel.url else { return }
+                    onCommit(url.path)
+                } label: {
+                    Label("Attach…", systemImage: "paperclip")
+                        .font(.callout)
+                        .foregroundStyle(theme.chatText.opacity(0.6))
+                }
+                .buttonStyle(.plain)
+            } else {
+                let fileName = (path as NSString).lastPathComponent
+                Label(fileName, systemImage: "paperclip")
+                    .font(.callout)
+                    .lineLimit(1)
+                    .foregroundStyle(theme.chatText)
+                    .onTapGesture {
+                        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+                    }
+                    .contextMenu {
+                        Button("Open") { NSWorkspace.shared.open(URL(fileURLWithPath: path)) }
+                        Button("Reveal in Finder") {
+                            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+                        }
+                        Divider()
+                        Button("Remove attachment", role: .destructive) { onCommit("") }
+                    }
+                    .help(path)
+            }
+        }
     }
 
     // MARK: Rating

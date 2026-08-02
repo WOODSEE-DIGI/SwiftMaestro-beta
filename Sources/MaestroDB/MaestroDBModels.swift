@@ -71,10 +71,10 @@ enum DBFieldType: String, Codable, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// Types offered in the "Add field" UI today (relation/attachment are
-    /// schema-ready but hidden until their editors ship).
+    /// Types offered in the "Add field" UI. Relation (single-link) and
+    /// attachment (file reference) editors shipped in Phase 3.
     static var uiSupported: [DBFieldType] {
-        [.text, .longText, .number, .checkbox, .date, .select, .multiSelect, .url, .email, .phone, .rating]
+        [.text, .longText, .number, .checkbox, .date, .select, .multiSelect, .url, .email, .phone, .rating, .relation, .attachment]
     }
 }
 

@@ -104,7 +104,10 @@ struct MaestroDBGridView: View {
                     }
                 }
             ForEach(viewModel.fields) { field in
-                MaestroDBCellView(field: field, row: row) { value in
+                MaestroDBCellView(
+                    field: field, row: row,
+                    relation: viewModel.relationData[field.id]
+                ) { value in
                     viewModel.setCell(rowID: row.id, fieldID: field.id, value: value)
                 }
                 .frame(width: Self.width(for: field), alignment: .leading)

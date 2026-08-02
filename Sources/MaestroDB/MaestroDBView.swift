@@ -151,8 +151,12 @@ struct MaestroDBView: View {
 
             Menu {
                 Button("Import CSV…") { importCSV() }
-                Button("Export CSV…") { exportCSV() }
+                Divider()
+                Button("Export CSV (All Rows)…") { exportCSV(filtered: false) }
                     .disabled(viewModel.fields.isEmpty)
+                Button("Export CSV (Filtered View)…") { exportCSV(filtered: true) }
+                    .disabled(viewModel.fields.isEmpty
+                              || (viewModel.searchQuery.isEmpty && viewModel.sort == nil))
             } label: {
                 Image(systemName: "square.and.arrow.up.on.square")
             }
@@ -164,8 +168,8 @@ struct MaestroDBView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .sheet(isPresented: $isAddingField) {
-            MaestroDBAddFieldSheet { name, type, options in
-                Task { await viewModel.addField(named: name, type: type, options: options) }
+            MaestroDBAddFieldSheet(tables: viewModel.tables) { name, type, options, config in
+                Task { await viewModel.addField(named: name, type: type, options: options, config: config) }
             }
         }
     }
@@ -208,13 +212,15 @@ struct MaestroDBView: View {
         Task { await viewModel.importCSV(from: url) }
     }
 
-    private func exportCSV() {
+    private func exportCSV(filtered: Bool) {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.commaSeparatedText]
         let tableName = viewModel.tables.first(where: { $0.id == viewModel.selectedTableID })?.name ?? "Table"
-        panel.nameFieldStringValue = "\(tableName).csv"
-        panel.message = "Export the full table as CSV"
+        panel.nameFieldStringValue = filtered ? "\(tableName) (filtered).csv" : "\(tableName).csv"
+        panel.message = filtered
+            ? "Export the current filtered/sorted view as CSV"
+            : "Export the full table as CSV"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        Task { await viewModel.exportCSV(to: url) }
+        Task { await viewModel.exportCSV(to: url, filtered: filtered) }
     }
 }
