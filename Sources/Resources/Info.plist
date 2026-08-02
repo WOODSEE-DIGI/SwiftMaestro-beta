@@ -17,30 +17,52 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.9</string>
+	<string>0.2.0</string>
 	<key>CFBundleVersion</key>
-	<string>9</string>
+	<string>10</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>SwiftMaestro uses automation to create notes in the Notes app and to compose drafts and read message details in Mail when you ask it to.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>SwiftMaestro creates calendar events when you ask it to.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>SwiftMaestro uses cameras and capture cards for tethered photography and live video preview.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>SwiftMaestro reads and manages your contacts when you ask it to, so it can act as a local CRM and personal assistant.</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © 2026. All rights reserved.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>SwiftMaestro uses the microphone for speech-to-text transcription.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>SwiftMaestro reads your Photos albums and recent asset metadata when you ask it to.</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>SwiftMaestro creates and reads reminders when you ask it to.</string>
+	<key>NSSiriUsageDescription</key>
+	<string>SwiftMaestro lets you ask the agent a question hands-free using Siri.</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
 	<key>SUFeedURL</key>
 	<string>https://swiftmaestro.com/download/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>TTIO4DYLbmp/OPA3VtOvE8IERZ328cWiidD3gdKo+SY=</string>
-	<key>SUEnableAutomaticChecks</key>
-	<true/>
 	<key>SUScheduledCheckInterval</key>
 	<integer>86400</integer>
-	<key>LSMinimumSystemVersion</key>
-	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
 		<dict>
-			<key>UTTypeIdentifier</key>
-			<string>com.woodseedigi.swiftmaestro.workspace-panel</string>
-			<key>UTTypeDescription</key>
-			<string>SwiftMaestro Workspace Panel</string>
 			<key>UTTypeConformsTo</key>
 			<array>
 				<string>public.data</string>
 			</array>
+			<key>UTTypeDescription</key>
+			<string>SwiftMaestro Workspace Panel</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.woodseedigi.swiftmaestro.workspace-panel</string>
 			<key>UTTypeTagSpecification</key>
 			<dict>
 				<key>public.filename-extension</key>
@@ -50,27 +72,5 @@
 			</dict>
 		</dict>
 	</array>
-	<key>NSHumanReadableCopyright</key>
-	<string>Copyright © 2026. All rights reserved.</string>
-	<key>NSPrincipalClass</key>
-	<string>NSApplication</string>
-	<key>LSApplicationCategoryType</key>
-	<string>public.app-category.utilities</string>
-	<key>NSRemindersFullAccessUsageDescription</key>
-	<string>SwiftMaestro creates and reads reminders when you ask it to.</string>
-	<key>NSCalendarsFullAccessUsageDescription</key>
-	<string>SwiftMaestro creates calendar events when you ask it to.</string>
-	<key>NSAppleEventsUsageDescription</key>
-	<string>SwiftMaestro uses automation to create notes in the Notes app and to compose drafts and read message details in Mail when you ask it to.</string>
-	<key>NSContactsUsageDescription</key>
-	<string>SwiftMaestro reads and manages your contacts when you ask it to, so it can act as a local CRM and personal assistant.</string>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>SwiftMaestro reads your Photos albums and recent asset metadata when you ask it to.</string>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>SwiftMaestro uses the microphone for speech-to-text transcription.</string>
-	<key>NSCameraUsageDescription</key>
-	<string>SwiftMaestro uses cameras and capture cards for tethered photography and live video preview.</string>
-	<key>NSSiriUsageDescription</key>
-	<string>SwiftMaestro lets you ask the agent a question hands-free using Siri.</string>
 </dict>
 </plist>
