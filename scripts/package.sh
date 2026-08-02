@@ -22,6 +22,13 @@ SIGN_IDENTITY="${SIGN_IDENTITY:-Developer ID Application}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-SwiftMaestroNotary}"
 APP_PATH="build/$CONFIG/$APP_NAME.app"
 
+# Hardened runtime only with a real identity — ad-hoc ("-") builds must not
+# carry the runtime flag (dyld then rejects every dylib at launch).
+RUNTIME_OPT=(--options runtime)
+if [ "$SIGN_IDENTITY" = "-" ]; then
+    RUNTIME_OPT=()
+fi
+
 if [ ! -d "$APP_PATH" ]; then
     echo "App not found at $APP_PATH — run ./scripts/build.sh first."
     exit 1
@@ -38,7 +45,7 @@ fi
 # Ship the third-party notices inside the app bundle (license obligation for
 # several bundled components, and good practice for all of them).
 cp Sources/Resources/THIRD-PARTY-NOTICES.md "$APP_PATH/Contents/Resources/THIRD-PARTY-NOTICES.md"
-codesign --force --sign "$SIGN_IDENTITY" --timestamp --options runtime \
+codesign --force --sign "$SIGN_IDENTITY" --timestamp ${RUNTIME_OPT[@]+"${RUNTIME_OPT[@]}"} \
     --entitlements Sources/Resources/SwiftMaestro.entitlements "$APP_PATH"
 
 # Default the DMG version to the app's own CFBundleShortVersionString so the

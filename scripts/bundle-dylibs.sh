@@ -21,6 +21,15 @@ ENTITLEMENTS="${ENTITLEMENTS:-Sources/Resources/SwiftMaestro.entitlements}"
 FRAMEWORKS="$APP_PATH/Contents/Frameworks"
 BIN="$APP_PATH/Contents/MacOS/SwiftMaestro"
 
+# Hardened runtime only with a real identity. Ad-hoc ("-") local builds must
+# NOT carry the runtime flag: dyld's library validation then rejects every
+# mapped dylib ("mapping process and mapped file (non-platform) have
+# different Team IDs") and the app dies at launch.
+RUNTIME_OPT=(--options runtime)
+if [ "$SIGN_IDENTITY" = "-" ]; then
+    RUNTIME_OPT=()
+fi
+
 if [ ! -d "$APP_PATH" ]; then
     echo "App not found at $APP_PATH"
     exit 1
@@ -48,7 +57,7 @@ bundle() {
             echo "  $name: $(basename "$dep") -> @rpath"
         fi
     done
-    codesign --force --sign "$SIGN_IDENTITY" --timestamp --options runtime "$dst"
+    codesign --force --sign "$SIGN_IDENTITY" --timestamp ${RUNTIME_OPT[@]+"${RUNTIME_OPT[@]}"} "$dst"
     echo "bundled + signed: $name"
 }
 
@@ -60,7 +69,7 @@ bundle /opt/homebrew/opt/little-cms2/lib/liblcms2.2.dylib
 
 # The binary changed (install_name_tool invalidates its signature) — re-sign
 # the whole app with entitlements.
-codesign --force --sign "$SIGN_IDENTITY" --timestamp --options runtime \
+codesign --force --sign "$SIGN_IDENTITY" --timestamp ${RUNTIME_OPT[@]+"${RUNTIME_OPT[@]}"} \
     --entitlements "$ENTITLEMENTS" "$APP_PATH"
 
 echo "=== Dylibs bundled, app re-signed ==="

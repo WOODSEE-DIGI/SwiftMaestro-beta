@@ -21,6 +21,12 @@ SIGN_IDENTITY="${SIGN_IDENTITY:-Developer ID Application}"
 ENTITLEMENTS="${ENTITLEMENTS:-Sources/Resources/SwiftMaestro.entitlements}"
 MAIN_BIN="$APP_PATH/Contents/MacOS/SwiftMaestro"
 
+# Hardened runtime only with a real identity (see bundle-dylibs.sh note).
+RUNTIME_OPT=(--options runtime)
+if [ "$SIGN_IDENTITY" = "-" ]; then
+    RUNTIME_OPT=()
+fi
+
 if [ ! -d "$APP_PATH" ]; then
     echo "App not found at $APP_PATH"
     exit 1
@@ -37,7 +43,7 @@ while IFS= read -r f; do
     [ "$f" = "$MAIN_BIN" ] && continue
     if file -b "$f" | grep -q "Mach-O"; then
         chmod u+w "$f" 2>/dev/null || true
-        if codesign --force --sign "$SIGN_IDENTITY" --timestamp --options runtime "$f" 2>/dev/null; then
+        if codesign --force --sign "$SIGN_IDENTITY" --timestamp ${RUNTIME_OPT[@]+"${RUNTIME_OPT[@]}"} "$f" 2>/dev/null; then
             SIGNED=$((SIGNED + 1))
         else
             echo "WARN: signing failed: ${f#$APP_PATH/}"
@@ -52,21 +58,21 @@ echo "=== Nested Mach-O files signed: $SIGNED (failed: $FAILED) ==="
 #    first, then nested apps, then frameworks (bottom-up order).
 sealed=0
 while IFS= read -r bundle; do
-    codesign --force --sign "$SIGN_IDENTITY" --timestamp --options runtime "$bundle"
+    codesign --force --sign "$SIGN_IDENTITY" --timestamp ${RUNTIME_OPT[@]+"${RUNTIME_OPT[@]}"} "$bundle"
     sealed=$((sealed + 1))
 done < <(find "$APP_PATH/Contents" -name "*.xpc" -type d 2>/dev/null)
 while IFS= read -r bundle; do
-    codesign --force --sign "$SIGN_IDENTITY" --timestamp --options runtime "$bundle"
+    codesign --force --sign "$SIGN_IDENTITY" --timestamp ${RUNTIME_OPT[@]+"${RUNTIME_OPT[@]}"} "$bundle"
     sealed=$((sealed + 1))
 done < <(find "$APP_PATH/Contents" -name "*.app" -type d -not -path "$APP_PATH" 2>/dev/null)
 while IFS= read -r bundle; do
-    codesign --force --sign "$SIGN_IDENTITY" --timestamp --options runtime "$bundle"
+    codesign --force --sign "$SIGN_IDENTITY" --timestamp ${RUNTIME_OPT[@]+"${RUNTIME_OPT[@]}"} "$bundle"
     sealed=$((sealed + 1))
 done < <(find "$APP_PATH/Contents/Frameworks" -name "*.framework" -type d 2>/dev/null)
 
 echo "=== Nested bundles sealed: $sealed ==="
 
 # 3. Re-sign the whole app so the outer seal covers every change.
-codesign --force --sign "$SIGN_IDENTITY" --timestamp --options runtime \
+codesign --force --sign "$SIGN_IDENTITY" --timestamp ${RUNTIME_OPT[@]+"${RUNTIME_OPT[@]}"} \
     --entitlements "$ENTITLEMENTS" "$APP_PATH"
 echo "=== App re-signed ==="
