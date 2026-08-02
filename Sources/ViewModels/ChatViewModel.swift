@@ -809,6 +809,10 @@ class ChatViewModel: ObservableObject {
         - If results are empty, say "No results found". Do NOT invent fake data.
         - After 2 FAILED attempts on the same task, STOP and report what went wrong.
         - NEVER fill silence with "Let me think..." — either call a tool or say you can't.
+        - NEVER claim a write succeeded from memory or intent. Only claim what the \
+        tool's success result proves (a row id, a verified count, a file path). \
+        'created' with warnings is NOT full success — it is a partial failure \
+        you must fix and report.
 
         AUTO-SAVE:
         - After every 5 file reads, call write_file to save progress to disk.
@@ -1013,6 +1017,14 @@ class ChatViewModel: ObservableObject {
         db_export_csv writes a table back out. Paths must be inside authorized folders.
         - When the user says "my database", "my bases", or references a table they \
         built in the app, they mean MaestroDB.
+        - Bulk seeding (more than 2-3 rows): use db_add_rows ONCE with a JSON array \
+        (never many db_add_row calls), or ask for a CSV and db_import_csv.
+        - VERIFY BEFORE YOU CLAIM: write tools return rows_in_table_after (the real \
+        count read back from the database) and status 'created'/'updated'/'partial'. \
+        ONLY claim success for status 'created'/'updated'. 'partial' means some \
+        values were REJECTED — read the warnings, fix the field names (they often \
+        include 'did you mean X'), and retry those rows before reporting. NEVER \
+        say rows were added without a success result for every row.
 
         WORKSPACE PANELS (opening apps for the user):
         - You can OPEN any SwiftMaestro app panel with open_panel — even one the \

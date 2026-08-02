@@ -263,7 +263,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
                 "db_list_bases", "db_create_base", "db_list_tables", "db_create_table",
                 "db_table_schema", "db_add_field", "db_list_rows", "db_add_row",
                 "db_update_row", "db_delete_row", "db_import_csv", "db_export_csv",
-                "db_delete_table", "db_delete_base",
+                "db_delete_table", "db_delete_base", "db_add_rows",
             ]
         case .mcp:
             return []

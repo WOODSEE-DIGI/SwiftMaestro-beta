@@ -33,7 +33,13 @@ struct MaestroDBView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task { await viewModel.loadAll() }
-        .onReceive(NotificationCenter.default.publisher(for: .maestroDBDidChange)) { _ in
+        // Hop to main: db_* tools post from background threads, and touching
+        // the @Observable view model off-main triggers 'Publishing changes
+        // from background threads' warnings.
+        .onReceive(
+            NotificationCenter.default.publisher(for: .maestroDBDidChange)
+                .receive(on: DispatchQueue.main)
+        ) { _ in
             viewModel.scheduleExternalReload()
         }
     }

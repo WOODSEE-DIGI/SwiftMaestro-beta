@@ -69,6 +69,10 @@ extension MaestroTools {
                 name: "db_delete_base", spec: databaseToolSpecs[13],
                 category: ToolCategory.database.rawValue,
                 handler: { call in await dbDeleteBase(call) }),
+            ToolDefinition(
+                name: "db_add_rows", spec: databaseToolSpecs[14],
+                category: ToolCategory.database.rawValue,
+                handler: { call in await dbAddRows(call) }),
         ])
     }
 
@@ -199,6 +203,20 @@ extension MaestroTools {
                 + "first and report the counts from the result.",
                 properties: ["base": ["type": "string", "description": baseRefDesc]],
                 required: ["base"]),
+            rawSpec("db_add_rows",
+                "Add MULTIPLE rows to a table in ONE call — always prefer this over "
+                + "repeated db_add_row when seeding several rows. 'rows' is a JSON "
+                + "array string of value objects (same shape as db_add_row's "
+                + "'values'). The result reports per-row successes/failures AND "
+                + "rows_in_table_after — the verified count read back from the "
+                + "database. Quote that number when you tell the user it's done; "
+                + "if any row failed, say which and why.",
+                properties: [
+                    "table": ["type": "string", "description": tableRefDesc],
+                    "base": ["type": "string", "description": baseRefDesc],
+                    "rows": ["type": "string", "description": "JSON array string, e.g. [{\"Name\": \"Ada\", \"Done\": true}, {\"Name\": \"Grace\"}]"],
+                ],
+                required: ["table", "rows"]),
         ]
     }
 
@@ -214,6 +232,7 @@ extension MaestroTools {
     private struct AddFieldArgs: Codable { let table, base, name, type, options, link_table: String? }
     private struct RowValuesArgs: Codable { let table, base, values, row_id: String? }
     private struct ImportCSVArgs: Codable { let path, base, table, create: String? }
+    private struct AddRowsArgs: Codable { let table, base, rows: String? }
     private struct ExportCSVArgs: Codable { let table, base, path: String? }
 
     // MARK: - Resolution helpers
@@ -260,13 +279,11 @@ extension MaestroTools {
         return names.isEmpty ? "(none — create one first)" : names.joined(separator: ", ")
     }
 
-    /// Parse the `values` JSON-object string into [fieldName: valueText].
+    /// Convert a JSON object (already deserialized) into [fieldName: valueText].
     /// JSON scalars (number/bool) are stringified so models can pass natural
-    /// JSON instead of string-everything.
-    private static func parseValues(_ raw: String) -> [String: String]? {
-        guard let data = raw.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data),
-              let dict = object as? [String: Any] else { return nil }
+    /// JSON instead of string-everything. Shared by parseValues (single row)
+    /// and the db_add_rows bulk path.
+    private static func stringifyJSONDict(_ dict: [String: Any]) -> [String: String] {
         var values: [String: String] = [:]
         for (key, value) in dict {
             switch value {
@@ -288,6 +305,37 @@ extension MaestroTools {
         return values
     }
 
+    /// Parse the `values` JSON-object string into [fieldName: valueText].
+    private static func parseValues(_ raw: String) -> [String: String]? {
+        guard let data = raw.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let dict = object as? [String: Any] else { return nil }
+        return stringifyJSONDict(dict)
+    }
+
+    /// Best-guess field for an unknown name: exact case-insensitive first
+    /// (handled by the caller), then normalized prefix/contains ("Serial No" →
+    /// "Serial Number", "Item" → "Item Name"). Nil when nothing is close.
+    /// Internal (not private) so tests can drive it directly.
+    static func suggestField(_ name: String, fields: [DBField]) -> String? {
+        let norm = { (s: String) in
+            s.lowercased().filter { $0.isLetter || $0.isNumber }
+        }
+        let target = norm(name)
+        guard !target.isEmpty else { return nil }
+        // Prefix in either direction, then containment — shortest match wins
+        // (closest in specificity).
+        let prefixHits = fields.filter {
+            let candidate = norm($0.name)
+            return candidate.hasPrefix(target) || target.hasPrefix(candidate)
+        }
+        let containHits = prefixHits.isEmpty
+            ? fields.filter { norm($0.name).contains(target) || target.contains(norm($0.name)) }
+            : []
+        return (prefixHits.isEmpty ? containHits : prefixHits)
+            .min { norm($0.name).count < norm($1.name).count }?.name
+    }
+
     /// Apply parsed name→value pairs to canonical field-id→stored-value
     /// pairs. Unknown field names and uncoercible values are reported.
     /// Select/multiSelect options auto-add (matches UI behaviour).
@@ -302,7 +350,11 @@ extension MaestroTools {
             guard let index = mutableFields.firstIndex(where: {
                 $0.name.caseInsensitiveCompare(name) == .orderedSame
             }) else {
-                errors.append("unknown field '\(name)' (fields: \(fields.map(\.name).joined(separator: ", ")))")
+                if let suggestion = suggestField(name, fields: fields) {
+                    errors.append("unknown field '\(name)' — did you mean '\(suggestion)'?")
+                } else {
+                    errors.append("unknown field '\(name)' (fields: \(fields.map(\.name).joined(separator: ", ")))")
+                }
                 continue
             }
             var field = mutableFields[index]
@@ -558,15 +610,88 @@ extension MaestroTools {
             let fields = try database.fields(tableID: table.id)
             let (cells, errors, optionsAdded) = try coerceValues(
                 values, fields: fields, database: database)
+            // Truthful statuses: NOTHING valid → hard error, no empty row;
+            // SOME rejected → 'partial', never a silent 'created' (the model
+            // was reading 'created' as full success and moving on).
+            guard !cells.isEmpty else {
+                return errorJSON(
+                    "row NOT created — every value was rejected: \(errors.joined(separator: "; "))")
+            }
             let row = try database.addRow(tableID: table.id, values: cells)
             var result: [String: Any] = [
-                "status": "created", "row_id": row.id, "table": table.name,
+                "status": errors.isEmpty ? "created" : "partial",
+                "row_id": row.id, "table": table.name,
                 "fields_set": cells.count,
+                "rows_in_table_after": try database.rows(tableID: table.id).count,
             ]
             if !optionsAdded.isEmpty { result["options_added"] = optionsAdded }
-            if !errors.isEmpty { result["warnings"] = errors }
+            if !errors.isEmpty {
+                result["warnings"] = errors
+                result["note"] = "PARTIAL: \(errors.count) value(s) were NOT stored — tell the user exactly what was skipped."
+            }
             return jsonString(result)
         } catch { return errorJSON("could not add row: \(error.localizedDescription)") }
+    }
+
+    private static func dbAddRows(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: AddRowsArgs.self),
+              let tableRef = args.table?.trimmingCharacters(in: .whitespaces), !tableRef.isEmpty,
+              let rowsRaw = args.rows?.trimmingCharacters(in: .whitespaces), !rowsRaw.isEmpty else {
+            return errorJSON("db_add_rows requires 'table' and 'rows'")
+        }
+        guard let data = rowsRaw.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let array = object as? [[String: Any]], !array.isEmpty else {
+            return errorJSON(
+                "'rows' must be a JSON array string of objects, e.g. "
+                + "[{\"Name\": \"Ada\"}, {\"Name\": \"Grace\"}]")
+        }
+        do {
+            let database = MaestroDBDatabase.shared
+            guard let table = try resolveTable(tableRef, baseRef: args.base, database: database) else {
+                return errorJSON("no table named '\(tableRef)'. Tables: \(try tableNameList(database))")
+            }
+            let fields = try database.fields(tableID: table.id)
+            var createdIDs: [String] = []
+            var failures: [String] = []
+            var allWarnings: [String] = []
+            var optionsAdded: [String] = []
+            for (index, dict) in array.enumerated() {
+                let values = stringifyJSONDict(dict)
+                let (cells, errors, newOptions) = try coerceValues(
+                    values, fields: fields, database: database)
+                if cells.isEmpty, !errors.isEmpty {
+                    failures.append("row \(index + 1): \(errors.joined(separator: "; "))")
+                    continue
+                }
+                do {
+                    let row = try database.addRow(tableID: table.id, values: cells)
+                    createdIDs.append(row.id)
+                    optionsAdded.append(contentsOf: newOptions)
+                } catch {
+                    failures.append("row \(index + 1): insert failed — \(error.localizedDescription)")
+                }
+                for error in errors {
+                    allWarnings.append("row \(index + 1): \(error)")
+                }
+            }
+            var result: [String: Any] = [
+                "status": (failures.isEmpty && allWarnings.isEmpty) ? "created" : "partial",
+                "table": table.name,
+                "rows_requested": array.count,
+                "rows_created": createdIDs.count,
+                "rows_failed": failures.count,
+                "rows_in_table_after": try database.rows(tableID: table.id).count,
+            ]
+            if !createdIDs.isEmpty { result["row_ids"] = createdIDs }
+            if !failures.isEmpty { result["failures"] = failures }
+            if !allWarnings.isEmpty { result["warnings"] = allWarnings }
+            if !optionsAdded.isEmpty { result["options_added"] = optionsAdded }
+            if !failures.isEmpty || !allWarnings.isEmpty {
+                result["note"] = "Report rows_created/rows_failed truthfully — NEVER claim all rows were added unless rows_failed is 0 with no warnings."
+            }
+            return jsonString(result)
+        } catch { return errorJSON("could not add rows: \(error.localizedDescription)") }
     }
 
     private static func dbUpdateRow(_ call: ToolCall) async -> String {
@@ -586,14 +711,22 @@ extension MaestroTools {
             let fields = try database.fields(tableID: row.tableID)
             let (cells, errors, optionsAdded) = try coerceValues(
                 values, fields: fields, database: database)
+            guard !cells.isEmpty else {
+                return errorJSON(
+                    "row NOT updated — every value was rejected: \(errors.joined(separator: "; "))")
+            }
             for (fieldID, value) in cells {
                 try database.setCell(rowID: rowID, fieldID: fieldID, value: value)
             }
             var result: [String: Any] = [
-                "status": "updated", "row_id": rowID, "fields_set": cells.count,
+                "status": errors.isEmpty ? "updated" : "partial",
+                "row_id": rowID, "fields_set": cells.count,
             ]
             if !optionsAdded.isEmpty { result["options_added"] = optionsAdded }
-            if !errors.isEmpty { result["warnings"] = errors }
+            if !errors.isEmpty {
+                result["warnings"] = errors
+                result["note"] = "PARTIAL: \(errors.count) value(s) were NOT stored — tell the user exactly what was skipped."
+            }
             return jsonString(result)
         } catch { return errorJSON("could not update row: \(error.localizedDescription)") }
     }
@@ -691,6 +824,7 @@ extension MaestroTools {
                     "fields_created": report.fieldsCreated,
                     "options_added": report.optionsAdded,
                     "cells_skipped": report.cellsSkipped,
+                    "rows_in_table_after": try database.rows(tableID: table.id).count,
                 ])
             }
             guard let table = try resolveTable(tableRef, baseRef: baseRef, database: database) else {
@@ -705,6 +839,7 @@ extension MaestroTools {
                 "fields_created": report.fieldsCreated,
                 "options_added": report.optionsAdded,
                 "cells_skipped": report.cellsSkipped,
+                "rows_in_table_after": try database.rows(tableID: table.id).count,
             ])
         } catch { return errorJSON("CSV import failed: \(error.localizedDescription)") }
     }
