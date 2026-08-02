@@ -238,8 +238,9 @@ struct ChatView: View {
         FlowLayout(spacing: 8, rowSpacing: 6) {
             ForEach(toolbarCategories) { category in
                 let active = enabledCategories.contains(category)
+                let autoManaged = autoTools && category.isPanelLinked
                 Button {
-                    toggleCategory(category)
+                    categoryTapped(category)
                 } label: {
                     VStack(spacing: 1) {
                         Image(systemName: category.icon)
@@ -261,7 +262,12 @@ struct ChatView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("\(category.displayName): \(active ? "enabled" : "disabled")")
+                .help(
+                    autoManaged
+                        ? (active
+                            ? "\(category.displayName): auto-enabled while its panel is open. Tap to focus the panel."
+                            : "\(category.displayName): auto-off (panel closed). Tap to open the \(category.displayName) panel and enable these tools.")
+                        : "\(category.displayName): \(active ? "enabled" : "disabled")")
             }
 
             if !addableCategories.isEmpty {
@@ -298,6 +304,35 @@ struct ChatView: View {
             }
 
             Divider().frame(width: 1, height: 18)
+
+            Button {
+                workspace.setAutoToolCategories(!autoTools, for: vm.agent.id)
+            } label: {
+                VStack(spacing: 1) {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .symbolVariant(autoTools ? .fill : .none)
+                        .foregroundStyle(autoTools ? theme.accent : theme.chatSecondaryText)
+                        .frame(height: 14)
+                    Text("Auto")
+                        .font(.system(size: 8, weight: autoTools ? .semibold : .medium))
+                        .foregroundStyle(autoTools ? theme.accent : theme.chatSecondaryText)
+                        .lineLimit(1)
+                }
+                .frame(minWidth: 34)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 2)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(autoTools ? theme.accent.opacity(0.12) : Color.clear)
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(
+                "Auto tools: \(autoTools ? "on" : "off"). When on, app tool categories "
+                + "(Books, Database, Kanban, Notes, …) are advertised only while that "
+                + "app's panel is open — core tools are unaffected. Turn off to manage "
+                + "every category manually.")
 
             Button {
                 workspace.setCompactToolMode(!compactToolMode, for: vm.agent.id)
@@ -338,6 +373,11 @@ struct ChatView: View {
         workspace.compactToolMode(for: vm.agent.id)
     }
 
+    /// Whether panel-driven tool categories (Auto) is on for this agent.
+    private var autoTools: Bool {
+        workspace.autoToolCategories(for: vm.agent.id)
+    }
+
     /// Categories always shown for this agent kind.
     private var defaultVisibleCategories: [ToolCategory] {
         ToolCategory.visible(for: vm.agent.kind)
@@ -360,13 +400,38 @@ struct ChatView: View {
             .sorted { $0.displayName.localizedCompare($1.displayName) == .orderedAscending }
     }
 
-    /// Current enabled categories for this agent.
+    /// The categories actually advertised to the model right now — under Auto
+    /// this is the panel-derived effective set; otherwise the saved set.
     private var enabledCategories: Set<ToolCategory> {
+        workspace.effectiveToolCategories(for: vm.agent.id)
+    }
+
+    /// The SAVED category set (what the user chose manually). Writes always go
+    /// here so turning Auto off restores exactly what the user picked.
+    private var savedCategories: Set<ToolCategory> {
         workspace.enabledToolCategories(for: vm.agent.id)
     }
 
+    /// Tap behaviour: under Auto, a panel-linked category isn't a toggle —
+    /// tapping opens/focuses its app panel (which is what activates the tools).
+    /// Everything else toggles the saved set as before.
+    private func categoryTapped(_ category: ToolCategory) {
+        if autoTools && category.isPanelLinked {
+            if let openKind = category.linkedPanelKinds.first(where: { WorkspaceLayoutState.shared.isOpen($0) }) {
+                NotificationCenter.default.post(name: .bringWorkspacePanelToFront, object: openKind)
+            } else if let kind = category.linkedPanelKinds.first {
+                NotificationCenter.default.post(name: .openWorkspacePanel, object: kind)
+            }
+            return
+        }
+        toggleCategory(category)
+    }
+
     private func toggleCategory(_ category: ToolCategory) {
-        var updated = enabledCategories
+        // Always mutate the SAVED set, never the panel-derived effective set —
+        // writing effective-as-saved under Auto would permanently strip
+        // categories whose panels happen to be closed right now.
+        var updated = savedCategories
         if updated.contains(category) {
             updated.remove(category)
         } else {
@@ -376,7 +441,7 @@ struct ChatView: View {
     }
 
     private func enableCategory(_ category: ToolCategory) {
-        var updated = enabledCategories
+        var updated = savedCategories
         updated.insert(category)
         workspace.setEnabledToolCategories(updated, for: vm.agent.id)
     }

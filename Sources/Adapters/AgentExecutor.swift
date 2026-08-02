@@ -1325,7 +1325,7 @@ final class AgentExecutor: Sendable {
         // MCP servers the user exposes to delegated sub-agents. Per-agent enabled
         // categories override the old automatic lite-mode reduction.
         let enabledCategories = await MainActor.run {
-            MaestroTools.workspace?.enabledToolCategories(for: target.id)
+            MaestroTools.workspace?.effectiveToolCategories(for: target.id)
         }
         let compactMode = await MainActor.run {
             MaestroTools.workspace?.compactToolMode(for: target.id) ?? false
@@ -1448,7 +1448,7 @@ final class AgentExecutor: Sendable {
         mcp: MCPClientService?, workingDirectory: String?
     ) async -> DelegateResult {
         let enabledCategories = await MainActor.run {
-            MaestroTools.workspace?.enabledToolCategories(for: target.id)
+            MaestroTools.workspace?.effectiveToolCategories(for: target.id)
         }
         let compactMode = await MainActor.run {
             MaestroTools.workspace?.compactToolMode(for: target.id) ?? false

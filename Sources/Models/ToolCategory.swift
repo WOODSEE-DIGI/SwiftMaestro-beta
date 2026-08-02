@@ -269,6 +269,38 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         }
     }
 
+    /// The workspace panel(s) this category's tools operate on, if any.
+    /// Used by panel-driven tool categories (AgentRecord.autoToolCategories):
+    /// a linked category is advertised to the model only while one of these
+    /// panels is open. Categories NOT listed here (file, shell, memory,
+    /// workspace, system, sqlite, index, web, vault, …) are core/agent tools
+    /// with no single app surface — they always pass through at the user's
+    /// saved setting.
+    var linkedPanelKinds: [WorkspacePanelKind] {
+        switch self {
+        case .notes: return [.notesMD, .appleNotes]
+        case .kanban: return [.kanban]
+        case .canvas: return [.canvas]
+        case .numbers: return [.numbers]
+        case .maps: return [.maps]
+        case .photos: return [.photos]
+        case .mail: return [.mail]
+        case .whatsapp: return [.whatsapp]
+        case .discord: return [.discord]
+        case .browser: return [.webBrowser]
+        case .books: return [.maestroBooks]
+        case .database: return [.maestroDB]
+        case .documents: return [.maestroDocs]
+        case .file, .shell, .server, .index, .memory, .messaging,
+             .bus, .system, .mcp, .sqlite, .workspace, .rules, .time, .stocks,
+             .news, .web, .bluesky, .vault:
+            return []
+        }
+    }
+
+    /// Whether this category is gated behind an app panel under Auto mode.
+    var isPanelLinked: Bool { !linkedPanelKinds.isEmpty }
+
     /// Categories visible in the tool picker for a given agent kind.
     static func visible(for kind: AgentKind) -> [ToolCategory] {
         switch kind {

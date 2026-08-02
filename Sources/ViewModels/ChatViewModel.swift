@@ -219,7 +219,7 @@ class ChatViewModel: ObservableObject {
         // tool categories override the old automatic lite-mode reduction.
         var toolSpecs: [ToolSpec] = []
         if model.advertisesTools {
-            let enabledCategories = MaestroTools.workspace?.enabledToolCategories(for: agent.id)
+            let enabledCategories = MaestroTools.workspace?.effectiveToolCategories(for: agent.id)
             let compactMode = MaestroTools.workspace?.compactToolMode(for: agent.id) ?? false
             // Set immediately before use (mirrors MaestroTools.inheritedRoots)
             // so search_tools/call_tool can see this agent's actual scope.

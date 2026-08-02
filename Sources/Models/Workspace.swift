@@ -54,10 +54,17 @@ struct AgentRecord: Identifiable, Codable, Hashable {
     /// heuristics based on the agent name. Optional so existing workspace.json
     /// decodes and upgrades lazily.
     var category: AgentCategory?
+    /// Panel-driven tool categories: when on (the default), categories linked to
+    /// an app panel (Books, MaestroDB, Kanban, Notes, …) are only advertised to
+    /// the model while that panel is open — core/non-panel categories are
+    /// unaffected. The saved set is never mutated by this; turning it off
+    /// restores the saved set exactly. Optional so existing workspace.json
+    /// decodes (nil = on).
+    var autoToolCategories: Bool?
     init(id: UUID = UUID(), name: String, kind: AgentKind, projectId: UUID? = nil,
          modelID: String? = nil, workingDirectory: String? = nil,
          enabledToolCategories: [String]? = nil, compactToolMode: Bool? = nil,
-         category: AgentCategory? = nil) {
+         category: AgentCategory? = nil, autoToolCategories: Bool? = nil) {
         self.id = id
         self.name = name
         self.kind = kind
@@ -67,6 +74,7 @@ struct AgentRecord: Identifiable, Codable, Hashable {
         self.enabledToolCategories = enabledToolCategories
         self.compactToolMode = compactToolMode
         self.category = category
+        self.autoToolCategories = autoToolCategories
     }
 }
 
@@ -301,6 +309,45 @@ final class WorkspaceStore {
         guard let i = agents.firstIndex(where: { $0.id == agentID }) else { return }
         agents[i].enabledToolCategories = Array(categories.map(\.rawValue))
         save()
+    }
+
+    /// Whether panel-driven tool categories are on for an agent. Defaults to
+    /// `true` (nil) — app-domain tools only exist in the prompt while their
+    /// window is open, keeping schemas lean.
+    func autoToolCategories(for agentID: UUID) -> Bool {
+        agent(id: agentID)?.autoToolCategories ?? true
+    }
+
+    /// Set panel-driven tool categories for an agent and persist.
+    func setAutoToolCategories(_ enabled: Bool, for agentID: UUID) {
+        guard let i = agents.firstIndex(where: { $0.id == agentID }) else { return }
+        agents[i].autoToolCategories = enabled
+        save()
+    }
+
+    /// The tool categories actually advertised to the model for the next run.
+    /// With Auto on, panel-linked categories (Books, MaestroDB, Kanban, Notes…)
+    /// are included only while one of their panels is open; every other
+    /// category passes through from the saved set untouched.
+    func effectiveToolCategories(for agentID: UUID) -> Set<ToolCategory> {
+        Self.effectiveCategories(
+            saved: enabledToolCategories(for: agentID),
+            auto: autoToolCategories(for: agentID),
+            isOpen: { WorkspaceLayoutState.shared.isOpen($0) })
+    }
+
+    /// Pure filter behind `effectiveToolCategories`, extracted so tests can
+    /// drive it without touching the live layout (WorkspaceLayoutState
+    /// persists on every mutation — tests must never open/close real panels).
+    nonisolated static func effectiveCategories(
+        saved: Set<ToolCategory>, auto: Bool,
+        isOpen: (WorkspacePanelKind) -> Bool
+    ) -> Set<ToolCategory> {
+        guard auto else { return saved }
+        return saved.filter { category in
+            let panels = category.linkedPanelKinds
+            return panels.isEmpty || panels.contains(where: isOpen)
+        }
     }
 
     /// Whether Compact Tool Mode is enabled for an agent. Defaults to `false`
