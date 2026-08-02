@@ -7,14 +7,15 @@ This file provides context for AI agents (Amy/Oz in Warp, Qwen Code CLI, or any 
 
 These are mandatory working agreements for this repo. Follow them every session.
 
-1. **Orient before acting.** Before changing code, read this file and `~/.ai-context/README.md`, and query the `ai-context-bridge` MCP memory for relevant prior context. Confirm where the project stands before editing.
-2. **Verify every build.** After code changes, run `xcodegen generate` if files were added/removed, then run `xcodebuild ... build` and confirm `** BUILD SUCCEEDED **` before claiming a task is done. Do not commit generated `SwiftMaestro.xcodeproj/` or `.derivedData/` output.
-3. **Protect the Mac with large models.** Never trigger a second large in-process model load (the 122B is ~65GB resident). Confirm no other large model is loaded before loading another.
-4. **Scan downloads.** Any downloaded file gets a two-stage malware scan: quick scan, then deep scan, before use.
-5. **Before any public push.** Deep-scrub for PII that could be used maliciously. The name `woodsee` may remain.
-6. **Git discipline.** Commit only when explicitly asked.
-7. **Conventions.** Use 24-hour time `HH:mm:ss` with an AM/PM indicator. Name plans for Warp rules and AI-context rules as `YY.MM.DD-Plan name`.
-8. **Backup before destructive operations.** Never delete, overwrite, or reset user data, preferences, keychain items, model files, or project configuration without first making a recoverable backup (e.g., copy the file/directory, export the plist, snapshot the keychain item) and confirming the backup succeeded. This applies to `~/Library/Preferences/`, `~/Library/Application Support/SwiftMaestro/`, `~/.ai-context/`, and any user-created files.
+1. **Never launch the app.** Do not `open`, launch, relaunch, kill (`pkill`/`killall`), screenshot, or UI-drive SwiftMaestro (any copy — Debug, Release, `/Applications`, DMG). Do not touch its processes, windows, or TCC prompts. Verification ends at `xcodebuild ... build` → `** BUILD SUCCEEDED **`; the user launches and tests the app themselves and reports what they see. The only sanctioned shipping step is the package pipeline producing a DMG — never a launch.
+2. **Orient before acting.** Before changing code, read this file and `~/.ai-context/README.md`, and query the `ai-context-bridge` MCP memory for relevant prior context. Confirm where the project stands before editing.
+3. **Verify every build.** After code changes, run `xcodegen generate` if files were added/removed, then run `xcodebuild ... build` and confirm `** BUILD SUCCEEDED **` before claiming a task is done. Do not commit generated `SwiftMaestro.xcodeproj/` or `.derivedData/` output.
+4. **Protect the Mac with large models.** Never trigger a second large in-process model load (the 122B is ~65GB resident). Confirm no other large model is loaded before loading another.
+5. **Scan downloads.** Any downloaded file gets a two-stage malware scan: quick scan, then deep scan, before use.
+6. **Before any public push.** Deep-scrub for PII that could be used maliciously. The name `woodsee` may remain.
+7. **Git discipline.** Commit only when explicitly asked.
+8. **Conventions.** Use 24-hour time `HH:mm:ss` with an AM/PM indicator. Name plans for Warp rules and AI-context rules as `YY.MM.DD-Plan name`.
+9. **Backup before destructive operations.** Never delete, overwrite, or reset user data, preferences, keychain items, model files, or project configuration without first making a recoverable backup (e.g., copy the file/directory, export the plist, snapshot the keychain item) and confirming the backup succeeded. This applies to `~/Library/Preferences/`, `~/Library/Application Support/SwiftMaestro/`, `~/.ai-context/`, and any user-created files.
 
 ---
 
