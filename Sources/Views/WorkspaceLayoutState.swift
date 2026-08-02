@@ -76,6 +76,9 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
     /// MaestroBooks — Xero-compatible invoicing (A4 tax invoice PDFs filed
     /// in MaestroDAM, Xero CSV export, agent-driven).
     case maestroBooks
+    /// MaestroDB — dynamic-schema database (Airtable/Notion alternative) with
+    /// grid + shared-kanban board views on GRDB.
+    case maestroDB
 
     var icon: String {
         switch self {
@@ -110,6 +113,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .damBrowser: return "photo.on.rectangle.angled"
         case .maestroDocs: return "doc.richtext"
         case .maestroBooks: return "dollarsign.circle"
+        case .maestroDB: return "tablecells"
         }
     }
 
@@ -151,6 +155,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .damBrowser: return "damBrowser"
         case .maestroDocs: return "maestroDocs"
         case .maestroBooks: return "maestroBooks"
+        case .maestroDB: return "maestroDB"
         }
     }
 
@@ -190,6 +195,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .damBrowser: return "MaestroDAM"
         case .maestroDocs: return "MaestroDocs"
         case .maestroBooks: return "MaestroBooks"
+        case .maestroDB: return "MaestroDB"
         }
     }
 
@@ -241,6 +247,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .damBrowser: return "damBrowser"
         case .maestroDocs: return "maestroDocs"
         case .maestroBooks: return "maestroBooks"
+        case .maestroDB: return "maestroDB"
         }
     }
 }
