@@ -33,11 +33,18 @@ rm -rf "$BUILD_ROOT"
 
 if [ "${UNSIGNED:-0}" = "1" ]; then
     echo "Building ad-hoc signed (local testing only — not for distribution)."
+    # Hardened runtime is OFF here deliberately: it buys an ad-hoc build
+    # nothing, and its library validation rejects any dylib whose Team ID
+    # differs from the app's — with no Team ID at all, Homebrew dylibs
+    # (and anything else mapped at launch) fail with 'different Team IDs'
+    # and the app dies in dyld before main(). Release/Developer ID builds
+    # keep the hardened runtime + re-signed dylibs as before.
     xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration "$CONFIG" \
         -destination 'platform=macOS,arch=arm64' \
         -derivedDataPath "$BUILD_ROOT/DerivedData" \
         SYMROOT="$BUILD_ROOT" \
         CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="-" \
+        ENABLE_HARDENED_RUNTIME=NO \
         build
 else
     echo "Building Developer ID signed (team $TEAM_ID)…"
