@@ -368,6 +368,20 @@ struct AppearanceSettingsTab: View {
                 // buttons, selections, and plan cards across the whole app.
                 DisclosureGroup("Appearance", isExpanded: $appearanceExpanded) {
                     VStack(alignment: .leading, spacing: 10) {
+                        Picker("Mode", selection: Binding(
+                            get: { skinStore.skinModeEnabled },
+                            set: { skinStore.skinModeEnabled = $0 }
+                        )) {
+                            Text("System").tag(false)
+                            Text("Skin").tag(true)
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        Text(skinStore.skinModeEnabled
+                            ? "Skin mode: pick one skin below — it sets everything, including the appearance."
+                            : "System mode: the System Default theme, with your choice of light/dark.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Divider()
                         Picker("Theme", selection: $theme.appearance) {
                             ForEach(ThemeStore.Appearance.allCases) { mode in
                                 Text(mode.label).tag(mode)
@@ -375,7 +389,11 @@ struct AppearanceSettingsTab: View {
                         }
                         .pickerStyle(.segmented)
                         .labelsHidden()
-                        Text("Force light or dark, or follow the system setting.")
+                        .disabled(skinStore.skinModeEnabled)
+                        .opacity(skinStore.skinModeEnabled ? 0.45 : 1)
+                        Text(skinStore.skinModeEnabled
+                            ? "Appearance is driven by the selected skin."
+                            : "Force light or dark, or follow the system setting.")
                             .font(.caption).foregroundStyle(.secondary)
                         Divider()
                         ColorPicker("Accent color", selection: theme.accentBinding, supportsOpacity: false)
@@ -383,33 +401,10 @@ struct AppearanceSettingsTab: View {
                             + "default header color for any panel below that hasn't been customized.")
                             .font(.caption).foregroundStyle(.secondary)
                         Divider()
-                        LuminanceSliderRow(
-                            title: "Background",
-                            binding: theme.backgroundLuminanceBinding
-                        )
-                        LuminanceSliderRow(
-                            title: "Text",
-                            binding: theme.textLuminanceBinding
-                        )
-                        .disabled(theme.globalTextFollowsContrast)
-                        .opacity(theme.globalTextFollowsContrast ? 0.45 : 1)
-                        HStack {
-                            Text("Global brightness for the content surface — chat, MaestroDB grid, "
-                                + "Notes preview. Panels keep their own overrides; hue fine-tuning "
-                                + "lives in the Chat group below.")
-                                .font(.caption).foregroundStyle(.secondary)
-                            Spacer()
-                            Toggle(isOn: theme.textFollowsContrastBinding) {
-                                Text("Auto contrast")
-                                    .font(.caption)
-                            }
-                            .toggleStyle(.checkbox)
-                            .help("Text luminance is computed against the background so it always contrasts. Turn off to drive the Text slider manually.")
-                            Button("Reset") { theme.resetGlobalSurfaceColors() }
-                                .font(.caption)
-                                .buttonStyle(.borderless)
-                                .foregroundStyle(theme.accent)
-                        }
+                        Text("Surfaces and their text/icons follow the selected theme automatically — "
+                            + "text is always contrast-computed against its own background, so "
+                            + "everything stays legible. Fine-tune individual panels in the groups below.")
+                            .font(.caption).foregroundStyle(.secondary)
                         Divider()
                         skinSection
                     }
@@ -435,7 +430,10 @@ struct AppearanceSettingsTab: View {
                 DisclosureGroup("Plans panel", isExpanded: $plansExpanded) {
                     VStack(alignment: .leading, spacing: 12) {
                         ColorPicker("Background", selection: theme.plansPanelBinding, supportsOpacity: false)
+                        ColorPicker("Card bubble", selection: theme.plansCardBinding, supportsOpacity: false)
                         ColorPicker("Card text", selection: theme.plansTextBinding, supportsOpacity: false)
+                        Text("Cards default to the accent color; card text always contrasts against the card.")
+                            .font(.caption).foregroundStyle(.secondary)
                         ResetToGlobalButton(action: theme.resetPlansColors)
                     }
                     .padding(.top, 8)
@@ -446,6 +444,7 @@ struct AppearanceSettingsTab: View {
                     VStack(alignment: .leading, spacing: 12) {
                         ColorPicker("Background", selection: theme.chatBackgroundBinding, supportsOpacity: false)
                         ColorPicker("Assistant text", selection: theme.chatTextBinding, supportsOpacity: false)
+                        ColorPicker("Secondary text (chips, timestamps)", selection: theme.chatSecondaryTextBinding, supportsOpacity: false)
                         ColorPicker("Your message bubble", selection: theme.userBubbleBinding, supportsOpacity: false)
                         ColorPicker("Your message text", selection: theme.userBubbleTextBinding, supportsOpacity: false)
                         Text("Leave the background unset to follow the system.")
@@ -584,7 +583,7 @@ struct AppearanceSettingsTab: View {
             }
 
             Picker("Skin", selection: Binding(
-                get: { skinStore.currentSkinID ?? Skin.default.id },
+                get: { skinStore.skinModeEnabled ? (skinStore.currentSkinID ?? Skin.default.id) : Skin.default.id },
                 set: { skinStore.applySkin(id: $0) }
             )) {
                 ForEach(skinStore.skins) { skin in
@@ -595,8 +594,13 @@ struct AppearanceSettingsTab: View {
             }
             .pickerStyle(.menu)
             .labelsHidden()
+            .foregroundStyle(theme.chatText)
+            .disabled(!skinStore.skinModeEnabled)
+            .opacity(skinStore.skinModeEnabled ? 1 : 0.45)
 
-            Text(skinStore.currentSkin?.description ?? "Choose a preset, or save and import custom skins.")
+            Text(skinStore.skinModeEnabled
+                ? (skinStore.currentSkin?.description ?? "Choose a preset, or save and import custom skins.")
+                : "Locked to System Default in System mode. Switch to Skin mode to choose a skin.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -2290,39 +2294,10 @@ struct AboutSettingsTab: View {
     }
 }
 
-// MARK: - Luminance slider row
-
-/// Brightness dial (0 black – 1 white) with dark/light end glyphs and a live
-/// percentage label. Drives ThemeStore's global surface luminance bindings.
-private struct LuminanceSliderRow: View {
-    let title: String
-    @Binding var binding: Double
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Text(title)
-                .frame(width: 90, alignment: .leading)
-            Image(systemName: "circle.fill")
-                .font(.caption2)
-                .foregroundStyle(.black)
-                .overlay(Circle().stroke(.quaternary, lineWidth: 0.5))
-            Slider(value: $binding, in: 0...1)
-            Image(systemName: "circle.fill")
-                .font(.caption2)
-                .foregroundStyle(.white)
-                .overlay(Circle().stroke(.quaternary, lineWidth: 0.5))
-            Text("\(Int(binding * 100))%")
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .frame(width: 38, alignment: .trailing)
-        }
-    }
-}
-
-// MARK: - Reset to global button
+// MARK: - Reset to default button
 
 /// Per-panel-group reset: clears that group's overrides so it falls back to
-/// the global luminance tier (or skin/system when the tier is off).
+/// the adaptive per-appearance defaults (or a skin's colors when set there).
 private struct ResetToGlobalButton: View {
     @Environment(ThemeStore.self) private var theme
     let action: () -> Void
@@ -2330,7 +2305,7 @@ private struct ResetToGlobalButton: View {
     var body: some View {
         HStack {
             Spacer()
-            Button("Reset to global", action: action)
+            Button("Reset to default", action: action)
                 .font(.caption)
                 .buttonStyle(.borderless)
                 .foregroundStyle(theme.accent)

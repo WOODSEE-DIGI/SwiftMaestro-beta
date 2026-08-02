@@ -15,9 +15,11 @@ struct Skin: Identifiable, Hashable, Codable {
     var userBubbleText: String?
     var chatBackground: String?
     var chatText: String?
+    var chatSecondaryText: String?
     var sidebarBackground: String?
     var sidebarText: String?
     var plansPanel: String?
+    var plansCard: String?
     var plansText: String?
     var tasksPanel: String?
     var tasksText: String?
@@ -37,9 +39,11 @@ struct Skin: Identifiable, Hashable, Codable {
         userBubbleText: String? = nil,
         chatBackground: String? = nil,
         chatText: String? = nil,
+        chatSecondaryText: String? = nil,
         sidebarBackground: String? = nil,
         sidebarText: String? = nil,
         plansPanel: String? = nil,
+        plansCard: String? = nil,
         plansText: String? = nil,
         tasksPanel: String? = nil,
         tasksText: String? = nil,
@@ -59,9 +63,11 @@ struct Skin: Identifiable, Hashable, Codable {
         self.userBubbleText = userBubbleText
         self.chatBackground = chatBackground
         self.chatText = chatText
+        self.chatSecondaryText = chatSecondaryText
         self.sidebarBackground = sidebarBackground
         self.sidebarText = sidebarText
         self.plansPanel = plansPanel
+        self.plansCard = plansCard
         self.plansText = plansText
         self.tasksPanel = tasksPanel
         self.tasksText = tasksText
@@ -86,5 +92,22 @@ extension Skin {
     /// The default system look — no overrides at all.
     static var `default`: Skin {
         Skin(id: "default", name: "System Default", description: "Follows the system accent and window backgrounds.", isBuiltIn: true)
+    }
+
+    /// Whether this is a dark-mode skin. Driven by the skin's declared
+    /// `appearance` — every built-in pair ships one `.light` and one `.dark`.
+    var isDark: Bool { appearance == .dark }
+
+    /// System Default belongs to every appearance's picker list and is never
+    /// auto-swapped when the appearance changes.
+    var isSystemDefault: Bool { id == "default" }
+
+    /// Name without the trailing " Light"/" Dark" marker — the key that pairs
+    /// the two variants of a family ("Matrix Dark" ↔ "Matrix Light"), used to
+    /// find the matching skin when the appearance flips.
+    var appearanceFamily: String {
+        if name.hasSuffix(" Dark") { return String(name.dropLast(" Dark".count)) }
+        if name.hasSuffix(" Light") { return String(name.dropLast(" Light".count)) }
+        return name
     }
 }

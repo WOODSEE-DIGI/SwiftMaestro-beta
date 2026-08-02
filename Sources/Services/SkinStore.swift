@@ -13,6 +13,38 @@ final class SkinStore {
         didSet { UserDefaults.standard.set(currentSkinID, forKey: Self.currentSkinIDKey) }
     }
 
+    /// The master theme mode — ONE choice, so the appearance picker and the
+    /// skin picker can never fight:
+    ///
+    /// - **OFF (System mode):** the System/Light/Dark segmented control is
+    ///   active and the theme is System Default (plus any per-group overrides).
+    /// - **ON (Skin mode):** the segmented control is disabled and the user
+    ///   picks one skin from the combined list; each skin carries its own
+    ///   appearance with it, applied atomically.
+    var skinModeEnabled: Bool {
+        didSet {
+            guard oldValue != skinModeEnabled else { return }
+            UserDefaults.standard.set(skinModeEnabled, forKey: Self.skinModeEnabledKey)
+            if skinModeEnabled {
+                // Entering Skin mode: re-assert the selected skin's colors and
+                // appearance atomically (no-op if it's System Default).
+                if let current = currentSkin, !current.isSystemDefault {
+                    applySkin(current)
+                }
+            } else {
+                // Back to System mode: clean System Default slate, keeping the
+                // user's explicit Light/Dark choice. (No snapshot/restore —
+                // skins write into the same override storage, so "System-mode
+                // colors" can't be told apart from skin colors; restoring a
+                // contaminated snapshot re-applied skin hexes as user
+                // overrides and leaked skins into System mode.)
+                let mode = theme.appearance
+                applyDefault()
+                theme.appearance = mode
+            }
+        }
+    }
+
     /// All available skins: built-ins first, then user skins sorted by name.
     private(set) var skins: [Skin] = []
 
@@ -20,11 +52,17 @@ final class SkinStore {
     private let theme: ThemeStore
 
     private static let currentSkinIDKey = "theme.skinStore.currentSkinID"
+    private static let skinModeEnabledKey = "theme.skinStore.skinModeEnabled"
     private static let skinsDirName = "skins"
 
     init(theme: ThemeStore) {
         self.theme = theme
-        self.currentSkinID = UserDefaults.standard.string(forKey: Self.currentSkinIDKey)
+        let persistedID = UserDefaults.standard.string(forKey: Self.currentSkinIDKey)
+        self.currentSkinID = persistedID
+        // If the key was never written, infer from the persisted selection:
+        // anyone on a real skin is in Skin mode; System Default means System mode.
+        self.skinModeEnabled = (UserDefaults.standard.object(forKey: Self.skinModeEnabledKey) as? Bool)
+            ?? (persistedID != nil && persistedID != Skin.default.id)
         reload()
     }
 
@@ -49,8 +87,20 @@ final class SkinStore {
 
         guard let skin else { return }
 
-        theme.appearance = skin.appearance
+        // A skin with an explicit appearance takes the mode with it (picking
+        // Matrix Dark means dark mode); System Default leaves the user's
+        // Light/Dark choice untouched.
+        if skin.appearance != .system {
+            theme.appearance = skin.appearance
+        }
 
+        applySkinColors(skin)
+    }
+
+    /// Apply just a skin's color values — no override reset, no selection
+    /// change, no appearance change. Used to restore the System-mode snapshot
+    /// when leaving Skin mode.
+    private func applySkinColors(_ skin: Skin) {
         if let hex = skin.accent, let color = Color(hex: hex) {
             theme.setAccent(color)
         }
@@ -66,6 +116,9 @@ final class SkinStore {
         if let hex = skin.chatText, let color = Color(hex: hex) {
             theme.setChatText(color)
         }
+        if let hex = skin.chatSecondaryText, let color = Color(hex: hex) {
+            theme.setChatSecondaryText(color)
+        }
         if let hex = skin.sidebarBackground, let color = Color(hex: hex) {
             theme.setSidebar(color)
         }
@@ -74,6 +127,9 @@ final class SkinStore {
         }
         if let hex = skin.plansPanel, let color = Color(hex: hex) {
             theme.setPlansPanel(color)
+        }
+        if let hex = skin.plansCard, let color = Color(hex: hex) {
+            theme.setPlansCard(color)
         }
         if let hex = skin.plansText, let color = Color(hex: hex) {
             theme.setPlansText(color)
@@ -149,9 +205,11 @@ final class SkinStore {
             userBubble: skin.userBubble,
             userBubbleText: skin.userBubbleText,
             chatBackground: skin.chatBackground,
+            chatSecondaryText: skin.chatSecondaryText,
             sidebarBackground: skin.sidebarBackground,
             sidebarText: skin.sidebarText,
             plansPanel: skin.plansPanel,
+            plansCard: skin.plansCard,
             plansText: skin.plansText,
             tasksPanel: skin.tasksPanel,
             tasksText: skin.tasksText,
@@ -187,9 +245,11 @@ final class SkinStore {
             userBubbleText: theme.userBubbleText.hexRGBA,
             chatBackground: theme.chatBackground.hexRGBA,
             chatText: theme.chatText.hexRGBA,
+            chatSecondaryText: theme.chatSecondaryText.hexRGBA,
             sidebarBackground: theme.sidebarBackground.hexRGBA,
             sidebarText: theme.sidebarText.hexRGBA,
             plansPanel: theme.plansPanel.hexRGBA,
+            plansCard: theme.plansCard.hexRGBA,
             plansText: theme.plansCardText.hexRGBA,
             tasksPanel: theme.tasksPanel.hexRGBA,
             tasksText: theme.tasksText.hexRGBA,
@@ -278,7 +338,7 @@ final class SkinStore {
             sidebarBackground: "081008FF",
             sidebarText: "00FF41FF",
             plansPanel: "0D1A0DFF",
-            plansText: "00FF41FF",
+            plansText: "000000FF",
             tasksPanel: "0D1A0DFF",
             tasksText: "00FF41FF",
             background: "050A05FF",
@@ -557,7 +617,7 @@ final class SkinStore {
             sidebarBackground: "25252AFF",
             sidebarText: "FFFFFFCC",
             plansPanel: "2C2C32FF",
-            plansText: "FFFFFFCC",
+            plansText: "1D1D1FFF",
             tasksPanel: "2C2C32FF",
             tasksText: "FFFFFFCC",
             background: "1D1D1FFF",
@@ -582,7 +642,7 @@ final class SkinStore {
             sidebarBackground: "EDF1F5FF",
             sidebarText: "1F2D3DFF",
             plansPanel: "E1E8F0FF",
-            plansText: "1F2D3DFF",
+            plansText: "FFFFFFFF",
             tasksPanel: "E1E8F0FF",
             tasksText: "1F2D3DFF",
             background: "F7F9FCFF",
@@ -605,7 +665,7 @@ final class SkinStore {
             sidebarBackground: "16202BFF",
             sidebarText: "FFFFFFCC",
             plansPanel: "1E2D3DFF",
-            plansText: "FFFFFFCC",
+            plansText: "0F1720FF",
             tasksPanel: "1E2D3DFF",
             tasksText: "FFFFFFCC",
             background: "0F1720FF",

@@ -54,8 +54,8 @@ struct AgentsPanelView: View {
                 }
             }
             .listStyle(.sidebar)
-            .scrollContentBackground(theme.sidebarOverridden ? .hidden : .automatic)
-            .background(theme.sidebarOverridden ? theme.sidebarBackground : Color.clear)
+            .scrollContentBackground(.hidden)
+            .background(theme.sidebarBackground)
 
             VStack(alignment: .leading, spacing: 8) {
                 EngineStatusBar()

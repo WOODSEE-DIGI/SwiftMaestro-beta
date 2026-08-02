@@ -96,6 +96,8 @@ struct ContentView: View {
         .frame(minWidth: 900, minHeight: 620)
         .tint(theme.accent)
         .preferredColorScheme(theme.appearance.colorScheme)
+        // (No scheme bridging needed — ThemeStore drives NSApp.appearance
+        // itself, making `.system` resolution deterministic.)
         #if os(macOS)
         .background(
             WindowSizeConfigurator(

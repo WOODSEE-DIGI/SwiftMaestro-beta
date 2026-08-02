@@ -191,8 +191,8 @@ struct ChatView: View {
             Spacer()
             // Per-agent model override. "" picks the global default; any other
             // tag pins this agent (and its delegations) to that model.
-            Image(systemName: "cpu").foregroundStyle(.secondary)
-            Text("This agent").foregroundStyle(.secondary)
+            Image(systemName: "cpu").foregroundStyle(theme.chatSecondaryText)
+            Text("This agent").foregroundStyle(theme.chatSecondaryText)
             Picker("", selection: agentModelBinding) {
                 Text(defaultAgentModelLabel).tag("")
                 ForEach(catalog.models) { m in
@@ -216,7 +216,7 @@ struct ChatView: View {
             }
         }
         .font(.caption)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(theme.chatSecondaryText)
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
     }
@@ -244,11 +244,11 @@ struct ChatView: View {
                     VStack(spacing: 1) {
                         Image(systemName: category.icon)
                             .symbolVariant(active ? .fill : .none)
-                            .foregroundStyle(active ? theme.accent : .secondary)
+                            .foregroundStyle(active ? theme.accent : theme.chatSecondaryText)
                             .frame(height: 14)
                         Text(category.displayName)
                             .font(.system(size: 8, weight: active ? .semibold : .medium))
-                            .foregroundStyle(active ? theme.accent : .secondary)
+                            .foregroundStyle(active ? theme.accent : theme.chatSecondaryText)
                             .lineLimit(1)
                     }
                     .frame(minWidth: 34)
@@ -276,11 +276,11 @@ struct ChatView: View {
                 } label: {
                     VStack(spacing: 1) {
                         Image(systemName: "plus")
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(theme.chatSecondaryText)
                             .frame(height: 14)
                         Text("Add")
                             .font(.system(size: 8, weight: .medium))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(theme.chatSecondaryText)
                             .lineLimit(1)
                     }
                     .frame(minWidth: 34)
@@ -288,7 +288,7 @@ struct ChatView: View {
                     .padding(.vertical, 2)
                     .background(
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .stroke(.secondary.opacity(0.3), lineWidth: 1)
+                            .stroke(theme.chatSecondaryText.opacity(0.45), lineWidth: 1)
                     )
                     .contentShape(Rectangle())
                 }
@@ -305,11 +305,11 @@ struct ChatView: View {
                 VStack(spacing: 1) {
                     Image(systemName: "arrow.down.right.and.arrow.up.left")
                         .symbolVariant(compactToolMode ? .fill : .none)
-                        .foregroundStyle(compactToolMode ? theme.accent : .secondary)
+                        .foregroundStyle(compactToolMode ? theme.accent : theme.chatSecondaryText)
                         .frame(height: 14)
                     Text("Compact")
                         .font(.system(size: 8, weight: compactToolMode ? .semibold : .medium))
-                        .foregroundStyle(compactToolMode ? theme.accent : .secondary)
+                        .foregroundStyle(compactToolMode ? theme.accent : theme.chatSecondaryText)
                         .lineLimit(1)
                 }
                 .frame(minWidth: 34)
@@ -422,7 +422,7 @@ struct ChatView: View {
                 Spacer()
                 Text("\(items.count)")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(theme.plansPanelText)
                 Button { showingPlans = true } label: {
                     Image(systemName: "rectangle.expand.vertical")
                 }
@@ -446,7 +446,7 @@ struct ChatView: View {
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 10)
                                 .background(
-                                    theme.accent,
+                                    theme.plansCard,
                                     in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                         }
                         .buttonStyle(.plain)
@@ -588,7 +588,7 @@ struct ChatView: View {
                 Spacer()
                 Text("\(done)/\(todos.count)")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(theme.tasksText.opacity(0.65))
                 Button { todoStore.clear(for: vm.agent.id) } label: {
                     Image(systemName: "trash")
                 }
@@ -603,10 +603,10 @@ struct ChatView: View {
                     ForEach(todos) { item in
                         HStack(alignment: .top, spacing: 8) {
                             Image(systemName: item.done ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(item.done ? .green : .secondary)
+                                .foregroundStyle(item.done ? .green : theme.tasksText.opacity(0.55))
                             Text(MaestroTools.sanitizeModelText(item.title))
-                                .strikethrough(item.done, color: .secondary)
-                                .foregroundStyle(item.done ? Color.secondary : theme.tasksText)
+                                .strikethrough(item.done, color: theme.tasksText.opacity(0.55))
+                                .foregroundStyle(item.done ? theme.tasksText.opacity(0.55) : theme.tasksText)
                                 .fixedSize(horizontal: false, vertical: true)
                             Spacer(minLength: 0)
                         }
@@ -687,7 +687,7 @@ struct ChatView: View {
                 ProgressView().controlSize(.small)
                 Text(loadingText)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(theme.chatSecondaryText)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 4)
@@ -734,7 +734,7 @@ struct ChatView: View {
                 ProgressView().controlSize(.small)
                 Text(vm.currentActivity ?? "Thinking\u{2026}")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(theme.chatSecondaryText)
                 Spacer()
             }
             .padding(.horizontal, 12)
@@ -794,7 +794,7 @@ struct ChatView: View {
                             .controlSize(.small)
                     } else {
                         Image(systemName: "mic.circle.fill")
-                            .foregroundColor(whisper.modelState == .loaded ? .orange : .secondary)
+                            .foregroundColor(whisper.modelState == .loaded ? .orange : theme.chatSecondaryText)
                     }
                 }
                 .buttonStyle(.plain)
@@ -810,7 +810,7 @@ struct ChatView: View {
                 // Steer the running agent without cancelling it.
                 Button { vm.steer(text: vm.inputText) } label: {
                     Image(systemName: "arrow.up.circle")
-                        .foregroundColor(vm.inputText.isEmpty ? .secondary : .blue)
+                        .foregroundColor(vm.inputText.isEmpty ? theme.chatSecondaryText : .blue)
                 }
                 .disabled(vm.inputText.isEmpty)
                 .help("Steer the running agent (sends without stopping)")
@@ -823,14 +823,15 @@ struct ChatView: View {
                 Button { submitInput() } label: {
                     Image(systemName: "arrow.up.circle.fill")
                         .foregroundColor(
-                            vm.inputText.isEmpty && vm.pendingImages.isEmpty ? .secondary : .blue)
+                            vm.inputText.isEmpty && vm.pendingImages.isEmpty ? theme.chatSecondaryText : .blue)
                 }
                 .disabled(vm.inputText.isEmpty && vm.pendingImages.isEmpty)
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .background(.background)
+        .foregroundStyle(theme.chatText)
+        .background(theme.secondaryBackground)
     }
 
     /// Placeholder hint: while streaming, the field steers the running agent.

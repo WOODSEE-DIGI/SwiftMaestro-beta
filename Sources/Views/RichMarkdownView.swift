@@ -359,6 +359,7 @@ enum MarkdownBlockParser {
 // MARK: - Markdown Block View
 
 struct MarkdownBlockView: View {
+    @Environment(ThemeStore.self) private var theme
     let block: MarkdownBlock
     let textColor: Color
 
@@ -374,17 +375,17 @@ struct MarkdownBlockView: View {
         case .blockquote(_, let text):
             HStack(alignment: .top, spacing: 8) {
                 RoundedRectangle(cornerRadius: 1)
-                    .fill(.quaternary)
+                    .fill(theme.chatSecondaryText.opacity(0.5))
                     .frame(width: 3)
                 inlineText(text)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(theme.chatSecondaryText)
             }
             .padding(.leading, 4)
         case .bullet(_, let text, let indent, let checked):
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 if let checked {
                     Image(systemName: checked ? "checkmark.square" : "square")
-                        .foregroundStyle(checked ? .green : .secondary)
+                        .foregroundStyle(checked ? .green : theme.chatSecondaryText)
                 } else {
                     Text("•")
                 }

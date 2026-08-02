@@ -38,8 +38,8 @@ struct AppsLauncherPanel: View {
             }
         }
         .listStyle(.sidebar)
-        .scrollContentBackground(theme.sidebarOverridden ? .hidden : .automatic)
-        .background(theme.sidebarOverridden ? theme.sidebarBackground : Color.clear)
+        .scrollContentBackground(.hidden)
+        .background(theme.sidebarBackground)
     }
 
     /// A section whose rows can be collapsed/expanded by tapping its header.

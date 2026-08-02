@@ -25,7 +25,7 @@ struct MessageBubble: View {
             VStack(alignment: isUser ? .trailing : .leading, spacing: 4) {
                 Text(roleLabel)
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(theme.chatSecondaryText)
                     .padding(.horizontal, 4)
                 
                 if let images = message.imageData, !images.isEmpty {
@@ -47,14 +47,14 @@ struct MessageBubble: View {
                     DisclosureGroup(isExpanded: reasoningExpanded) {
                         Text(reasoning)
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(theme.chatSecondaryText)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.top, 2)
                     } label: {
                         Label(reasoningLabel, systemImage: "brain")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(theme.chatSecondaryText)
                     }
                     .padding(.horizontal, 12)
                 }
@@ -65,7 +65,7 @@ struct MessageBubble: View {
                             ForEach(Array(groupedSteps.enumerated()), id: \.offset) { _, group in
                                 Text(group.count > 1 ? "\(group.name) \u{00d7}\(group.count)" : group.name)
                                     .font(.caption.monospaced())
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(theme.chatSecondaryText)
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -74,7 +74,7 @@ struct MessageBubble: View {
                         Label("\(steps.count) tool step\(steps.count == 1 ? "" : "s")",
                               systemImage: "wrench.and.screwdriver")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(theme.chatSecondaryText)
                     }
                     .padding(.horizontal, 12)
                 }
@@ -282,7 +282,7 @@ struct MessageBubble: View {
         if !text.isEmpty {
             Text(text)
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(theme.chatSecondaryText)
         }
     }
 
@@ -320,7 +320,7 @@ struct MessageBubble: View {
                 Text(label)
             }
             .font(.caption2)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(theme.chatSecondaryText)
         }
         .buttonStyle(.plain)
         .help("\(label) message")
@@ -334,10 +334,10 @@ struct MessageBubble: View {
             HStack {
                 Image(systemName: "archivebox")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(theme.chatSecondaryText)
                 Text("Context compacted")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(theme.chatSecondaryText)
                 Spacer()
                 Button {
                     withAnimation(.easeInOut(duration: 0.15)) {
@@ -352,7 +352,7 @@ struct MessageBubble: View {
                         Text(collapsed ? "Show summary" : "Hide summary")
                     }
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(theme.chatSecondaryText)
                 }
                 .buttonStyle(.plain)
             }
@@ -378,7 +378,7 @@ struct MessageBubble: View {
                             Text("Hide summary")
                         }
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(theme.chatSecondaryText)
                     }
                     .buttonStyle(.plain)
                 }
@@ -386,6 +386,6 @@ struct MessageBubble: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(Color.secondary.opacity(0.08), in: bubbleShape)
+        .background(theme.chatText.opacity(0.06), in: bubbleShape)
     }
 }

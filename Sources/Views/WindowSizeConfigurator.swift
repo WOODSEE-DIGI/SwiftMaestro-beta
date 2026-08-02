@@ -16,9 +16,13 @@ struct WindowSizeConfigurator: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSView {
         let view = WindowObserverView()
-        view.configure = { [weak view, self] in
-            let target = view?.window ?? NSApp.mainWindow ?? NSApp.keyWindow
-            self.configure(window: target, context: context)
+        view.configurator = self
+        view.environment = context.environment
+        view.configure = { [weak view] in
+            guard let view, let configurator = view.configurator,
+                  let environment = view.environment else { return }
+            let target = view.window ?? NSApp.mainWindow ?? NSApp.keyWindow
+            configurator.configure(window: target, environment: environment)
         }
         view.startTimer()
         return view
@@ -26,10 +30,15 @@ struct WindowSizeConfigurator: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSView, context: Context) {
         guard let view = nsView as? WindowObserverView else { return }
+        // Refresh the captured values — the closure created in makeNSView
+        // would otherwise keep applying the ORIGINAL backgroundColor forever
+        // (the window stayed dark after a light/dark flip).
+        view.configurator = self
+        view.environment = context.environment
         view.configure?()
     }
 
-    private func configure(window: NSWindow?, context: Context) {
+    private func configure(window: NSWindow?, environment: EnvironmentValues) {
         guard let window else { return }
         // SwiftUI's Settings scene builds a preferences-style window whose
         // styleMask omits `.resizable`, so `.windowResizability` alone never adds
@@ -54,7 +63,7 @@ struct WindowSizeConfigurator: NSViewRepresentable {
         }
 
         if let backgroundColor {
-            let resolved = backgroundColor.resolve(in: context.environment)
+            let resolved = backgroundColor.resolve(in: environment)
             window.backgroundColor = NSColor(
                 srgbRed: CGFloat(resolved.red),
                 green: CGFloat(resolved.green),
@@ -70,6 +79,8 @@ struct WindowSizeConfigurator: NSViewRepresentable {
     /// correct target, so we check both paths.
     private final class WindowObserverView: NSView {
         var configure: (() -> Void)?
+        var configurator: WindowSizeConfigurator?
+        var environment: EnvironmentValues?
         private var timer: Timer?
         private var attempts = 0
 
