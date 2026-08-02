@@ -609,13 +609,19 @@ enum MaestroTools {
             functionSpec(
                 name: "open_panel",
                 description:
-                    "OPEN or bring to front a workspace panel inside SwiftMaestro. "
-                    + "This makes the panel visible in the workspace grid or its floating "
-                    + "window. Available panels: 'terminal', 'numbers', 'kanban', "
-                    + "'calendar', 'reminders', 'contacts', 'appleNotes', 'notesMD', "
-                    + "'canvas', 'whatsapp', or an agent name to open its chat panel.",
+                    "OPEN (or focus) any app panel inside SwiftMaestro — even one the "
+                    + "user has never opened. The panel docks into the workspace grid. "
+                    + "Opening an app's panel also ACTIVATES that app's tools from your "
+                    + "NEXT reply onward (Auto tool mode): e.g. open 'database' before "
+                    + "using db_* tools, 'books' before invoice_*, 'kanban' before kanban "
+                    + "tools. Newly activated tools are NOT available inside the current "
+                    + "turn. Panels: database, books, docs, kanban, canvas, numbers, "
+                    + "maps, photos, mail, whatsapp, discord, browser, notesMD, "
+                    + "appleNotes, terminal, calendar, reminders, contacts, dam, bus, "
+                    + "audio, agents, apps, cameras, scenes, mixer, broadcast, ndi — or "
+                    + "an agent name to open its chat panel.",
                 properties: [
-                    "panel": ["type": "string", "description": "Panel to open: 'terminal', 'numbers', 'kanban', 'calendar', 'reminders', 'contacts', 'appleNotes', 'notesMD', 'canvas', 'whatsapp', or an agent name."],
+                    "panel": ["type": "string", "description": "Panel name or alias (e.g. 'database', 'db', 'books', 'mail', 'browser') or an agent name."],
                 ],
                 required: ["panel"]
             ),
@@ -1386,21 +1392,47 @@ enum MaestroTools {
     }
 
     /// Maps a free-form panel name (from the model) to a `WorkspacePanelKind`.
-    /// Agent names are resolved by fuzzy-matching against workspace agents.
+    /// Every static panel is reachable — app-tool panels matter most (opening
+    /// one activates its tool category under Auto mode), but monitors,
+    /// launchers, and the streaming suite are included too. Agent names are
+    /// resolved by fuzzy-matching against workspace agents. Plugin panels are
+    /// data-driven and intentionally not resolvable here.
     @MainActor
     private static func resolvePanelKind(_ name: String) -> WorkspacePanelKind? {
         let lower = name.trimmingCharacters(in: .whitespaces).lowercased()
         switch lower {
-        case "terminal", "shell", "term": return .terminal
-        case "numbers", "spreadsheet": return .numbers
+        // App-tool panels (Auto mode activates the matching category).
+        case "database", "db", "maestrodb", "airtable": return .maestroDB
+        case "books", "maestrobooks", "invoices", "invoicing": return .maestroBooks
+        case "docs", "maestrodocs", "documents": return .maestroDocs
         case "kanban", "board": return .kanban
+        case "canvas", "draw": return .canvas
+        case "numbers", "spreadsheet": return .numbers
+        case "maps", "map": return .maps
+        case "photos", "photo", "pictures": return .photos
+        case "mail", "email", "apple mail": return .mail
+        case "whatsapp", "wa": return .whatsapp
+        case "discord", "dc": return .discord
+        case "browser", "web browser", "webbrowser": return .webBrowser
+        case "notes.md", "notesmd", "md notes": return .notesMD
+        case "apple notes", "applenotes", "notes": return .appleNotes
+        // General panels.
+        case "terminal", "shell", "term": return .terminal
         case "calendar", "cal": return .calendar
         case "reminders", "todo", "tasks": return .reminders
         case "contacts", "people": return .contacts
-        case "apple notes", "applenotes", "notes": return .appleNotes
-        case "notes.md", "notesmd", "md notes": return .notesMD
-        case "canvas", "draw": return .canvas
-        case "whatsapp", "wa": return .whatsapp
+        case "dam", "maestrodam", "assets", "asset browser": return .damBrowser
+        case "bus", "bus monitor", "busmonitor": return .busMonitor
+        case "audio", "audio control": return .audioControl
+        case "agents", "agent list": return .agents
+        case "apps", "launcher", "app launcher": return .appLauncher
+        case "cameras", "tethering", "tether": return .tethering
+        case "stream ingest", "ingest": return .streamIngest
+        case "broadcast", "publisher": return .broadcast
+        case "mixer", "stream mixer": return .streamMixer
+        case "ndi", "ndi browser": return .ndiBrowser
+        case "color", "color adjustments", "lut": return .colorAdjustments
+        case "scenes", "scene composer": return .scenes
         default:
             // Try fuzzy-matching against agent names
             guard let ws = workspace else { return nil }
@@ -1423,7 +1455,12 @@ enum MaestroTools {
         return await MainActor.run {
             guard let layout = workspaceLayout else { return errorJSON("workspace layout unavailable") }
             guard let kind = resolvePanelKind(args.panel) else {
-                return errorJSON("unknown panel '\(args.panel)'. Available: terminal, numbers, kanban, calendar, reminders, contacts, appleNotes, notesMD, canvas, whatsapp, or an agent name.")
+                return errorJSON(
+                    "unknown panel '\(args.panel)'. Available: database, books, docs, "
+                    + "kanban, canvas, numbers, maps, photos, mail, whatsapp, discord, "
+                    + "browser, notesMD, appleNotes, terminal, calendar, reminders, "
+                    + "contacts, dam, bus, audio, agents, apps, cameras, scenes, mixer, "
+                    + "broadcast, ndi — or an agent name.")
             }
             let result = layout.open(kind)
             switch result {
@@ -1445,10 +1482,12 @@ enum MaestroTools {
                     "note": "Panel is now visible in the workspace.",
                 ])
             case .alreadyOpen:
+                // Still honor the "or focus" half of the contract.
+                NotificationCenter.default.post(name: .bringWorkspacePanelToFront, object: kind)
                 return jsonString([
                     "status": "already_open",
                     "panel": args.panel,
-                    "note": "Panel was already open.",
+                    "note": "Panel was already open; brought to front.",
                 ])
             }
         }

@@ -1013,6 +1013,18 @@ class ChatViewModel: ObservableObject {
         db_export_csv writes a table back out. Paths must be inside authorized folders.
         - When the user says "my database", "my bases", or references a table they \
         built in the app, they mean MaestroDB.
+
+        WORKSPACE PANELS (opening apps for the user):
+        - You can OPEN any SwiftMaestro app panel with open_panel — even one the \
+        user has never opened. It docks into the workspace grid in front of them.
+        - When the user asks you to open/launch/show an app inside SwiftMaestro \
+        ("open MaestroDB", "show me the kanban board"), call open_panel — do NOT \
+        just describe where to click.
+        - Opening an app's panel also ACTIVATES that app's tools from your NEXT \
+        reply onward (Auto tool mode). If you need an app's tools and its panel \
+        is closed (your current tool list lacks them), open the panel first, tell \
+        the user it's ready, then use the new tools on your next reply — they are \
+        NOT available mid-turn.
         """
 
     /// Routing guidance so the model uses the Xcode-aware xcodebuildmcp tools for
