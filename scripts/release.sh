@@ -151,7 +151,7 @@ set net:reconnect-interval-multiplier 2
 set sftp:max-packets-in-flight 64
 mkdir -p '${REMOTE_DIR}'
 set cmd:fail-exit yes
-put -c -E '$DIST_DIR/appcast.xml' -o '${REMOTE_DIR}/appcast.xml'
+put -c '$DIST_DIR/appcast.xml' -o '${REMOTE_DIR}/appcast.xml'
 cls --size '${REMOTE_DIR}/appcast.xml'
 bye
 EOF
