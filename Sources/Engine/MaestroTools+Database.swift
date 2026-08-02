@@ -61,6 +61,14 @@ extension MaestroTools {
                 name: "db_export_csv", spec: databaseToolSpecs[11],
                 category: ToolCategory.database.rawValue,
                 handler: { call in await dbExportCSV(call) }),
+            ToolDefinition(
+                name: "db_delete_table", spec: databaseToolSpecs[12],
+                category: ToolCategory.database.rawValue,
+                handler: { call in await dbDeleteTable(call) }),
+            ToolDefinition(
+                name: "db_delete_base", spec: databaseToolSpecs[13],
+                category: ToolCategory.database.rawValue,
+                handler: { call in await dbDeleteBase(call) }),
         ])
     }
 
@@ -176,6 +184,21 @@ extension MaestroTools {
                     "path": ["type": "string", "description": "Absolute output path, e.g. /Users/x/Documents/jobs.csv"],
                 ],
                 required: ["table", "path"]),
+            rawSpec("db_delete_table",
+                "Permanently DELETE a table and all its fields and rows. This cannot "
+                + "be undone — confirm with the user before calling, and report the "
+                + "counts from the result. For a fresh start, delete then re-create.",
+                properties: [
+                    "table": ["type": "string", "description": tableRefDesc],
+                    "base": ["type": "string", "description": baseRefDesc],
+                ],
+                required: ["table"]),
+            rawSpec("db_delete_base",
+                "Permanently DELETE an entire base with every table, field and row "
+                + "inside it. This cannot be undone — always confirm with the user "
+                + "first and report the counts from the result.",
+                properties: ["base": ["type": "string", "description": baseRefDesc]],
+                required: ["base"]),
         ]
     }
 
@@ -588,6 +611,50 @@ extension MaestroTools {
             try database.deleteRow(rowID)
             return jsonString(["status": "deleted", "row_id": rowID])
         } catch { return errorJSON("could not delete row: \(error.localizedDescription)") }
+    }
+
+    private static func dbDeleteTable(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: TableRefArgs.self),
+              let ref = args.table?.trimmingCharacters(in: .whitespaces), !ref.isEmpty else {
+            return errorJSON("db_delete_table requires 'table'")
+        }
+        do {
+            let database = MaestroDBDatabase.shared
+            guard let table = try resolveTable(ref, baseRef: args.base, database: database) else {
+                return errorJSON("no table named '\(ref)'. Tables: \(try tableNameList(database))")
+            }
+            let fieldCount = try database.fields(tableID: table.id).count
+            let rowCount = try database.rows(tableID: table.id).count
+            try database.deleteTable(table.id)
+            return jsonString([
+                "status": "deleted", "table": table.name,
+                "fields_deleted": fieldCount, "rows_deleted": rowCount,
+            ])
+        } catch { return errorJSON("could not delete table: \(error.localizedDescription)") }
+    }
+
+    private static func dbDeleteBase(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: BaseRefArgs.self),
+              let ref = args.base?.trimmingCharacters(in: .whitespaces), !ref.isEmpty else {
+            return errorJSON("db_delete_base requires 'base'")
+        }
+        do {
+            let database = MaestroDBDatabase.shared
+            guard let base = try resolveBase(ref, database: database) else {
+                let names = try database.bases().map(\.name).joined(separator: ", ")
+                return errorJSON("no base named '\(ref)'. Bases: \(names.isEmpty ? "(none)" : names)")
+            }
+            let tables = try database.tables(baseID: base.id)
+            var rowCount = 0
+            for table in tables {
+                rowCount += try database.rows(tableID: table.id).count
+            }
+            try database.deleteBase(base.id)
+            return jsonString([
+                "status": "deleted", "base": base.name,
+                "tables_deleted": tables.count, "rows_deleted": rowCount,
+            ])
+        } catch { return errorJSON("could not delete base: \(error.localizedDescription)") }
     }
 
     // MARK: - CSV handlers

@@ -142,4 +142,34 @@ struct MaestroDBRelationTests {
         #expect(rows[0].value(for: jobName.id) == "Website")  // rest of the row kept
         #expect(rows[1].value(for: f.linkField.id) == f.acme.id)
     }
+
+    @Test func deleteTableCascadesFieldsRowsAndCells() throws {
+        let (db, dir) = try makeTempDB()
+        defer { cleanup(dir) }
+        let f = try makeFixture(db)
+        _ = try db.addRow(tableID: f.jobs.id, values: [f.linkField.id: f.acme.id])
+
+        try db.deleteTable(f.jobs.id)
+
+        #expect(try db.tables(baseID: f.clients.baseID).contains { $0.id == f.jobs.id } == false)
+        #expect(try db.fields(tableID: f.jobs.id).isEmpty)
+        #expect(try db.rows(tableID: f.jobs.id).isEmpty)
+        // The target table is untouched.
+        #expect(try db.rows(tableID: f.clients.id).count == 2)
+    }
+
+    @Test func deleteBaseCascadesEverythingInside() throws {
+        let (db, dir) = try makeTempDB()
+        defer { cleanup(dir) }
+        let f = try makeFixture(db)
+        _ = try db.addRow(tableID: f.jobs.id, values: [f.linkField.id: f.globex.id])
+
+        try db.deleteBase(f.clients.baseID)
+
+        #expect(try db.bases().isEmpty)
+        #expect(try db.fields(tableID: f.clients.id).isEmpty)
+        #expect(try db.fields(tableID: f.jobs.id).isEmpty)
+        #expect(try db.rows(tableID: f.clients.id).isEmpty)
+        #expect(try db.rows(tableID: f.jobs.id).isEmpty)
+    }
 }

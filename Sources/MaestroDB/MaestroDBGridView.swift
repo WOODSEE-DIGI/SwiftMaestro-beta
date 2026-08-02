@@ -152,6 +152,17 @@ struct MaestroDBGridView: View {
 // MARK: - Alert prompt helper
 
 extension NSAlert {
+    /// Synchronous destructive-action confirmation (Delete/Cancel).
+    static func confirm(_ title: String, message: String, destructiveTitle: String = "Delete") -> Bool {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: destructiveTitle)
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
     /// Small synchronous text prompt used for rename/option micro-flows.
     static func prompt(_ title: String, defaultValue: String) -> String? {
         let alert = NSAlert()

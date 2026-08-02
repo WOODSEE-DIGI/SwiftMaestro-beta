@@ -175,6 +175,56 @@ final class MaestroDBViewModel {
 
     // MARK: - Bases
 
+    /// Field/row counts used in delete-confirmation text (sync reads — the
+    /// database layer is synchronous; the async wrappers are for UI flow).
+    func summary(forTableID tableID: String) -> (fields: Int, rows: Int) {
+        let fields = (try? database.fields(tableID: tableID).count) ?? 0
+        let rows = (try? database.rows(tableID: tableID).count) ?? 0
+        return (fields, rows)
+    }
+
+    func summary(forBaseID baseID: String) -> (tables: Int, rows: Int) {
+        guard let tables = try? database.tables(baseID: baseID) else { return (0, 0) }
+        var rows = 0
+        for table in tables {
+            rows += (try? database.rows(tableID: table.id).count) ?? 0
+        }
+        return (tables.count, rows)
+    }
+
+    /// Delete any base by id (clears the selection if it was selected).
+    func deleteBase(id baseID: String) async {
+        do {
+            try database.deleteBase(baseID)
+            if selectedBaseID == baseID {
+                selectedBaseID = nil
+                selectedTableID = nil
+            }
+            await loadAll()
+        } catch { errorMessage = "Could not delete base: \(error.localizedDescription)" }
+    }
+
+    /// Rename any base by id.
+    func renameBase(id baseID: String, to name: String) async {
+        do { try database.renameBase(baseID, name: name); await loadAll() }
+        catch { errorMessage = "Could not rename base: \(error.localizedDescription)" }
+    }
+
+    /// Delete any table by id (clears the selection if it was selected).
+    func deleteTable(id tableID: String) async {
+        do {
+            try database.deleteTable(tableID)
+            if selectedTableID == tableID { selectedTableID = nil }
+            await loadTables()
+        } catch { errorMessage = "Could not delete table: \(error.localizedDescription)" }
+    }
+
+    /// Rename any table by id.
+    func renameTable(id tableID: String, to name: String) async {
+        do { try database.renameTable(tableID, name: name); await loadTables() }
+        catch { errorMessage = "Could not rename table: \(error.localizedDescription)" }
+    }
+
     func createBase(named name: String) async {
         do {
             let base = try database.createBase(name: name)

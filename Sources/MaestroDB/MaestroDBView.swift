@@ -72,6 +72,22 @@ struct MaestroDBView: View {
                             ForEach(viewModel.tables) { table in
                                 Label(table.name, systemImage: "tablecells")
                                     .tag(table.id)
+                                    .contextMenu {
+                                        Button("Rename Table…") {
+                                            if let newName = NSAlert.prompt("Rename table", defaultValue: table.name) {
+                                                Task { await viewModel.renameTable(id: table.id, to: newName) }
+                                            }
+                                        }
+                                        Divider()
+                                        Button("Delete Table…", role: .destructive) {
+                                            let summary = viewModel.summary(forTableID: table.id)
+                                            if NSAlert.confirm(
+                                                "Delete table '\(table.name)'?",
+                                                message: "This permanently deletes \(summary.fields) field(s) and \(summary.rows) row(s). This cannot be undone.") {
+                                                Task { await viewModel.deleteTable(id: table.id) }
+                                            }
+                                        }
+                                    }
                             }
                         }
                     } header: {
@@ -81,6 +97,22 @@ struct MaestroDBView: View {
                                 .foregroundStyle(theme.chatText)
                         }
                         .buttonStyle(.plain)
+                        .contextMenu {
+                            Button("Rename Base…") {
+                                if let newName = NSAlert.prompt("Rename base", defaultValue: base.name) {
+                                    Task { await viewModel.renameBase(id: base.id, to: newName) }
+                                }
+                            }
+                            Divider()
+                            Button("Delete Base…", role: .destructive) {
+                                let summary = viewModel.summary(forBaseID: base.id)
+                                if NSAlert.confirm(
+                                    "Delete base '\(base.name)'?",
+                                    message: "This permanently deletes \(summary.tables) table(s) and all \(summary.rows) row(s) inside them. This cannot be undone.") {
+                                    Task { await viewModel.deleteBase(id: base.id) }
+                                }
+                            }
+                        }
                     }
                 }
             }
