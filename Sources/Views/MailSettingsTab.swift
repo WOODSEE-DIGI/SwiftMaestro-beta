@@ -51,10 +51,17 @@ struct MailSettingsTab: View {
                             TextField("http://localhost:8087", text: Bindable(mailService).relayBaseURLString)
                                 .textFieldStyle(.roundedBorder)
                                 .font(.caption.monospaced())
+                                .onChange(of: mailService.relayBaseURLString) { _, newValue in
+                                    // Sync the pixel-injection URL so tracked emails
+                                    // point recipients at the same public endpoint.
+                                    if let url = URL(string: newValue) {
+                                        relayManager.publicBaseURL = url
+                                    }
+                                }
                         }
                         Text("Localhost works for tracking messages you open yourself. For tracking opens "
-                            + "on other people's machines, this must be a publicly reachable URL "
-                            + "(e.g. https://track.woodsee.com) that forwards to the relay — the pixel "
+                            + "on other people's machines, set this to a publicly reachable URL "
+                            + "(e.g. https://track.swiftmaestro.com) that forwards to the relay — the pixel "
                             + "fires on the recipient's device.")
                             .font(.caption).foregroundStyle(.secondary)
                         LabeledContent("Event store") {

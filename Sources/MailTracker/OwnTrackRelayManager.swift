@@ -33,11 +33,22 @@ final class OwnTrackRelayManager {
     /// later if anyone actually collides with it.
     let port: UInt16 = 8087
 
-    /// Public base URL recipients' clients will hit. For real-world tracking
-    /// this must eventually point at a publicly reachable host (localhost only
-    /// fires for opens on this machine) — that deployment question is
-    /// unchanged from the standalone server.
-    var baseURL: URL { URL(string: "http://localhost:\(port)")! }
+    /// Public base URL recipients' clients will hit when they open a tracked
+    /// email. For local-only tracking this stays at `http://localhost:8087`.
+    /// For real-world tracking, set this to a publicly reachable URL (e.g.
+    /// `https://track.swiftmaestro.com`) that proxies to the relay.
+    var publicBaseURL: URL {
+        get {
+            if let stored = UserDefaults.standard.string(forKey: Self.publicBaseURLKey),
+               let url = URL(string: stored), url.scheme != nil {
+                return url
+            }
+            return URL(string: "http://localhost:\(port)")!
+        }
+        set {
+            UserDefaults.standard.set(newValue.absoluteString, forKey: Self.publicBaseURLKey)
+        }
+    }
 
     /// Where events + message records are persisted (JSON, standalone-relay
     /// compatible format).
@@ -47,6 +58,7 @@ final class OwnTrackRelayManager {
 
     private static let signingSecretAccount = "owntrack-signing-secret"
     private static let autoStartKey = "owntrack.autoStartRelay"
+    private static let publicBaseURLKey = "owntrack.publicBaseURL"
 
     private init() {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -54,6 +66,13 @@ final class OwnTrackRelayManager {
             .appendingPathComponent("SwiftMaestro/mailtracker", isDirectory: true)
             .appendingPathComponent("relay-store.json")
         autoStartRelay = UserDefaults.standard.object(forKey: Self.autoStartKey) as? Bool ?? true
+
+        // Seed from the AppleMailService base URL if the user set one there,
+        // so pixel injection and service queries stay in sync.
+        if let stored = UserDefaults.standard.string(forKey: "appleMail.relayBaseURL"),
+           let url = URL(string: stored), url.scheme != nil {
+            UserDefaults.standard.set(url.absoluteString, forKey: Self.publicBaseURLKey)
+        }
     }
 
     // MARK: - Lifecycle
@@ -77,7 +96,7 @@ final class OwnTrackRelayManager {
                 host: "localhost",
                 port: port,
                 signingSecret: try loadOrCreateSigningSecret(),
-                baseURL: baseURL,
+                baseURL: publicBaseURL,
                 storeURL: storeURL
             )
             let server = try RelayHTTPServer(configuration: configuration)

@@ -1,0 +1,14 @@
+{
+  "name": "swiftmaestro-tracking-relay",
+  "version": "1.0.0",
+  "description": "Self-hostable email open/click tracking relay for SwiftMaestro",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {},
+  "engines": {
+    "node": ">=18"
+  }
+}
