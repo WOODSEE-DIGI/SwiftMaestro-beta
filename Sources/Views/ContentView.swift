@@ -26,6 +26,8 @@ struct ContentView: View {
     @State private var newAgentCategory: AgentCategory = .general
     /// First-run welcome: shown once, only when no models are present on disk.
     @AppStorage("onboarding.seenV1") private var onboardingSeen = false
+    /// Welcome screen: shown once before onboarding on first launch.
+    @AppStorage("welcome.seenV1") private var welcomeSeen = false
     /// WhisperKit first-run: shown once when the speech model needs downloading.
     @AppStorage("whisperkit.seenV1") private var whisperKitSeen = false
     /// Notes iCloud sync first-run: shown once so new users can confirm sync.
@@ -39,6 +41,7 @@ struct ContentView: View {
     private enum ActiveSheet: Identifiable {
         case newAgent
         case onboarding
+        case welcome
         case whisperSetup
         case notesOnboarding
         case agentCategory(AgentRecord)
@@ -47,6 +50,7 @@ struct ContentView: View {
             switch self {
             case .newAgent: return 1
             case .onboarding: return 2
+            case .welcome: return 0
             case .whisperSetup: return 3
             case .notesOnboarding: return 4
             case .agentCategory(let agent): return 5 + agent.id.hashValue
@@ -115,6 +119,10 @@ struct ContentView: View {
                 OnboardingView(onDone: { onboardingSeen = true; activeSheet = nil })
                     .environment(catalog)
                     .environment(engine)
+            case .welcome:
+                WelcomeView(onDone: { welcomeSeen = true; activeSheet = nil })
+                    .environment(catalog)
+                    .environment(engine)
             case .whisperSetup:
                 WhisperKitSetupSheet(onDone: { whisperKitSeen = true; activeSheet = nil })
                     .environment(whisper)
@@ -126,7 +134,13 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .openWorkspacePanel)) { notification in
             guard let kind = notification.object as? WorkspacePanelKind else { return }
-            openPanel(kind)
+            // Read current modifier flags from the event that triggered this.
+            // Shift → dock below (new row); Option → float; default → dock right.
+            let flags = NSEvent.modifierFlags
+            let zone: TilingDropZone? = flags.contains(.option) ? nil
+                : flags.contains(.shift) ? .bottom
+                : .right
+            openPanel(kind, zone: zone)
         }
         .onReceive(NotificationCenter.default.publisher(for: .newAgentRequested)) { _ in
             activeSheet = .newAgent
@@ -184,8 +198,12 @@ struct ContentView: View {
                 }
                 openWindow(id: "workspace-panel-window", value: WorkspacePanelWindowID(kind: kind))
             }
+            // Welcome screen: shown once before model selection.
+            if !welcomeSeen && activeSheet == nil {
+                activeSheet = .welcome
+            }
             // Welcome a fresh install (no model files on disk yet), once.
-            if !onboardingSeen && !catalog.models.contains(where: { $0.localPath != nil }) {
+            if welcomeSeen && !onboardingSeen && !catalog.models.contains(where: { $0.localPath != nil }) {
                 activeSheet = .onboarding
             }
         }
@@ -210,13 +228,10 @@ struct ContentView: View {
                     if activeSheet == nil { activeSheet = .whisperSetup }
                 }
             }
-            // Notes iCloud onboarding: prompt once, after other first-run sheets.
-            if !notesOnboardingSeen && activeSheet == nil {
-                if NotesiCloudSupport.onboardingChoiceMade {
-                    notesOnboardingSeen = true
-                } else {
-                    activeSheet = .notesOnboarding
-                }
+            // Notes iCloud onboarding: already handled in WelcomeView.
+            // Mark as seen so the old sheet never re-appears.
+            if !notesOnboardingSeen && welcomeSeen {
+                notesOnboardingSeen = true
             }
         }
     }
@@ -298,8 +313,8 @@ struct ContentView: View {
     /// Opens a panel via `workspaceLayout`, and — if it opened as a floating
     /// window rather than docking directly — actually presents that window.
     /// The single call site every "open this panel" action should go through.
-    private func openPanel(_ kind: WorkspacePanelKind) {
-        let result = workspaceLayout.open(kind)
+    private func openPanel(_ kind: WorkspacePanelKind, zone: TilingDropZone? = .right) {
+        let result = workspaceLayout.open(kind, zone: zone)
         switch result {
         case .floated:
             openWindow(id: "workspace-panel-window", value: WorkspacePanelWindowID(kind: kind))

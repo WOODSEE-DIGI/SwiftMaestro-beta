@@ -51,7 +51,7 @@ extension MaestroTools {
                 handler: { call in await listAppleNotes(call) }),
             ToolDefinition(name: "read_apple_note", spec: appsToolSpecs[16], category: ToolCategory.notes.rawValue,
                 handler: { call in await readAppleNote(call) }),
-            ToolDefinition(name: "list_calendar_events", spec: appsToolSpecs[17], category: ToolCategory.system.rawValue,
+            ToolDefinition(name: "list_calendar_events", spec: appsToolSpecs[17], category: ToolCategory.calendar.rawValue,
                 handler: { call in await listCalendarEventsTool(call) }),
             ToolDefinition(name: "list_numbers_documents", spec: appsToolSpecs[18], category: ToolCategory.numbers.rawValue,
                 handler: { _ in await listNumbersDocuments() }),

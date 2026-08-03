@@ -145,8 +145,23 @@ struct DBRow: Identifiable, Sendable {
 
     /// Typed setter helpers (produce the canonical stored strings).
     static func store(_ value: Bool) -> String { value ? "1" : "0" }
+
+    private static let numberFormatter: NumberFormatter = {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        f.usesSignificantDigits = true
+        f.maximumSignificantDigits = 12
+        f.minimumFractionDigits = 0
+        f.maximumFractionDigits = 12
+        f.usesGroupingSeparator = false
+        return f
+    }()
+
     static func store(_ value: Double) -> String {
-        value.truncatingRemainder(dividingBy: 1) == 0 ? String(Int(value)) : String(value)
+        if value.truncatingRemainder(dividingBy: 1) == 0 {
+            return String(Int(value))
+        }
+        return numberFormatter.string(from: NSNumber(value: value)) ?? String(value)
     }
     static func store(_ value: Date) -> String { ISO8601DateFormatter().string(from: value) }
     static func store(multi values: [String]) -> String {

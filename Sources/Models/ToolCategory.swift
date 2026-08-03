@@ -19,6 +19,9 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     case sqlite
     case workspace
     case rules
+    case calendar
+    case reminders
+    case contacts
     case time
     case notes
     case kanban
@@ -36,6 +39,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     case bluesky
     case vault
     case database
+    case dam
 
     var id: String { rawValue }
 
@@ -60,7 +64,8 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             return false
         case .file, .documents, .books, .shell, .server, .index, .system, .sqlite,
              .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news,
-             .mail, .whatsapp, .discord, .web, .browser, .bluesky, .vault, .database:
+             .mail, .whatsapp, .discord, .web, .browser, .bluesky, .vault, .database, .dam,
+             .calendar, .reminders, .contacts:
             return true
         }
     }
@@ -98,6 +103,10 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .bluesky: return "Bluesky"
         case .vault: return "Vault"
         case .database: return "Database"
+        case .dam: return "DAM"
+        case .calendar: return "Calendar"
+        case .reminders: return "Reminders"
+        case .contacts: return "Contacts"
         }
     }
 
@@ -134,6 +143,10 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .bluesky: return "at"
         case .vault: return "lock.square"
         case .database: return "cylinder"
+        case .dam: return "photo.on.rectangle.angled"
+        case .calendar: return "calendar"
+        case .reminders: return "checklist"
+        case .contacts: return "person.2"
         }
     }
 
@@ -177,10 +190,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             ]
         case .system:
             return [
-                "create_reminder", "list_reminders", "list_reminder_lists",
-                "create_calendar_event", "list_calendar_events",
                 "open_url", "list_shortcuts", "run_shortcut", "create_shortcut",
-                "search_contacts", "create_contact", "update_contact", "delete_contact",
             ]
         case .sqlite:
             return ["execute_sqlite"]
@@ -265,6 +275,17 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
                 "db_update_row", "db_delete_row", "db_import_csv", "db_export_csv",
                 "db_delete_table", "db_delete_base", "db_add_rows",
             ]
+        case .dam:
+            return [
+                "dam_search", "dam_import", "dam_list_folders", "dam_list_assets",
+                "dam_asset_info", "dam_set_rating", "dam_set_keywords",
+            ]
+        case .calendar:
+            return ["create_calendar_event", "list_calendar_events"]
+        case .reminders:
+            return ["create_reminder", "list_reminders", "list_reminder_lists"]
+        case .contacts:
+            return ["search_contacts", "create_contact", "update_contact", "delete_contact"]
         case .mcp:
             return []
         }
@@ -291,9 +312,15 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .browser: return [.webBrowser]
         case .books: return [.maestroBooks]
         case .database: return [.maestroDB]
+        case .dam: return [.damBrowser]
         case .documents: return [.maestroDocs]
-        case .file, .shell, .server, .index, .memory, .messaging,
-             .bus, .system, .mcp, .sqlite, .workspace, .rules, .time, .stocks,
+        case .shell: return [.terminal]
+        case .calendar: return [.calendar]
+        case .reminders: return [.reminders]
+        case .contacts: return [.contacts]
+        case .bus: return [.busMonitor]
+        case .file, .server, .index, .memory, .messaging,
+             .system, .mcp, .sqlite, .workspace, .rules, .time, .stocks,
              .news, .web, .bluesky, .vault:
             return []
         }
@@ -308,12 +335,14 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .navigator:
             return [
                 .workspace, .memory, .bus, .system, .rules, .time, .web, .browser, .vault, .documents, .books,
-                .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky, .database,
+                .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky, .database, .dam,
+                .calendar, .reminders, .contacts,
             ]
         case .project:
             return [
                 .file, .documents, .books, .shell, .server, .index, .memory, .messaging, .bus, .system, .mcp, .sqlite, .web, .browser, .vault,
-                .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky, .database,
+                .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky, .database, .dam,
+                .calendar, .reminders, .contacts,
             ]
         }
     }

@@ -280,6 +280,11 @@ final class DAMDatabase: Sendable {
         }
     }
 
+    /// Convenience: total assets in a folder (any rating).
+    func assetCount(folder: String?) throws -> Int {
+        try assetCount(folder: folder, minRating: 0)
+    }
+
     /// Distinct folders with their direct asset counts — the data behind
     /// the folder tree sidebar.
     func folderCounts() throws -> [(folder: String, count: Int)] {
@@ -301,6 +306,15 @@ final class DAMDatabase: Sendable {
     func fetchAssets(ids: [Int64]) throws -> [DAMAsset] {
         try dbQueue.read { db in
             try DAMAsset.fetchAll(db, keys: ids)
+        }
+    }
+
+    /// Fetch a single asset by its absolute file path. Returns nil if not found.
+    func asset(withPath path: String) throws -> DAMAsset? {
+        try dbQueue.read { db in
+            try DAMAsset
+                .filter(DAMAsset.Columns.path == path)
+                .fetchOne(db)
         }
     }
 

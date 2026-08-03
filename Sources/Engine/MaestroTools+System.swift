@@ -34,19 +34,19 @@ extension MaestroTools {
                 handler: { call in readProjectRulesTool(call) }),
             ToolDefinition(
                 name: "create_reminder", spec: systemToolSpecs[3],
-                category: ToolCategory.system.rawValue,
+                category: ToolCategory.reminders.rawValue,
                 handler: { call in await createReminder(call) }),
             ToolDefinition(
                 name: "list_reminders", spec: systemToolSpecs[4],
-                category: ToolCategory.system.rawValue,
+                category: ToolCategory.reminders.rawValue,
                 handler: { call in await listRemindersTool(call) }),
             ToolDefinition(
                 name: "list_reminder_lists", spec: systemToolSpecs[5],
-                category: ToolCategory.system.rawValue,
+                category: ToolCategory.reminders.rawValue,
                 handler: { _ in await listReminderListsTool() }),
             ToolDefinition(
                 name: "create_calendar_event", spec: systemToolSpecs[6],
-                category: ToolCategory.system.rawValue,
+                category: ToolCategory.calendar.rawValue,
                 handler: { call in await createCalendarEvent(call) }),
             ToolDefinition(
                 name: "create_note", spec: systemToolSpecs[7],
@@ -58,19 +58,19 @@ extension MaestroTools {
                 handler: { call in await openURLTool(call) }),
             ToolDefinition(
                 name: "search_contacts", spec: systemToolSpecs[9],
-                category: ToolCategory.system.rawValue,
+                category: ToolCategory.contacts.rawValue,
                 handler: { call in await searchContactsTool(call) }),
             ToolDefinition(
                 name: "create_contact", spec: systemToolSpecs[10],
-                category: ToolCategory.system.rawValue,
+                category: ToolCategory.contacts.rawValue,
                 handler: { call in await createContactTool(call) }),
             ToolDefinition(
                 name: "update_contact", spec: systemToolSpecs[11],
-                category: ToolCategory.system.rawValue,
+                category: ToolCategory.contacts.rawValue,
                 handler: { call in await updateContactTool(call) }),
             ToolDefinition(
                 name: "delete_contact", spec: systemToolSpecs[12],
-                category: ToolCategory.system.rawValue,
+                category: ToolCategory.contacts.rawValue,
                 handler: { call in await deleteContactTool(call) }),
             ToolDefinition(
                 name: "list_shortcuts", spec: systemToolSpecs[13],

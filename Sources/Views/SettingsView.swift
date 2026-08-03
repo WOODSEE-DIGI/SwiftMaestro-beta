@@ -2285,6 +2285,31 @@ struct AboutSettingsTab: View {
                     Link("Git — git.woodsee.com", destination: URL(string: "https://git.woodsee.com")!)
                 }
 
+                Divider()
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Hints")
+                        .font(.headline)
+
+                    Toggle("Show feature tips", isOn: Binding(
+                        get: { FeatureTip.tipsEnabled },
+                        set: { FeatureTip.tipsEnabled = $0 }
+                    ))
+
+                    if FeatureTip.tipsEnabled {
+                        Button("Reset all tips") {
+                            FeatureTip.resetAll()
+                        }
+                        .font(.caption)
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(theme.accent)
+                    }
+
+                    Text("Small contextual hints appear once when you first use a feature.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
                 Spacer()
             }
             .padding()

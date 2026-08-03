@@ -565,7 +565,13 @@ struct ChatView: View {
             errorBanner
             streamingStatus
             attachmentStrip
-            inputBar
+            FeatureTipPopup(
+                key: FeatureTip.memory,
+                message: "I can remember things across sessions. Just ask naturally — \"remember that I prefer X\" or \"what did we discuss about Y?\" — and I'll store or recall context automatically.",
+                icon: "brain.head.profile"
+            ) {
+                inputBar
+            }
         }
         .background(theme.chatBackground)
     }
@@ -575,7 +581,13 @@ struct ChatView: View {
     /// multiple rows when the window is narrow or the panel is half-width.
     private var toolBar: some View {
         HStack(spacing: 0) {
-            toolCategoryPicker
+            FeatureTipPopup(
+                key: FeatureTip.toolPicker,
+                message: "Toggle tool categories on or off. Fewer tools = faster responses and fewer accidental side-effects. Under Auto mode, tools activate when their panel opens.",
+                icon: "wrench.and.screwdriver"
+            ) {
+                toolCategoryPicker
+            }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 8)

@@ -13,7 +13,12 @@ struct AppsLauncherPanel: View {
     @State private var collapsed: Set<String> = []
 
     var body: some View {
-        List {
+        FeatureTipPopup(
+            key: FeatureTip.panels,
+            message: "Open any panel — it tiles to the right by default. Hold Shift to dock below, or Option to float.",
+            icon: "sidebar.left"
+        ) {
+            List {
             // Categories and their apps come from AppCategory (the single source
             // of truth) and are filtered by AppEnablementStore — a disabled
             // category/app hides its row, and a section with no visible apps is
@@ -40,6 +45,7 @@ struct AppsLauncherPanel: View {
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
         .background(theme.sidebarBackground)
+        }
     }
 
     /// A section whose rows can be collapsed/expanded by tapping its header.

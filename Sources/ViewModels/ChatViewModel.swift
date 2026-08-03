@@ -827,6 +827,23 @@ class ChatViewModel: ObservableObject {
         - For quick lookups, web_search is enough. For deep reading, fetch the URL after searching.
         - MCP web tools (webclaw, firecrawl) provide richer scraping when enabled in Settings → MCP.
 
+        INTERNAL-FIRST RULE — BUILT-IN TOOLS OVER EXTERNAL APPS:
+        SwiftMaestro has built-in tools for almost everything. ALWAYS use them first.
+        - "search online" / "look up" / "find info" → use web_search, NOT an external browser.
+        - "open this page" / "show me this website" → use browser_open or browser_navigate \
+        to open it in the SwiftMaestro internal browser. NOT Safari, Chrome, or open_url.
+        - "read this webpage" / "get the content" → use browser_read or fetch_url. \
+        Do NOT open an external browser just to read a page.
+        - "search for flights / hotels / products" → use web_search for research. \
+        Only open the internal browser if interaction (clicking, filling forms) is needed.
+        - Only use open_url to launch an EXTERNAL app when: (a) the user explicitly says \
+        "open in Safari" / "open in Chrome" / "open externally", OR (b) the task requires \
+        a native app that has no built-in tool (e.g. opening System Settings, App Store).
+        - If an internal tool fails or cannot complete the task, THEN you may fall back to \
+        an external app — but tell the user you're doing so.
+        - The internal browser (browser_*) supports full WebKit rendering, JavaScript, \
+        screenshots, and element interaction. It is NOT a toy — use it confidently.
+
         BLUESKY:
         - Use search_bluesky_posts to search public Bluesky posts by keyword.
         - Use get_bluesky_profile to get a Bluesky user's profile, bio, and counts.
@@ -1007,8 +1024,10 @@ class ChatViewModel: ObservableObject {
         MAESTRODB (the user's own in-app database):
         - MaestroDB is the user's Airtable-style database app inside SwiftMaestro. \
         Use the db_* tools for it — NOT execute_sqlite (that's for arbitrary files).
-        - Discovery: db_list_bases → db_list_tables → db_table_schema. Always call \
-        db_table_schema before db_add_row so you use the exact field names.
+        - Discovery: ALWAYS call db_list_bases FIRST before creating anything. If a \
+        base already exists for the user's request, USE IT — do not create a duplicate. \
+        Then db_list_tables → db_table_schema. Always call db_table_schema before \
+        db_add_row so you use the exact field names.
         - Bases and tables resolve by NAME or id. Row values go in a 'values' JSON \
         object string keyed by FIELD NAME; values are coerced to each field's type.
         - Row ids come from db_list_rows (first column) for db_update_row/db_delete_row.
@@ -1019,6 +1038,8 @@ class ChatViewModel: ObservableObject {
         built in the app, they mean MaestroDB.
         - Bulk seeding (more than 2-3 rows): use db_add_rows ONCE with a JSON array \
         (never many db_add_row calls), or ask for a CSV and db_import_csv.
+        - Before creating a new base or table, ALWAYS check if one already exists \
+        with db_list_bases / db_list_tables. Reuse existing structures — never duplicate.
         - VERIFY BEFORE YOU CLAIM: write tools return rows_in_table_after (the real \
         count read back from the database) and status 'created'/'updated'/'partial'. \
         ONLY claim success for status 'created'/'updated'. 'partial' means some \

@@ -560,10 +560,10 @@ final class WorkspaceLayoutState {
         case floated
     }
 
-    /// Open a panel. The first panel ever opened docks immediately; every
-    /// panel after that opens as a floating window by default.
+    /// Open a panel. By default it docks to the right of the existing layout.
+    /// Pass `.bottom` (Shift) for a new row, or `nil` zone to float (Option).
     @discardableResult
-    func open(_ kind: WorkspacePanelKind) -> OpenResult {
+    func open(_ kind: WorkspacePanelKind, zone: TilingDropZone? = .right) -> OpenResult {
         guard !isOpen(kind) else { return .alreadyOpen }
 
         if root == nil && floatingPanels.isEmpty {
@@ -572,9 +572,16 @@ final class WorkspaceLayoutState {
             return .dockedDirectly
         }
 
-        floatingPanels.insert(kind)
-        save()
-        return .floated
+        guard let zone else {
+            // nil zone → float
+            floatingPanels.insert(kind)
+            save()
+            return .floated
+        }
+
+        // Dock into the tree at the requested zone.
+        dock(kind, zone: zone)
+        return .dockedDirectly
     }
 
     /// Ensure the navigation "chrome" — the Agents navigator panel with the Apps
