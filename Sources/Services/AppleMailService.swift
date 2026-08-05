@@ -279,13 +279,23 @@ final class AppleMailService {
     }
 
     /// Fetch the raw event list for a tracked message (sent/open/click/reply).
+    /// When using an external (non-localhost) relay, includes the API key for
+    /// per-user event isolation and uses `/events` (PHP relay path).
     func trackingEvents(messageID: String) async throws -> [TrackingEvent] {
         let base = relayBaseURLString
         let normalized = Self.normalizeMessageID(messageID)
-        guard var components = URLComponents(string: "\(base)/v1/events") else {
+        // External (PHP) relay uses /events; embedded relay uses /v1/events
+        let eventsPath = base.contains("localhost") ? "/v1/events" : "/events"
+        guard var components = URLComponents(string: "\(base)\(eventsPath)") else {
             throw RelayError.invalidBaseURL
         }
-        components.queryItems = [URLQueryItem(name: "messageId", value: normalized)]
+        var queryItems = [URLQueryItem(name: "messageId", value: normalized)]
+        // Include API key for external relays (not localhost)
+        if !base.contains("localhost") {
+            let apiKey = OwnTrackRelayManager.shared.relayAPIKey
+            queryItems.append(URLQueryItem(name: "apikey", value: apiKey))
+        }
+        components.queryItems = queryItems
         guard let url = components.url else { throw RelayError.invalidBaseURL }
         let (data, response) = try await URLSession.shared.data(from: url)
         guard let http = response as? HTTPURLResponse else { throw RelayError.invalidBaseURL }

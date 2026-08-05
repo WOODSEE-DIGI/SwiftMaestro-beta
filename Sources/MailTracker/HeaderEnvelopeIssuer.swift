@@ -53,10 +53,34 @@ public struct HeaderEnvelopeIssuer: Sendable {
             .appending(path: "\(token).gif")
     }
 
+    /// Pixel URL with API key query param for external (PHP) relay.
+    public func pixelURL(for token: String, apiKey: String) -> URL {
+        var components = URLComponents(
+            url: relayBaseURL
+                .appending(path: "t")
+                .appending(path: "open")
+                .appending(path: "\(token).gif"),
+            resolvingAgainstBaseURL: false
+        ) ?? URLComponents()
+        components.queryItems = [URLQueryItem(name: "apikey", value: apiKey)]
+        return components.url ?? pixelURL(for: token)
+    }
+
     public func clickURL(for token: String, destination: URL) -> URL {
         var components = URLComponents(url: relayBaseURL, resolvingAgainstBaseURL: false) ?? URLComponents()
         components.path = "/t/c/\(token)"
         components.queryItems = [URLQueryItem(name: "url", value: destination.absoluteString)]
+        return components.url ?? relayBaseURL
+    }
+
+    /// Click URL with API key query param for external (PHP) relay.
+    public func clickURL(for token: String, destination: URL, apiKey: String) -> URL {
+        var components = URLComponents(url: relayBaseURL, resolvingAgainstBaseURL: false) ?? URLComponents()
+        components.path = "/t/c/\(token)"
+        components.queryItems = [
+            URLQueryItem(name: "url", value: destination.absoluteString),
+            URLQueryItem(name: "apikey", value: apiKey),
+        ]
         return components.url ?? relayBaseURL
     }
 }

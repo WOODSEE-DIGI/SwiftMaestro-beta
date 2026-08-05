@@ -12,6 +12,7 @@ struct MailSettingsTab: View {
     @State private var relayManager = OwnTrackRelayManager.shared
     @State private var envelope = MailEnvelopeIndex.shared
     @State private var health: Bool?
+    @State private var showAPIKey = false
     @AppStorage("appleMail.loadRemoteImages") private var loadRemoteImages = false
 
     var body: some View {
@@ -61,7 +62,7 @@ struct MailSettingsTab: View {
                         }
                         Text("Localhost works for tracking messages you open yourself. For tracking opens "
                             + "on other people's machines, set this to a publicly reachable URL "
-                            + "(e.g. https://track.swiftmaestro.com) that forwards to the relay — the pixel "
+                            + "(e.g. https://swiftmaestro.com/tracking) — the pixel "
                             + "fires on the recipient's device.")
                             .font(.caption).foregroundStyle(.secondary)
                         LabeledContent("Event store") {
@@ -83,6 +84,37 @@ struct MailSettingsTab: View {
                         Text("Same JSON format as the standalone TrackingRelayServer — existing "
                             + "relay-store.json files can be dropped in directly.")
                             .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .padding(8)
+                }
+
+                GroupBox("Tracking API Key") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Your API key identifies you to the external relay. Only you can see your tracking events.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        HStack {
+                            if showAPIKey {
+                                Text(relayManager.relayAPIKey)
+                                    .font(.caption.monospaced())
+                                    .textSelection(.enabled)
+                            } else {
+                                Text(String(repeating: "•", count: 64))
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button(showAPIKey ? "Hide" : "Show") {
+                                showAPIKey.toggle()
+                            }
+                            .font(.caption)
+                            Button("Copy") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(relayManager.relayAPIKey, forType: .string)
+                            }
+                            .font(.caption)
+                        }
+                        Text("Never share this key. It controls who can see your email tracking events.")
+                            .font(.caption).foregroundStyle(.orange)
                     }
                     .padding(8)
                 }

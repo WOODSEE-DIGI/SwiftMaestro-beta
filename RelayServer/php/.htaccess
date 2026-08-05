@@ -1,8 +1,27 @@
 RewriteEngine On
 
-# Route all tracking requests through index.php
-# Paths match SwiftMaestro's embedded relay: /t/open/{token}.gif, /t/c/{token}
+# Don't rewrite existing files/directories
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+
+# Open pixel: /t/open/{token}.gif → index.php?action=open&token={token}
 RewriteRule ^t/open/(.+)\.gif$ index.php?action=open&token=$1 [L,QSA]
+
+# Click redirect: /t/c/{token}?url=... → index.php?action=click&token={token}&url=...
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
 RewriteRule ^t/c/(.+)$ index.php?action=click&token=$1 [L,QSA]
-RewriteRule ^health$ index.php?action=health [L,QSA]
+
+# Events query: /v1/events or /events → index.php?action=events
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^v1/events$ index.php?action=events [L,QSA]
+
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
 RewriteRule ^events$ index.php?action=events [L,QSA]
+
+# Health via /health path
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^health$ index.php?action=health [L,QSA]

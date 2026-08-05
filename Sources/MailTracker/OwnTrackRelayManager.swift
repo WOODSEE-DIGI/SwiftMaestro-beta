@@ -36,7 +36,7 @@ final class OwnTrackRelayManager {
     /// Public base URL recipients' clients will hit when they open a tracked
     /// email. For local-only tracking this stays at `http://localhost:8087`.
     /// For real-world tracking, set this to a publicly reachable URL (e.g.
-    /// `https://track.swiftmaestro.com`) that proxies to the relay.
+    /// `https://swiftmaestro.com/tracking`) that proxies to the relay.
     var publicBaseURL: URL {
         get {
             if let stored = UserDefaults.standard.string(forKey: Self.publicBaseURLKey),
@@ -50,6 +50,20 @@ final class OwnTrackRelayManager {
         }
     }
 
+    /// API key for the external (PHP) tracking relay. Serves as both the
+    /// signing secret for tracking tokens and the user identity for event
+    /// isolation — each user can only see their own events.
+    ///
+    /// Generated once on first access and stored in the local Keychain.
+    /// Falls back to UserDefaults when the Keychain is unavailable.
+    var relayAPIKey: String {
+        if let cached = _relayAPIKey { return cached }
+        let key = loadOrCreateRelayAPIKey()
+        _relayAPIKey = key
+        return key
+    }
+    private var _relayAPIKey: String?
+
     /// Where events + message records are persisted (JSON, standalone-relay
     /// compatible format).
     let storeURL: URL
@@ -57,6 +71,7 @@ final class OwnTrackRelayManager {
     private var server: RelayHTTPServer?
 
     private static let signingSecretAccount = "owntrack-signing-secret"
+    private static let relayAPIKeyAccount = "owntrack-relay-api-key"
     private static let autoStartKey = "owntrack.autoStartRelay"
     private static let publicBaseURLKey = "owntrack.publicBaseURL"
 
@@ -65,7 +80,7 @@ final class OwnTrackRelayManager {
         storeURL = appSupport
             .appendingPathComponent("SwiftMaestro/mailtracker", isDirectory: true)
             .appendingPathComponent("relay-store.json")
-        autoStartRelay = UserDefaults.standard.object(forKey: Self.autoStartKey) as? Bool ?? true
+        autoStartRelay = UserDefaults.standard.object(forKey: Self.autoStartKey) as? Bool ?? false
 
         // Seed from the AppleMailService base URL if the user set one there,
         // so pixel injection and service queries stay in sync.
@@ -150,4 +165,32 @@ final class OwnTrackRelayManager {
     }
 
     private static let signingSecretFallbackKey = "owntrack.signingSecret.fallback"
+
+    /// Reads the relay API key from the local Keychain, generating and storing
+    /// a fresh random one on first use. The key is a 64-char hex string
+    /// (UUID+UUID) used as both the HMAC signing secret for tracking tokens
+    /// and the user identity for event isolation on the external PHP relay.
+    private func loadOrCreateRelayAPIKey() -> String {
+        do {
+            if let existing = try KeychainService.read(account: Self.relayAPIKeyAccount, allowUI: false),
+               !existing.isEmpty {
+                return existing
+            }
+            let generated = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+                + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+            try KeychainService.store(account: Self.relayAPIKeyAccount, value: generated, synchronizable: false)
+            return generated
+        } catch {
+            if let fallback = UserDefaults.standard.string(forKey: Self.relayAPIKeyFallbackKey),
+               !fallback.isEmpty {
+                return fallback
+            }
+            let generated = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+                + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+            UserDefaults.standard.set(generated, forKey: Self.relayAPIKeyFallbackKey)
+            return generated
+        }
+    }
+
+    private static let relayAPIKeyFallbackKey = "owntrack.relayAPIKey.fallback"
 }
