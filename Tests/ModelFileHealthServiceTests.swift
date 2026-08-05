@@ -118,4 +118,78 @@ final class ModelFileHealthServiceTests: XCTestCase {
         XCTAssertTrue(model.hasLocalWeights, "lenient check should still see the one present shard")
         XCTAssertFalse(model.hasCompleteLocalWeights, "strict check must catch the missing shard")
     }
+
+    // MARK: - Stale upstream index repair (Qwen3-VL-8B phantom-shard family)
+
+    /// Write a minimal but structurally valid safetensors file: 8-byte LE
+    /// header length + JSON header + a couple of fake tensor bytes.
+    private func writeSafetensors(_ name: String, tensors: [String]) throws {
+        var header: [String: Any] = [:]
+        for tensor in tensors {
+            header[tensor] = ["dtype": "F16", "shape": [1], "data_offsets": [0, 2]]
+        }
+        let headerData = try JSONSerialization.data(withJSONObject: header)
+        var len = UInt64(headerData.count)
+        var data = Data()
+        withUnsafeBytes(of: &len) { data.append(contentsOf: $0) }
+        data.append(headerData)
+        data.append(Data(repeating: 0, count: 2))
+        try data.write(to: tempDir.appendingPathComponent(name))
+    }
+
+    func testStaleIndexIsRepairedFromCompleteOnDiskShards() throws {
+        // Production case: repo ships 2 four-bit shards (of-00002) but its
+        // index.json references 4 phantom shards (of-00004) from the
+        // unquantized source repo — verification could never pass.
+        try writeIndex(shards: [
+            "language_model.layers.0.weight": "model-00001-of-00004.safetensors",
+            "language_model.layers.1.weight": "model-00002-of-00004.safetensors",
+            "language_model.layers.2.weight": "model-00003-of-00004.safetensors",
+            "language_model.layers.3.weight": "model-00004-of-00004.safetensors",
+        ])
+        try writeSafetensors("model-00001-of-00002.safetensors",
+                             tensors: ["model.layers.0.weight", "model.embed.weight"])
+        try writeSafetensors("model-00002-of-00002.safetensors",
+                             tensors: ["model.layers.1.weight", "model.norm.weight"])
+
+        let model = makeModel()
+        XCTAssertTrue(ModelFileHealthService.missingWeightShards(for: model).isEmpty)
+
+        // The index was regenerated from the on-disk shards and the upstream
+        // file backed up alongside.
+        let data = try Data(contentsOf: tempDir.appendingPathComponent("model.safetensors.index.json"))
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let map = json?["weight_map"] as? [String: String]
+        XCTAssertEqual(Set((map ?? [:]).values), [
+            "model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors",
+        ])
+        XCTAssertEqual(map?.count, 4)
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: tempDir.appendingPathComponent("model.safetensors.index.json.upstream-broken.bak").path))
+    }
+
+    func testStaleIndexIsNOTRepairedOverIncompleteOnDiskShards() throws {
+        // Safety: if the real shard set is only half-downloaded, the stale
+        // index must be left alone — never bless a partial weight set.
+        try writeIndex(shards: [
+            "language_model.layers.0.weight": "model-00001-of-00004.safetensors",
+            "language_model.layers.1.weight": "model-00002-of-00004.safetensors",
+        ])
+        try writeSafetensors("model-00001-of-00002.safetensors",
+                             tensors: ["model.layers.0.weight"])
+
+        XCTAssertFalse(ModelFileHealthService.repairStaleWeightIndexIfNeeded(in: tempDir))
+        // Index untouched: still reports the phantom shards as missing.
+        let model = makeModel()
+        XCTAssertEqual(ModelFileHealthService.missingWeightShards(for: model),
+                       ["model-00001-of-00004.safetensors", "model-00002-of-00004.safetensors"])
+    }
+
+    func testSafetensorsTensorNamesParsesHeader() throws {
+        try writeSafetensors("model.safetensors",
+                             tensors: ["a.weight", "b.weight", "__metadata__"])
+        let names = ModelFileHealthService.safetensorsTensorNames(
+            tempDir.appendingPathComponent("model.safetensors"))
+        XCTAssertEqual(names, ["a.weight", "b.weight"])
+    }
 }

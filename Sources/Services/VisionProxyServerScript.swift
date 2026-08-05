@@ -21,8 +21,9 @@ enum VisionProxyServerScript {
     /// step up from the tiny 0.5B FastVLM model and produces accurate captions.
     /// Resolved via `ModelCatalog.modelsRoot` so it respects the user's model-root override.
     static var defaultModelPath: String {
-        (ModelCatalog.modelsRoot as NSString)
-            .appendingPathComponent("mlx-community/Qwen3-VL-8B-Instruct-4bit")
+        // Single source of truth is the catalog's candidate resolution (covers
+        // both swiftmaestro-models/ downloads and legacy mlx-community/ layouts).
+        ModelCatalog.defaultVisionProxyModelPath
     }
 
     /// Ensure the server script exists on disk and return its path.

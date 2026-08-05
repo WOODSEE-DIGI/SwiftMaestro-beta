@@ -262,9 +262,16 @@ final class ModelCatalog {
 
     /// Default path to the SwiftMaestro vision proxy model.
     /// Resolved relative to the user's configured `modelsRoot` so the proxy uses the
-    /// same model directory as the rest of the catalog.
+    /// same model directory as the rest of the catalog. Checks the actual download
+    /// convention FIRST (performDownload lands in `swiftmaestro-models/<repo>`),
+    /// then the legacy `mlx-community/` layout; defaults to the download
+    /// destination so a fresh download resolves the moment it completes.
     nonisolated static var defaultVisionProxyModelPath: String {
-        (Self.modelsRoot as NSString).appendingPathComponent("mlx-community/Qwen3-VL-8B-Instruct-4bit")
+        localIfPresent([
+            "swiftmaestro-models/Qwen3-VL-8B-Instruct-4bit",
+            "mlx-community/Qwen3-VL-8B-Instruct-4bit",
+        ]) ?? (Self.modelsRoot as NSString)
+            .appendingPathComponent("swiftmaestro-models/Qwen3-VL-8B-Instruct-4bit")
     }
 
     /// Current vision proxy configuration. Persisted to UserDefaults.
@@ -477,6 +484,20 @@ final class ModelCatalog {
             downloadURL: "https://huggingface.co/mlx-community/gemma-4-31b-it-qat-4bit"
         ),
         MaestroModel(
+            id: "local-gemma4-e4b-it",
+            displayName: "Gemma 4 E4B (Vision+Text, 4-bit)",
+            huggingFaceID: "mlx-community/gemma-4-e4b-it-4bit",
+            isVision: true,
+            localPath: localIfPresent("swiftmaestro-models/gemma-4-e4b-it-4bit"),
+            estimatedMemoryGB: 4,
+            supportsTools: true,
+            toolCallFormat: .gemma4,
+            recTemperature: 0.7, recTopP: 0.9, recRepetitionPenalty: 1.1,
+            recContextLength: 128_000,
+            activeParamsB: 4,
+            downloadURL: "https://huggingface.co/mlx-community/gemma-4-e4b-it-4bit"
+        ),
+        MaestroModel(
             id: "local-gemma4-e4b",
             displayName: "Gemma 4 E4B (Vision+Text, small)",
             huggingFaceID: "mlx-community/gemma-4-e4b-it-qat-4bit",
@@ -525,6 +546,35 @@ final class ModelCatalog {
             recMaxTokens: 200_000,
             recContextLength: 262_144,
             activeParamsB: 10
+        ),
+        MaestroModel(
+            id: "local-qwen3.5-9b",
+            displayName: "Qwen 3.5 9B (4-bit)",
+            huggingFaceID: "mlx-community/Qwen3.5-9B-MLX-4bit",
+            isVision: false,
+            localPath: localIfPresent("swiftmaestro-models/Qwen3.5-9B-MLX-4bit"),
+            estimatedMemoryGB: 6,
+            // Same qwen3.5 chat-template family as the 35B/122B (XML
+            // <function>/<parameter> tool calls) — a modern tool-calling
+            // sub-agent model at MacBook size. Verify round-trip on first use.
+            supportsTools: true,
+            toolCallFormat: .xmlFunction,
+            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05,
+            recContextLength: 262_144,
+            activeParamsB: 9,
+            downloadURL: "https://huggingface.co/mlx-community/Qwen3.5-9B-MLX-4bit"
+        ),
+        MaestroModel(
+            // NOT a chat model — sentence embeddings for local vector RAG via
+            // MLXEmbedders (the documented highest-value RAG upgrade). Hidden
+            // from the picker; downloaded so the embedding service can use it.
+            id: "local-qwen3-embedding-0.6b",
+            displayName: "Qwen3 Embedding 0.6B (4-bit, RAG)",
+            huggingFaceID: "mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ",
+            isVision: false,
+            localPath: localIfPresent("swiftmaestro-models/Qwen3-Embedding-0.6B-4bit-DWQ"),
+            estimatedMemoryGB: 1,
+            isHidden: true
         ),
         MaestroModel(
             id: "local-hermes-70b",
@@ -656,6 +706,16 @@ final class ModelCatalog {
             huggingFaceID: "mlx-community/GLM-5.1",
             isVision: false,
             localPath: nil,
+            estimatedMemoryGB: 150,
+            toolCallFormat: .glm4,
+            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05
+        ),
+        MaestroModel(
+            id: "hub-glm-5.2",
+            displayName: "GLM-5.2 (mxfp4, coding)",
+            huggingFaceID: "mlx-community/GLM-5.2-mxfp4",
+            isVision: false,
+            localPath: localIfPresent("swiftmaestro-models/GLM-5.2-mxfp4"),
             estimatedMemoryGB: 150,
             toolCallFormat: .glm4,
             recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05

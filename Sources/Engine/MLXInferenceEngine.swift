@@ -209,6 +209,12 @@ final class MLXInferenceEngine {
     /// Mutex protecting `downloadChain` so concurrent callers of
     /// `downloadModel` don't race on the read-modify-write of the chain.
     private let downloadMutex = NSLock()
+    /// Repos currently queued/in-flight, guarded by `downloadMutex`. A second
+    /// `downloadModel` for the SAME repo awaits the in-flight chain instead of
+    /// queueing a duplicate — production: two repair triggers for Qwen3-VL-8B
+    /// queued back-to-back and each wiped the other's progress (17.5 GB from
+    /// scratch, repeatedly).
+    private var queuedDownloadRepos = Set<String>()
 
     /// Client-side MCP tool source. Set during app launch. When present (and the
     /// model supports tools), discovered MCP tools join the same agentic loop as
@@ -263,8 +269,9 @@ final class MLXInferenceEngine {
     /// Uses the SwiftMaestro-managed Python helper with `huggingface_hub` + Xet
     /// acceleration; supports resume and reports progress to the UI.
     /// After completion the model's `localIfPresent` path will resolve on next access.
-    /// - Parameter repair: When true, remove any existing local directory first
-    ///   so incomplete/corrupt downloads can be fixed.
+    /// - Parameter repair: When true, force a full file pass even if metadata
+    ///   looks complete. Existing files are KEPT — the helper skips complete
+    ///   files and resumes partial ones, so a repair only fetches missing bytes.
     func downloadModel(_ model: MaestroModel, repair: Bool = false) async throws {
         NSLog("[DOWNLOAD] downloadModel called: %@ (repair=%d)", model.huggingFaceID, repair)
 
@@ -272,11 +279,24 @@ final class MLXInferenceEngine {
         // a new one. Two concurrent Python downloads corrupt each other via the
         // shared HuggingFace cache and venv. The mutex protects the
         // read-modify-write of `downloadChain` from concurrent callers.
+        // Same-repo dedupe: a duplicate request (double-clicked repair button,
+        // re-fired UI action) awaits the in-flight chain — it must NOT queue
+        // another full pass behind it.
         let myChain: Task<Void, any Error> = downloadMutex.withLock {
+            if queuedDownloadRepos.contains(model.huggingFaceID), let existing = downloadChain {
+                NSLog("[DOWNLOAD] %@ already in flight — awaiting existing download (duplicate request ignored)", model.huggingFaceID)
+                return existing
+            }
+            queuedDownloadRepos.insert(model.huggingFaceID)
             let previous = downloadChain
             let chain = Task { [weak self] in
                 if let previous { _ = await previous.result }
                 guard let self else { return }
+                defer {
+                    self.downloadMutex.withLock {
+                        self.queuedDownloadRepos.remove(model.huggingFaceID)
+                    }
+                }
                 try await self.performDownload(model, repair: repair)
             }
             downloadChain = chain
@@ -294,13 +314,22 @@ final class MLXInferenceEngine {
             .appendingPathComponent("swiftmaestro-models/\(repoName)", isDirectory: true)
         NSLog("[DOWNLOAD] destination: %@", destination.path)
 
+        // Repair NO LONGER wipes the directory. The helper skips complete
+        // files (size match) and resumes partials with curl -C -, so wiping
+        // only ever destroyed finished shards — production: two queued repairs
+        // for the 17.5 GB Qwen3-VL model each deleted the other's completed
+        // 5.3 GB shard, trapping the download in a from-scratch loop.
         if repair, FileManager.default.fileExists(atPath: destination.path) {
-            NSLog("[DOWNLOAD] removing existing directory for repair")
-            try FileManager.default.removeItem(at: destination)
+            NSLog("[DOWNLOAD] repair requested — keeping existing files; helper resumes partials and skips complete files")
         }
 
         let metadataOnly: Bool
-        if FileManager.default.fileExists(atPath: destination.path) {
+        if repair {
+            // Always a FULL pass on repair: the metadata-complete short-circuit
+            // below would skip the missing weight shards entirely when only
+            // config files are intact.
+            metadataOnly = false
+        } else if FileManager.default.fileExists(atPath: destination.path) {
             guard !ModelFileHealthService.isMetadataComplete(for: model) else {
                 NSLog("[DOWNLOAD] metadata already complete, skipping")
                 return

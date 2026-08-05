@@ -132,6 +132,14 @@ enum ModelFileHealthService {
         let directory = URL(fileURLWithPath: localPath)
         let fm = FileManager.default
 
+        // Self-heal a STALE upstream index before trusting its shard list:
+        // some mlx-community repos ship an index.json carried over from a
+        // different variant (production: Qwen3-VL-8B-Instruct-4bit's index
+        // pointed at 4 shards/17.5 GB from the unquantized source repo while
+        // shipping 2 four-bit shards/5.76 GB — a phantom "incomplete" state
+        // no amount of re-downloading could ever fix).
+        _ = repairStaleWeightIndexIfNeeded(in: directory)
+
         let indexURL = directory.appendingPathComponent("model.safetensors.index.json")
         if fm.fileExists(atPath: indexURL.path),
            let data = try? Data(contentsOf: indexURL),
@@ -174,6 +182,94 @@ enum ModelFileHealthService {
         // recognized sharded-naming pattern (an unfamiliar-but-plausible
         // layout) — treat leniently rather than flagging it as broken.
         return anyShardFound ? [] : ["(no .safetensors files found)"]
+    }
+
+    // MARK: - Stale index repair
+
+    /// Detect and repair a STALE `model.safetensors.index.json`: an index
+    /// whose `weight_map` names shards that will never exist in this download
+    /// (carried over from a different repo variant upstream). Detection is
+    /// deliberately strict — ALL three must hold:
+    ///   1. ZERO of the index's shard files exist on disk, AND
+    ///   2. OTHER `.safetensors` files DO exist on disk, AND
+    ///   3. those files form COMPLETE self-describing shard sets
+    ///      (every `model-XXXXX-of-YYYYY` group has all YYY shards) — so a
+    ///      half-downloaded model is never blessed as complete.
+    /// Repair rebuilds `weight_map` from the on-disk shards' safetensors
+    /// headers and rewrites the index (upstream file backed up alongside).
+    /// This heals mlx-swift-lm loading too, which reads the same index.
+    /// - Returns: true when a repair was performed.
+    @discardableResult
+    static func repairStaleWeightIndexIfNeeded(in directory: URL) -> Bool {
+        let fm = FileManager.default
+        let indexURL = directory.appendingPathComponent("model.safetensors.index.json")
+        guard fm.fileExists(atPath: indexURL.path),
+              let data = try? Data(contentsOf: indexURL),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let weightMap = json["weight_map"] as? [String: String],
+              !weightMap.isEmpty else { return false }
+
+        let indexShards = Set(weightMap.values)
+        guard indexShards.allSatisfy({ !fileExists($0, in: directory) }) else {
+            return false  // at least one indexed shard exists → normal partial download
+        }
+        guard let onDisk = try? fm.contentsOfDirectory(atPath: directory.path)
+            .filter({ $0.hasSuffix(".safetensors") }), !onDisk.isEmpty else { return false }
+
+        // Safety: on-disk shards must form complete self-describing sets.
+        var groups: [String: (total: Int, present: Set<Int>)] = [:]
+        for file in onDisk {
+            guard let (index, total, digits) = parseShardName(file) else { return false }
+            let key = "\(total)-\(digits)"
+            var group = groups[key] ?? (total, [])
+            group.present.insert(index)
+            groups[key] = group
+        }
+        for (_, group) in groups {
+            guard group.present.count == group.total,
+                  (1...group.total).allSatisfy(group.present.contains) else { return false }
+        }
+
+        // Rebuild weight_map from the shards' own headers.
+        var newMap: [String: String] = [:]
+        var totalBytes: Int64 = 0
+        for file in onDisk {
+            let url = directory.appendingPathComponent(file)
+            guard let names = safetensorsTensorNames(url) else { return false }
+            for name in names { newMap[name] = file }
+            totalBytes += Int64((try? fm.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0)
+        }
+        guard !newMap.isEmpty else { return false }
+
+        let backup = directory.appendingPathComponent("model.safetensors.index.json.upstream-broken.bak")
+        try? fm.removeItem(at: backup)
+        guard let _ = try? fm.moveItem(at: indexURL, to: backup) else { return false }
+        let out: [String: Any] = ["metadata": ["total_size": totalBytes], "weight_map": newMap]
+        guard let outData = try? JSONSerialization.data(withJSONObject: out, options: [.prettyPrinted, .sortedKeys]) else { return false }
+        do {
+            try outData.write(to: indexURL, options: .atomic)
+        } catch {
+            // Restore the upstream file on write failure so we never leave no index.
+            try? fm.moveItem(at: backup, to: indexURL)
+            return false
+        }
+        NSLog("[ModelFileHealth] repaired STALE weight index in %@: %d phantom shard(s) replaced by %d real file(s), %d tensors, %lld bytes",
+              directory.lastPathComponent, indexShards.count, onDisk.count, newMap.count, totalBytes)
+        return true
+    }
+
+    /// Read the tensor names from a safetensors file's header (8-byte LE
+    /// length prefix + JSON object). Returns nil on any parse failure.
+    static func safetensorsTensorNames(_ url: URL) -> Set<String>? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let lenData = try? handle.read(upToCount: 8), lenData.count == 8 else { return nil }
+        let headerLen = lenData.withUnsafeBytes { $0.load(as: UInt64.self) }
+        guard headerLen > 0, headerLen < 500_000_000,
+              let headerData = try? handle.read(upToCount: Int(headerLen)),
+              let json = try? JSONSerialization.jsonObject(with: headerData) as? [String: Any]
+        else { return nil }
+        return Set(json.keys.filter { $0 != "__metadata__" })
     }
 
     /// Parses `model-00002-of-00003.safetensors` (any prefix before the shard
