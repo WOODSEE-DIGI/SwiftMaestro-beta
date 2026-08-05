@@ -52,6 +52,10 @@ struct PlanWindowView: View {
     @State private var showingExporter = false
     /// Keep this window in front of all others. Opt-in, off by default.
     @State private var isPinnedToFront = false
+    /// Inline markdown editing state.
+    @State private var isEditing = false
+    @State private var editingContent = ""
+    @State private var hasUnsavedChanges = false
 
     private var scope: PlanScope? { target.flatMap { PlanScope(key: $0.scopeKey) } }
 
@@ -70,9 +74,19 @@ struct PlanWindowView: View {
                             .textSelection(.enabled)
                         metadataSection(for: plan)
                         Divider()
-                        Text(Self.rendered(plan.content))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        if isEditing {
+                            TextEditor(text: $editingContent)
+                                .font(.system(.body, design: .monospaced))
+                                .scrollContentBackground(.visible)
+                                .frame(maxWidth: .infinity, minHeight: 300, alignment: .leading)
+                                .onChange(of: editingContent) { _, new in
+                                    hasUnsavedChanges = (new != plan.content)
+                                }
+                        } else {
+                            Text(Self.rendered(plan.content))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     }
                     .padding(24)
                 }
@@ -93,6 +107,30 @@ struct PlanWindowView: View {
                         .help(isPinnedToFront
                             ? "Stop keeping this window in front of all others"
                             : "Keep this window in front of all others")
+                    }
+                    ToolbarItem(placement: .primaryAction) {
+                        if isEditing {
+                            Button("Cancel") {
+                                isEditing = false
+                                editingContent = ""
+                                hasUnsavedChanges = false
+                            }
+                            .keyboardShortcut(.cancelAction)
+                            Button("Save") {
+                                savePlan(plan)
+                            }
+                            .keyboardShortcut("s", modifiers: .command)
+                            .disabled(!hasUnsavedChanges)
+                        } else {
+                            Button {
+                                editingContent = plan.content
+                                isEditing = true
+                                hasUnsavedChanges = false
+                            } label: {
+                                Label("Edit", systemImage: "pencil")
+                            }
+                            .help("Edit plan content as raw Markdown")
+                        }
                     }
                     ToolbarItem(placement: .primaryAction) {
                         Button { showingExporter = true } label: {
@@ -123,6 +161,14 @@ struct PlanWindowView: View {
         #if os(macOS)
         .background(WindowPinConfigurator(isPinned: isPinnedToFront))
         #endif
+    }
+
+    private func savePlan(_ plan: Plan) {
+        guard let scope else { return }
+        let trimmed = editingContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        _ = planStore.update(id: plan.id, title: nil, content: trimmed, append: false, in: scope)
+        isEditing = false
+        hasUnsavedChanges = false
     }
 
     @ViewBuilder
