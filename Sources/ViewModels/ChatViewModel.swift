@@ -1215,16 +1215,24 @@ class ChatViewModel: ObservableObject {
     /// System-prompt section injected while a plan is attached to the session.
     /// Carries the full (freshly re-read) plan content plus the exact edit tool
     /// call, so the agent can refer to the plan and update it on request.
+    ///
+    /// **Placement**: this section is PREPENDED to the system message (before all
+    /// other content) so the model sees it first.  Small local models (Gemma 4,
+    /// etc.) attend most strongly to the beginning of a long prompt; appending
+    /// the plan at the end causes it to be ignored.
     static func attachedPlanSection(_ plan: Plan, scope: PlanScope) -> String {
         var editCall = "edit_plan(plan_id: \"\(plan.id.uuidString)\""
         if case .project(let name) = scope { editCall += ", project: \"\(name)\"" }
         editCall += ")"
         return """
-
-            ## USER-ATTACHED PLAN
-            The user attached the plan "\(plan.title)" to this session for reference. Its full current content is below — read it, quote it, and follow it directly. If the user asks you to change the plan, use \(editCall).
+            ## ACTIVE PLAN — follow this directly
+            The user attached the plan "\(plan.title)" to this session.
+            You MUST read the plan below and execute its steps.
+            Do NOT list other plans or ask which one — this IS the one.
+            If the user asks to change the plan, use \(editCall).
 
             \(plan.content)
+
             """
     }
 
@@ -1569,8 +1577,13 @@ class ChatViewModel: ObservableObject {
             // reflected; fall back to the attach-time copy if the plan (or
             // its scope) was deleted while attached.
             let fresh = PlanStore.load(attachedPlan.scope).first { $0.id == attachedPlan.plan.id }
-            inferenceSystemMessage.content += Self.attachedPlanSection(
+            // PREPEND so the model sees the attached plan first — small local
+            // models (Gemma 4 26B-A4B etc.) attend strongly to prompt head;
+            // content appended after thousands of tokens of tool definitions
+            // is effectively invisible.
+            inferenceSystemMessage.content = Self.attachedPlanSection(
                 fresh ?? attachedPlan.plan, scope: attachedPlan.scope)
+                + inferenceSystemMessage.content
         }
         // Keep the visible/serialized system prompt in sync with the regenerated
         // inference prompt so the user sees the correct model-capacity guidance.

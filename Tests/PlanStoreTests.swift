@@ -197,7 +197,7 @@ final class PlanStoreTests: XCTestCase {
         let plan = Plan(id: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
                         title: "Voting Records", content: "## Phase 1\nDo the thing")
         let section = ChatViewModel.attachedPlanSection(plan, scope: .agent(UUID()))
-        XCTAssertTrue(section.contains("USER-ATTACHED PLAN"))
+        XCTAssertTrue(section.contains("ACTIVE PLAN"))
         XCTAssertTrue(section.contains("\"Voting Records\""))
         XCTAssertTrue(section.contains("## Phase 1\nDo the thing"))
         XCTAssertTrue(section.contains("edit_plan(plan_id: \"11111111-2222-3333-4444-555555555555\")"))
@@ -210,5 +210,13 @@ final class PlanStoreTests: XCTestCase {
         let section = ChatViewModel.attachedPlanSection(plan, scope: .project("Voting Record Monitoring"))
         XCTAssertTrue(section.contains("project: \"Voting Record Monitoring\""))
         XCTAssertTrue(section.contains("shared body"))
+    }
+
+    func testAttachedPlanSectionForcefulInstruction() {
+        let plan = Plan(title: "Test", content: "body")
+        let section = ChatViewModel.attachedPlanSection(plan, scope: .agent(UUID()))
+        // The instruction must explicitly tell the model NOT to list other plans.
+        XCTAssertTrue(section.contains("Do NOT list other plans"))
+        XCTAssertTrue(section.contains("You MUST read the plan"))
     }
 }
