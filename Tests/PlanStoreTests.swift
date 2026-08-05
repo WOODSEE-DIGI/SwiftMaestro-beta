@@ -190,4 +190,25 @@ final class PlanStoreTests: XCTestCase {
         XCTAssertEqual(plans[0].title, "Persistent")
         XCTAssertEqual(plans[0].id, plan.id)
     }
+
+    // MARK: - Attached-plan system-prompt section ("Attach to Session")
+
+    func testAttachedPlanSectionCarriesContentAndEditCall() {
+        let plan = Plan(id: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+                        title: "Voting Records", content: "## Phase 1\nDo the thing")
+        let section = ChatViewModel.attachedPlanSection(plan, scope: .agent(UUID()))
+        XCTAssertTrue(section.contains("USER-ATTACHED PLAN"))
+        XCTAssertTrue(section.contains("\"Voting Records\""))
+        XCTAssertTrue(section.contains("## Phase 1\nDo the thing"))
+        XCTAssertTrue(section.contains("edit_plan(plan_id: \"11111111-2222-3333-4444-555555555555\")"))
+        // Personal scope must NOT carry a project parameter.
+        XCTAssertFalse(section.contains("project:"))
+    }
+
+    func testAttachedPlanSectionProjectScopeIncludesProjectParam() {
+        let plan = Plan(title: "Shared", content: "shared body")
+        let section = ChatViewModel.attachedPlanSection(plan, scope: .project("Voting Record Monitoring"))
+        XCTAssertTrue(section.contains("project: \"Voting Record Monitoring\""))
+        XCTAssertTrue(section.contains("shared body"))
+    }
 }

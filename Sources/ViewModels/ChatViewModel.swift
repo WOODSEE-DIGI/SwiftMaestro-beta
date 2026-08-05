@@ -16,6 +16,14 @@ class ChatViewModel: ObservableObject {
     /// paste). Sent as data URIs to the vision-capable model, then cleared.
     @Published var pendingImages: [Data] = []
     @Published var pendingImagePaths: [String] = []
+    /// A plan the user attached to this session from the Plans panel ("Attach
+    /// to Session"). Injected into the regenerated system prompt every turn
+    /// while attached so the agent can refer to (and edit) it; detached via
+    /// the composer's plan chip or the panel's context menu.
+    @Published var attachedPlan: (scope: PlanScope, plan: Plan)?
+
+    func attach(plan: Plan, scope: PlanScope) { attachedPlan = (scope, plan) }
+    func detachAttachedPlan() { attachedPlan = nil }
     /// Live, compact "what the agent is doing right now" line shown while
     /// streaming (e.g. "Running read_notes…"). Cleared when the turn ends.
     @Published var currentActivity: String?
@@ -821,21 +829,78 @@ class ChatViewModel: ObservableObject {
         - For directory exploration, use index_directory (recursive, Spotlight metadata). \
         Only use list_dir for single-directory-level checks.
 
-        WEB SEARCH:
-        - Use web_search to find current information online. Returns titles, URLs, snippets.
-        - Use fetch_url to read the full content of a specific web page as markdown.
-        - For quick lookups, web_search is enough. For deep reading, fetch the URL after searching.
-        - MCP web tools (webclaw, firecrawl) provide richer scraping when enabled in Settings → MCP.
+        WEB RESEARCH — BROWSER FIRST:
+        When the user asks you to research, compare, find prices, look up stores, \
+        or visit ANY website: open the internal browser FIRST. The user should see \
+        the SwiftBrowser panel open and watch you work.
+        - Step 1: browser_open with the URL — this opens a new tab AND navigates \
+        to it in one step. Returns a tab_id.
+        - Step 2: browser_read with the tab_id to extract page content as markdown.
+        - For multiple sites: call browser_open for EACH site (each opens its own \
+        tab), then browser_read on each tab to get content.
+        - browser_navigate is ONLY for back/forward/reload/stop within an already- \
+        open tab — do NOT use it to open new URLs.
+        - Use web_search ONLY for quick single-fact lookups (e.g. "what's the \
+        population of Tokyo") — NOT for multi-site research or price comparison.
+        - After web_search returns results, to read a result's full content, use \
+        browser_open(url) on the result URL — do NOT call web_search again.
+        - Use fetch_url ONLY when you already have a specific URL and just need \
+        its text content without showing the browser.
+        - NEVER delegate web research to a sub-agent — do it in the main chat so \
+        the user sees the browser panels open in real time.
+        - CRITICAL: If the SwiftBrowser panel is already open, you MUST use it. \
+        Do NOT open the browser panel and then use web_search instead. The whole \
+        point is that the user watches you browse.
+        - NEVER call web_search more than 2 times in a row. After 2 searches, \
+        you MUST switch to browser_open + browser_read for the actual content.
+
+        ASK BEFORE DOING — ONLY WHEN GENUINELY AMBIGUOUS:
+        Ask a clarifying question ONLY when the request is truly vague and \
+        you cannot pick a sensible default. A request that names specific \
+        products, places, or tools is NOT ambiguous — execute it immediately.
+        - "find rental prices for Canon R5ii and Profoto B1 in Sydney" → NOT \
+        ambiguous. Do it. Capture daily/weekend/weekly rates where listed — \
+        no need to ask which durations.
+        - "find rental prices" (no items, no place) → ask ONE short question, \
+        then proceed with the most likely interpretation anyway if the user \
+        just says "go ahead" or similar.
+        - NEVER ask "shall I proceed?", "would you like me to continue?", or \
+        "is this what you wanted?" mid-task. The user said do it — do it.
+
+        PLAN FIRST — THEN EXECUTE WITHOUT STOPPING:
+        Before calling ANY tool, briefly state what you're about to do and why. \
+        The user should see your plan before you start executing. Example:
+        "I'll open the SwiftBrowser to research rental prices, then create a \
+        MaestroDB base with the results."
+        - For multi-step tasks: list the steps, then execute them in order.
+        - CRITICAL: After creating a plan (create_plan) or todo list \
+        (create_todo_list), IMMEDIATELY start executing the FIRST step with \
+        tools in your VERY NEXT action. A plan is the START of the work, not \
+        the end of your turn. NEVER stop after planning to wait for approval.
+        - After opening a panel (open_panel), you MUST use its tools immediately. \
+        Don't open a browser panel and then ignore it — navigate to a URL with \
+        browser_open right away.
+        - When research is needed: browser_open(url) → browser_read(tab_id) for \
+        each site. Do NOT skip the browser and use web_search instead.
+
+        SPEED & AUTONOMY:
+        - Do NOT create sub-agents for simple research tasks. Handle them directly.
+        - Do NOT over-explain before acting. Start working, report results as you go.
+        - Keep working until the task is DONE. Only end your turn when the \
+        user's request is fully satisfied, or you are genuinely blocked \
+        (missing required info only the user has, or a tool repeatedly fails).
+        - If a tool fails, change approach (different args, different tool) — \
+        do NOT stop and ask the user what to do unless you're truly stuck.
+        - Brief progress notes as you work are fine; long summaries before \
+        the work is finished are not.
 
         INTERNAL-FIRST RULE — BUILT-IN TOOLS OVER EXTERNAL APPS:
         SwiftMaestro has built-in tools for almost everything. ALWAYS use them first.
-        - "search online" / "look up" / "find info" → use web_search, NOT an external browser.
-        - "open this page" / "show me this website" → use browser_open or browser_navigate \
-        to open it in the SwiftMaestro internal browser. NOT Safari, Chrome, or open_url.
+        - "open this page" / "show me this website" / "find prices" / "research" \
+        → use browser_open to open it in the SwiftMaestro internal browser. \
+        NOT Safari, Chrome, or open_url.
         - "read this webpage" / "get the content" → use browser_read or fetch_url. \
         Do NOT open an external browser just to read a page.
-        - "search for flights / hotels / products" → use web_search for research. \
-        Only open the internal browser if interaction (clicking, filling forms) is needed.
         - Only use open_url to launch an EXTERNAL app when: (a) the user explicitly says \
         "open in Safari" / "open in Chrome" / "open externally", OR (b) the task requires \
         a native app that has no built-in tool (e.g. opening System Settings, App Store).
@@ -843,6 +908,59 @@ class ChatViewModel: ObservableObject {
         an external app — but tell the user you're doing so.
         - The internal browser (browser_*) supports full WebKit rendering, JavaScript, \
         screenshots, and element interaction. It is NOT a toy — use it confidently.
+
+        RESEARCH → DATABASE WORKFLOW (the core loop — follow it exactly):
+        When the user asks you to research online AND build or update a database:
+        1. open_panel("database", zone="bottom") FIRST — the user watches data \
+        land in the bottom row while you browse above.
+        2. open_panel("browser") — research happens in the top row.
+        3. Create base/table/fields BEFORE researching (db_create_base, \
+        db_create_table, db_add_field) so you can enter data the moment you \
+        find it.
+        4. Research: browser_open(url) → browser_read(tab_id) per site.
+        4b. PRICES LIVE ON PRODUCT PAGES: category/listing pages show product \
+        cards, often WITHOUT prices. For each item, reach the item's PRODUCT \
+        page (e.g. /products/canon-eos-r5-mark-ii, /flash/profoto-b1-500-air). \
+        If you don't know the exact product URL, call browser_links on the \
+        listing page and open the link whose text matches the item name.
+        4c. EXTRACTION TEST: a browser_read result that contains NO "$" \
+        amounts is a FAILED extraction for a price task — do NOT record \
+        anything from it. Navigate deeper (product page) and read again. \
+        Record the row ONLY when you have an actual price from the page.
+        5. Enter data IMMEDIATELY after reading each page — db_add_rows with \
+        2-3 rows per call while the content is fresh. Do NOT hoard 10 pages \
+        and then try one giant call; big payloads get corrupted.
+        5b. RESEARCH BUDGET: after 4-6 productive pages, STOP browsing and \
+        enter what you have. NEVER re-read a page you already read — if a \
+        browser_open result says "reused_existing", you have that page's \
+        content already; move to data entry. More browsing ≠ better data.
+        6. REPEAT monitoring (user asks to re-check, refresh, or update): use \
+        db_upsert_rows with a key field (e.g. "Equipment Name") — NEVER \
+        db_add_rows, which would duplicate every row.
+        7. Finish with honest counts from the tool results: rows added/updated, \
+        the table name, and exactly what was skipped and why.
+
+        DATABASE (MaestroDB):
+        - When creating or editing database bases/tables, open the database panel \
+        first with open_panel("database") so the user can see the changes live.
+        - After creating a base with db_create_base, use the returned base_id \
+        (UUID) in subsequent db_create_table calls — do NOT pass the base name, \
+        because the name may contain special characters the model mangles.
+        - ALWAYS pass base_id as a UUID string (e.g. "base_id":"<UUID>"), NOT \
+        as a base name. The db_create_table tool requires the 'base' parameter \
+        to be the base name OR 'base_id' to be the UUID.
+        - Base and table names MUST be plain text only: letters, numbers, spaces, \
+        hyphens, underscores. NO quotes, braces, backslashes, or JSON punctuation \
+        in names. Example: "Sydney Camera Rental" NOT "Sydney Camera Rental\"}".
+        - When the user asks to create a base, use zone="bottom" in open_panel \
+        so the database panel appears below the other panels.
+        - db_add_rows: keep calls SMALL — 2-3 rows maximum per call, with SHORT \
+        values. For more rows, make multiple calls. Large payloads with long \
+        URLs get corrupted mid-generation; small calls are reliable.
+        - db_add_field: the field-name parameter is 'name' (NOT 'field_name'). \
+        The table parameter is 'table' (NOT 'table_name'). Field types: text, \
+        longText, number, checkbox, date, select, multiSelect, url, email, \
+        phone, rating, relation, attachment (NOT single_select — use 'select').
 
         BLUESKY:
         - Use search_bluesky_posts to search public Bluesky posts by keyword.
@@ -864,6 +982,22 @@ class ChatViewModel: ObservableObject {
         Never emit an empty assistant message. Summarize, quote, or list the key findings.
         - If a tool returns a list, enumerate the items. If it returns a file's contents, \
         summarize the key points. If it returns an error, report the error clearly.
+
+        FAILURE HONESTY — REPORT REAL ERRORS, NEVER MAKE EXCUSES:
+        When a tool fails — especially repeatedly — be transparent with the user.
+        - QUOTE the exact error message. NAME the tool that failed. EXPLAIN what \
+        you were trying to do and what you think caused the mismatch (e.g. "the \
+        tool expects the parameter 'name' but I was sending 'field_name'").
+        - NEVER hide failures behind vague phrases like "technical issues", \
+        "technical difficulties", "connection problems", or "the tool isn't \
+        cooperating". Those phrases tell the user nothing and erode trust.
+        - NEVER silently work around a broken tool with a different tool \
+        (e.g. writing a CSV file and importing it when db_add_field fails) \
+        unless the user explicitly asks for a workaround. The user wants the \
+        direct path fixed, and they can't fix what they don't know is broken.
+        - If you diagnose the cause, say so: "This looks like a bug in the \
+        tool's argument handling — worth reporting." Helping the user \
+        understand the problem is part of your job.
         """
     }
 
@@ -1078,6 +1212,22 @@ class ChatViewModel: ObservableObject {
         Build errors are returned directly by these tools.
         """
 
+    /// System-prompt section injected while a plan is attached to the session.
+    /// Carries the full (freshly re-read) plan content plus the exact edit tool
+    /// call, so the agent can refer to the plan and update it on request.
+    static func attachedPlanSection(_ plan: Plan, scope: PlanScope) -> String {
+        var editCall = "edit_plan(plan_id: \"\(plan.id.uuidString)\""
+        if case .project(let name) = scope { editCall += ", project: \"\(name)\"" }
+        editCall += ")"
+        return """
+
+            ## USER-ATTACHED PLAN
+            The user attached the plan "\(plan.title)" to this session for reference. Its full current content is below — read it, quote it, and follow it directly. If the user asks you to change the plan, use \(editCall).
+
+            \(plan.content)
+            """
+    }
+
     static func systemMessage(
         for agent: AgentRecord, projectName: String?, workingDirectory: String? = nil,
         modelDescription: String? = nil, model: MaestroModel? = nil, modelID: String? = nil,
@@ -1199,6 +1349,18 @@ class ChatViewModel: ObservableObject {
                 """
         }
         var content = base + "\n\n" + Self.planContextPrompt(for: agent, projectName: projectName)
+
+        // Today's date, front and centre — small models hallucinate dates
+        // (Gemma 4 stamped monitoring rows "2025-05-22" in August 2026) because
+        // they have no clock. Give them the real one.
+        let dateFmt = DateFormatter()
+        dateFmt.dateFormat = "yyyy-MM-dd"
+        let dayFmt = DateFormatter()
+        dayFmt.dateFormat = "EEEE"
+        let todayStamp = "\(dateFmt.string(from: Date())) (\(dayFmt.string(from: Date())))"
+        content = "TODAY'S DATE: \(todayStamp). Use this exact date (yyyy-MM-dd) for "
+            + "ANY date you record — Date Monitored, Date Found, created/updated dates, logs. "
+            + "NEVER invent, guess, or estimate a date.\n\n" + content
 
         // Add a category-specific prompt section (coding, research, design, etc.).
         let categorySection = Self.categoryPrompt(for: agent, model: model, modelID: modelID)
@@ -1401,12 +1563,23 @@ class ChatViewModel: ObservableObject {
             for: agent, projectName: projectName, workingDirectory: workingDirectory,
             modelDescription: modelDescription, model: model, modelID: model.huggingFaceID,
             usesXMLTools: model.toolCallFormat == .xmlFunction || model.toolCallFormat == .gemma4)
+        var inferenceSystemMessage = systemMessage
+        if let attachedPlan {
+            // Refresh from disk so the agent's mid-session plan edits are
+            // reflected; fall back to the attach-time copy if the plan (or
+            // its scope) was deleted while attached.
+            let fresh = PlanStore.load(attachedPlan.scope).first { $0.id == attachedPlan.plan.id }
+            inferenceSystemMessage.content += Self.attachedPlanSection(
+                fresh ?? attachedPlan.plan, scope: attachedPlan.scope)
+        }
         // Keep the visible/serialized system prompt in sync with the regenerated
         // inference prompt so the user sees the correct model-capacity guidance.
+        // (The DISPLAY copy stays free of the attached-plan section — the chip
+        // in the composer already shows it; the model-facing copy carries it.)
         if let first = messages.first, first.role == .system {
             messages[0] = systemMessage
         }
-        var output: [Message] = [systemMessage]
+        var output: [Message] = [inferenceSystemMessage]
         for message in messages where message.role != .system {
             // Strip the display-only "🔧 called `name`" markers so the model can't
             // replay/imitate them and fabricate tool calls.
@@ -1502,7 +1675,7 @@ class ChatViewModel: ObservableObject {
                 agentID: agent.id.uuidString,
                 agentName: agent.name,
                 summaryModel: summaryModel) {
-                output = [systemMessage, compacted.checkpoint] + compacted.recentMessages
+                output = [inferenceSystemMessage, compacted.checkpoint] + compacted.recentMessages
                 compactionSummary = compacted.summary
                 lastCompactionMessageCount = nonSystemOutput.count
                 lastCompactionTime = Date()

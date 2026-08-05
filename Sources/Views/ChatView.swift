@@ -517,11 +517,20 @@ struct ChatView: View {
                         .buttonStyle(.plain)
                         .help("Open \(entry.plan.title) in a window")
                         .contextMenu {
+                            if vm.attachedPlan?.plan.id == entry.plan.id {
+                                Button("Detach from Session") { vm.detachAttachedPlan() }
+                            } else {
+                                Button("Attach to Session") {
+                                    vm.attach(plan: entry.plan, scope: entry.scope)
+                                }
+                            }
+                            Divider()
                             Button("Open in Window") { openPlanWindow(entry) }
                             Button("Export as Markdown…") { startExport(entry.plan) }
                             Divider()
                             Button("Delete", role: .destructive) {
                                 planStore.delete(id: entry.plan.id, in: entry.scope)
+                                if vm.attachedPlan?.plan.id == entry.plan.id { vm.detachAttachedPlan() }
                             }
                         }
                     }
@@ -822,6 +831,28 @@ struct ChatView: View {
     /// Thumbnails of images staged for the next message, each removable.
     @ViewBuilder
     private var attachmentStrip: some View {
+        // Attached-plan chip: the plan the agent sees every turn until detached.
+        if let attached = vm.attachedPlan {
+            HStack(spacing: 6) {
+                Image(systemName: "doc.text")
+                Text(attached.plan.title)
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                Button { vm.detachAttachedPlan() } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+            .foregroundStyle(theme.plansCardText)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(theme.plansCard, in: Capsule())
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .help("Plan attached to this session — the agent sees its full content every turn. Click × to detach.")
+        }
         if !vm.pendingImages.isEmpty {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
