@@ -156,6 +156,15 @@ targets:
         alwaysOutOfDate: true
         outputFiles:
           - $(BUILT_PRODUCTS_DIR)/$(PRODUCT_NAME).app/Contents/Resources/gphoto2
+      - name: Bundle WhisperKit Models
+        script: |
+          # Copy WhisperKit CoreML models into the app bundle so dictation
+          # works on first launch without a ~3 GB download.
+          "${SRCROOT}/scripts/bundle-whisperkit.sh"
+        shell: /bin/bash
+        alwaysOutOfDate: true
+        outputFiles:
+          - $(BUILT_PRODUCTS_DIR)/$(PRODUCT_NAME).app/Contents/Resources/models/whisperkit
     dependencies:
       - package: SwiftMaestroKit
         product: SwiftMaestroKit
