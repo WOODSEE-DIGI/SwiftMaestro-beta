@@ -101,7 +101,11 @@ enum ToolArgumentRepair {
     /// wrapper characters, never real content.
     private static func cleanKey(_ key: String) -> String {
         var cleaned = key.replacingOccurrences(of: "<|\"|>", with: "")
-        let junk: [Character] = ["\"", "'", "\\", "{", "}", "[", "]", "<", "|", ">", " "]
+        // Junk small models wrap keys in — including COMMAS, which leak in
+        // when the model stutters mid-object: {..."rows":"...",",table":"X"}
+        // produces the key ",table" (comma + quote). Without the comma here
+        // the key survives as ",table" and the tool reports table missing.
+        let junk: [Character] = ["\"", "'", "\\", "{", "}", "[", "]", "<", "|", ">", " ", ","]
         while let first = cleaned.first, junk.contains(first) {
             cleaned.removeFirst()
         }
@@ -112,7 +116,8 @@ enum ToolArgumentRepair {
     }
 
     /// Strip a leading `key="value"` or `key=value` prefix that some models
-    /// emit inside the parameter value.
+    /// emit inside the parameter value. Also strips trailing JSON punctuation
+    /// (`}`, `{`, `,`) that small models leak into string values.
     private static func repairValue(_ key: String, value: Any) -> Any {
         guard var cleaned = value as? String else { return value }
         cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -127,13 +132,64 @@ enum ToolArgumentRepair {
             }
         }
 
-        // Remove surrounding double quotes, even if unbalanced.
-        if cleaned.hasPrefix("\"") {
-            cleaned.removeFirst()
+        // Strip wrapper junk to a fixpoint. Small models wrap values in
+        // backslash+quote layers (\"Representatives) and the escaping
+        // COMPOUNDS on each retry (" → \" → \\\" → …) — the old single
+        // hasPrefix("\"") check missed anything starting with a BACKSLASH,
+        // which is exactly the junk family emitted on every failure retry
+        // (the 17-round db_add_field meltdown).
+        let leadingJunk: [Character] = ["\\", "\"", "'", "{", "[", ",", "<", "|", ">", "}"]
+        // Trailing closers are only stripped when UNBALANCED (no matching
+        // opener in the value) so legitimate names like "Daily Rate (AUD)"
+        // keep their parenthesis while "Rental Prices\"}" loses the }.
+        let closers: [Character: Character] = ["}": "{", "]": "[", ")": "("]
+        let trailingEscape: [Character] = ["\\", "\"", "'", "<", "|", ">", ","]
+        for _ in 0..<6 {
+            let before = cleaned
+            while let first = cleaned.first, leadingJunk.contains(first) {
+                cleaned.removeFirst()
+            }
+            while let last = cleaned.last {
+                if let opener = closers[last], !cleaned.contains(opener) {
+                    cleaned.removeLast()
+                    continue
+                }
+                if trailingEscape.contains(last) {
+                    cleaned.removeLast()
+                    continue
+                }
+                break
+            }
+            cleaned = cleaned.replacingOccurrences(of: "<|\"|>", with: "")
+            if cleaned == before { break }
         }
-        if cleaned.hasSuffix("\"") {
-            cleaned.removeLast()
-        }
+
         return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Fixpoint cleaner for URLs emitted by small models. Production runs show the
+    /// escaping COMPOUNDING across rounds: a value the model already escaped gets
+    /// re-escaped next time, producing `\\\"\\\\\\\"https:\\\\\\\/\\\\\\\/host/path`
+    /// which a single cleaning pass cannot fix — the residue reaches WKWebView as
+    /// `https://%22https///host/` garbage. Iterate strip/unescape passes until the
+    /// string stops changing (bounded at 6 for safety).
+    ///
+    /// Only removes wrapper/escape artifacts — `%22` (encoded quote) is stripped
+    /// because a quote is never legitimate URL content from an agent; all other
+    /// percent-encoding is preserved.
+    static func sanitizeAgentURL(_ raw: String) -> String {
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let wrapperJunk: [Character] = ["\\", "\"", "'", "{", "}", "[", "]", ",", "<", ">", "|", " "]
+        for _ in 0..<6 {
+            let before = s
+            while let first = s.first, wrapperJunk.contains(first) { s.removeFirst() }
+            while let last = s.last, wrapperJunk.contains(last) { s.removeLast() }
+            s = s.replacingOccurrences(of: "\\/", with: "/")
+                .replacingOccurrences(of: "\\\"", with: "\"")
+                .replacingOccurrences(of: "%22", with: "")
+                .replacingOccurrences(of: ":///", with: "://")
+            if s == before { break }
+        }
+        return s
     }
 }

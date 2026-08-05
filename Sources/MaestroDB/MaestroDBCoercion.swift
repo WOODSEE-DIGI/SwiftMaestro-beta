@@ -22,8 +22,14 @@ enum MaestroDBCoercion {
             return trimmed
 
         case .number:
-            guard let number = Double(trimmed.replacingOccurrences(of: ",", with: "")) else { return nil }
-            return DBRow.store(number)
+            let cleaned = trimmed.replacingOccurrences(of: ",", with: "")
+            if let number = Double(cleaned) { return DBRow.store(number) }
+            // Lenient fallback: models send prices as "$250/day", "AUD 90",
+            // "from $16/day". Extract the first embedded number rather than
+            // rejecting the whole cell — an empty price cell is what pushed
+            // one model to re-create the same field five times.
+            if let number = extractEmbeddedNumber(trimmed) { return DBRow.store(number) }
+            return nil
 
         case .checkbox:
             return coerceBool(trimmed).map(DBRow.store)
@@ -55,6 +61,33 @@ enum MaestroDBCoercion {
         case "0", "false", "no", "n", "unchecked": return false
         default: return nil
         }
+    }
+
+    /// Extract the first number embedded in a decorated price string:
+    /// "$250/day" → 250, "from AUD 16" → 16, "AUD 1,250.00" → 1250.
+    /// Commas are treated as thousands separators; a single dot as decimal.
+    /// Returns nil when the string contains no digits ("Contact for price").
+    static func extractEmbeddedNumber(_ raw: String) -> Double? {
+        var token = ""
+        var seenDigit = false
+        var seenDot = false
+        for ch in raw {
+            if ch.isNumber {
+                token.append(ch)
+                seenDigit = true
+            } else if ch == "." {
+                if seenDigit && !seenDot { token.append(ch); seenDot = true }
+                else if seenDigit { break }            // second dot ends the number
+            } else if ch == "," {
+                if seenDigit { continue }              // thousands separator — skip
+            } else if (ch == "-" || ch == "+") && token.isEmpty {
+                token.append(ch)
+            } else if seenDigit {
+                break                                  // number ended
+            }
+        }
+        guard seenDigit, let value = Double(token) else { return nil }
+        return value
     }
 
     /// Multi-select accepts a JSON array (`["a","b"]`) or a separator-split

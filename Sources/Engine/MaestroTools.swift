@@ -611,17 +611,19 @@ enum MaestroTools {
                 description:
                     "OPEN (or focus) any app panel inside SwiftMaestro — even one the "
                     + "user has never opened. The panel docks into the workspace grid. "
-                    + "Opening an app's panel also ACTIVATES that app's tools from your "
-                    + "NEXT reply onward (Auto tool mode): e.g. open 'database' before "
-                    + "using db_* tools, 'books' before invoice_*, 'kanban' before kanban "
-                    + "tools. Newly activated tools are NOT available inside the current "
-                    + "turn. Panels: database, books, docs, kanban, canvas, numbers, "
-                    + "maps, photos, mail, whatsapp, discord, browser, notesMD, "
-                    + "appleNotes, terminal, calendar, reminders, contacts, dam, bus, "
-                    + "audio, agents, apps, cameras, scenes, mixer, broadcast, ndi — or "
-                    + "an agent name to open its chat panel.",
+                    + "Opening an app's panel also ACTIVATES that app's tools "
+                    + "(Auto tool mode): e.g. open 'database' before using db_* tools, "
+                    + "'books' before invoice_*, 'kanban' before kanban tools. After "
+                    + "opening a panel, call the app's tools in your NEXT tool call — "
+                    + "do NOT deliberate about whether they're available; once the "
+                    + "panel is open, its tools work. Panels: database, books, docs, "
+                    + "kanban, canvas, numbers, maps, photos, mail, whatsapp, discord, "
+                    + "browser, notesMD, appleNotes, terminal, calendar, reminders, "
+                    + "contacts, dam, bus, audio, agents, apps, cameras, scenes, mixer, "
+                    + "broadcast, ndi — or an agent name to open its chat panel.",
                 properties: [
                     "panel": ["type": "string", "description": "Panel name or alias (e.g. 'database', 'db', 'books', 'mail', 'browser') or an agent name."],
+                    "zone": ["type": "string", "description": "Where to dock: 'right' (default, side-by-side), 'bottom' (below existing panels), or 'float'. Omit for default."],
                 ],
                 required: ["panel"]
             ),
@@ -780,8 +782,11 @@ enum MaestroTools {
         var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         s = s.replacingOccurrences(of: "<|\"|>", with: "")
         s = s.replacingOccurrences(of: "\\/", with: "/")
-        while let last = s.last, ["\"", "'", "}", "]", ","].contains(last) { s.removeLast() }
-        while let first = s.first, ["\"", "'", "{", "[", ","].contains(first) { s.removeFirst() }
+        // Backslash residue too — Gemma 4 glues literal escape junk onto ids:
+        // `\"E74A27FF-…\"}` failed UUID parsing and cost a 4-round error loop
+        // before the model pivoted to the clean id (15:26 run).
+        while let last = s.last, ["\"", "'", "}", "]", ",", "\\"].contains(last) { s.removeLast() }
+        while let first = s.first, ["\"", "'", "{", "[", ",", "\\"].contains(first) { s.removeFirst() }
         s = s.trimmingCharacters(in: .whitespacesAndNewlines)
         return UUID(uuidString: s)
     }
@@ -954,6 +959,16 @@ enum MaestroTools {
         let content = sanitizeModelInline(args.content ?? "")
         return await MainActor.run {
             guard let store = planStore else { return errorJSON("plan store unavailable") }
+            // Duplicate guard: small models re-issue the identical create_plan call
+            // a round later (production: same title twice, two UUIDs) — return the
+            // EXISTING plan and point at edit_plan instead of stacking duplicates.
+            if let existing = store.plans(in: scope).first(where: {
+                $0.title.caseInsensitiveCompare(title) == .orderedSame
+            }) {
+                return "Plan \"\(existing.title)\" already exists (id \(existing.id.uuidString)) "
+                    + "in \(scopeLabel(scope)) — do NOT create it again. Use edit_plan with "
+                    + "this plan_id to change it."
+            }
             let plan = store.create(title: title, content: content, in: scope)
             return "Created \(scopeLabel(scope)) plan \"\(plan.title)\" (id \(plan.id.uuidString))."
         }
@@ -1383,11 +1398,13 @@ enum MaestroTools {
 
     private struct OpenPanelArgs: Codable {
         let panel: String
+        let zone: String?
 
-        enum CodingKeys: String, CodingKey { case panel }
+        enum CodingKeys: String, CodingKey { case panel, zone }
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             panel = try c.decode(String.self, forKey: .panel)
+            zone = try c.decodeIfPresent(String.self, forKey: .zone)
         }
     }
 
@@ -1452,6 +1469,20 @@ enum MaestroTools {
               !args.panel.trimmingCharacters(in: .whitespaces).isEmpty
         else { return errorJSON("open_panel requires 'panel'") }
 
+        let zone: TilingDropZone? = {
+            // Database panels default to bottom so the user can see data entry
+            // below the chat and browser panels.
+            let panelLower = args.panel.trimmingCharacters(in: .whitespaces).lowercased()
+            let isDatabase = panelLower == "database" || panelLower == "db"
+            if isDatabase && args.zone == nil { return .bottom }
+
+            switch args.zone?.lowercased() {
+            case "bottom": return .bottom
+            case "float":  return nil
+            default:       return .right
+            }
+        }()
+
         return await MainActor.run {
             guard let layout = workspaceLayout else { return errorJSON("workspace layout unavailable") }
             guard let kind = resolvePanelKind(args.panel) else {
@@ -1462,7 +1493,7 @@ enum MaestroTools {
                     + "contacts, dam, bus, audio, agents, apps, cameras, scenes, mixer, "
                     + "broadcast, ndi — or an agent name.")
             }
-            let result = layout.open(kind)
+            let result = layout.open(kind, zone: zone)
             switch result {
             case .dockedDirectly:
                 return jsonString([

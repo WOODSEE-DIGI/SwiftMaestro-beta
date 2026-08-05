@@ -167,6 +167,25 @@ final class AgentExecutor: Sendable {
                     // resolves against a global registry (not the per-round schema), so the
                     // only reliable stop is to intercept the call in the loop and skip it.
                     var disabledLoopTools = Set<String>()
+                    // Repeated-identical-ARGS loop guard (a STUCK loop, not a failure):
+                    // the failure breaker only fires on errors, but a small model can
+                    // also re-call the SAME tool with the SAME arguments and get the
+                    // SAME result forever — the 14:06 run re-read ONE LUNAR page NINE
+                    // times (~8K context tokens per read) while the table stayed empty.
+                    // Tracks (tool|args) counts: warn at 3 identical calls, disable at 4.
+                    var repeatedArgsCounts: [String: Int] = [:]
+                    var disabledArgCombos = Set<String>()
+                    // DB-turn WRITE GUARD (research→DB rhythm): the 04:08 production
+                    // run created the base/table/fields then browsed 36 rounds with
+                    // ZERO db_add_rows calls — schema built, pages read, table left
+                    // empty forever. Every guard on record watches failures or
+                    // repeated args; none notices "N pages read, 0 rows written".
+                    // Nudge after 2 unread reads, hard-block browser_open at 4+
+                    // (browser_read/browser_links stay open for drilling), and
+                    // re-arm everything after any successful db row write.
+                    var dbWorkflowTurn = false      // any db_ tool succeeded this turn
+                    var readsSinceLastDbWrite = 0   // page reads without an intervening db write
+                    var dbWriteNudgeSent = false    // one-shot soft nudge (re-arms on write)
                     // Context budget: configurable via UserDefaults. This is a near-
                     // overflow backstop, not a research cut-off — the real context-
                     // window limit is handled by compaction (ChatViewModel) at the
@@ -255,6 +274,13 @@ final class AgentExecutor: Sendable {
                                     + "to the original request now, as plain text.",
                             ])
                         }
+                        // CONTEXT RECYCLING: elide stale tool results BEFORE generating.
+                        // The agent's job is open → read → extract → move on — the
+                        // database (and its own reasoning) is the memory, NOT 37 stale
+                        // page dumps accumulating until MLX hits metal::malloc at ~70K
+                        // tokens (the 14:39 crash). Keep only the last few results full.
+                        Self.elideOldToolResults(&convo)
+
                         let (content, rawToolCalls) = try await backend.streamRound(
                             convo: convo,
                             toolSpecs: specsThisRound,
@@ -405,8 +431,53 @@ final class AgentExecutor: Sendable {
                                     "role": "tool",
                                     "tool_call_id": tc.id,
                                     "content": "{\"error\":\"\(tc.name) is disabled for the rest of this turn "
-                                        + "after repeated identical failures. Do NOT call it again — move on to the "
-                                        + "next step or give your final answer.\"}",
+                                        + "after repeated identical failures. Do NOT call it again. In your final "
+                                        + "answer you MUST quote the exact error message to the user and name "
+                                        + "\(tc.name) as the failing tool — do not hide the failure behind vague "
+                                        + "phrases like 'technical issues'.\"}",
+                                ])
+                                continue
+                            }
+                            // Loop-guard hard stop: this exact (tool + arguments) combo
+                            // already ran 4+ times this turn. Identical inputs mean
+                            // identical outputs — re-executing is pure token burn (the
+                            // 14:06 run re-read ONE page NINE times). Intercept with a
+                            // synthetic error instead of executing.
+                            // Normalized signature: escape-junk growth on retries
+                            // (" → \" → \\\" → …) mutates the raw args each round,
+                            // which used to RESET every loop counter — the 17-round
+                            // db_add_field meltdown was invisible to this guard.
+                            let argSignature = Self.normalizedGuardSignature(tc.name + "|" + tc.arguments)
+                            if disabledArgCombos.contains(argSignature) {
+                                NSLog("[AGENT] LOOP GUARD: intercepted repeated call \(tc.name) (these args already ran 4+ times)")
+                                convo.append([
+                                    "role": "tool",
+                                    "tool_call_id": tc.id,
+                                    "content": "{\"error\":\"You have already run \(tc.name) with these EXACT "
+                                        + "arguments multiple times and received the identical result. The page "
+                                        + "has not changed — the data you need is NOT there. Do NOT repeat this "
+                                        + "call. Use browser_links to find a different page, or enter the data "
+                                        + "you already have with db_add_rows now.\"}",
+                                ])
+                                continue
+                            }
+                            // Write-guard hard stop: in a database workflow turn,
+                            // opening a 4th+ page without having written a single row
+                            // means the table stays empty while context burns.
+                            // browser_read/browser_links remain available so the model
+                            // can still drill product pages — only NEW opens are blocked
+                            // until a write lands. Any successful db write re-arms this.
+                            if tc.name == "browser_open", dbWorkflowTurn, readsSinceLastDbWrite >= 4 {
+                                NSLog("[AGENT] WRITE GUARD: blocked browser_open after \(readsSinceLastDbWrite) reads with no db write")
+                                convo.append([
+                                    "role": "tool",
+                                    "tool_call_id": tc.id,
+                                    "content": "{\"error\":\"browser_open is blocked: you have read "
+                                        + "\(readsSinceLastDbWrite) pages without saving ANYTHING to your "
+                                        + "table. Call db_add_rows NOW with the data you already have "
+                                        + "(2-3 rows), then browsing resumes. If earlier pages had no "
+                                        + "usable data, use browser_links on an open tab to drill to a "
+                                        + "PRODUCT page instead of opening new URLs.\"}",
                                 ])
                                 continue
                             }
@@ -428,11 +499,68 @@ final class AgentExecutor: Sendable {
                                     "content": Self.truncatedToolResult(result),
                                 ])
                             }
+                            // Write-guard bookkeeping: a successful db row write resets
+                            // the unread-reads counter (and re-arms the nudge); each
+                            // successful page READ increments it. The soft nudge fires
+                            // once per lull at 2 unread reads; the hard block (above)
+                            // fires at 4+.
+                            if !result.hasPrefix("{\"error\"") {
+                                if tc.name.hasPrefix("db_") { dbWorkflowTurn = true }
+                                switch tc.name {
+                                case "db_add_row", "db_add_rows", "db_upsert_rows",
+                                     "db_update_row", "db_import_csv":
+                                    readsSinceLastDbWrite = 0
+                                    dbWriteNudgeSent = false
+                                case "browser_read", "deep_fetch", "web_crawl", "fetch_url":
+                                    readsSinceLastDbWrite += 1
+                                    if dbWorkflowTurn, readsSinceLastDbWrite == 2, !dbWriteNudgeSent {
+                                        dbWriteNudgeSent = true
+                                        NSLog("[AGENT] WRITE GUARD: 2 unread reads in db turn — nudging db_add_rows")
+                                        convo.append([
+                                            "role": "user",
+                                            "content": "SYSTEM: you have read 2 pages in a database task "
+                                                + "WITHOUT saving any rows — the table stays empty while you "
+                                                + "keep browsing. Call db_add_rows RIGHT NOW with whatever "
+                                                + "data you have already collected (2-3 rows is fine — saved "
+                                                + "data beats held data), THEN continue browsing. If the "
+                                                + "pages you read had no usable data, call browser_links on "
+                                                + "one of them to find PRODUCT pages instead of opening "
+                                                + "more listing pages.",
+                                        ])
+                                    }
+                                default: break
+                                }
+                            }
+                            // Repeated-args loop guard: count (tool|args) regardless of
+                            // success — identical inputs mean identical outputs, so
+                            // re-calling is pure token burn. Warn at 3, disable at 4.
+                            // (The failure breaker below only sees ERRORS; this sees the
+                            // "successful" stuck loop, like 9 identical page reads.)
+                            repeatedArgsCounts[argSignature, default: 0] += 1
+                            let argRepeats = repeatedArgsCounts[argSignature] ?? 1
+                            if argRepeats == 3, !result.hasPrefix("{\"error\"") {
+                                convo.append([
+                                    "role": "user",
+                                    "content": "SYSTEM: you have now called \(tc.name) with the IDENTICAL "
+                                        + "arguments \(argRepeats) times this turn and received identical "
+                                        + "results. The page has not changed — the data you need is NOT "
+                                        + "there. Do NOT call it again with these arguments. If you are "
+                                        + "hunting for a price: use browser_links on the current page to "
+                                        + "find the PRODUCT link and open THAT, or enter the data you "
+                                        + "already have with db_add_rows now.",
+                                ])
+                            } else if argRepeats >= 4, !disabledArgCombos.contains(argSignature) {
+                                disabledArgCombos.insert(argSignature)
+                                NSLog("[AGENT] LOOP GUARD: disabled \(tc.name) with these args after \(argRepeats) identical calls")
+                            }
                             // Consecutive-identical-failure circuit breaker. If the same
                             // tool keeps returning the same error, first nudge with a
                             // corrective message, then remove it so the agent must move on.
                             if result.hasPrefix("{\"error\"") {
-                                let signature = tc.name + "|" + String(result.prefix(80))
+                                // Normalized here too: the corrupted junk INSIDE the
+                                // error message grows each retry, so the raw prefix
+                                // always looked like a NEW failure to the breaker.
+                                let signature = Self.normalizedGuardSignature(tc.name + "|" + String(result.prefix(80)))
                                 consecutiveFailures = (signature == lastFailureSignature) ? consecutiveFailures + 1 : 1
                                 lastFailureSignature = signature
                                 if consecutiveFailures == 4 {
@@ -441,8 +569,11 @@ final class AgentExecutor: Sendable {
                                         "content":
                                             "SYSTEM: \(tc.name) has failed \(consecutiveFailures) times in a row "
                                             + "with the SAME error. Your arguments are malformed. Do NOT keep "
-                                            + "retrying the identical call — read the error, fix the argument "
-                                            + "format, and try ONCE more, or skip this step and continue.",
+                                            + "retrying the identical call — read the error, compare it against "
+                                            + "the tool's parameter spec, fix the argument format, and try ONCE "
+                                            + "more with DIFFERENT arguments. If you still can't fix it, skip "
+                                            + "this step and quote the exact error text to the user in your "
+                                            + "final answer.",
                                     ])
                                 } else if consecutiveFailures >= 6, !disabledLoopTools.contains(tc.name) {
                                     disabledLoopTools.insert(tc.name)
@@ -451,8 +582,12 @@ final class AgentExecutor: Sendable {
                                         "role": "user",
                                         "content":
                                             "SYSTEM: \(tc.name) kept failing with the same error and has been disabled "
-                                            + "for the rest of this turn. Stop calling it. Continue with the remaining "
-                                            + "steps or give your final answer now.",
+                                            + "for the rest of this turn. Stop calling it. REQUIRED: in your final "
+                                            + "answer you must (1) quote the exact error message, (2) name \(tc.name) "
+                                            + "as the tool that failed, and (3) explain what you were trying to do. "
+                                            + "Do NOT gloss over this with vague phrases like 'technical issues', and "
+                                            + "do NOT silently work around the failure with a different tool — the "
+                                            + "user needs to know the direct path is broken so it can be fixed.",
                                     ])
                                 }
                             } else {
@@ -542,6 +677,59 @@ final class AgentExecutor: Sendable {
         let messageish = ["message", "inbox", "sent", "messaged", "notified", "deliver"]
         if messageish.contains(where: { t.contains($0) }) {
             return "Call send_agent_message with to_agent, subject, and message."
+        }
+        // Question-stalls and soft-future narration MUST come before the
+        // "plan"/"todo" branches below — stall text almost always mentions the
+        // plan it just created, and steering it to create_plan/edit_plan again
+        // would make the model redundantly RE-RUN the planning tool instead of
+        // executing the plan.
+        let questionStalls = [
+            "shall i proceed", "shall i continue", "shall i start",
+            "should i proceed", "should i continue", "should i start",
+            "would you like me to", "do you want me to",
+            "let me know if you'd like", "let me know when",
+            "let me know if you would like",
+        ]
+        if questionStalls.contains(where: { t.contains($0) }) {
+            return "Do NOT ask for confirmation — the user already asked for this task. "
+                + "Start executing the FIRST unfinished step of your plan RIGHT NOW with "
+                + "the appropriate tool call (e.g. open_panel, browser_open, db_create_base). "
+                + "Only if you genuinely cannot proceed without information only the user "
+                + "has, explain exactly what you need in one short sentence."
+        }
+        let softFutures = [
+            "i will aim", "i'll aim", "i will attempt", "i'll attempt",
+            "i will try", "i'll try", "i will capture", "i'll capture",
+            "i will populate", "i'll populate", "i will research", "i'll research",
+        ]
+        if softFutures.contains(where: { t.contains($0) }) {
+            return "Do not announce what you will do — do it. Emit the tool call that "
+                + "performs the FIRST step of what you just described (e.g. browser_open "
+                + "for research, db_add_rows for data entry) with correct arguments, now."
+        }
+        // Tool-invocation spirals: "Wait, I'll call db_create_base…" ×20 with no
+        // call ever emitted. MUST come before the "plan" branch — spiral content
+        // always mentions its plan, and steering it to edit_plan instead of the
+        // tool it's circling would send it deeper into the weeds.
+        let callIntents = [
+            "i'll call ", "i will call ", "let me call ", "i'll run ",
+            "i will run ", "let me run ", "i'll execute ", "i will execute ",
+        ]
+        if callIntents.contains(where: { t.contains($0) }) {
+            let spiralTools = [
+                "db_create_base", "db_create_table", "db_add_field", "db_add_rows",
+                "db_upsert_rows", "db_add_row", "db_list_rows", "db_list_bases",
+                "db_table_schema", "browser_open", "browser_read", "open_panel",
+                "web_search", "fetch_url", "create_todo_list", "create_plan",
+                "get_current_time",
+            ]
+            if let tool = spiralTools.first(where: { t.contains($0) }) {
+                return "You keep saying you'll call \(tool) but you haven't. Stop "
+                    + "deliberating about whether you're allowed to call it — you ARE. "
+                    + "Emit the \(tool) tool call NOW with correct arguments and nothing else."
+            }
+            return "You keep announcing a tool call without emitting it. Emit the tool "
+                + "call NOW — no more deliberation about whether you're allowed."
         }
         if claimsDelegation(content) {
             return "Call ask_project_agents with a 'requests' list of {project, agent, task} "
@@ -655,7 +843,30 @@ final class AgentExecutor: Sendable {
             "now let me", "good, i'll", "i have the",
             "step 1:", "step 2:", "step 3:", "step 4:", "step 5:",
             "first, i will", "then i will", "finally, i will",
-            "first, i'll", "then i'll", "finally, i'll"]
+            "first, i'll", "then i'll", "finally, i'll",
+            // Soft future intent — the model's favourite stall vocabulary
+            // ("I will aim to capture…", "I will attempt to populate…").
+            "i will aim", "i'll aim", "i will attempt", "i'll attempt",
+            "i will try", "i'll try", "i will seek", "i'll seek",
+            "i will capture", "i'll capture", "i will populate", "i'll populate",
+            "i will research", "i'll research", "i will search", "i'll search",
+            "i will browse", "i'll browse", "i will start", "i'll start",
+            // Tool-invocation intent — THE most common stall phrase: "Wait,
+            // I'll call db_create_base…" repeated 20 times with no call ever
+            // emitted (Gemma 4 reasoning spiral, 06:18 run).
+            "i'll call", "i will call", "let me call", "i'll run",
+            "i will run", "let me run", "i'll execute", "i will execute",
+            "i'll invoke", "i will invoke", "i'll emit", "i will emit",
+            // Question-stalls — ending the turn by asking permission instead
+            // of executing ("Shall I proceed?", "Would you like me to
+            // continue?"). The user already asked for the task; asking again
+            // is a tool-use failure. The nudge explicitly permits a genuine
+            // final answer, so a real clarifying question still gets through.
+            "shall i proceed", "shall i continue", "shall i start",
+            "should i proceed", "should i continue", "should i start",
+            "would you like me to", "do you want me to",
+            "let me know if you'd like", "let me know when",
+            "let me know if you would like"]
         return intents.contains { t.contains($0) }
     }
 
@@ -1136,6 +1347,25 @@ final class AgentExecutor: Sendable {
         let kept = result.prefix(maxToolResultChars)
         NSLog("[AGENT] truncated oversized tool result: \(result.count) -> \(maxToolResultChars) chars")
         return kept + "\n\n…[truncated: showing \(maxToolResultChars) of \(result.count) chars]"
+    }
+
+    /// CONTEXT RECYCLING: stub out all but the most recent tool results before
+    /// each generation. Per-result truncation (maxToolResultChars) caps ONE
+    /// result, but ACCUMULATION across rounds is what kills the backend — the
+    /// 14:39 run carried 37 rounds of page reads (~70K tokens) until MLX threw
+    /// metal::malloc. The database and the model's own running notes are the
+    /// memory; the conversation is scratch space. Once a result has been
+    /// processed, its full text is waste. Only the last `keepLast` results
+    /// stay full-fidelity so the model can still quote its freshest reads.
+    private static func elideOldToolResults(_ convo: inout [[String: Any]], keepLast: Int = 4) {
+        let toolIndices = convo.indices.filter { convo[$0]["role"] as? String == "tool" }
+        guard toolIndices.count > keepLast else { return }
+        for idx in toolIndices.dropLast(keepLast) {
+            guard let content = convo[idx]["content"] as? String, content.count > 160 else { continue }
+            convo[idx]["content"] = String(content.prefix(80))
+                + " …[elided: result already processed — the extracted data is in "
+                + "your table or earlier reasoning]"
+        }
     }
 
     /// Inject the agent's working directory as `cwd` for execute_command when the
@@ -1888,6 +2118,17 @@ final class AgentExecutor: Sendable {
             return content.count / 4
         }
         return 0
+    }
+
+    /// Normalize a loop-guard / failure-breaker signature so escape-junk growth
+    /// can't dodge detection. Production failure family: a failed retry re-escapes
+    /// the same values (" → \" → \\\" → …), mutating the raw args/error text each
+    /// round — every counter keyed on the raw string kept resetting to 1, so the
+    /// 17-round db_add_field meltdown was invisible to both guards. Removing the
+    /// escape + wrapper characters (including stray structural braces from the
+    /// meltdown) makes logically identical retries collide.
+    static func normalizedGuardSignature(_ raw: String) -> String {
+        String(raw.filter { !["\\", "\"", "'", "{", "}", "[", "]", "(", ")"].contains($0) })
     }
 
     /// Check if system memory usage exceeds safe threshold.

@@ -66,15 +66,15 @@ extension MaestroTools {
     static var browserToolSpecs: [ToolSpec] {
         [
             rawSpec("browser_open",
-                "Open a URL in an internal browser tab. If that URL is already open, the existing "
-                + "tab is focused and returned (no duplicate is created) — so check browser_list "
-                + "first and do NOT open the same page twice. IMPORTANT: only open URLs from a real "
-                + "source — the user's request, or links returned by browser_links / browser_read / "
-                + "web_search. NEVER invent or guess a URL; invented URLs almost always 404. Returns "
-                + "the tab_id and warns if the page is a dead link. Pass background=true to open "
-                + "without switching focus.",
+                "Open a URL in the internal browser. This opens a NEW tab AND navigates to the URL "
+                + "in one step — you do NOT need a separate navigate call afterwards. If that URL is "
+                + "already open, the existing tab is focused and returned (no duplicate is created). "
+                + "IMPORTANT: only open URLs from a real source — the user's request, or links returned "
+                + "by browser_links / browser_read / web_search. NEVER invent or guess a URL; invented "
+                + "URLs almost always 404. Returns the tab_id and warns if the page is a dead link. "
+                + "Pass background=true to open without switching focus.",
                 properties: [
-                    "url": ["type": "string", "description": "URL to open (https:// added if missing)"],
+                    "url": ["type": "string", "description": "URL to open and navigate to (https:// added if missing)"],
                     "background": ["type": "boolean", "description": "Open without focusing the tab (default false)"],
                 ],
                 required: ["url"]),
@@ -96,7 +96,9 @@ extension MaestroTools {
                 ],
                 required: []),
             rawSpec("browser_navigate",
-                "Navigate a tab: back, forward, reload, or stop. Defaults to the active tab.",
+                "Navigate within an already-open tab: go back, go forward, reload the page, or stop "
+                + "loading. Does NOT accept a URL — to open a new URL, use browser_open instead. "
+                + "Defaults to the active tab.",
                 properties: [
                     "action": ["type": "string", "description": "One of: back, forward, reload, stop"],
                     "tab_id": ["type": "string", "description": "Target tab_id (default: active tab)"],
@@ -260,14 +262,85 @@ extension MaestroTools {
         }
     }
 
+    /// Click away cookie/consent banners before extracting content. The banners
+    /// overlay prices and inject "Manage cookies / Decline all / OK" noise into
+    /// the markdown — a user reported the agent re-reading pages while hunting
+    /// for data obscured by The Front's consent bar. Tries explicit accept
+    /// labels first, common framework selectors (OneTrust, Cookiebot) second,
+    /// and falls back to decline/reject (which also dismisses the banner).
+    /// No-op for non-WebKit tabs and for pages with no banner.
+    @MainActor
+    private static func dismissConsentBanners(_ tab: BrowserTab) async {
+        guard tab.engineType == .webKit else { return }
+        let js = """
+        (() => {
+            const labels = [
+                'accept all', 'accept', 'allow all', 'agree', 'i agree', 'got it', 'ok', 'okay',
+                'decline all', 'decline', 'reject all', 'reject'
+            ];
+            const els = [...document.querySelectorAll(
+                'button, a, [role="button"], input[type="button"], input[type="submit"]')];
+            for (const label of labels) {
+                const el = els.find(e => {
+                    const txt = (e.innerText || e.value || e.getAttribute('aria-label') || '')
+                        .trim().toLowerCase();
+                    return txt === label || txt.startsWith(label + ' ');
+                });
+                if (el && el.offsetParent !== null) { el.click(); return 'clicked:' + label; }
+            }
+            const known = document.querySelector(
+                '#onetrust-accept-btn-handler, .cc-accept, .cc-allow, .cc-dismiss, ' +
+                '.cookie-accept, .js-accept-cookies, #CybotCookiebotDialogBodyButtonDecline');
+            if (known) { known.click(); return 'clicked:framework'; }
+            return 'none';
+        })()
+        """
+        _ = try? await tab.evaluateJavaScript(js)
+        // Let any post-dismiss reflow settle before extraction.
+        try? await Task.sleep(nanoseconds: 300_000_000)
+    }
+
     // MARK: - Handlers
+
+    /// Count currency-amount signals in extracted page text ("$250", "$95/day",
+    /// "AUD 90"). Feeds the playbook's EXTRACTION TEST mechanically: a read with
+    /// price_signals = 0 is a FAILED extraction for price research — the model no
+    /// longer has to judge that itself.
+    static func priceSignalCount(in text: String) -> Int {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"(?i)(\$\s?\d[\d,.]*|\bAUD\s?\d[\d,.]*)"#) else { return 0 }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return regex.numberOfMatches(in: text, range: range)
+    }
+
+    /// Raw `document.body.innerText` extraction used when the clipper times out
+    /// or wedges. Runs through the tab's own timeout-protected evaluateJavaScript
+    /// (15s hard cap), so this fallback can never re-introduce the hang it
+    /// rescues.
+    @MainActor
+    private static func plainTextFallback(_ tab: BrowserTab) async -> String? {
+        guard let data = try? await tab.evaluateJavaScript(
+            "document.body ? document.body.innerText : ''"),
+              let text = try? JSONDecoder().decode(String.self, from: data) else {
+            return nil
+        }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
 
     @MainActor
     private static func browserOpen(_ call: ToolCall) async -> String {
         let args = decodeArgs(call, as: OpenArgs.self)
-        guard let urlString = args?.url,
-              !urlString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard let rawURL = args?.url,
+              !rawURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return errorJSON("'url' is required")
+        }
+        // Small models compound escape layers across rounds until the URL is
+        // `%22https///` garbage — clean to a fixpoint before navigating.
+        let urlString = ToolArgumentRepair.sanitizeAgentURL(rawURL)
+        guard !urlString.isEmpty else {
+            return errorJSON("'url' was empty after cleaning escape junk from '\(rawURL)'. "
+                + "Send the bare URL only: https://host/path — no quotes, no backslashes.")
         }
         let background = args?.background?.value ?? false
         let store = WebBrowserStore.shared
@@ -285,6 +358,7 @@ extension MaestroTools {
             "active": store.selectedTabID == tab.id,
             "background": background,
         ]
+        if urlString != rawURL { result["sanitized_url"] = true }
         if reusedExisting {
             result["reused_existing"] = true
             result["note"] = "This URL is already open in a tab — reused it instead of opening a "
@@ -373,9 +447,33 @@ extension MaestroTools {
     private static func browserRead(_ call: ToolCall) async -> String {
         let args = decodeArgs(call, as: ReadArgs.self)
         let store = WebBrowserStore.shared
-        guard let tab = resolveTab(args?.tab_id, in: store) else { return errorJSON("No active tab") }
+        let tab: BrowserTab?
+        if let requested = args?.tab_id?.trimmingCharacters(in: .whitespaces), !requested.isEmpty {
+            // STRICT: an explicitly-given tab_id must exist. The model has
+            // hallucinated ids — and once FABRICATED an entire tab — in
+            // production; silently reading the active tab instead hides the
+            // fabrication and lets the model trust its invented state.
+            guard let id = agentUUID(requested),
+                  let matched = store.tabs.first(where: { $0.id == id }) else {
+                let open = store.tabs.map {
+                    "\($0.id.uuidString) → \($0.currentURL?.absoluteString ?? "(no url)")"
+                }
+                return errorJSON(
+                    "no tab with id '\(requested)'. Open tabs: "
+                    + (open.isEmpty ? "(none)" : open.joined(separator: "; "))
+                    + ". Use browser_list for current tab ids — NEVER invent a tab_id; "
+                    + "use the tab_id returned by browser_open.")
+            }
+            tab = matched
+        } else {
+            tab = store.selectedTab
+        }
+        guard let tab else { return errorJSON("No active tab") }
         // SPAs render their DOM after load — wait for real content before extracting.
         await waitForRenderedContent(tab)
+        // Clear cookie/consent banners so they don't overlay content or pollute
+        // the extracted markdown with banner noise.
+        await dismissConsentBanners(tab)
         let format = (args?.format ?? "markdown").lowercased()
         let url = tab.currentURL?.absoluteString ?? ""
 
@@ -405,11 +503,45 @@ extension MaestroTools {
             do {
                 let html = try await tab.capturePageHTML()
                 guard !html.isEmpty else { return errorJSON("Page has no readable content") }
-                let result = try await WebClipperService.shared.clip(html: html, url: url)
-                return jsonString([
+                var result: WebClipResult
+                var extractionMode = "clipper"
+                do {
+                    result = try await WebClipperService.shared.clip(html: html, url: url)
+                } catch {
+                    // Clipper timed out or its webview wedged (the 14-minute
+                    // Shopify stall). Degrade gracefully: raw innerText via the
+                    // tab's own timeout-protected evaluateJavaScript, so the
+                    // agent still gets page content instead of an empty error.
+                    NSLog("[browser_read] clipper failed (\(error.localizedDescription)); falling back to innerText")
+                    guard let text = await Self.plainTextFallback(tab), !text.isEmpty else {
+                        return errorJSON("Failed to read page: clipper failed (\(error.localizedDescription)) "
+                            + "and the plain-text fallback found no content. Try browser_eval, or "
+                            + "browser_navigate reload and retry once.")
+                    }
+                    result = WebClipResult(
+                        title: tab.title, url: url, excerpt: String(text.prefix(300)),
+                        author: "", published: "", site: "", markdown: text, html: "")
+                    extractionMode = "plain_text_fallback"
+                }
+                var payload: [String: Any] = [
                     "tab_id": tab.id.uuidString, "url": url, "title": result.title,
                     "excerpt": result.excerpt, "markdown": result.markdown, "length": result.markdown.count,
-                ])
+                    "extraction_mode": extractionMode,
+                ]
+                // Mechanical extraction test: the playbook's "no $ = failed
+                // extraction" rule as a deterministic signal the model can act on
+                // without judgment. Only nags on the negative — price-bearing
+                // pages just report the count.
+                let signals = priceSignalCount(in: result.markdown)
+                payload["price_signals"] = signals
+                if signals == 0 {
+                    payload["extraction_note"] = "no currency amounts detected on this page — "
+                        + "if you are collecting prices/rates, this read is a FAILED extraction: "
+                        + "use browser_links to drill to a PRODUCT page or move on; do NOT record "
+                        + "rows from this page. If you already have data from earlier pages, save "
+                        + "it with db_add_rows now."
+                }
+                return jsonString(payload)
             } catch {
                 return errorJSON("Failed to read page: \(error.localizedDescription)")
             }

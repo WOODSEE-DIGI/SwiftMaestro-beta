@@ -191,7 +191,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .scenes: return "Scenes"
         case .agents: return "Agents"
         case .appLauncher: return "Apps"
-        case .webBrowser: return "Web Browser"
+        case .webBrowser: return "SwiftBrowser"
         case .damBrowser: return "MaestroDAM"
         case .maestroDocs: return "MaestroDocs"
         case .maestroBooks: return "MaestroBooks"
@@ -315,6 +315,47 @@ indirect enum LayoutNode: Codable, Hashable, Sendable {
         case .leaf(let k): return k == kind
         case .stack(let kinds): return kinds.contains(kind)
         case .split(_, _, let first, let second): return first.contains(kind) || second.contains(kind)
+        }
+    }
+
+    /// Walk the tree to find the rightmost/bottommost leaf panel. Prefers the
+    /// `second` child at each split (right for horizontal, bottom for vertical).
+    func rightmostLeaf() -> WorkspacePanelKind? {
+        switch self {
+        case .leaf(let k): return k
+        case .stack(let kinds): return kinds.last
+        case .split(_, _, _, let second):
+            return second.rightmostLeaf() ?? self.leftmostLeaf()
+        }
+    }
+
+    /// Walk the tree to find the rightmost leaf of the TOP row. Like
+    /// `rightmostLeaf()` but at VERTICAL splits it descends into the TOP
+    /// (`first`) child — the main content row — instead of the bottom row.
+    /// Used when docking a new panel to the right so it lands beside the
+    /// chat/browser row rather than next to a bottom-docked panel (e.g.
+    /// MaestroDB), which is where plain `rightmostLeaf()` would put it once
+    /// a bottom row exists.
+    func rightmostTopLeaf() -> WorkspacePanelKind? {
+        switch self {
+        case .leaf(let k): return k
+        case .stack(let kinds): return kinds.last
+        case .split(let axis, _, let first, let second):
+            switch axis {
+            case .horizontal:
+                return second.rightmostTopLeaf() ?? first.rightmostTopLeaf()
+            case .vertical:
+                return first.rightmostTopLeaf() ?? second.rightmostTopLeaf()
+            }
+        }
+    }
+
+    private func leftmostLeaf() -> WorkspacePanelKind? {
+        switch self {
+        case .leaf(let k): return k
+        case .stack(let kinds): return kinds.first
+        case .split(_, _, let first, _):
+            return first.leftmostLeaf()
         }
     }
 
@@ -579,8 +620,55 @@ final class WorkspaceLayoutState {
             return .floated
         }
 
-        // Dock into the tree at the requested zone.
-        dock(kind, zone: zone)
+        // Dock a brand-new panel into the tree. Instead of splitting the
+        // entire root (which would squish everything to 50%), find the
+        // rightmost content leaf and insert relative to it.
+        guard let current = self.root else {
+            self.root = .leaf(kind)
+            save()
+            return .dockedDirectly
+        }
+
+        if zone == .bottom {
+            // Bottom-docking must create a true second ROW spanning the full
+            // main content width — not a vertical split nested inside the
+            // rightmost column (which renders as just another right panel).
+            // The workspace root is normally `.split(.horizontal, chrome, main)`;
+            // split `main` vertically so the new panel sits below everything.
+            if case .split(axis: .horizontal, let ratio, let first, let second) = current,
+               first.contains(.agents) {
+                self.root = .split(axis: .horizontal, ratio: ratio, first: first,
+                                   second: .split(axis: .vertical, ratio: 0.65,
+                                                  first: second, second: .leaf(kind)))
+            } else {
+                // No chrome column — split the whole root vertically.
+                self.root = .split(axis: .vertical, ratio: 0.65,
+                                   first: current, second: .leaf(kind))
+            }
+            save()
+            return .dockedDirectly
+        }
+
+        // For .right, target the rightmost leaf of the TOP row so a bottom
+        // row (MaestroDB etc.) doesn't capture the new panel next to itself.
+        let targetLeaf = (zone == .right) ? current.rightmostTopLeaf() : current.rightmostLeaf()
+        if let targetKind = targetLeaf,
+           let targetPath = current.path(to: targetKind) {
+            self.root = current.inserting(kind, at: targetPath, zone: zone)
+        } else {
+            // Fallback: split the root directly.
+            switch zone {
+            case .right:
+                self.root = .split(axis: .horizontal, ratio: 0.5, first: current, second: .leaf(kind))
+            case .left:
+                self.root = .split(axis: .horizontal, ratio: 0.5, first: .leaf(kind), second: current)
+            case .top:
+                self.root = .split(axis: .vertical, ratio: 0.5, first: .leaf(kind), second: current)
+            case .bottom, .center:
+                self.root = .split(axis: .vertical, ratio: 0.5, first: current, second: .leaf(kind))
+            }
+        }
+        save()
         return .dockedDirectly
     }
 

@@ -85,7 +85,7 @@ enum AgentCategory: String, Codable, CaseIterable, Identifiable, Hashable, Senda
 
     /// Default tool categories enabled for agents of this category.
     var defaultToolCategories: Set<ToolCategory> {
-        var base: Set<ToolCategory> = [.file, .shell, .memory, .web, .system, .workspace]
+        var base: Set<ToolCategory> = [.file, .shell, .memory, .web, .browser, .system, .workspace]
         switch self {
         case .coding:
             base.formUnion([.index, .server, .sqlite, .mcp])

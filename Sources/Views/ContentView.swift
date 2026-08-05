@@ -134,9 +134,15 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .openWorkspacePanel)) { notification in
             guard let kind = notification.object as? WorkspacePanelKind else { return }
-            // Read current modifier flags from the event that triggered this.
+            // Read modifier flags captured at click time (passed via userInfo
+            // by AppsLauncherPanel) so we don't race against key release.
+            let flags: NSEvent.ModifierFlags = {
+                if let stored = notification.userInfo?["modifierFlags"] as? NSEvent.ModifierFlags {
+                    return stored
+                }
+                return NSEvent.modifierFlags
+            }()
             // Shift → dock below (new row); Option → float; default → dock right.
-            let flags = NSEvent.modifierFlags
             let zone: TilingDropZone? = flags.contains(.option) ? nil
                 : flags.contains(.shift) ? .bottom
                 : .right

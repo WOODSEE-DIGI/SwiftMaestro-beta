@@ -225,7 +225,9 @@ extension WebKitBrowserEngine: WKUIDelegate {
 /// Guards a `CheckedContinuation` so it is resumed exactly once. Used when racing a
 /// WebKit callback against a timeout — whichever fires first wins; the loser is
 /// dropped, avoiding both a double-resume crash and a never-resumed leak.
-private final class ResumeOnceGuard<T: Sendable>: @unchecked Sendable {
+/// Shared with WebClipperService, whose clip/load evaluations get the same
+/// hard-timeout treatment (the 14-minute browser_read stall).
+final class ResumeOnceGuard<T: Sendable>: @unchecked Sendable {
     private var resumed = false
     private let lock = NSLock()
 

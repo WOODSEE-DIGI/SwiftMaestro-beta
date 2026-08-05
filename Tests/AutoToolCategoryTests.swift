@@ -29,9 +29,9 @@ struct AutoToolCategoryTests {
     }
 
     @Test func coreCategoriesAreNotPanelLinked() {
-        for core in [ToolCategory.file, .shell, .memory, .workspace, .system,
+        for core in [ToolCategory.file, .memory, .workspace, .system,
                      .sqlite, .index, .web, .vault, .rules, .time, .messaging,
-                     .bus, .server, .mcp] {
+                     .server, .mcp] {
             #expect(!core.isPanelLinked, "\(core) should stay manual under Auto")
         }
     }

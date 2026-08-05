@@ -41,7 +41,10 @@ extension MaestroTools {
                 "Search the web using Bing and return results with titles, URLs, and snippets. "
                 + "Use this to find current information, documentation, news, or any online content. "
                 + "Do NOT call this tool more than 3 times for the same question. If the first "
-                + "search does not return useful results, rephrase once, then answer with what you found.",
+                + "search does not return useful results, rephrase once, then answer with what you found. "
+                + "IMPORTANT: After getting search results, to read full page content use browser_open(url) "
+                + "on the most relevant result URL — NOT web_search again. web_search is for DISCOVERING "
+                + "URLs; browser_open + browser_read is for READING their content.",
                 properties: [
                     "query": ["type": "string", "description": "Search query string"],
                     "max_results": ["type": "integer", "description": "Max results to return (default 5, max 10)"],
