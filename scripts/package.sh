@@ -42,6 +42,11 @@ fi
 # rejects on missing secure timestamps.
 "$(dirname "$0")/sign-nested-binaries.sh"
 
+# Prove the bundle is fully self-contained BEFORE shipping: no machine-local
+# (Homebrew) references, no missing @rpath libs. Fails the package on leaks —
+# this is the fresh-Mac launch-crash regression gate.
+APP_PATH="$APP_PATH" "$(dirname "$0")/audit-dependencies.sh" "$APP_PATH"
+
 # Ship the third-party notices inside the app bundle (license obligation for
 # several bundled components, and good practice for all of them).
 cp Sources/Resources/THIRD-PARTY-NOTICES.md "$APP_PATH/Contents/Resources/THIRD-PARTY-NOTICES.md"

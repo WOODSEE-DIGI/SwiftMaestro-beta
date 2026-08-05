@@ -1,6 +1,56 @@
 import Foundation
 import AppKit
 
+/// Resolves the gphoto2 binary: the app-bundled copy first (DMG self-contained),
+/// then Homebrew locations. When the bundled copy is used, CAMLIBS/IOLIBS must
+/// point at the bundled driver directories so libgphoto2 finds its camera and
+/// port drivers — otherwise it looks inside the (possibly absent) Homebrew prefix.
+enum Gphoto2Resolver {
+    struct Resolved {
+        let binaryPath: String
+        /// Extra environment to set when spawning (empty for system installs,
+        /// which find their own drivers).
+        let environment: [String: String]
+    }
+
+    static func resolve() -> Resolved? {
+        let fm = FileManager.default
+        if let resourcePath = Bundle.main.resourcePath {
+            let bundledBin = resourcePath + "/gphoto2/bin/gphoto2"
+            if fm.isExecutableFile(atPath: bundledBin) {
+                var env: [String: String] = [:]
+                let libRoot = resourcePath + "/gphoto2/lib"
+                if let camlibs = firstChildDir(in: libRoot + "/libgphoto2") {
+                    env["CAMLIBS"] = camlibs
+                }
+                if let iolibs = firstChildDir(in: libRoot + "/libgphoto2_port") {
+                    env["IOLIBS"] = iolibs
+                }
+                return Resolved(binaryPath: bundledBin, environment: env)
+            }
+        }
+        for candidate in ["/opt/homebrew/bin/gphoto2", "/usr/local/bin/gphoto2"] {
+            if fm.isExecutableFile(atPath: candidate) {
+                return Resolved(binaryPath: candidate, environment: [:])
+            }
+        }
+        return nil
+    }
+
+    /// The driver modules live in a versioned subdir (2.5.34, 0.12.2) — resolve
+    /// whatever single version directory shipped inside the bundle.
+    private static func firstChildDir(in path: String) -> String? {
+        let fm = FileManager.default
+        guard let children = try? fm.contentsOfDirectory(atPath: path) else { return nil }
+        for child in children where !child.hasPrefix(".") {
+            let full = path + "/" + child
+            var isDir: ObjCBool = false
+            if fm.fileExists(atPath: full, isDirectory: &isDir), isDir.boolValue { return full }
+        }
+        return nil
+    }
+}
+
 /// PTP/USB source backed by the gphoto2 command-line tool.
 /// Supports Nikon D90/D7000 and Sony A7R II via libgphoto2.
 @MainActor
@@ -14,15 +64,18 @@ final class PTPCaptureSource: CaptureSource, @unchecked Sendable {
 
     private let port: String?
     private let gphotoPath: String
+    private let gphotoEnvironment: [String: String]
     private var previewTask: Task<Void, Never>?
     private let previewContinuation: AsyncStream<Data>.Continuation
     let previewStream: AsyncStream<Data>
 
-    init(id: CaptureSourceID, name: String, port: String? = nil, gphotoPath: String = "/opt/homebrew/bin/gphoto2") {
+    init(id: CaptureSourceID, name: String, port: String? = nil, gphotoPath: String? = nil) {
         self.id = id
         self.name = name
         self.port = port
-        self.gphotoPath = gphotoPath
+        let resolved = Gphoto2Resolver.resolve()
+        self.gphotoPath = gphotoPath ?? resolved?.binaryPath ?? "/opt/homebrew/bin/gphoto2"
+        self.gphotoEnvironment = gphotoPath == nil ? (resolved?.environment ?? [:]) : [:]
 
         var continuation: AsyncStream<Data>.Continuation?
         self.previewStream = AsyncStream { cont in
@@ -81,13 +134,24 @@ final class PTPCaptureSource: CaptureSource, @unchecked Sendable {
 
     // MARK: - gphoto2 CLI helpers
 
+    /// Process environment for gphoto2 spawns: the current environment plus
+    /// CAMLIBS/IOLIBS when running the bundled binary (system installs find
+    /// their own drivers and need nothing extra).
+    private var spawnEnvironment: [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        for (key, value) in gphotoEnvironment { env[key] = value }
+        return env
+    }
+
     private func run(_ args: [String], timeout: TimeInterval) async throws {
         let gphotoPath = self.gphotoPath
+        let environment = self.spawnEnvironment
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global().async {
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: gphotoPath)
                 process.arguments = args
+                process.environment = environment
 
                 let output = Pipe()
                 let error = Pipe()
@@ -141,6 +205,7 @@ final class PTPCaptureSource: CaptureSource, @unchecked Sendable {
     private func capturePreview() async throws -> Data {
         let gphotoPath = self.gphotoPath
         let port = self.port
+        let environment = self.spawnEnvironment
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global().async {
                 var args = ["--capture-preview", "--stdout"]
@@ -151,6 +216,7 @@ final class PTPCaptureSource: CaptureSource, @unchecked Sendable {
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: gphotoPath)
                 process.arguments = args
+                process.environment = environment
 
                 let output = Pipe()
                 let errorPipe = Pipe()
@@ -188,17 +254,25 @@ final class PTPCaptureSource: CaptureSource, @unchecked Sendable {
 struct PTPSourceEnumerator: CaptureSourceEnumerator, @unchecked Sendable {
     let sourceType: CaptureSourceType = .ptpUSB
     private let gphotoPath: String
+    private let gphotoEnvironment: [String: String]
 
-    init(gphotoPath: String = "/opt/homebrew/bin/gphoto2") {
-        self.gphotoPath = gphotoPath
+    init(gphotoPath: String? = nil) {
+        let resolved = Gphoto2Resolver.resolve()
+        self.gphotoPath = gphotoPath ?? resolved?.binaryPath ?? "/opt/homebrew/bin/gphoto2"
+        self.gphotoEnvironment = gphotoPath == nil ? (resolved?.environment ?? [:]) : [:]
     }
 
     func discover() async -> CaptureSourceDiscovery {
+        let gphotoPath = self.gphotoPath
+        let gphotoEnvironment = self.gphotoEnvironment
         let text = await withCheckedContinuation { continuation in
             DispatchQueue.global().async {
+                var environment = ProcessInfo.processInfo.environment
+                for (key, value) in gphotoEnvironment { environment[key] = value }
                 let process = Process()
-                process.executableURL = URL(fileURLWithPath: self.gphotoPath)
+                process.executableURL = URL(fileURLWithPath: gphotoPath)
                 process.arguments = ["--auto-detect"]
+                process.environment = environment
 
                 let output = Pipe()
                 let errorPipe = Pipe()

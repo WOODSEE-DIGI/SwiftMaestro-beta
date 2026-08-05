@@ -1290,7 +1290,7 @@ struct ModelsSettingsTab: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.blue)
-                .help("Re-download \(model.displayName) — the existing partial download will be removed first")
+                .help("Re-download \(model.displayName) — existing files are kept and resumed; only missing bytes are fetched")
             }
             .help("Some weight files are missing on disk; this model cannot be loaded until re-downloaded")
         } else if model.hasLocalWeights {
@@ -1793,7 +1793,7 @@ struct MCPSettingsTab: View {
                     })
                 }
                 Button {
-                    servers.append(MCPServerEntry(name: "new-server", command: "/opt/homebrew/bin/node", scriptPath: "", env: "", workingDir: "", timeout: 8, enabled: false))
+                    servers.append(MCPServerEntry(name: "new-server", command: MCPServerEntry.bundledNode, scriptPath: "", env: "", workingDir: "", timeout: 8, enabled: false))
                 } label: {
                     Label("Add Server", systemImage: "plus")
                 }
@@ -2137,6 +2137,12 @@ struct MCPServerEntry: Identifiable, Codable {
     var advertisesToDelegates: Bool { advertiseToSubAgents ?? true }
 
     /// Pre-configured MCP servers that ship with SwiftMaestro. These appear in
+    /// Node from the app-bundled MCP runtime — works without Homebrew. The
+    /// bundled-manifest resolution replaces whole entries on fresh installs;
+    /// this path keeps even unresolved defaults runnable on any machine.
+    static let bundledNode = SwiftMaestroPaths.appSupportDir
+        .appendingPathComponent("mcp-servers/.runtime/node/bin/node").path
+
     /// Settings → MCP on first launch. Enabled servers connect on launch;
     /// disabled ones are ready to toggle on when their backend is available.
     static let defaults: [MCPServerEntry] = [
@@ -2153,7 +2159,7 @@ struct MCPServerEntry: Identifiable, Codable {
         ),
         MCPServerEntry(
             name: "firecrawl",
-            command: "/opt/homebrew/bin/node",
+            command: bundledNode,
             scriptPath: "\(NSHomeDirectory())/GitHub/AI-ML-Agents/firecrawl-mcp-server/dist/index.js",
             env: "FIRECRAWL_API_URL=http://localhost:3002",
             workingDir: "\(NSHomeDirectory())/GitHub/AI-ML-Agents/firecrawl-mcp-server",
@@ -2163,7 +2169,7 @@ struct MCPServerEntry: Identifiable, Codable {
         ),
         MCPServerEntry(
             name: "read-website-fast",
-            command: "/opt/homebrew/bin/node",
+            command: bundledNode,
             scriptPath: "\(NSHomeDirectory())/GitHub/AI-ML-Agents/mcp-read-website-fast/dist/serve-restart.js",
             env: "",
             workingDir: "\(NSHomeDirectory())/GitHub/AI-ML-Agents/mcp-read-website-fast",
@@ -2174,7 +2180,7 @@ struct MCPServerEntry: Identifiable, Codable {
         // ── Infrastructure ──
         MCPServerEntry(
             name: "ai-context-bridge",
-            command: "/opt/homebrew/bin/node",
+            command: bundledNode,
             scriptPath: "\(NSHomeDirectory())/.ai-context/mcp-server/server.js",
             env: "",
             workingDir: "\(NSHomeDirectory())/.ai-context/mcp-server",
@@ -2184,7 +2190,7 @@ struct MCPServerEntry: Identifiable, Codable {
         ),
         MCPServerEntry(
             name: "playwright",
-            command: "/opt/homebrew/bin/node",
+            command: bundledNode,
             scriptPath: "\(NSHomeDirectory())/GitHub/AI-ML-Agents/playwright-mcp/packages/playwright-mcp/cli.js",
             env: "HOME=\(NSHomeDirectory())",
             workingDir: "\(NSHomeDirectory())/GitHub/AI-ML-Agents/playwright-mcp",
@@ -2194,7 +2200,7 @@ struct MCPServerEntry: Identifiable, Codable {
         ),
         MCPServerEntry(
             name: "xcodebuildmcp",
-            command: "/opt/homebrew/bin/node",
+            command: bundledNode,
             scriptPath: "\(NSHomeDirectory())/GitHub/AI-ML-Agents/XcodeBuildMCP/build/cli.js",
             env: "HOME=\(NSHomeDirectory())",
             workingDir: "\(NSHomeDirectory())/GitHub/AI-ML-Agents/XcodeBuildMCP",
@@ -2205,7 +2211,7 @@ struct MCPServerEntry: Identifiable, Codable {
         ),
         MCPServerEntry(
             name: "swift-terminals",
-            command: "/opt/homebrew/bin/node",
+            command: bundledNode,
             scriptPath: "\(NSHomeDirectory())/GitHub/AI-ML-Agents/Swift-terminals/dist/index.js",
             env: "",
             workingDir: "\(NSHomeDirectory())/GitHub/AI-ML-Agents/Swift-terminals",
@@ -2228,7 +2234,7 @@ struct MCPServerEntry: Identifiable, Codable {
         // ── Web crawling (advanced, needs backend) ──
         MCPServerEntry(
             name: "crawlkit",
-            command: "/opt/homebrew/bin/node",
+            command: bundledNode,
             scriptPath: "\(NSHomeDirectory())/.ai-context/mcp-crawlkit/server.js",
             env: "CRAWLKIT_BASE_URL=http://localhost:8088",
             workingDir: "\(NSHomeDirectory())/.ai-context/mcp-crawlkit",

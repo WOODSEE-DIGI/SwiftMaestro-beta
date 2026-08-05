@@ -771,3 +771,12 @@ No rights beyond those granted by the applicable original license are conveyed f
 
 WhisperKit by Argmax, Inc. — Apache License 2.0.
 https://github.com/argmaxinc/WhisperKit/blob/main/LICENSE
+
+### gphoto2, libgphoto2, and libgphoto2_port (GNU GPL v2)
+
+gphoto2 2.5.32, libgphoto2 2.5.34, and libgphoto2_port 0.12.2 by Marcus Meissner
+and the gphoto2 contributors — GNU General Public License version 2.
+Used for PTP/USB camera tethering (Nikon, Sony, Canon, and others).
+The complete license text is bundled alongside the binary at
+`Contents/Resources/gphoto2/COPYING`; source code is available at
+https://github.com/gphoto/gphoto2 and https://github.com/gphoto/libgphoto2

@@ -158,7 +158,18 @@ final class PythonVenvService {
 
     /// Find a suitable system Python 3 interpreter.
     private func findSystemPython() async throws -> String {
-        let candidates = [
+        var candidates: [String] = []
+        // 1. The app-bundled Python runtime (DMG self-contained path — works on
+        //    machines with no Homebrew and no Xcode CLT python stub).
+        if let resourcePath = Bundle.main.resourcePath {
+            candidates.append(resourcePath + "/mcp-servers/.runtime/python/bin/python3")
+        }
+        // 2. The extracted runtime in Application Support (first-launch MCP bundle
+        //    extraction) — same interpreter, already unpacked on disk.
+        candidates.append(SwiftMaestroPaths.appSupportDir
+            .appendingPathComponent("mcp-servers/.runtime/python/bin/python3").path)
+        // 3. System interpreters (dev machines).
+        candidates += [
             "/opt/homebrew/bin/python3",
             "/usr/local/bin/python3",
             "/usr/bin/python3",

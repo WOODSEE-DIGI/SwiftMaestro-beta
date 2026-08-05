@@ -37,10 +37,15 @@ fi
 
 mkdir -p "$FRAMEWORKS"
 
-# Repoint homebrew references in the main binary to bundled @rpath names.
-otool -L "$BIN" | awk '/\/opt\/homebrew\//{print $1}' | while read -r dep; do
-    install_name_tool -change "$dep" "@rpath/$(basename "$dep")" "$BIN"
-    echo "binary: $dep -> @rpath/$(basename "$dep")"
+# Repoint homebrew references in ALL MacOS-dir Mach-O files to bundled @rpath
+# names. Xcode 16+ Debug builds put the real code in SwiftMaestro.debug.dylib
+# — rewriting only the main binary leaves a machine-local leak in Debug builds.
+for BINFILE in "$APP_PATH/Contents/MacOS/"*; do
+    file "$BINFILE" | grep -q "Mach-O" || continue
+    otool -L "$BINFILE" | awk '/\/opt\/homebrew\//{print $1}' | while read -r dep; do
+        install_name_tool -change "$dep" "@rpath/$(basename "$dep")" "$BINFILE"
+        echo "$(basename "$BINFILE"): $dep -> @rpath/$(basename "$dep")"
+    done
 done
 
 bundle() {

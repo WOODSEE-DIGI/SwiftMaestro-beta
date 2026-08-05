@@ -146,6 +146,16 @@ targets:
         outputFiles:
           - $(BUILT_PRODUCTS_DIR)/$(PRODUCT_NAME).app/Contents/Resources/ffmpeg
           - $(BUILT_PRODUCTS_DIR)/$(PRODUCT_NAME).app/Contents/Resources/ffprobe
+      - name: Bundle gphoto2
+        script: |
+          # Copy the gphoto2 CLI + libgphoto2 dylibs + driver modules into the
+          # app bundle and rewrite Homebrew references to @rpath, so PTP camera
+          # tethering works on machines without Homebrew.
+          "${SRCROOT}/scripts/bundle-gphoto2.sh"
+        shell: /bin/bash
+        alwaysOutOfDate: true
+        outputFiles:
+          - $(BUILT_PRODUCTS_DIR)/$(PRODUCT_NAME).app/Contents/Resources/gphoto2
     dependencies:
       - package: SwiftMaestroKit
         product: SwiftMaestroKit
