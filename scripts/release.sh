@@ -9,14 +9,14 @@
 #
 # Env overrides:
 #   VERSION=<x.y.z>            (default reads from app Info.plist)
-#   DOWNLOAD_URL_PREFIX=<url>  (default https://swiftmaestro.com/releases/)
+#   DOWNLOAD_URL_PREFIX=<url>  (default https://s3.ap-southeast-2.onidel.cloud/swiftmaestro-releases/)
 #   SKIP_NOTARIZE=1            (build + sign only; no notarization)
 #   UPLOAD=1                   (upload dist/ to swiftmaestro.com via rsync)
 #   DEPLOY_HOST/USER/PATH      (override upload target)
 set -euo pipefail
 
 APP_NAME="SwiftMaestro"
-DOWNLOAD_URL_PREFIX="${DOWNLOAD_URL_PREFIX:-https://swiftmaestro.com/download/}"
+DOWNLOAD_URL_PREFIX="${DOWNLOAD_URL_PREFIX:-https://s3.ap-southeast-2.onidel.cloud/swiftmaestro-releases/}"
 APP_PATH="build/Release/${APP_NAME}.app"
 DIST_DIR="dist"
 

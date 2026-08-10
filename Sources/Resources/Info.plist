@@ -47,7 +47,7 @@
 	<key>SUEnableAutomaticChecks</key>
 	<true/>
 	<key>SUFeedURL</key>
-	<string>https://swiftmaestro.com/download/appcast.xml</string>
+	<string>https://s3.ap-southeast-2.onidel.cloud/swiftmaestro-releases/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>TTIO4DYLbmp/OPA3VtOvE8IERZ328cWiidD3gdKo+SY=</string>
 	<key>SUScheduledCheckInterval</key>
