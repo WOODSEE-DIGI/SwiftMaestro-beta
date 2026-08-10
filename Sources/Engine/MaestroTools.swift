@@ -1159,7 +1159,19 @@ enum MaestroTools {
                 let where_ = args.to_project.map { " in project '\($0)'" } ?? ""
                 return errorJSON("no agent named '\(toName)'\(where_). Use list_workspace to see agents.")
             }
-            let fromName = agentUUID(args.agent_id).flatMap { ws.agent(id: $0)?.name } ?? "an agent"
+            // Self-messaging is always a model error: agents preserve their
+            // OWN context via memory/plans, not by posting to their own
+            // inbox (confirmed live: Maestro "sent a status update to the
+            // Maestro agent" to preserve investigation context, which parked
+            // a confusing self-addressed message in its own inbox).
+            let senderUUID = agentUUID(args.agent_id)
+            if let senderUUID, recipient.id == senderUUID {
+                return errorJSON(
+                    "cannot send a message to yourself (\(recipient.name)). The inbox is for "
+                        + "talking to OTHER agents. To preserve your own context, use "
+                        + "memory_write or create_plan instead.")
+            }
+            let fromName = senderUUID.flatMap { ws.agent(id: $0)?.name } ?? "an agent"
             store.send(
                 to: recipient.id, fromName: fromName, fromAgentId: args.agent_id,
                 subject: subject.isEmpty ? "(no subject)" : subject, body: body)
@@ -1533,6 +1545,30 @@ enum MaestroTools {
         return try? JSONDecoder().decode(T.self, from: data)
     }
 
+    /// Short description of what actually arrived in a tool call's arguments
+    /// (key names + JSON types), for error messages. Strict decodes fail on
+    /// the WHOLE struct when one value has the wrong type, which used to
+    /// produce misleading "requires 'x'" errors that left the model guessing
+    /// which argument was at fault (the glob_files/write_file meltdowns).
+    /// String values are truncated and never included — only key/type pairs.
+    static func argDiagnostics(_ call: ToolCall) -> String {
+        let arguments = call.function.arguments
+        guard !arguments.isEmpty else { return "no arguments received" }
+        let pairs = arguments.keys.sorted().map { key in
+            let typeName: String
+            switch arguments[key] {
+            case .string: typeName = "string"
+            case .int, .double: typeName = "number"
+            case .bool: typeName = "bool"
+            case .array: typeName = "array"
+            case .object: typeName = "object"
+            case .null, .none: typeName = "null"
+            }
+            return "\(key):\(typeName)"
+        }
+        return "received [\(pairs.joined(separator: ", "))]"
+    }
+
     /// Build an OpenAI-style function `ToolSpec`. `properties` maps each parameter
     /// name to its `{"type": ..., "description": ...}` JSON-schema entry.
     /// Parameter descriptions are stripped for simple types to save tokens.
@@ -1569,7 +1605,7 @@ enum MaestroTools {
     static func listRulesTool() -> String {
         let rules = SwiftMaestroSettingsStore.loadRules()
         let list: [[String: Any]] = rules.map { rule in
-            var item: [String: Any] = [
+            let item: [String: Any] = [
                 "id": rule.id.uuidString,
                 "text": rule.text,
                 "enabled": rule.enabled,

@@ -279,7 +279,7 @@ final class ObsbotController: @unchecked Sendable {
             isConnected = true
             // Read current zoom range once.
             try? await readZoomRange()
-            try? await refreshStatus()
+            await refreshStatus()
         } catch {
             isConnected = false
             lastError = error.localizedDescription

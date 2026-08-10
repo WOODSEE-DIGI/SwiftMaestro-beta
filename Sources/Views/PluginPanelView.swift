@@ -64,9 +64,6 @@ private struct PluginWebView: NSViewRepresentable {
 
         let configuration = WKWebViewConfiguration()
         configuration.userContentController = contentController
-        // Each plugin gets its own isolated process pool — no shared cookies/
-        // storage/state with other plugins or the rest of the app.
-        configuration.processPool = WKProcessPool()
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
         bridge.webView = webView

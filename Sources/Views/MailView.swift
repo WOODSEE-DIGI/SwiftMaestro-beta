@@ -4,24 +4,14 @@ import AppKit
 // MARK: - Mail view
 
 /// Webmail-style Mail panel: mailbox sidebar, message list, and reading pane
-/// rendered on top of Mail.app's live data (via `AppleMailReader`), with the
-/// OwnTrack tracking inspector as a second mode. Compose hands drafts to
-/// Mail.app (JXA) or the default client (mailto:).
+/// rendered on top of Mail.app's live data (via `AppleMailReader`). Compose
+/// hands drafts to Mail.app (JXA) or the default client (mailto:).
 struct MailView: View {
-    enum Mode: String, CaseIterable, Identifiable {
-        case mailbox, tracking
-        var id: String { rawValue }
-        var title: String { self == .mailbox ? "Mailbox" : "Tracking" }
-        var icon: String { self == .mailbox ? "tray" : "chart.line.uptrend.xyaxis" }
-    }
-
     @Environment(AppleMailService.self) private var service
     @Environment(ThemeStore.self) private var theme
     @State private var reader = AppleMailReader.shared
     @State private var envelope = MailEnvelopeIndex.shared
     @State private var bodyStore = MailBodyStore.shared
-
-    @State private var mode: Mode = .mailbox
 
     // Mailbox state
     @State private var selectedMailbox: AppleMailReader.MailboxRef? = .unified(.inbox)
@@ -50,14 +40,6 @@ struct MailView: View {
     @State private var composeSubject = ""
     @State private var composeBody = ""
 
-    // Tracking state
-    @State private var selectedTrackedMessage: AppleMailService.SelectedMailMessage?
-    @State private var summary: MessageTrackingSummary?
-    @State private var events: [TrackingEvent] = []
-    @State private var manualMessageID = ""
-    @State private var isLoadingTracking = false
-    @State private var trackingError: String?
-
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -67,14 +49,10 @@ struct MailView: View {
 
             Divider()
 
-            switch mode {
-            case .mailbox: mailboxMode
-            case .tracking: trackingMode
-            }
+            mailboxMode
         }
         .task {
             service.requestAuthorization()
-            await service.ensureRelayRunning()
             await refreshMailbox()
         }
         .sheet(isPresented: $isComposing) { composeSheet }
@@ -86,24 +64,14 @@ struct MailView: View {
         HStack(spacing: 10) {
             Text("Mail")
                 .font(.headline)
-            Picker("Mode", selection: $mode) {
-                ForEach(Mode.allCases) { m in
-                    Label(m.title, systemImage: m.icon).tag(m)
-                }
-            }
-            .pickerStyle(.segmented)
-            .fixedSize()
-            .labelsHidden()
             Spacer()
             Button { isComposing = true } label: {
                 Label("Compose", systemImage: "square.and.pencil")
             }
-            if mode == .mailbox {
-                Button { Task { await getMail() } } label: {
-                    Label("Get Mail", systemImage: "arrow.down.circle")
-                }
+            Button { Task { await getMail() } } label: {
+                Label("Get Mail", systemImage: "arrow.down.circle")
             }
-            Button { Task { await refreshAll() } } label: {
+            Button { Task { await refreshMailbox() } } label: {
                 Label("Refresh", systemImage: "arrow.clockwise")
             }
             Button { service.openMail() } label: {
@@ -521,132 +489,6 @@ struct MailView: View {
         return regex.firstMatch(in: content, range: NSRange(content.startIndex..., in: content)) != nil
     }
 
-    // MARK: Tracking mode
-
-    private var trackingMode: some View {
-        List {
-            relaySection
-            selectedMessageSection
-            if let summary { summarySection(summary) }
-            if !events.isEmpty { eventsSection }
-        }
-    }
-
-    private var relaySection: some View {
-        Section("OwnTrack Relay") {
-            HStack(spacing: 8) {
-                Circle().fill(relayStatusColor).frame(width: 8, height: 8)
-                Text(relayStatusText).font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Text(service.relayBaseURLString)
-                    .font(.caption.monospaced()).foregroundStyle(.secondary)
-                    .lineLimit(1).truncationMode(.middle)
-            }
-            HStack {
-                if OwnTrackRelayManager.shared.isRunning {
-                    Button("Stop Embedded Relay") {
-                        OwnTrackRelayManager.shared.stopRelay()
-                        Task { await service.checkRelayHealth() }
-                    }
-                } else {
-                    Button("Start Embedded Relay") {
-                        OwnTrackRelayManager.shared.startRelay()
-                        Task { await service.checkRelayHealth() }
-                    }
-                }
-                if let error = OwnTrackRelayManager.shared.lastError {
-                    Text(error).font(.caption2).foregroundStyle(.red).lineLimit(1)
-                }
-            }
-            HStack {
-                TextField("Message-ID (without <>)", text: $manualMessageID)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.caption)
-                Button("Look Up") { Task { await loadTracking(for: manualMessageID) } }
-                    .disabled(manualMessageID.trimmingCharacters(in: .whitespaces).isEmpty || isLoadingTracking)
-            }
-        }
-    }
-
-    private var selectedMessageSection: some View {
-        Section("Selected in Mail") {
-            Button {
-                Task { await inspectSelectedMessage() }
-            } label: {
-                Label("Inspect Selected Message", systemImage: "envelope.magnifyingglass")
-            }
-            .disabled(isLoadingTracking)
-
-            if let selectedTrackedMessage {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(selectedTrackedMessage.subject ?? "(no subject)")
-                        .font(.subheadline.weight(.semibold))
-                    if let sender = selectedTrackedMessage.sender {
-                        Label(sender, systemImage: "person")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    if let messageID = selectedTrackedMessage.messageID {
-                        Label(messageID, systemImage: "number")
-                            .font(.caption.monospaced()).foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                    }
-                }
-                .padding(.vertical, 2)
-            }
-        }
-    }
-
-    private func summarySection(_ summary: MessageTrackingSummary) -> some View {
-        Section("Tracking Summary") {
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                statCell("Sent", count: summary.sentCount, icon: "paperplane")
-                statCell("Opens", count: summary.openCount, icon: "eye")
-                statCell("Clicks", count: summary.clickCount, icon: "hand.tap")
-                statCell("Replies", count: summary.replyCount, icon: "arrowshape.turn.up.left")
-            }
-            .padding(.vertical, 4)
-            if !summary.openQualityCounts.isEmpty {
-                ForEach(summary.openQualityCounts.sorted(by: { $0.key < $1.key }), id: \.key) { quality, count in
-                    HStack {
-                        Text(quality).font(.caption).foregroundStyle(.secondary)
-                        Spacer()
-                        Text("\(count)").font(.caption.monospacedDigit())
-                    }
-                }
-            }
-            if let firstOpened = summary.firstOpenedAt {
-                LabeledContent("First opened", value: firstOpened.formatted(date: .abbreviated, time: .shortened)).font(.caption)
-            }
-            if let lastOpened = summary.lastOpenedAt, lastOpened != summary.firstOpenedAt {
-                LabeledContent("Last opened", value: lastOpened.formatted(date: .abbreviated, time: .shortened)).font(.caption)
-            }
-            if let firstClicked = summary.firstClickedAt {
-                LabeledContent("First clicked", value: firstClicked.formatted(date: .abbreviated, time: .shortened)).font(.caption)
-            }
-        }
-    }
-
-    private var eventsSection: some View {
-        Section("Events (\(events.count))") {
-            ForEach(events.sorted(by: { $0.timestamp > $1.timestamp })) { event in
-                HStack(spacing: 8) {
-                    Image(systemName: iconForEvent(event.type))
-                        .foregroundStyle(.secondary).frame(width: 16)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(event.type.rawValue.capitalized).font(.caption.weight(.medium))
-                        Text(event.timestamp.formatted(date: .abbreviated, time: .shortened))
-                            .font(.caption2).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    if let recipient = event.recipient {
-                        Text(recipient).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                }
-                .padding(.vertical, 2)
-            }
-        }
-    }
-
     // MARK: - Compose sheet
 
     private var composeSheet: some View {
@@ -674,46 +516,6 @@ struct MailView: View {
         }
         .padding()
         .frame(width: 480)
-    }
-
-    // MARK: - Shared cells & helpers
-
-    private func statCell(_ label: String, count: Int, icon: String) -> some View {
-        VStack(spacing: 4) {
-            Image(systemName: icon).foregroundStyle(.secondary)
-            Text("\(count)").font(.title3.weight(.semibold)).monospacedDigit()
-            Text(label).font(.caption2).foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 6)
-        .background(theme.secondaryBackground)
-        .cornerRadius(6)
-    }
-
-    private var relayStatusColor: Color {
-        switch service.relayOnline {
-        case .some(true): return .green
-        case .some(false): return .red
-        case .none: return .secondary
-        }
-    }
-
-    private var relayStatusText: String {
-        switch service.relayOnline {
-        case .some(true):
-            return OwnTrackRelayManager.shared.isRunning ? "Embedded relay running" : "Relay online (external)"
-        case .some(false): return "Relay offline — start the embedded relay"
-        case .none: return "Checking relay…"
-        }
-    }
-
-    private func iconForEvent(_ type: TrackingEventType) -> String {
-        switch type {
-        case .sent: return "paperplane"
-        case .open: return "eye"
-        case .click: return "hand.tap"
-        case .reply: return "arrowshape.turn.up.left"
-        }
     }
 
     private static func dateLabel(_ date: Date) -> String {
@@ -835,17 +637,6 @@ struct MailView: View {
                 resolved[group.uuid] = best?.name
             }
             accountSectionNames = resolved
-        }
-    }
-
-    private func refreshAll() async {
-        if mode == .mailbox {
-            await refreshMailbox()
-        } else {
-            await service.ensureRelayRunning()
-            if summary != nil, let id = selectedTrackedMessage?.messageID ?? Optional(manualMessageID) {
-                await loadTracking(for: id)
-            }
         }
     }
 
@@ -1040,49 +831,6 @@ struct MailView: View {
         }
     }
 
-    // MARK: - Tracking actions
-
-    private func inspectSelectedMessage() async {
-        trackingError = nil
-        isLoadingTracking = true
-        defer { isLoadingTracking = false }
-        do {
-            let message = try await service.selectedMessage()
-            selectedTrackedMessage = message
-            guard let message, let messageID = message.messageID, !messageID.isEmpty else {
-                if selectedTrackedMessage == nil {
-                    trackingError = "No message selected in Mail (or Mail has no viewer open)."
-                }
-                return
-            }
-            manualMessageID = AppleMailService.normalizeMessageID(messageID)
-            await loadTracking(for: messageID)
-        } catch {
-            trackingError = "Could not read Mail's selection: \(error.localizedDescription)"
-        }
-    }
-
-    private func loadTracking(for messageID: String) async {
-        trackingError = nil
-        isLoadingTracking = true
-        defer { isLoadingTracking = false }
-        let normalized = AppleMailService.normalizeMessageID(messageID)
-        guard !normalized.isEmpty else { return }
-        guard await service.ensureRelayRunning() else {
-            trackingError = "No relay reachable at \(service.relayBaseURLString) and the embedded relay failed to start."
-            return
-        }
-        do {
-            async let fetchedSummary = service.trackingSummary(messageID: normalized)
-            async let fetchedEvents = service.trackingEvents(messageID: normalized)
-            summary = try await fetchedSummary
-            events = try await fetchedEvents
-        } catch {
-            summary = nil
-            events = []
-            trackingError = "No tracking data for \(normalized): \(error.localizedDescription)"
-        }
-    }
 }
 
 // MARK: - Preview

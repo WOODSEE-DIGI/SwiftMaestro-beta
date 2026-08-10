@@ -8,10 +8,16 @@ import Foundation
 struct LMStudioConfig {
     let baseURL: String
     let apiKey: String
+    /// Idle timeout for the streaming request. Local disk-streamed models
+    /// (Deltafin/K3) can spend minutes in prefill before the first SSE delta
+    /// arrives, so they need a much longer window than LM Studio's fast
+    /// resident models.
+    let requestTimeout: TimeInterval
 
-    init(baseURL: String, apiKey: String = "") {
+    init(baseURL: String, apiKey: String = "", requestTimeout: TimeInterval = 120) {
         self.baseURL = baseURL
         self.apiKey = apiKey
+        self.requestTimeout = requestTimeout
     }
 
     var chatCompletionURL: URL? {

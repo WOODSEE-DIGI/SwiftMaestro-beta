@@ -47,6 +47,14 @@ class ChatViewModel: ObservableObject {
     private var reasoningStart: Date?
     private var streamBuffer = ""
     private var sawReasoningClose = false
+    /// Per-ROUND close tracking: each tool-round re-arms reasoning, so a final
+    /// answer round with NO thinking block (no close tag of its own) would
+    /// otherwise pour the answer into `reasoning` and leave the chat empty —
+    /// "thoughts didn't become chat". `sawCloseSinceFold` records whether the
+    /// current (post-fold) segment ever closed; `reasoningLengthAtLastFold`
+    /// marks where the final round's reasoning began.
+    private var sawCloseSinceFold = false
+    private var reasoningLengthAtLastFold = 0
     /// Tool call XML suppression: when the model streams `<tool_call>` tokens
     /// into the text stream alongside `.toolCall` events, suppress the raw XML
     /// so it doesn't leak into the displayed answer.
@@ -127,7 +135,9 @@ class ChatViewModel: ObservableObject {
         for model: MaestroModel, engine: MLXInferenceEngine, sessionKey: String
     ) -> GenerationBackend {
         if let remoteURL = model.remoteBaseURL {
-            let config = LMStudioConfig(baseURL: remoteURL)
+            let config = LMStudioConfig(
+                baseURL: remoteURL,
+                requestTimeout: model.remoteRequestTimeout ?? 120)
             return RemoteLMStudioBackend(config: config, model: model)
         }
         return InProcessMLXBackend(engine: engine, model: model, sessionKey: sessionKey)
@@ -164,6 +174,7 @@ class ChatViewModel: ObservableObject {
             role: .assistant, content: "", timestamp: now,
             modelName: currentModelDisplayName))
         isStreaming = true
+        AIBroadcastService.broadcastGenerationStarted(modelName: currentModelDisplayName ?? "unknown")
 
         // Manual compaction command: bypass the model and compact history immediately.
         if isCompactionRequest, !model.isRemote {
@@ -177,6 +188,8 @@ class ChatViewModel: ObservableObject {
         reasoningStart = Date()
         streamBuffer = ""
         sawReasoningClose = false
+        sawCloseSinceFold = false
+        reasoningLengthAtLastFold = 0
         suppressingToolCall = false
         // Fresh steer queue for this run; the executor drains it each round.
         let inbox = SteerInbox()
@@ -190,8 +203,14 @@ class ChatViewModel: ObservableObject {
         generateTask = Task {
             // Tell the agent what it ACTUALLY runs on, so "which model are you?"
             // is answered truthfully instead of echoing the agent's name.
-            let modelDesc = "\(model.displayName) (model id \(model.huggingFaceID)), "
-                + "served via in-process Apple MLX"
+            let modelDesc: String
+            if let remoteURL = model.remoteBaseURL {
+                modelDesc = "\(model.displayName) (model id \(model.huggingFaceID)), "
+                    + "served via OpenAI-compatible endpoint at \(remoteURL)"
+            } else {
+                modelDesc = "\(model.displayName) (model id \(model.huggingFaceID)), "
+                    + "served via in-process Apple MLX"
+            }
             let summaryModel = Self.pickSummaryModel(active: model, catalog: catalog)
             let (requestMessages, compactionSummary) = await messagesForInference(
                 model: model, modelDescription: modelDesc, engine: engine,
@@ -214,7 +233,6 @@ class ChatViewModel: ObservableObject {
                 }
             }
 
-            let defaults = UserDefaults.standard
             let thinking = model.tunedThinkingEnabled
             // Per-model sampling: this model's own override (Settings → Tuning)
             // or its recommended values — never one global value across models.
@@ -240,13 +258,14 @@ class ChatViewModel: ObservableObject {
                 // Maestro gets NO MCP tools — it delegates everything.
                 // Only project agents get MCP tools (read_note, list_dir, etc.).
                 if !isNavigator {
-                    let mcpSchemas = await mcp.currentSchemas()
                     if let enabledCategories {
                         let mcpCategory = ToolCategory.mcp
                         if enabledCategories.contains(mcpCategory) {
+                            let mcpSchemas = await mcp.currentSchemas(forCategories: enabledCategories)
                             toolSpecs += mcpSchemas
                         }
                     } else {
+                        let mcpSchemas = await mcp.currentSchemas()
                         toolSpecs += mcpSchemas
                     }
                 }
@@ -366,13 +385,23 @@ class ChatViewModel: ObservableObject {
                 // other error surfaces in the chat UI.
                 if Task.isCancelled || error is CancellationError {
                     NSLog("[BACKEND] in-process generation cancelled")
+                    AIBroadcastService.broadcastGenerationCancelled(
+                        modelName: currentModelDisplayName ?? "unknown")
                 } else {
                     NSLog("[BACKEND] in-process generation FAILED for \(model.huggingFaceID): \(error.localizedDescription)")
                     errorMessage = error.localizedDescription
+                    AIBroadcastService.broadcastGenerationFailed(
+                        modelName: currentModelDisplayName ?? "unknown",
+                        error: error.localizedDescription)
                 }
             }
             finishStreamParsing()
             isStreaming = false
+            AIBroadcastService.broadcastGenerationCompleted(
+                modelName: currentModelDisplayName ?? "unknown",
+                totalTokens: messages.last?.content.count ?? 0,
+                tokensPerSecond: engine.tokensPerSecond
+            )
             currentActivity = nil
             steerInbox = nil
             saveHistory()
@@ -403,6 +432,8 @@ class ChatViewModel: ObservableObject {
         reasoningStart = Date()
         streamBuffer = ""
         sawReasoningClose = false
+        sawCloseSinceFold = false
+        reasoningLengthAtLastFold = 0
         suppressingToolCall = false
     }
 
@@ -426,7 +457,7 @@ class ChatViewModel: ObservableObject {
             "(/[^\\s\"']+\\.(?i:png|jpg|jpeg|gif|bmp|tiff|webp|heic))",
             "([^\\s\"']+\\.(?i:png|jpg|jpeg|gif|bmp|tiff|webp|heic))",
         ]
-        for (pi, pattern) in patterns.enumerated() {
+        for (_, pattern) in patterns.enumerated() {
             guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
             let ns = working as NSString
             let matches = regex.matches(in: working, range: NSRange(location: 0, length: ns.length))
@@ -565,7 +596,27 @@ class ChatViewModel: ObservableObject {
             }
             return
         }
-        // Reasoning mode: close on either Qwen or Gemma 4 end-of-thinking markers.
+        // Reasoning mode: suppress `<tool_call>` XML that streams inside
+        // thinking blocks (Gemma 4 emits tool-call XML within <channel>).
+        // Without this, the raw XML leaks into reasoning and eventually
+        // into the answer when foldNarrationIntoReasoning moves it.
+        if suppressingToolCall {
+            if let r = streamBuffer.range(of: Self.toolCallClose) {
+                suppressingToolCall = false
+                let after = ThinkingTagStripper.strip(String(streamBuffer[r.upperBound...]))
+                streamBuffer = ""
+                if !after.isEmpty { appendAnswer(after) }
+            }
+            return
+        }
+        if let r = streamBuffer.range(of: Self.toolCallOpen) {
+            let before = ThinkingTagStripper.strip(String(streamBuffer[..<r.lowerBound]))
+            if !before.isEmpty { appendReasoning(before) }
+            suppressingToolCall = true
+            return
+        }
+
+        // Close on either Qwen or Gemma 4 end-of-thinking markers.
         if let r = streamBuffer.range(of: Self.qwenCloseTag) {
             let reasoning = ThinkingTagStripper.strip(String(streamBuffer[..<r.lowerBound]))
             appendReasoning(reasoning)
@@ -622,6 +673,7 @@ class ChatViewModel: ObservableObject {
     /// Stamp cumulative reasoning duration (send → this close); last close wins.
     private func markReasoningClosed() {
         sawReasoningClose = true
+        sawCloseSinceFold = true
         guard let start = reasoningStart,
               let idx = messages.lastIndex(where: { $0.role == .assistant }) else { return }
         messages[idx].reasoningSeconds = Date().timeIntervalSince(start)
@@ -637,6 +689,9 @@ class ChatViewModel: ObservableObject {
             if inReasoning { appendReasoning(stripped) } else { appendAnswer(stripped) }
             streamBuffer = ""
         }
+        if suppressingToolCall {
+            suppressingToolCall = false
+        }
         if let idx = messages.lastIndex(where: { $0.role == .assistant }) {
             let narration = ThinkingTagStripper.strip(messages[idx].content)
             if !narration.isEmpty {
@@ -644,31 +699,56 @@ class ChatViewModel: ObservableObject {
                 messages[idx].reasoning = (messages[idx].reasoning ?? "") + sep + narration
                 messages[idx].content = ""
             }
+            // The next round starts a fresh reasoning segment: anything it
+            // streams before its OWN close tag belongs to that round, so this
+            // point is where the final round's reasoning will have begun.
+            reasoningLengthAtLastFold = messages[idx].reasoning?.count ?? 0
         }
+        sawCloseSinceFold = false
         inReasoning = true
     }
 
-    /// Flush the tail at end of stream. If no `</think>`/`</channel>`/`<channel|>` ever arrived
-    /// (a model that doesn't emit thinking tags), treat the accumulated reasoning
-    /// as the answer after stripping any residual markers.
+    /// Flush the tail at end of stream, then rescue any answer that never
+    /// escaped the reasoning bucket. Two rescue tiers:
+    /// 1. No close tag ALL turn (a model without thinking markers): the whole
+    ///    reasoning blob is the answer (long-standing behavior).
+    /// 2. Earlier rounds closed but the FINAL round never did (the answer
+    ///    round emitted no thinking block of its own): its text poured into
+    ///    `reasoning`, leaving the chat with "thoughts but no answer". Promote
+    ///    the post-fold suffix — the final round's segment — to the answer,
+    ///    keeping earlier rounds' reasoning in the disclosure.
     private func finishStreamParsing() {
+        // Discard any in-progress tool call XML suppression BEFORE flushing the
+        // buffer, so partial `<tool_call>` fragments don't leak into the answer.
+        if suppressingToolCall {
+            suppressingToolCall = false
+            streamBuffer = ""
+        }
         if !streamBuffer.isEmpty {
             let stripped = ThinkingTagStripper.strip(streamBuffer)
             if inReasoning { appendReasoning(stripped) } else { appendAnswer(stripped) }
             streamBuffer = ""
         }
-        // Discard any in-progress tool call XML suppression — the model
-        // produced a partial `<tool_call>` block that never got closed.
-        if suppressingToolCall {
-            suppressingToolCall = false
-        }
-        guard !sawReasoningClose,
-              let idx = messages.lastIndex(where: { $0.role == .assistant }),
+        guard let idx = messages.lastIndex(where: { $0.role == .assistant }),
               messages[idx].content.isEmpty,
               let reasoning = messages[idx].reasoning, !reasoning.isEmpty else { return }
-        messages[idx].content = ThinkingTagStripper.strip(reasoning)
-        messages[idx].reasoning = nil
-        messages[idx].reasoningSeconds = nil
+
+        if !sawReasoningClose {
+            // Tier 1: no close tags at all this turn.
+            messages[idx].content = ThinkingTagStripper.strip(reasoning)
+            messages[idx].reasoning = nil
+            messages[idx].reasoningSeconds = nil
+        } else if !sawCloseSinceFold {
+            // Tier 2: final round unclosed — promote its suffix to the answer.
+            let foldPoint = min(reasoningLengthAtLastFold, reasoning.count)
+            let splitIndex = reasoning.index(reasoning.startIndex, offsetBy: foldPoint)
+            let prefix = String(reasoning[..<splitIndex])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let suffix = String(reasoning[splitIndex...])
+            messages[idx].content = ThinkingTagStripper.strip(suffix)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            messages[idx].reasoning = prefix.isEmpty ? nil : prefix
+        }
     }
 
     /// Record a tool invocation as compact activity on the in-flight assistant
@@ -678,12 +758,20 @@ class ChatViewModel: ObservableObject {
     /// narration into `reasoning` first.
     private func recordToolStep(_ name: String) {
         foldNarrationIntoReasoning()
+        // Sanitize tool name: strip any trailing XML fragments that the
+        // parser may have included (e.g. "execute_command<parameter" → "execute_command").
+        let cleanName: String
+        if let angleIdx = name.firstIndex(of: "<") {
+            cleanName = String(name[..<angleIdx]).trimmingCharacters(in: .whitespaces)
+        } else {
+            cleanName = name
+        }
         if let idx = messages.lastIndex(where: { $0.role == .assistant }) {
             var steps = messages[idx].toolSteps ?? []
-            steps.append(name)
+            steps.append(cleanName)
             messages[idx].toolSteps = steps
         }
-        currentActivity = "Running \(name)…"
+        currentActivity = "Running \(cleanName)…"
     }
 
     private func saveHistory() {
@@ -814,9 +902,18 @@ class ChatViewModel: ObservableObject {
         CRITICAL HONESTY RULES:
         - If you lack a tool for a task, say "I don't have a tool for that" NOW.
         - If a tool errors, report it: "Tool X failed: [error]". Do NOT retry silently.
+        - NEVER claim a tool is broken, failing, or "returning no results" when it \
+        returned data. A successful result you did not expect is the TRUTH — \
+        report what it actually shows; if you expected something else, say so \
+        honestly (e.g. "the folder contains X, not the Y I expected").
         - If results are empty, say "No results found". Do NOT invent fake data.
         - After 2 FAILED attempts on the same task, STOP and report what went wrong.
         - NEVER fill silence with "Let me think..." — either call a tool or say you can't.
+        - NEVER narrate hesitation or second-guessing: no "Wait", "Actually", \
+        "Hmm", "let me re-check", "let me verify again", or "on second thought". \
+        Decide and commit — call the tool NOW or give the final answer. Do NOT \
+        re-verify things you already checked (files read, outputs received, \
+        schemas seen): act on the information you have.
         - NEVER claim a write succeeded from memory or intent. Only claim what the \
         tool's success result proves (a row id, a verified count, a file path). \
         'created' with warnings is NOT full success — it is a partial failure \
@@ -1210,6 +1307,18 @@ class ChatViewModel: ObservableObject {
         build_run_sim for a simulator). build_run_macos/build_run_sim require a scheme \
         (via session defaults or explicit args) — set the scheme before calling them. \
         Build errors are returned directly by these tools.
+        - Only call tools that are in your actual tool list. If build_run_macos / \
+        build_run_sim are NOT in your list (the server may not advertise them), do NOT \
+        invent them — fall back to execute_command with xcodebuild instead.
+        - BUILD VIA execute_command — EXACT WORKFLOW (follow this sequence exactly): \
+        1) Run: `xcodebuild -quiet ... build 2>&1 | tee .build/build.log` with \
+        start_background: true (this returns immediately with a PID). \
+        2) Wait 10-30 seconds, then check status: call list_background_processes. \
+        3) Once the build process exits, check for errors: `grep "error:" .build/build.log` \
+        (do NOT read the entire log — grep for errors only). \
+        4) If no errors, the build succeeded. NEVER run a second build command. \
+        NEVER use `clean build` unless the user explicitly asks for it. ALWAYS use \
+        `-quiet` to suppress 1000+ lines of export noise. NEVER write logs to /tmp/.
         """
 
     /// System-prompt section injected while a plan is attached to the session.
@@ -1354,6 +1463,12 @@ class ChatViewModel: ObservableObject {
                 LANGUAGE RULE: You MUST respond in English only. Never use Vietnamese, \
                 Thai, Chinese, Japanese, or any other language. All your thoughts, \
                 tool arguments, and responses must be in English.
+
+                MARKDOWN FORMATTING RULE: When producing numbered or bulleted lists, \
+                EVERY item MUST start on its own line. Put a newline character before \
+                each list number or bullet. CORRECT: "1. First item\\n2. Second item" \
+                WRONG: "1. First item.2. Second item". Each list item is a separate \
+                paragraph — never concatenate multiple items on the same line.
                 """
         }
         var content = base + "\n\n" + Self.planContextPrompt(for: agent, projectName: projectName)
@@ -1665,7 +1780,7 @@ class ChatViewModel: ObservableObject {
         let nonSystemOutput = Array(output.dropFirst())
         let totalTokens = ChatCompaction.estimateTokens(
             for: nonSystemOutput.map { ChatCompaction.serialize($0) })
-        let budgetExceeded = totalTokens > model.tunedContextLength - max(model.tunedMaxTokens, 20_000)
+        let budgetExceeded = totalTokens > model.effectiveCompactionThreshold
         let hasNewActivitySinceCompaction = nonSystemOutput.count != lastCompactionMessageCount
         // Re-compact at most once per minute even when budget is exceeded, and
         // only when the message count actually changed (no new activity = skip).
@@ -1707,9 +1822,8 @@ class ChatViewModel: ObservableObject {
         // If the active model is already small, just use it.
         if model.estimatedMemoryGB <= 16 { return nil }
         let preferredIDs = [
-            "local-deepseek-r1-8b",
-            "local-qwen3.5-27b",
-            "local-qwen3.6-35b-a3b",
+            "local-qwen3.6-35b-a3b",   // 20 GB MoE — fast compaction
+            "local-gemma4-26b",        // 26 GB — vision model doubles as summarizer
         ]
         if let fast = preferredIDs.lazy.compactMap({ catalog.model(forID: $0) })
             .first(where: { $0.supportsTools && !$0.isRemote }) {

@@ -1,6 +1,13 @@
+import AppKit
 import Foundation
 import WebKit
 import MLXLMCommon
+
+/// Type-erased Sendable wrapper for WKScriptMessage.body (which is `Any`).
+private struct SendableAny: @unchecked Sendable {
+    let value: Any
+    init(_ value: Any) { self.value = value }
+}
 
 /// Native side of a plugin's JS↔Swift bridge. One instance per loaded plugin
 /// panel, scoped to that plugin's `id` and the `PluginCapability`s its
@@ -31,11 +38,14 @@ final class PluginBridge: NSObject, WKScriptMessageHandler {
     nonisolated func userContentController(
         _ userContentController: WKUserContentController, didReceive message: WKScriptMessage
     ) {
-        guard let body = message.body as? [String: Any],
-              let id = body["id"] as? String,
-              let type = body["type"] as? String
+        // message.body is MainActor-isolated in newer SDKs — snapshot it on
+        // the main thread before crossing into the nonisolated context.
+        let bodySnapshot: SendableAny = MainActor.assumeIsolated { SendableAny(message.body) }
+        guard let dict = bodySnapshot.value as? [String: Any],
+              let id = dict["id"] as? String,
+              let type = dict["type"] as? String
         else { return }
-        let payload = body["payload"] as? [String: Any] ?? [:]
+        let payload = dict["payload"] as? [String: Any] ?? [:]
 
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -111,6 +121,10 @@ final class PluginBridge: NSObject, WKScriptMessageHandler {
             let call = ToolCall(function: .init(name: name, arguments: arguments))
             return await MaestroTools.execute(call)
 
+        case "startOAuth":
+            try requireCapability(.oauth)
+            return try await performOAuth(payload: payload)
+
         default:
             throw BridgeError.unknownRequestType(type)
         }
@@ -149,19 +163,79 @@ final class PluginBridge: NSObject, WKScriptMessageHandler {
         ]
     }
 
+    // MARK: - OAuth (loopback)
+
+    /// `payload`: `{ authorizeURL: String, state: String, port?: Int, timeoutSeconds?: Int }`.
+    /// Opens the authorize URL in the default browser, then waits for the
+    /// provider's redirect on a loopback-only listener. Returns the callback's
+    /// query items (`{ code, state, … }`) — the plugin performs the token
+    /// exchange itself via `fetch`, so client secrets and tokens never pass
+    /// through the native side.
+    private func performOAuth(payload: [String: Any]) async throws -> [String: String] {
+        guard let urlString = payload["authorizeURL"] as? String,
+              let authorizeURL = URL(string: urlString),
+              authorizeURL.scheme == "https"
+        else {
+            throw BridgeError.invalidPayload("'authorizeURL' is required and must be an https URL")
+        }
+        guard let state = payload["state"] as? String, !state.isEmpty else {
+            throw BridgeError.invalidPayload("'state' is required")
+        }
+        let rawPort = (payload["port"] as? Int) ?? 53124
+        guard (1024...65535).contains(rawPort), let port = UInt16(exactly: rawPort) else {
+            throw BridgeError.invalidPayload("'port' must be between 1024 and 65535")
+        }
+        let rawTimeout = (payload["timeoutSeconds"] as? Int) ?? 120
+        let timeout = max(min(rawTimeout, 600), 15)
+
+        NSWorkspace.shared.open(authorizeURL)
+        return try await OAuthLoopbackServer.waitForCallback(
+            expectedState: state,
+            port: port,
+            timeout: .seconds(timeout)
+        )
+    }
+
     // MARK: - JS callbacks
 
     private func resolve(id: String, result: Any?) {
-        let json: String
-        if let result {
-            let data = (try? JSONSerialization.data(withJSONObject: result))
-                ?? (try? JSONEncoder().encode(result as? String))
-                ?? Data("null".utf8)
-            json = String(data: data, encoding: .utf8) ?? "null"
-        } else {
-            json = "null"
-        }
+        let json = Self.bridgeResultJSON(result)
         webView?.evaluateJavaScript("window.__swiftMaestroResolve(\(Self.jsString(id)), \(json))")
+    }
+
+    /// Serializes a bridge handler's return value for the JS callback.
+    ///
+    /// Crash-safe by construction (confirmed live as an app-wide SIGTRAP):
+    /// a handler returning `String?.none` (e.g. `getSecret` for a key that
+    /// doesn't exist) arrives here as a NON-nil `Any?` holding a nested
+    /// `Optional.none`, and feeding that to `JSONSerialization` raises an
+    /// uncatchable `NSInvalidArgumentException` ("Invalid top-level type")
+    /// that `try?` cannot intercept. So the value is first flattened and
+    /// sanitized to a guaranteed-JSON-safe form, and only then serialized —
+    /// with `.fragmentsAllowed` so top-level scalars (String/Int/Bool/null)
+    /// are legal without the old String-only fallback dance.
+    /// Internal (not private) so tests can exercise it without a WKWebView.
+    static func bridgeResultJSON(_ result: Any?) -> String {
+        let safe = jsonSafeValue(result)
+        guard let data = try? JSONSerialization.data(
+            withJSONObject: safe, options: .fragmentsAllowed),
+              let string = String(data: data, encoding: .utf8)
+        else { return "null" }
+        return string
+    }
+
+    /// Flattens nested optionals and maps anything JSON can't express to a
+    /// safe stand-in: missing optionals become NSNull, non-serializable
+    /// values become their `String(describing:)`.
+    private static func jsonSafeValue(_ value: Any?) -> Any {
+        guard let value else { return NSNull() }
+        let mirror = Mirror(reflecting: value)
+        if mirror.displayStyle == .optional {
+            guard let child = mirror.children.first?.value else { return NSNull() }
+            return jsonSafeValue(child)
+        }
+        if JSONSerialization.isValidJSONObject(["v": value]) { return value }
+        return String(describing: value)
     }
 
     private func reject(id: String, message: String) {
@@ -210,6 +284,7 @@ final class PluginBridge: NSObject, WKScriptMessageHandler {
             setSecret: (name, value) => send('setSecret', { name: name, value: value }),
             fetch: (url, options) => send('fetch', { url: url, options: options || {} }),
             callTool: (name, args) => send('callTool', { name: name, arguments: args || {} }),
+            startOAuth: (options) => send('startOAuth', options || {}),
             log: (message) => {
                 window.webkit.messageHandlers.swiftMaestroBridge.postMessage(
                     { id: '0', type: 'log', payload: { message: String(message) } });

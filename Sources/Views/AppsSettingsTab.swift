@@ -27,49 +27,60 @@ struct AppsSettingsTab: View {
                 }
 
                 ForEach(AppCategory.allCases, id: \.self) { category in
-                    GroupBox {
-                        VStack(alignment: .leading, spacing: 6) {
-                            ForEach(category.kinds, id: \.self) { kind in
-                                Toggle(
-                                    kind.staticDisplayName ?? kind.themeStorageKey,
-                                    isOn: enablement.appBinding(for: kind)
-                                )
-                                .toggleStyle(.switch)
-                                .disabled(!enablement.isCategoryEnabled(category))
+                    if !category.isHidden {
+                        GroupBox {
+                            VStack(alignment: .leading, spacing: 6) {
+                                ForEach(category.kinds, id: \.self) { kind in
+                                    Toggle(
+                                        kind.staticDisplayName ?? kind.themeStorageKey,
+                                        isOn: enablement.appBinding(for: kind)
+                                    )
+                                    .toggleStyle(.switch)
+                                    .disabled(!enablement.isCategoryEnabled(category))
+                                }
                             }
-                        }
-                        .padding(8)
-                    } label: {
-                        HStack {
-                            Text(category.title)
-                                .font(categoryHeadingFont)
-                            Spacer()
-                            Toggle("Show \(category.title)", isOn: enablement.categoryBinding(for: category))
-                                .toggleStyle(.switch)
-                                .labelsHidden()
+                            .padding(8)
+                        } label: {
+                            HStack {
+                                Text(category.title)
+                                    .font(categoryHeadingFont)
+                                Spacer()
+                                Toggle("Show \(category.title)", isOn: enablement.categoryBinding(for: category))
+                                    .toggleStyle(.switch)
+                                    .labelsHidden()
+                            }
                         }
                     }
                 }
 
-                if !pluginService.plugins.isEmpty {
-                    GroupBox {
-                        VStack(alignment: .leading, spacing: 6) {
-                            ForEach(pluginService.plugins) { manifest in
-                                Toggle(manifest.name, isOn: enablement.pluginBinding(for: manifest.id))
-                                    .toggleStyle(.switch)
-                                    .disabled(!enablement.pluginsSectionEnabled)
-                            }
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 6) {
+                        // Built-in native panels grouped under Plugins in the
+                        // launcher (WhatsApp, Discord) share the plugin
+                        // toggles, keyed by themeStorageKey.
+                        ForEach(AppCategory.builtInPluginKinds, id: \.self) { kind in
+                            Toggle(
+                                kind.staticDisplayName ?? kind.themeStorageKey,
+                                isOn: enablement.pluginBinding(for: kind.themeStorageKey)
+                            )
+                            .toggleStyle(.switch)
+                            .disabled(!enablement.pluginsSectionEnabled)
                         }
-                        .padding(8)
-                    } label: {
-                        HStack {
-                            Text("Plugins")
-                                .font(categoryHeadingFont)
-                            Spacer()
-                            Toggle("Show Plugins", isOn: enablement.pluginsSectionBinding())
+                        ForEach(pluginService.plugins) { manifest in
+                            Toggle(manifest.name, isOn: enablement.pluginBinding(for: manifest.id))
                                 .toggleStyle(.switch)
-                                .labelsHidden()
+                                .disabled(!enablement.pluginsSectionEnabled)
                         }
+                    }
+                    .padding(8)
+                } label: {
+                    HStack {
+                        Text("Plugins")
+                            .font(categoryHeadingFont)
+                        Spacer()
+                        Toggle("Show Plugins", isOn: enablement.pluginsSectionBinding())
+                            .toggleStyle(.switch)
+                            .labelsHidden()
                     }
                 }
 

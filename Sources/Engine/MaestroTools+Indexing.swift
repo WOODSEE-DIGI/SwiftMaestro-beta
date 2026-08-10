@@ -46,6 +46,9 @@ extension MaestroTools {
             rawSpec("index_directory",
                 "Recursively scan directories and save a structured index of ALL files "
                 + "and subdirectories using macOS Spotlight metadata (no file reading). "
+                + "Counts are RECURSIVE and include hidden directories (e.g. .venv, .git), "
+                + "so totals are usually MUCH larger than a single-level list_dir of the "
+                + "same path — that difference is expected, NOT a list_dir failure. "
                 + "The index is automatically saved to shared memory — you do NOT need to "
                 + "call save_index afterwards. Returns a summary with the saved URI, counts, "
                 + "and total size. Use 'depth' to limit recursion (0 = top-level only). "

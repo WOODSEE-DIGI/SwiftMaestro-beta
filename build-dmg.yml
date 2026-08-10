@@ -45,6 +45,18 @@ jobs:
             build
         working-directory: SwiftMaestro
       
+      - name: Bundle dylibs + audit
+        # The raw xcodebuild output references /opt/homebrew dylibs (libusb,
+        # libraw chain) — shipping it as-is crashes on every user machine
+        # ("different Team IDs" with Homebrew present, "Library not loaded"
+        # without). Bundle + re-sign them, then prove self-containment.
+        run: |
+          APP_PATH="SwiftMaestro/build/Release/SwiftMaestro.app" \
+          SIGN_IDENTITY="-" \
+            SwiftMaestro/scripts/bundle-dylibs.sh
+          SwiftMaestro/scripts/audit-dependencies.sh "SwiftMaestro/build/Release/SwiftMaestro.app"
+        working-directory: SwiftMaestro
+
       - name: Create DMG
         run: |
           mkdir -p dmg-staging

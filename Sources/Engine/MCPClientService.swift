@@ -291,6 +291,46 @@ actor MCPClientService {
             }
     }
 
+    /// MCP server name → ToolCategory mapping. Servers not listed here
+    /// default to `.mcp` (always included when MCP category is enabled).
+    ///
+    /// Heavy web-scraping servers map to `.scraping` — NOT `.web` — because
+    /// `.web` is in EVERY agent category's baseline (it holds the lightweight
+    /// native tools web_search/fetch_url). `.scraping` is only in the
+    /// research/analysis/data baselines, so coding agents actually drop these
+    /// servers' tool schemas by default.
+    private static let serverCategoryMap: [String: ToolCategory] = [
+        "webclaw": .scraping,
+        "firecrawl": .scraping,
+        "read-website-fast": .scraping,
+        "whatsapp": .whatsapp,
+        "xcodebuildmcp": .shell,
+        "swift-terminals": .shell,
+        "ai-context-bridge": .memory,
+    ]
+
+    /// MCP tool schemas filtered by the agent's enabled tool categories.
+    /// Only includes tools from MCP servers whose category is in the
+    /// enabled set. Reduces prompt from 110 MCP tools to ~59 for coding
+    /// agents (excludes webclaw 12, firecrawl 26, read-website-fast 1,
+    /// whatsapp 12 — none of those categories are in the coding baseline).
+    func currentSchemas(forCategories enabledCategories: Set<ToolCategory>) -> [ToolSpec] {
+        let entries = SwiftMaestroSettingsStore.loadMCPServers()
+        let exposure = Dictionary(
+            entries.map { ($0.name, $0.advertisesToAgents) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return routing.values.uniqued()
+            .filter { connection in
+                guard exposure[connection.serverName] ?? true else { return false }
+                let serverCategory = Self.serverCategoryMap[connection.serverName] ?? .mcp
+                return enabledCategories.contains(serverCategory)
+            }
+            .flatMap { connection in
+                connection.tools.map { Self.toolSpec(for: $0) }
+            }
+    }
+
     /// Whether an MCP server owns the named tool.
     func handles(_ name: String) -> Bool {
         routing[name] != nil

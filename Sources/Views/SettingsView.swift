@@ -928,7 +928,7 @@ struct SecretsSettingsTab: View {
 
     private func edit(original: SecretMetadata, name: String, value: String, scope: SecretScope, synced: Bool, note: String?) {
         do {
-            try SecretsStore.update(
+            _ = try SecretsStore.update(
                 original: original,
                 name: name,
                 value: value.isEmpty ? nil : value,
@@ -1305,7 +1305,7 @@ struct ModelsSettingsTab: View {
                     Button {
                         loadingModelID = model.id
                         Task {
-                            try? await engine.loadModel(model)
+                            _ = try? await engine.loadModel(model)
                             loadingModelID = nil
                         }
                     } label: {
@@ -1346,15 +1346,26 @@ struct ModelsSettingsTab: View {
                     catalog.refreshLocalPaths()
                 }
             } label: {
-                Image(systemName: isRepair
-                      ? "arrow.clockwise.circle"
-                      : "arrow.down.circle")
+                Label {
+                    Text(isRepair ? "Repair" : "Download \(model.estimatedMemoryGB)GB")
+                        .font(.caption.weight(.semibold))
+                } icon: {
+                    Image(systemName: isRepair
+                          ? "arrow.clockwise.circle.fill"
+                          : "arrow.down.circle.fill")
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(isRepair ? Color.orange.opacity(0.15) : Color.blue.opacity(0.15))
+                )
+                .foregroundStyle(isRepair ? .orange : .blue)
             }
             .buttonStyle(.plain)
-            .foregroundStyle(.blue)
             .help(isRepair
                   ? "Repair incomplete download"
-                  : "Download from Hugging Face")
+                  : "Download ~\(model.estimatedMemoryGB)GB from Hugging Face")
         }
     }
 
@@ -2202,12 +2213,12 @@ struct MCPServerEntry: Identifiable, Codable {
             name: "xcodebuildmcp",
             command: bundledNode,
             scriptPath: "\(NSHomeDirectory())/GitHub/AI-ML-Agents/XcodeBuildMCP/build/cli.js",
-            env: "HOME=\(NSHomeDirectory())",
+            env: "HOME=\(NSHomeDirectory())\nXCODEBUILDMCP_ENABLED_WORKFLOWS=simulator,session-management,macos",
             workingDir: "\(NSHomeDirectory())/GitHub/AI-ML-Agents/XcodeBuildMCP",
             timeout: 10,
             enabled: true,
             args: ["\(NSHomeDirectory())/GitHub/AI-ML-Agents/XcodeBuildMCP/build/cli.js", "mcp"],
-            notes: "Xcode project management, simulator, app utilities."
+            notes: "Xcode project management, simulator, macOS builds, app utilities."
         ),
         MCPServerEntry(
             name: "swift-terminals",

@@ -36,7 +36,7 @@ final class RemoteLMStudioBackend: GenerationBackend, @unchecked Sendable {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 120
+        request.timeoutInterval = config.requestTimeout
 
         // Resolve secret:// API key from Keychain at send time.
         let resolvedKey = config.apiKey.hasPrefix(SecretsStore.referencePrefix)

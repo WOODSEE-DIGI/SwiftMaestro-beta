@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="setup" class="setup hidden">
+    <h1>Connect Patreon</h1>
+
+    <div class="mode-picker">
+      <button id="modeCreatorBtn" class="mode-btn active">I'm a creator</button>
+      <button id="modePatronBtn" class="mode-btn">I'm a patron</button>
+    </div>
+
+    <div id="creatorSetup">
+      <p class="hint">
+        Register a v2 client at <strong>patreon.com/portal</strong> →
+        <strong>Clients &amp; API Keys</strong>, then paste the
+        <strong>Creator's Access Token</strong>. Client ID/secret + refresh token are
+        optional — without them an expired token just needs re-pasting.
+      </p>
+      <label>Creator's Access Token</label>
+      <input id="creatorTokenInput" type="password" placeholder="paste token here" autocorrect="off" autocapitalize="off">
+      <details class="advanced">
+        <summary>Auto-refresh credentials (optional)</summary>
+        <label>Client ID</label>
+        <input id="creatorClientIdInput" type="text" placeholder="client id" autocorrect="off" autocapitalize="off">
+        <label>Client Secret</label>
+        <input id="creatorClientSecretInput" type="password" placeholder="client secret" autocorrect="off" autocapitalize="off">
+        <label>Creator's Refresh Token</label>
+        <input id="creatorRefreshInput" type="password" placeholder="refresh token" autocorrect="off" autocapitalize="off">
+      </details>
+      <button id="creatorConnectButton">Connect as Creator</button>
+    </div>
+
+    <div id="patronSetup" class="hidden">
+      <p class="hint">
+        Register a v2 client at <strong>patreon.com/portal</strong> →
+        <strong>Clients &amp; API Keys</strong> with redirect URI
+        <code>http://127.0.0.1:53124/callback</code>, then sign in with your
+        Patreon account to see your memberships.
+      </p>
+      <label>Client ID</label>
+      <input id="patronClientIdInput" type="text" placeholder="client id" autocorrect="off" autocapitalize="off">
+      <label>Client Secret</label>
+      <input id="patronClientSecretInput" type="password" placeholder="client secret" autocorrect="off" autocapitalize="off">
+      <button id="patronConnectButton">Log in with Patreon</button>
+    </div>
+
+    <p id="setupError" class="error hidden"></p>
+  </div>
+
+  <div id="app" class="app hidden">
+    <header>
+      <img id="headerAvatar" class="header-avatar hidden" alt="">
+      <span id="accountLabel" class="account"></span>
+      <span class="spacer"></span>
+      <button id="refreshButton" title="Refresh now">⟳</button>
+      <div id="settingsWrap" class="settings-wrap hidden">
+        <button id="settingsButton" title="Account settings">⋯</button>
+        <div id="settingsMenu" class="settings-menu hidden">
+          <div id="settingsAccount" class="settings-account"></div>
+          <button id="disconnectButton" class="settings-item">Disconnect</button>
+        </div>
+      </div>
+    </header>
+
+    <nav id="tabs"></nav>
+
+    <p id="viewError" class="error hidden"></p>
+    <div id="content" class="content"></div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

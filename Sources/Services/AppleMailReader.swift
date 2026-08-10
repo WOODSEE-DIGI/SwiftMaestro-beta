@@ -1,5 +1,15 @@
 import Foundation
 
+// MARK: - Sendable wrapper for non-Sendable formatters
+
+/// Boxes a non-Sendable formatter type as `@unchecked Sendable` so it can be
+/// captured in `@Sendable` closures (JSONDecoder custom strategies). The
+/// formatter is fully configured at init time and never mutated afterward.
+private struct SendableFormatter: @unchecked Sendable {
+    let formatter: ISO8601DateFormatter
+    init(_ formatter: ISO8601DateFormatter) { self.formatter = formatter }
+}
+
 // MARK: - Apple Mail reader (JXA bridge)
 
 /// Reads and drives Mail.app's live data — accounts, mailboxes, message
@@ -450,18 +460,20 @@ final class AppleMailReader {
     // MARK: - Decoders
 
     /// JXA `Date#toISOString()` includes milliseconds.
-    private static let iso8601WithFraction: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
+    /// Wrapped in @unchecked Sendable because ISO8601DateFormatter is a
+    /// reference type but is effectively immutable after configuration.
+    nonisolated private static let iso8601WithFraction = SendableFormatter({
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }())
 
-    private static let messageDecoder: JSONDecoder = {
+    nonisolated private static let messageDecoder: JSONDecoder = {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { decoder in
             let container = try decoder.singleValueContainer()
             let string = try container.decode(String.self)
-            if let date = iso8601WithFraction.date(from: string) { return date }
+            if let date = iso8601WithFraction.formatter.date(from: string) { return date }
             if let date = ISO8601DateFormatter().date(from: string) { return date }
             throw DecodingError.dataCorruptedError(
                 in: container, debugDescription: "Unparseable date: \(string)")

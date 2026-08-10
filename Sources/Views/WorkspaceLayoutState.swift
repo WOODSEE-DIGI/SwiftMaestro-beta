@@ -20,8 +20,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
     case numbers
     case maps
     case photos
-    /// Apple Mail bridge: launch Mail, compose drafts, and inspect OwnTrack
-    /// open/click stats from the local tracking relay.
+    /// Apple Mail bridge: launch Mail, compose drafts, and read messages.
     case mail
     case whatsapp
     case discord

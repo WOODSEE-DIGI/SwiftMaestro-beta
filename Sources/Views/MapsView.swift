@@ -202,7 +202,7 @@ struct MapsView: View {
         .padding(.vertical, 4)
         .swipeActions(edge: .trailing) {
             Button("Open in Maps") {
-                service.openInMaps(
+                _ = service.openInMaps(
                     query: location.name,
                     latitude: location.latitude,
                     longitude: location.longitude
@@ -211,7 +211,7 @@ struct MapsView: View {
         }
         .contextMenu {
             Button("Open in Maps") {
-                service.openInMaps(
+                _ = service.openInMaps(
                     query: location.name,
                     latitude: location.latitude,
                     longitude: location.longitude
@@ -244,7 +244,7 @@ struct MapsView: View {
         .padding(.vertical, 4)
         .swipeActions(edge: .trailing) {
             Button("Open in Maps") {
-                service.openInMaps(
+                _ = service.openInMaps(
                     query: poi.name,
                     latitude: poi.latitude,
                     longitude: poi.longitude
@@ -253,7 +253,7 @@ struct MapsView: View {
         }
         .contextMenu {
             Button("Open in Maps") {
-                service.openInMaps(
+                _ = service.openInMaps(
                     query: poi.name,
                     latitude: poi.latitude,
                     longitude: poi.longitude
@@ -412,7 +412,7 @@ struct ResultMap: NSViewRepresentable {
         }
 
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
-            guard let resultAnnotation = annotation as? ResultAnnotation else { return nil }
+            guard let _ = annotation as? ResultAnnotation else { return nil }
             let identifier = "resultPin"
             let view = mapView.dequeueReusableAnnotationView(withIdentifier: identifier)
                 ?? MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: identifier)

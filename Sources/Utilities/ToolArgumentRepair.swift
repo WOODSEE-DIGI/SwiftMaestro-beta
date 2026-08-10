@@ -32,8 +32,28 @@ enum ToolArgumentRepair {
         guard let data = unwrapped.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
-            return unwrapped
+            // A value truncated mid-string (small models hit token limits
+            // inside long 'content' args) kills the whole JSON parse — close
+            // any open string and unbalanced braces/brackets, then retry.
+            // Confirmed live: a write_file call whose content cut off
+            // mid-sentence reported "requires 'path' and 'content'" even
+            // though both were present before the truncation.
+            let closed = closeUnterminatedJSON(unwrapped)
+            guard closed != unwrapped,
+                  let closedData = closed.data(using: .utf8),
+                  let closedObj = try? JSONSerialization.jsonObject(with: closedData) as? [String: Any]
+            else {
+                return unwrapped
+            }
+            return rekeyed(closedObj, original: closed)
         }
+
+        return rekeyed(obj, original: unwrapped)
+    }
+
+    /// Clean keys/values and re-serialize when anything changed; otherwise
+    /// return the original text untouched.
+    private static func rekeyed(_ obj: [String: Any], original: String) -> String {
 
         var repaired: [String: Any] = [:]
         var changed = false
@@ -48,14 +68,42 @@ enum ToolArgumentRepair {
             repaired[cleanKey] = cleanValue
         }
 
-        if !changed { return unwrapped }
+        if !changed { return original }
 
         guard let out = try? JSONSerialization.data(withJSONObject: repaired, options: []),
               let outString = String(data: out, encoding: .utf8)
         else {
-            return unwrapped
+            return original
         }
         return outString
+    }
+
+    /// Close an argument blob whose last string value was truncated mid-token
+    /// (no closing quote) and whose braces/brackets are unbalanced. Returns
+    /// the input unchanged when it's already balanced, so callers can compare.
+    private static func closeUnterminatedJSON(_ text: String) -> String {
+        var insideString = false
+        var escaped = false
+        var openBraces = 0
+        var openBrackets = 0
+        for char in text {
+            if escaped { escaped = false; continue }
+            if char == "\\" { escaped = true; continue }
+            if char == "\"" { insideString.toggle(); continue }
+            guard !insideString else { continue }
+            switch char {
+            case "{": openBraces += 1
+            case "}": openBraces -= 1
+            case "[": openBrackets += 1
+            case "]": openBrackets -= 1
+            default: break
+            }
+        }
+        var result = text
+        if insideString { result.append("\"") }
+        result.append(String(repeating: "]", count: max(0, openBrackets)))
+        result.append(String(repeating: "}", count: max(0, openBraces)))
+        return result
     }
 
     // MARK: - Private helpers

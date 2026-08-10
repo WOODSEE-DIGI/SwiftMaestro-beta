@@ -90,9 +90,9 @@ enum AgentCategory: String, Codable, CaseIterable, Identifiable, Hashable, Senda
         case .coding:
             base.formUnion([.index, .server, .sqlite, .mcp])
         case .research:
-            base.formUnion([.index, .sqlite, .vault])
+            base.formUnion([.index, .sqlite, .vault, .scraping])
         case .analysis:
-            base.formUnion([.index, .sqlite, .numbers, .vault])
+            base.formUnion([.index, .sqlite, .numbers, .vault, .scraping])
         case .create:
             base.formUnion([.index, .canvas, .notes])
         case .writing:
@@ -104,7 +104,7 @@ enum AgentCategory: String, Codable, CaseIterable, Identifiable, Hashable, Senda
         case .testing:
             base.formUnion([.index, .server, .sqlite])
         case .data:
-            base.formUnion([.index, .sqlite, .numbers, .vault])
+            base.formUnion([.index, .sqlite, .numbers, .vault, .scraping])
         case .marketing:
             base.formUnion([.index, .notes, .bluesky, .vault])
         case .legal:

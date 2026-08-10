@@ -29,22 +29,26 @@ final class StudioSceneService: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            guard let self,
-                  let oldSourceID = notification.userInfo?["oldSourceID"] as? String,
-                  let newSourceID = notification.userInfo?["newSourceID"] as? String,
-                  let selectedSceneID = self.selectedSceneID,
-                  let sceneIndex = self.scenes.firstIndex(where: { $0.id == selectedSceneID }) else { return }
+            // Extract values before crossing into MainActor to avoid Sendable
+            // warning on the Notification's userInfo (which contains Any).
+            guard let oldSourceID = notification.userInfo?["oldSourceID"] as? String,
+                  let newSourceID = notification.userInfo?["newSourceID"] as? String else { return }
+            Task { @MainActor [weak self] in
+                guard let self,
+                      let selectedSceneID = self.selectedSceneID,
+                      let sceneIndex = self.scenes.firstIndex(where: { $0.id == selectedSceneID }) else { return }
 
-            var scene = self.scenes[sceneIndex]
-            var changed = false
-            for index in scene.layers.indices {
-                if case .camera(let sourceID) = scene.layers[index].source, sourceID == oldSourceID {
-                    scene.layers[index].source = .camera(sourceID: newSourceID)
-                    changed = true
+                var scene = self.scenes[sceneIndex]
+                var changed = false
+                for index in scene.layers.indices {
+                    if case .camera(let sourceID) = scene.layers[index].source, sourceID == oldSourceID {
+                        scene.layers[index].source = .camera(sourceID: newSourceID)
+                        changed = true
+                    }
                 }
-            }
-            if changed {
-                self.updateScene(scene)
+                if changed {
+                    self.updateScene(scene)
+                }
             }
         }
     }

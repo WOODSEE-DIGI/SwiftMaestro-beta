@@ -72,24 +72,44 @@ enum KeychainService {
     static func store(account: String, value: String, synchronizable: Bool) throws {
         guard let data = value.data(using: .utf8) else { throw KeychainError.encodingFailed }
 
-        // Remove any existing item (matching either sync state) first for idempotency.
-        try? delete(account: account)
-
         let accessible: CFString = synchronizable
             ? kSecAttrAccessibleAfterFirstUnlock
             : kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
 
-        let query: [String: Any] = [
+        // Update-in-place first: SecItemUpdate preserves the item's access
+        // control list. The previous delete+add destroyed every "Always
+        // Allow" grant the item had accumulated — including grants made to
+        // OTHER identities sharing this login keychain (the Developer-ID DMG,
+        // /usr/bin/security, older ad-hoc builds) — so two identities that
+        // both write the same account (e.g. DMG and Xcode Debug both
+        // refreshing plugin tokens) ping-ponged password prompts forever.
+        let findQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
-            kSecValueData as String: data,
-            kSecAttrSynchronizable as String: synchronizable ? kCFBooleanTrue! : kCFBooleanFalse!,
-            kSecAttrAccessible as String: accessible,
+            kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
         ]
+        let updates: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: accessible,
+            kSecAttrSynchronizable as String: synchronizable ? kCFBooleanTrue! : kCFBooleanFalse!,
+        ]
+        let updateStatus = SecItemUpdate(findQuery as CFDictionary, updates as CFDictionary)
 
-        let status = SecItemAdd(query as CFDictionary, nil)
-        guard status == errSecSuccess else { throw KeychainError.unexpectedStatus(status) }
+        if updateStatus == errSecItemNotFound {
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecAttrAccount as String: account,
+                kSecValueData as String: data,
+                kSecAttrSynchronizable as String: synchronizable ? kCFBooleanTrue! : kCFBooleanFalse!,
+                kSecAttrAccessible as String: accessible,
+            ]
+            let status = SecItemAdd(query as CFDictionary, nil)
+            guard status == errSecSuccess else { throw KeychainError.unexpectedStatus(status) }
+        } else if updateStatus != errSecSuccess {
+            throw KeychainError.unexpectedStatus(updateStatus)
+        }
     }
 
     // MARK: - Read

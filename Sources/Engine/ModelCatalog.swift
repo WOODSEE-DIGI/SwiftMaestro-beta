@@ -39,10 +39,19 @@ struct MaestroModel: Identifiable, Hashable {
     /// get a reduced tool set to avoid overwhelming the smaller model).
     var activeParamsB: Int? = nil
     var isLiteModel: Bool { (activeParamsB ?? 999) < 10 }
+    /// Token count at which chat-history compaction should trigger for this
+    /// model. MoE models with low active params (e.g. 3-4B) hit generation
+    /// speed cliffs well before their nominal context window; setting this
+    /// lower forces compaction before degradation. Nil = use the default
+    /// formula (contextLength - maxTokens).
+    var compactionThreshold: Int? = nil
     /// LM Studio endpoint URL (e.g. `http://localhost:1234`). When set,
     /// the model runs on a remote LM Studio server instead of in-process MLX.
     var remoteBaseURL: String? = nil
     var isRemote: Bool { remoteBaseURL != nil }
+    /// Idle timeout for remote streaming requests. Deltafin/K3 needs minutes
+    /// of prefill tolerance; LM Studio's resident models are fine at 120s.
+    var remoteRequestTimeout: TimeInterval? = nil
     /// HuggingFace download URL shown in Settings so users can grab the model.
     var downloadURL: String? = nil
     /// Whether this entry should appear in the main model picker.
@@ -164,6 +173,15 @@ extension MaestroModel {
     var tunedThinkingEnabled: Bool {
         (UserDefaults.standard.object(forKey: Self.tuningKey(id, "thinking")) as? Bool)
             ?? false
+    }
+
+    /// Effective compaction threshold for THIS model: the model's explicit
+    /// `compactionThreshold` if set, otherwise the default formula. MoE models
+    /// with low active params set this explicitly to avoid generation speed
+    /// cliffs that occur well before the nominal context window is filled.
+    var effectiveCompactionThreshold: Int {
+        if let explicit = compactionThreshold { return explicit }
+        return tunedContextLength - max(tunedMaxTokens, 20_000)
     }
 }
 
@@ -354,8 +372,121 @@ final class ModelCatalog {
     }
 
     static let builtInModels: [MaestroModel] = [
-        // === Local models (already downloaded) ===
-        // Loaded in-process from the swiftmaestro-models scan dir.
+        // ── Primary: Verified & Daily-Use ──────────────────────────────────
+
+        // Coding workhorse — MoE, fast inference, XML function calls.
+        // 30B-A3B active params, 128K context, ~45 GB.
+        // Low active params → compact early to avoid gen speed cliff.
+        MaestroModel(
+            id: "local-qwen3-coder-next",
+            displayName: "Qwen 3 Coder Next",
+            huggingFaceID: "mlx-community/Qwen3-Coder-Next-4bit",
+            isVision: false,
+            localPath: localIfPresent("swiftmaestro-models/Qwen3-Coder-Next-4bit"),
+            estimatedMemoryGB: 45,
+            supportsTools: true,
+            toolCallFormat: .xmlFunction,
+            recTemperature: 0.7, recTopP: 0.8, recRepetitionPenalty: 1.05,
+            recContextLength: 128_000,
+            activeParamsB: 3,
+            compactionThreshold: 32_000
+        ),
+
+        // General/reasoning powerhouse — MoE, 262K context, XML function calls.
+        // 122B total, 10B active, ~65 GB.
+        MaestroModel(
+            id: "local-qwen3.5-122b",
+            displayName: "Qwen 3.5 122B (A10B)",
+            huggingFaceID: "mlx-community/Qwen3.5-122B-A10B-4bit",
+            isVision: false,
+            localPath: localIfPresent("swiftmaestro-models/Qwen3.5-122B-A10B-4bit"),
+            estimatedMemoryGB: 65,
+            supportsTools: true,
+            toolCallFormat: .xmlFunction,
+            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05,
+            recMaxTokens: 200_000,
+            recContextLength: 262_144,
+            activeParamsB: 10
+        ),
+
+        // Vision+Text — Gemma 4 MoE with native image understanding.
+        // 26B total, 4B active, 8-bit, ~26 GB. Default model on launch.
+        // Low active params → compact early to avoid gen speed cliff.
+        MaestroModel(
+            id: "local-gemma4-26b",
+            displayName: "Gemma 4 26B-A4B (Vision+Text, 8-bit)",
+            huggingFaceID: "lmstudio-community/gemma-4-26B-A4B-it-MLX-8bit",
+            isVision: true,
+            localPath: localIfPresent("swiftmaestro-models/gemma-4-26B-A4B-it-MLX-8bit"),
+            estimatedMemoryGB: 26,
+            supportsTools: true,
+            toolCallFormat: .gemma4,
+            recTemperature: 0.7, recTopP: 0.9, recRepetitionPenalty: 1.1,
+            recContextLength: 128_000,
+            activeParamsB: 4,
+            compactionThreshold: 20_000,
+            downloadURL: "https://huggingface.co/lmstudio-community/gemma-4-26B-A4B-it-MLX-8bit"
+        ),
+
+        // ── Remote: Kimi K3 API ─────────────────────────────────────────────
+
+        // Kimi K3 via Moonshot AI's OpenAI-compatible API. 2.8T MoE, 1M context,
+        // native vision, $3/M input ($0.30 cached), $15/M output.
+        // Requires API key in Keychain (Settings → Secrets → "kimi-k3-api-key").
+        MaestroModel(
+            id: "remote-kimi-k3",
+            displayName: "Kimi K3 (API, 1M ctx)",
+            huggingFaceID: "kimi-k3",
+            isVision: true,
+            estimatedMemoryGB: 0,
+            supportsTools: true,
+            toolCallFormat: .xmlFunction,
+            recTemperature: 0.7, recTopP: 0.8, recRepetitionPenalty: 1.0,
+            recMaxTokens: 32_768,
+            recContextLength: 1_048_576,
+            activeParamsB: 104,
+            remoteBaseURL: "https://api.moonshot.ai"
+        ),
+
+        // Kimi K3 2.8T run LOCALLY via Deltafin's OpenAI-compatible server —
+        // full, unpruned, byte-exact weights expert-streamed from NVMe by the
+        // native Rust runtime. Requires M1 Ultra 128 GB or newer with ~2 TB
+        // free internal storage (full corpus) or ~250 GB (stream mode);
+        // server lifecycle is managed in Settings → Kimi K3. Expect seconds
+        // per token: this is a deep-research/batch model, not interactive.
+        MaestroModel(
+            id: "local-kimi-k3-deltafin",
+            displayName: "Kimi K3 2.8T (local · Deltafin)",
+            huggingFaceID: "deltafin-kimi-k3",
+            isVision: false,
+            estimatedMemoryGB: 0,
+            supportsTools: false,
+            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.0,
+            recMaxTokens: 2_048,
+            recContextLength: 8_192,
+            activeParamsB: 104,
+            remoteBaseURL: DeltafinK3Service.baseURL,
+            remoteRequestTimeout: 3_600
+        ),
+
+        // ── Alternative: Large Dense ───────────────────────────────────────
+
+        // Open-weight alternative — dense architecture, ~60 GB.
+        MaestroModel(
+            id: "local-gpt-oss-120b",
+            displayName: "GPT-OSS 120B",
+            huggingFaceID: "mlx-community/gpt-oss-120b-4bit",
+            isVision: false,
+            localPath: localIfPresent("swiftmaestro-models/gpt-oss-120b-4bit"),
+            estimatedMemoryGB: 60,
+            supportsTools: true,
+            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05,
+            recContextLength: 128_000
+        ),
+
+        // Fast MoE alternative — 35B total, 3B active, ~20 GB.
+        // Different tool-call format (Qwen3.5-style XML).
+        // Low active params → compact early to avoid gen speed cliff.
         MaestroModel(
             id: "local-qwen3.6-35b-a3b",
             displayName: "Qwen 3.6 35B-A3B",
@@ -368,206 +499,37 @@ final class ModelCatalog {
             recTemperature: 0.8, recTopP: 0.9, recRepetitionPenalty: 1.15,
             recContextLength: 131_072,
             activeParamsB: 3,
+            compactionThreshold: 24_000,
             downloadURL: "https://huggingface.co/lmstudio-community/Qwen3.6-35B-A3B-MLX-4bit"
         ),
+
+        // ── Frontier: Self-Hosted (512GB+ Unified Memory Required) ───────────
+
+        // Kimi K3 self-hosted — Moonshot AI's 2.8T MoE flagship, open-weight.
+        // 896 experts, 16 active per token, native vision, 1M context.
+        // Smallest GGUF: Q1_0 at 466GB — needs 512GB M3 Ultra Mac Studio.
+        // Requires llama.cpp KDA support (not yet available as of Aug 2026).
+        // Prefer the API entry above for immediate access.
         MaestroModel(
-            id: "local-qwen3.6-27b",
-            displayName: "Qwen 3.6 27B (dense)",
-            huggingFaceID: "mlx-community/Qwen3.6-27B-4bit",
-            isVision: false,
-            localPath: localIfPresent("swiftmaestro-models/Qwen3.6-27B-4bit"),
-            estimatedMemoryGB: 15,
-            toolCallFormat: .xmlFunction,
-            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05,
-            recContextLength: 128_000,
-            activeParamsB: 27,
-            downloadURL: "https://huggingface.co/mlx-community/Qwen3.6-27B-4bit"
-        ),
-        MaestroModel(
-            id: "local-qwen3.6-35b-a3b-8bit",
-            displayName: "Qwen 3.6 35B-A3B (8-bit)",
-            huggingFaceID: "mlx-community/Qwen3.6-35B-A3B-8bit",
-            isVision: false,
-            localPath: localIfPresent("swiftmaestro-models/Qwen3.6-35B-A3B-8bit"),
-            estimatedMemoryGB: 35,
-            toolCallFormat: .xmlFunction,
-            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05,
-            recContextLength: 131_072,
-            activeParamsB: 3,
-            downloadURL: "https://huggingface.co/mlx-community/Qwen3.6-35B-A3B-8bit"
-        ),
-        MaestroModel(
-            id: "local-gemma4-12b",
-            displayName: "Gemma 4 12B (4-bit)",
-            huggingFaceID: "lmstudio-community/gemma-4-12B-it-MLX-4bit",
-            isVision: false,
-            localPath: localIfPresent([
-                "swiftmaestro-models/gemma-4-12B-it-MLX-4bit",
-                "lmstudio-community/gemma-4-12B-it-MLX-4bit",
-            ]),
-            estimatedMemoryGB: 11,
-            supportsTools: true,
-            toolCallFormat: .gemma4,
-            recTemperature: 0.7, recTopP: 0.9, recRepetitionPenalty: 1.1,
-            recContextLength: 128_000,
-            activeParamsB: 12,
-            downloadURL: "https://huggingface.co/lmstudio-community/gemma-4-12B-it-MLX-4bit"
-        ),
-        MaestroModel(
-            id: "local-gemma4-26b-4bit",
-            displayName: "Gemma 4 26B-A4B (Vision+Text, 4-bit)",
-            huggingFaceID: "lmstudio-community/gemma-4-26B-A4B-it-MLX-4bit",
+            id: "hub-kimi-k3",
+            displayName: "Kimi K3 (2.8T, 512GB Mac Studio)",
+            huggingFaceID: "unsloth/Kimi-K3-GGUF",
             isVision: true,
-            localPath: localIfPresent("swiftmaestro-models/gemma-4-26B-A4B-it-MLX-4bit"),
-            estimatedMemoryGB: 16,
-            supportsTools: true,
-            toolCallFormat: .gemma4,
-            recTemperature: 0.7, recTopP: 0.9, recRepetitionPenalty: 1.1,
-            recContextLength: 128_000,
-            activeParamsB: 4,
-            downloadURL: "https://huggingface.co/lmstudio-community/gemma-4-26B-A4B-it-MLX-4bit"
-        ),
-        MaestroModel(
-            id: "local-gemma4-26b",
-            displayName: "Gemma 4 26B-A4B (Vision+Text, 8-bit, default)",
-            huggingFaceID: "lmstudio-community/gemma-4-26B-A4B-it-MLX-8bit",
-            isVision: true,
-            localPath: localIfPresent("swiftmaestro-models/gemma-4-26B-A4B-it-MLX-8bit"),
-            estimatedMemoryGB: 26,
-            supportsTools: true,
-            toolCallFormat: .gemma4,
-            recTemperature: 0.7, recTopP: 0.9, recRepetitionPenalty: 1.1,
-            recContextLength: 128_000,
-            activeParamsB: 4,
-            downloadURL: "https://huggingface.co/lmstudio-community/gemma-4-26B-A4B-it-MLX-8bit"
-        ),
-        MaestroModel(
-            id: "local-gemma4-26b-qat-4bit",
-            displayName: "Gemma 4 26B-A4B QAT 4-bit (Vision+Text)",
-            huggingFaceID: "lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit",
-            isVision: true,
-            localPath: localIfPresent("swiftmaestro-models/gemma-4-26B-A4B-it-QAT-MLX-4bit"),
-            estimatedMemoryGB: 18,
-            supportsTools: true,
-            toolCallFormat: .gemma4,
-            recTemperature: 0.7, recTopP: 0.9, recRepetitionPenalty: 1.1,
-            recContextLength: 128_000,
-            activeParamsB: 4,
-            downloadURL: "https://huggingface.co/lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit"
-        ),
-        MaestroModel(
-            id: "local-gemma4-26b-a4b",
-            displayName: "Gemma 4 26B-A4B (Vision+Text, mlx-community 4-bit)",
-            huggingFaceID: "mlx-community/gemma-4-26b-a4b-it-4bit",
-            isVision: true,
-            localPath: localIfPresent("swiftmaestro-models/gemma-4-26b-a4b-it-4bit"),
-            estimatedMemoryGB: 16,
-            supportsTools: true,
-            toolCallFormat: .gemma4,
-            recTemperature: 0.7, recTopP: 0.9, recRepetitionPenalty: 1.1,
-            recContextLength: 128_000,
-            activeParamsB: 4,
-            downloadURL: "https://huggingface.co/mlx-community/gemma-4-26b-a4b-it-4bit"
-        ),
-        MaestroModel(
-            id: "local-gemma4-31b-it",
-            displayName: "Gemma 4 31B (Vision+Text, QAT 4-bit)",
-            huggingFaceID: "mlx-community/gemma-4-31b-it-qat-4bit",
-            isVision: true,
-            localPath: localIfPresent("swiftmaestro-models/gemma-4-31b-it-qat-4bit"),
-            estimatedMemoryGB: 17,
-            supportsTools: true,
-            toolCallFormat: .gemma4,
-            recTemperature: 0.7, recTopP: 0.9, recRepetitionPenalty: 1.1,
-            recContextLength: 128_000,
-            activeParamsB: 31,
-            downloadURL: "https://huggingface.co/mlx-community/gemma-4-31b-it-qat-4bit"
-        ),
-        MaestroModel(
-            id: "local-gemma4-e4b-it",
-            displayName: "Gemma 4 E4B (Vision+Text, 4-bit)",
-            huggingFaceID: "mlx-community/gemma-4-e4b-it-4bit",
-            isVision: true,
-            localPath: localIfPresent("swiftmaestro-models/gemma-4-e4b-it-4bit"),
-            estimatedMemoryGB: 4,
-            supportsTools: true,
-            toolCallFormat: .gemma4,
-            recTemperature: 0.7, recTopP: 0.9, recRepetitionPenalty: 1.1,
-            recContextLength: 128_000,
-            activeParamsB: 4,
-            downloadURL: "https://huggingface.co/mlx-community/gemma-4-e4b-it-4bit"
-        ),
-        MaestroModel(
-            id: "local-gemma4-e4b",
-            displayName: "Gemma 4 E4B (Vision+Text, small)",
-            huggingFaceID: "mlx-community/gemma-4-e4b-it-qat-4bit",
-            isVision: true,
-            localPath: localIfPresent("swiftmaestro-models/gemma-4-e4b-it-qat-4bit"),
-            estimatedMemoryGB: 4,
-            supportsTools: true,
-            toolCallFormat: .gemma4,
-            recTemperature: 0.7, recTopP: 0.9, recRepetitionPenalty: 1.1,
-            recContextLength: 128_000,
-            activeParamsB: 4,
-            downloadURL: "https://huggingface.co/mlx-community/gemma-4-e4b-it-qat-4bit"
-        ),
-        MaestroModel(
-            id: "local-qwen3.5-27b",
-            displayName: "Qwen 3.5 27B (Opus Distilled)",
-            huggingFaceID: "mlx-community/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit",
-            isVision: false,
-            localPath: localIfPresent([
-                "swiftmaestro-models/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit",
-                "mlx-community/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit",
-            ]),
-            estimatedMemoryGB: 14,
-            supportsTools: true,  // Qwen 3.5 family uses xmlFunction
-            recTemperature: 0.7, recTopP: 0.9, recRepetitionPenalty: 1.05,
-            recContextLength: 262_144,
-            activeParamsB: 27
-        ),
-        MaestroModel(
-            id: "local-qwen3.5-122b",
-            displayName: "Qwen 3.5 122B (A10B)",
-            huggingFaceID: "mlx-community/Qwen3.5-122B-A10B-4bit",
-            isVision: false,
-            localPath: localIfPresent("swiftmaestro-models/Qwen3.5-122B-A10B-4bit"),
-            estimatedMemoryGB: 65,
-            // In-process load works with the current mlx-swift-lm loader, which
-            // quantizes a module only when the checkpoint has its `.scales`
-            // (Load.swift). This checkpoint's lm_head IS quantized, so the old
-            // "lm_head not found" failure (an older loader) no longer applies.
-            // Confirmed: this checkpoint's chat_template uses the same XML
-            // <function>/<parameter> tool format as the 3.6 default
-            // (qwen3_5_moe), so the xmlFunction parser applies identically.
+            localPath: nil,
+            estimatedMemoryGB: 466,
             supportsTools: true,
             toolCallFormat: .xmlFunction,
-            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05,
-            recMaxTokens: 200_000,
-            recContextLength: 262_144,
-            activeParamsB: 10
+            recTemperature: 0.7, recTopP: 0.8, recRepetitionPenalty: 1.05,
+            recContextLength: 1_048_576,
+            activeParamsB: 50,
+            downloadURL: "https://huggingface.co/unsloth/Kimi-K3-GGUF"
         ),
+
+        // ── Utility: Vision Proxy & Embeddings (hidden from picker) ────────
+
+        // NOT a chat model — sentence embeddings for local vector RAG via
+        // MLXEmbedders. Hidden from picker; downloaded so embedding service works.
         MaestroModel(
-            id: "local-qwen3.5-9b",
-            displayName: "Qwen 3.5 9B (4-bit)",
-            huggingFaceID: "mlx-community/Qwen3.5-9B-MLX-4bit",
-            isVision: false,
-            localPath: localIfPresent("swiftmaestro-models/Qwen3.5-9B-MLX-4bit"),
-            estimatedMemoryGB: 6,
-            // Same qwen3.5 chat-template family as the 35B/122B (XML
-            // <function>/<parameter> tool calls) — a modern tool-calling
-            // sub-agent model at MacBook size. Verify round-trip on first use.
-            supportsTools: true,
-            toolCallFormat: .xmlFunction,
-            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05,
-            recContextLength: 262_144,
-            activeParamsB: 9,
-            downloadURL: "https://huggingface.co/mlx-community/Qwen3.5-9B-MLX-4bit"
-        ),
-        MaestroModel(
-            // NOT a chat model — sentence embeddings for local vector RAG via
-            // MLXEmbedders (the documented highest-value RAG upgrade). Hidden
-            // from the picker; downloaded so the embedding service can use it.
             id: "local-qwen3-embedding-0.6b",
             displayName: "Qwen3 Embedding 0.6B (4-bit, RAG)",
             huggingFaceID: "mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ",
@@ -576,48 +538,8 @@ final class ModelCatalog {
             estimatedMemoryGB: 1,
             isHidden: true
         ),
-        MaestroModel(
-            id: "local-hermes-70b",
-            displayName: "Hermes 4 70B (4-bit)",
-            huggingFaceID: "lmstudio-community/Hermes-4-70B-MLX-4bit",
-            isVision: false,
-            localPath: localIfPresent("swiftmaestro-models/Hermes-4-70B-MLX-4bit"),
-            estimatedMemoryGB: 56
-        ),
-        MaestroModel(
-            id: "local-magistral-small",
-            displayName: "Magistral Small 2509",
-            huggingFaceID: "lmstudio-community/Magistral-Small-2509-MLX-4bit",
-            isVision: false,
-            localPath: localIfPresent("swiftmaestro-models/Magistral-Small-2509-MLX-4bit"),
-            estimatedMemoryGB: 13
-        ),
-        MaestroModel(
-            id: "local-deepseek-r1-8b",
-            displayName: "DeepSeek R1 0528 (Qwen3 8B)",
-            huggingFaceID: "lmstudio-community/DeepSeek-R1-0528-Qwen3-8B-MLX-4bit",
-            isVision: false,
-            localPath: localIfPresent("swiftmaestro-models/DeepSeek-R1-0528-Qwen3-8B-MLX-4bit"),
-            estimatedMemoryGB: 4,
-            supportsTools: true,  // Qwen3-based, format inferred from model_type
-            recTemperature: 0.6, recTopP: 0.95, recRepetitionPenalty: 1.1
-        ),
-        MaestroModel(
-            id: "local-gpt-oss-20b",
-            displayName: "GPT-OSS 20B",
-            huggingFaceID: "mlx-community/gpt-oss-20b-MXFP4-Q8",
-            isVision: false,
-            localPath: localIfPresent("swiftmaestro-models/gpt-oss-20b-MXFP4-Q8"),
-            estimatedMemoryGB: 11
-        ),
-        MaestroModel(
-            id: "local-deepseek-vl2-small",
-            displayName: "DeepSeek VL2 Small (Vision)",
-            huggingFaceID: "mlx-community/deepseek-vl2-small-4bit",
-            isVision: true,
-            localPath: localIfPresent("swiftmaestro-models/deepseek-vl2-small-4bit"),
-            estimatedMemoryGB: 9
-        ),
+
+        // Vision proxy — used internally for image captioning/description.
         MaestroModel(
             id: "local-qwen3-vl-8b-4bit",
             displayName: "Qwen3-VL 8B (Vision Proxy)",
@@ -625,163 +547,6 @@ final class ModelCatalog {
             isVision: true,
             localPath: localIfPresent("swiftmaestro-models/Qwen3-VL-8B-Instruct-4bit"),
             estimatedMemoryGB: 6
-        ),
-        MaestroModel(
-            id: "local-nemotron-30b",
-            displayName: "Nemotron Cascade 30B (A3B)",
-            huggingFaceID: "JANGQ-AI/Nemotron-Cascade-2-30B-A3B-JANG_4M",
-            isVision: false,
-            localPath: localIfPresent("swiftmaestro-models/Nemotron-Cascade-2-30B-A3B-JANG_4M"),
-            estimatedMemoryGB: 1
-        ),
-
-        // === Larger MLX models (download on first use) ===
-        MaestroModel(
-            id: "local-qwen3.5-35b-a3b",
-            displayName: "Qwen 3.5 35B-A3B",
-            huggingFaceID: "mlx-community/Qwen3.5-35B-A3B-OptiQ-4bit",
-            isVision: false,
-            localPath: localIfPresent("swiftmaestro-models/Qwen3.5-35B-A3B-OptiQ-4bit"),
-            estimatedMemoryGB: 20,
-            supportsTools: true,
-            toolCallFormat: .xmlFunction,
-            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05,
-            recContextLength: 262_144,
-            activeParamsB: 3
-        ),
-        MaestroModel(
-            id: "local-qwen3-coder-next",
-            displayName: "Qwen 3 Coder Next",
-            huggingFaceID: "mlx-community/Qwen3-Coder-Next-4bit",
-            isVision: false,
-            localPath: localIfPresent("swiftmaestro-models/Qwen3-Coder-Next-4bit"),
-            estimatedMemoryGB: 45,
-            supportsTools: true,
-            toolCallFormat: .xmlFunction,
-            recTemperature: 0.7, recTopP: 0.8, recRepetitionPenalty: 1.05,
-            recContextLength: 128_000,
-            activeParamsB: 3   // 30B-A3B: 3 billion active params per token
-        ),
-        MaestroModel(
-            id: "local-gpt-oss-120b",
-            displayName: "GPT-OSS 120B",
-            huggingFaceID: "mlx-community/gpt-oss-120b-4bit",
-            isVision: false,
-            localPath: localIfPresent("swiftmaestro-models/gpt-oss-120b-4bit"),
-            estimatedMemoryGB: 60,
-            supportsTools: true,
-            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05,
-            recContextLength: 128_000
-        ),
-        MaestroModel(
-            id: "local-kimi-dev-72b",
-            displayName: "Kimi Dev 72B (4-bit)",
-            huggingFaceID: "mlx-community/Kimi-Dev-72B-4bit",
-            isVision: false,
-            localPath: localIfPresent("swiftmaestro-models/Kimi-Dev-72B-4bit"),
-            estimatedMemoryGB: 45,
-            // Qwen2.5-based dense model; tool format is the classic Qwen2 JSON
-            // tool-call schema rather than the Qwen3 XML function format. Leave
-            // supportsTools off until we verify tool-call parsing works.
-            supportsTools: false,
-            recTemperature: 0.7, recTopP: 0.8, recRepetitionPenalty: 1.05,
-            recContextLength: 131_072,
-            activeParamsB: 72,
-            downloadURL: "https://huggingface.co/mlx-community/Kimi-Dev-72B-4bit"
-        ),
-
-        // === Experimental / ultra-tier models (download on first use, very high memory) ===
-        MaestroModel(
-            id: "hub-deepseek-v4-flash",
-            displayName: "DeepSeek V4-Flash (4-bit, 1M context)",
-            huggingFaceID: "mlx-community/DeepSeek-V4-Flash-4bit",
-            isVision: false,
-            localPath: nil,
-            estimatedMemoryGB: 151,
-            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05
-        ),
-        MaestroModel(
-            id: "hub-glm-5.1",
-            displayName: "GLM-5.1 (MIT, coding)",
-            huggingFaceID: "mlx-community/GLM-5.1",
-            isVision: false,
-            localPath: nil,
-            estimatedMemoryGB: 150,
-            toolCallFormat: .glm4,
-            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05
-        ),
-        MaestroModel(
-            id: "hub-glm-5.2",
-            displayName: "GLM-5.2 (mxfp4, coding)",
-            huggingFaceID: "mlx-community/GLM-5.2-mxfp4",
-            isVision: false,
-            localPath: localIfPresent("swiftmaestro-models/GLM-5.2-mxfp4"),
-            estimatedMemoryGB: 150,
-            toolCallFormat: .glm4,
-            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05
-        ),
-        MaestroModel(
-            id: "hub-minimax-m2.7",
-            displayName: "MiniMax M2.7 (4-bit, agentic)",
-            huggingFaceID: "mlx-community/MiniMax-M2.7-4bit",
-            isVision: false,
-            localPath: nil,
-            estimatedMemoryGB: 128,
-            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05
-        ),
-        MaestroModel(
-            id: "hub-kimi-k2.6",
-            displayName: "Kimi K2.6 (DQ3, 512 GB Mac)",
-            huggingFaceID: "mlx-community/Kimi-K2.6-mlx-DQ3_K_M-q8",
-            isVision: false,
-            localPath: nil,
-            estimatedMemoryGB: 186,
-            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05
-        ),
-        MaestroModel(
-            id: "hub-llama4-scout",
-            displayName: "Llama 4 Scout (4-bit, 10M context)",
-            huggingFaceID: "mlx-community/meta-llama-Llama-4-Scout-17B-16E-4bit",
-            isVision: true,
-            localPath: nil,
-            estimatedMemoryGB: 60,
-            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05
-        ),
-
-        // === Hub models (download on first use) ===
-        MaestroModel(
-            id: "hub-qwen3-8b",
-            displayName: "Qwen 3 8B (Hub)",
-            huggingFaceID: "mlx-community/Qwen3-8B-4bit",
-            isVision: false,
-            localPath: nil,
-            estimatedMemoryGB: 6
-        ),
-        MaestroModel(
-            id: "hub-qwen3-4b",
-            displayName: "Qwen 3 4B (Hub)",
-            huggingFaceID: "mlx-community/Qwen3-4B-4bit",
-            isVision: false,
-            localPath: nil,
-            estimatedMemoryGB: 3
-        ),
-        MaestroModel(
-            id: "hub-gemma3n-e4b",
-            displayName: "Gemma 3n E4B (Hub)",
-            huggingFaceID: "mlx-community/gemma-3n-E4B-it-lm-4bit",
-            isVision: false,
-            localPath: nil,
-            estimatedMemoryGB: 3,
-            supportsTools: true,  // Gemma family, format inferred from model_type
-            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05
-        ),
-        MaestroModel(
-            id: "hub-llama3.2-1b",
-            displayName: "Llama 3.2 1B (Hub)",
-            huggingFaceID: "mlx-community/Llama-3.2-1B-Instruct-4bit",
-            isVision: false,
-            localPath: nil,
-            estimatedMemoryGB: 1
         ),
     ]
 

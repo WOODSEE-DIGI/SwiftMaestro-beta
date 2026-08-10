@@ -294,7 +294,6 @@ final class ChangeGuard: Sendable {
 
     private func record(_ change: FileChange) throws {
         try dbQueue.write { db in
-            var change = change
             try change.insert(db)
         }
     }

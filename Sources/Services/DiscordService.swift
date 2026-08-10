@@ -77,7 +77,7 @@ final class DiscordService {
             guilds = try await client.getCurrentGuilds()
             // If the user has configured a server ID, select it automatically.
             if !selectedServerID.isEmpty {
-                try? await loadServer(id: selectedServerID)
+                await loadServer(id: selectedServerID)
             }
             status = .connected
         } catch {
@@ -131,7 +131,7 @@ final class DiscordService {
     }
 
     func loadMessages(channelID: String) async {
-        guard let client else { return }
+        guard client != nil else { return }
         status = .fetchingMessages
         messages = []
         do {
@@ -144,7 +144,7 @@ final class DiscordService {
 
     /// Loads more messages older than the current oldest message.
     func loadOlderMessages() async {
-        guard let client, let channelID = selectedChannelID, let oldest = messages.last else { return }
+        guard client != nil, let channelID = selectedChannelID, let oldest = messages.last else { return }
         status = .fetchingMessages
         do {
             let older = try await fetchMessages(channelID: channelID, before: oldest.id)

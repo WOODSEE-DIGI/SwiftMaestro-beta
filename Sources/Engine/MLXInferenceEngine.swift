@@ -293,7 +293,7 @@ final class MLXInferenceEngine {
                 if let previous { _ = await previous.result }
                 guard let self else { return }
                 defer {
-                    self.downloadMutex.withLock {
+                    _ = self.downloadMutex.withLock {
                         self.queuedDownloadRepos.remove(model.huggingFaceID)
                     }
                 }
@@ -560,7 +560,7 @@ final class MLXInferenceEngine {
     /// kernel fusion enabled.
     private func clearMLXCaches() {
         MLX.Memory.clearCache()
-        mlxDetailCompileClearCache()
+        _ = mlxDetailCompileClearCache()
     }
 
     /// C declaration for the MLX compile-cache clear function (mlx/c/compile.h).
@@ -807,6 +807,10 @@ final class MLXInferenceEngine {
                                 await MainActor.run {
                                     self.tokensPerSecond = info.tokensPerSecond
                                 }
+                                AIBroadcastService.recordToken(
+                                    totalTokens: info.generationTokenCount,
+                                    tokensPerSecond: info.tokensPerSecond
+                                )
                                 continuation.yield(.info(tokensPerSecond: info.tokensPerSecond))
                             case .toolCall(let call):
                                 pendingCalls.append(call)
@@ -1079,6 +1083,10 @@ final class MLXInferenceEngine {
             case .info(let info):
                 NSLog("[PERF] prompt=\(info.promptTokenCount) tok (\(String(format: "%.0f", info.promptTokensPerSecond)) tok/s prefill); gen=\(info.generationTokenCount) tok (\(String(format: "%.1f", info.tokensPerSecond)) tok/s)")
                 self.tokensPerSecond = info.tokensPerSecond
+                AIBroadcastService.recordToken(
+                    totalTokens: info.generationTokenCount,
+                    tokensPerSecond: info.tokensPerSecond
+                )
                 onInfo(info.tokensPerSecond)
             case .toolCall(let call):
                 let argsObj = call.function.arguments.mapValues { $0.anyValue }
@@ -1234,6 +1242,10 @@ final class MLXInferenceEngine {
             case .info(let info):
                 NSLog("[PERF] prompt=\(info.promptTokenCount) tok (\(String(format: "%.0f", info.promptTokensPerSecond)) tok/s prefill); gen=\(info.generationTokenCount) tok (\(String(format: "%.1f", info.tokensPerSecond)) tok/s)")
                 self.tokensPerSecond = info.tokensPerSecond
+                AIBroadcastService.recordToken(
+                    totalTokens: info.generationTokenCount,
+                    tokensPerSecond: info.tokensPerSecond
+                )
                 onInfo(info.tokensPerSecond)
             case .toolCall(let call):
                 let argsObj = call.function.arguments.mapValues { $0.anyValue }

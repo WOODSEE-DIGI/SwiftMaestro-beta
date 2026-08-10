@@ -88,10 +88,14 @@ extension MaestroTools {
                     "append": ["type": "boolean", "description": "If true, append content to the end of the existing file instead of overwriting. Default false."],
                 ], required: ["path", "content"]),
             rawSpec("list_dir",
-                "List ALL entries (files and subdirectories) of a directory. Use an absolute path. "
+                "List ALL entries (files and subdirectories) of a directory, ONE level only "
+                + "(NOT recursive), INCLUDING hidden dotfiles. Use an absolute path. "
                 + "Your working directory is automatically authorized for listing. "
                 + "IMPORTANT: Return EVERY entry — do NOT filter, skip, or prioritize files you think "
-                + "are 'important'. The user needs to see the COMPLETE contents. For large directories, "
+                + "are 'important'. The user needs to see the COMPLETE contents. "
+                + "NOTE: the entry count is for ONE level, so it will be much smaller than "
+                + "index_directory's RECURSIVE totals for the same path — that difference is "
+                + "expected, NOT an error. For large directories, "
                 + "prefer index_directory instead — it gives a structured tree with Spotlight metadata "
                 + "(file types, sizes, dates) without reading any file contents.",
                 properties: [
@@ -144,12 +148,15 @@ extension MaestroTools {
         ]
     }
 
-    private struct ReadFileArgs: Codable {
+    struct ReadFileArgs: Decodable {
         let path: String?
-        let offset: Int?
-        let limit: Int?
+        let offset: LenientInt?
+        let limit: LenientInt?
     }
-    private struct WriteFileArgs: Codable { let path: String?; let content: String?; let encoding: String?; let append: Bool? }
+    // `append` is LenientBool: small models emit it as "false"/"true"
+    // strings, which failed the whole decode and made write_file report
+    // "requires 'path' and 'content'" even when both were present.
+    struct WriteFileArgs: Decodable { let path: String?; let content: String?; let encoding: String?; let append: LenientBool? }
     private struct ListDirArgs: Codable { let path: String? }
     private struct OCRImageArgs: Codable { let path: String? }
     private struct CopyFileArgs: Codable { let source: String?; let destination: String? }
@@ -167,17 +174,32 @@ extension MaestroTools {
     /// Visibility: internal (used by both `MaestroTools+Files.swift` and `MaestroTools.swift`).
     static func unescapeShellPath(_ path: String) -> String {
         var result = ""
-        var chars = path.makeIterator()
-        while let ch = chars.next() {
-            if ch == "\\" {
-                // Consume the next character (the escaped one) and append it literally.
-                // This handles `\ `, `\( `, etc. If there's nothing after the backslash,
-                // we just drop the trailing backslash.
-                if let next = chars.next() {
-                    result.append(next)
-                }
+        let chars = Array(path)
+        var i = 0
+        while i < chars.count {
+            guard chars[i] == "\\" else {
+                result.append(chars[i])
+                i += 1
+                continue
+            }
+            // Gather the full backslash run. A run followed by a slash is an
+            // over-escaped path separator from JSON-mimicking models (\/, \\/,
+            // \\\/ — the read_file "no file at" and write_file "volume is
+            // read only" failures were exactly this, not real I/O errors).
+            var j = i
+            while j < chars.count && chars[j] == "\\" { j += 1 }
+            let runLength = j - i
+            if j < chars.count, chars[j] == "/" {
+                result.append("/")
+                i = j + 1
+            } else if j < chars.count {
+                // True shell escape (e.g. `\ `): extra backslashes stay literal.
+                if runLength > 1 { result.append(contentsOf: repeatElement("\\", count: runLength - 1)) }
+                result.append(chars[j])
+                i = j + 1
             } else {
-                result.append(ch)
+                // Trailing backslash(es) — drop, matching the original behavior.
+                break
             }
         }
         return result
@@ -460,7 +482,7 @@ extension MaestroTools {
         switch category {
         case .text:
             if let text = FileContentExtractor.extractText(from: actualPath) {
-                let result = applyLineLimit(text, offset: args.offset, limit: args.limit,
+                let result = applyLineLimit(text, offset: args.offset?.value, limit: args.limit?.value,
                                             totalSource: text, path: resolved, actualPath: actualPath)
                 NSLog("[read_file] returning text result: %@", String(result.prefix(200)))
                 return result
@@ -469,7 +491,7 @@ extension MaestroTools {
 
         case .pdf, .document:
             if let text = FileContentExtractor.extractText(from: actualPath), !text.isEmpty {
-                let result = applyLineLimit(text, offset: args.offset, limit: args.limit,
+                let result = applyLineLimit(text, offset: args.offset?.value, limit: args.limit?.value,
                                             totalSource: text, path: resolved, actualPath: actualPath)
                 NSLog("[read_file] returning document result: %@", String(result.prefix(200)))
                 return result
@@ -483,10 +505,14 @@ extension MaestroTools {
     }
 
     static func writeFile(_ call: ToolCall) async -> String {
-        guard let args = decodeArgs(call, as: WriteFileArgs.self),
-              let raw = args.path?.trimmingCharacters(in: .whitespaces), !raw.isEmpty,
+        guard let args = decodeArgs(call, as: WriteFileArgs.self) else {
+            return errorJSON(
+                "write_file could not decode its arguments (\(argDiagnostics(call))). "
+                    + "Pass 'path' and 'content' as strings; 'append' accepts a boolean.")
+        }
+        guard let raw = args.path?.trimmingCharacters(in: .whitespaces), !raw.isEmpty,
               let content = args.content else {
-            return errorJSON("write_file requires 'path' and 'content'")
+            return errorJSON("write_file requires 'path' and 'content' (\(argDiagnostics(call)))")
         }
         guard let resolved = resolveAbsolute(raw) else {
             return errorJSON("write_file requires an absolute path (got '\(raw)')")
@@ -501,7 +527,7 @@ extension MaestroTools {
             do {
                 try ChangeGuard.shared.snapshotForMutation(
                     path: resolved,
-                    kind: (args.append ?? false) ? .append : .overwrite,
+                    kind: (args.append?.value ?? false) ? .append : .overwrite,
                     tool: "write_file")
             } catch {
                 return errorJSON(
@@ -514,7 +540,7 @@ extension MaestroTools {
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
 
-            let append = args.append ?? false
+            let append = args.append?.value ?? false
             let bytesWritten: Int
             if append && FileManager.default.fileExists(atPath: resolved) {
                 if encoding == "base64" {

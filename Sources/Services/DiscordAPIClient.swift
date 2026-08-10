@@ -14,11 +14,11 @@ actor DiscordAPIClient {
         // Discord timestamps include fractional seconds; `.iso8601` handles
         // them on modern Foundation, but the `withFractionalSeconds` option is
         // the explicit fallback.
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         self.decoder.dateDecodingStrategy = .custom { decoder in
             let container = try decoder.singleValueContainer()
             let string = try container.decode(String.self)
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
             guard let date = formatter.date(from: string) else {
                 throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid date: \(string)")
             }
@@ -68,7 +68,7 @@ actor DiscordAPIClient {
 
         let (data, response) = try await URLSession.shared.data(for: request)
         let rateLimit = DiscordRateLimitInfo.parse(from: response)
-        try await applyRateLimit(rateLimit)
+        await applyRateLimit(rateLimit)
 
         guard let http = response as? HTTPURLResponse else {
             throw DiscordAPIError.noResponse

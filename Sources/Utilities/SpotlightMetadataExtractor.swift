@@ -1,5 +1,5 @@
 import Foundation
-import CoreServices
+@preconcurrency import CoreServices
 
 /// Extracts file metadata using native macOS Spotlight APIs (`NSMetadataItem`,
 /// `NSMetadataQuery`). This provides rich metadata (content type, size, dates,

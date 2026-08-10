@@ -78,7 +78,7 @@ public struct ShellApprovalRequest: Identifiable, Codable {
     let agentName: String
 
     /// When the approval expires (10 minutes from creation).
-    public let createdAt: Date = Date()
+    public let createdAt: Date
     
     /// Compute remaining time until expiration.
     public var timeRemaining: TimeInterval {
@@ -96,7 +96,8 @@ public struct ShellApprovalRequest: Identifiable, Codable {
         cwd: URL,
         classification: ShellPolicyClassification,
         reason: String? = nil,
-        agentName: String
+        agentName: String,
+        createdAt: Date = Date()
     ) {
         self.id = id
         self.command = command
@@ -104,6 +105,7 @@ public struct ShellApprovalRequest: Identifiable, Codable {
         self.classification = classification
         self.reason = reason
         self.agentName = agentName
-}
+        self.createdAt = createdAt
+    }
 
 }

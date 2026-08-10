@@ -39,7 +39,7 @@ struct TilingDropDelegate: DropDelegate {
     }
 
     func dropExited(info: DropInfo) {
-        dragState.updateTarget(kind: nil, zone: nil)
+        dragState.clearTarget(ifCurrent: targetKind)
     }
 
     func performDrop(info: DropInfo) -> Bool {

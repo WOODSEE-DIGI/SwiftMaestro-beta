@@ -36,7 +36,9 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     case discord
     case web
     case browser
+    case scraping
     case bluesky
+    case patreon
     case vault
     case database
     case dam
@@ -64,7 +66,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             return false
         case .file, .documents, .books, .shell, .server, .index, .system, .sqlite,
              .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news,
-             .mail, .whatsapp, .discord, .web, .browser, .bluesky, .vault, .database, .dam,
+             .mail, .whatsapp, .discord, .web, .browser, .scraping, .bluesky, .patreon, .vault, .database, .dam,
              .calendar, .reminders, .contacts:
             return true
         }
@@ -100,7 +102,9 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .discord: return "Discord"
         case .web: return "Web"
         case .browser: return "Browser"
+        case .scraping: return "Scraping"
         case .bluesky: return "Bluesky"
+        case .patreon: return "Patreon"
         case .vault: return "Vault"
         case .database: return "Database"
         case .dam: return "DAM"
@@ -140,7 +144,9 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .discord: return "bubble.left.and.text.bubble.right"
         case .web: return "globe"
         case .browser: return "safari"
+        case .scraping: return "tray.and.arrow.down"
         case .bluesky: return "at"
+        case .patreon: return "heart.circle"
         case .vault: return "lock.square"
         case .database: return "cylinder"
         case .dam: return "photo.on.rectangle.angled"
@@ -255,6 +261,13 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             ]
         case .web:
             return ["web_search", "fetch_url", "deep_fetch", "web_crawl", "site_map"]
+        case .scraping:
+            // MCP-only category (like .mcp): heavy web-scraping MCP servers
+            // (firecrawl, webclaw, read-website-fast) map here via
+            // MCPClientService.serverCategoryMap so coding agents can drop
+            // ~39 scraping tool schemas without losing the lightweight native
+            // web tools above (web_search/fetch_url for documentation lookups).
+            return []
         case .browser:
             return [
                 "browser_open", "browser_list", "browser_focus", "browser_close",
@@ -265,6 +278,14 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             return [
                 "search_bluesky_posts", "get_bluesky_profile", "get_bluesky_author_feed",
                 "get_bluesky_thread", "search_bluesky_actors",
+                "get_bluesky_timeline", "post_bluesky",
+                "like_bluesky_post", "unlike_bluesky_post",
+                "repost_bluesky_post", "unrepost_bluesky_post",
+            ]
+        case .patreon:
+            return [
+                "get_patreon_campaign", "list_patreon_members",
+                "list_patreon_posts", "get_patreon_memberships",
             ]
         case .vault:
             return ["obsidian_search_vault", "obsidian_read_note", "obsidian_write_note", "obsidian_list_vault"]
@@ -321,7 +342,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .bus: return [.busMonitor]
         case .file, .server, .index, .memory, .messaging,
              .system, .mcp, .sqlite, .workspace, .rules, .time, .stocks,
-             .news, .web, .bluesky, .vault:
+             .news, .web, .scraping, .bluesky, .patreon, .vault:
             return []
         }
     }
@@ -334,14 +355,14 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         switch kind {
         case .navigator:
             return [
-                .workspace, .memory, .bus, .system, .rules, .time, .web, .browser, .vault, .documents, .books,
-                .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky, .database, .dam,
+                .workspace, .memory, .bus, .system, .rules, .time, .web, .browser, .scraping, .vault, .documents, .books,
+                .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky, .patreon, .database, .dam,
                 .calendar, .reminders, .contacts,
             ]
         case .project:
             return [
-                .file, .documents, .books, .shell, .server, .index, .memory, .messaging, .bus, .system, .mcp, .sqlite, .web, .browser, .vault,
-                .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky, .database, .dam,
+                .file, .documents, .books, .shell, .server, .index, .memory, .messaging, .bus, .system, .mcp, .sqlite, .web, .browser, .scraping, .vault,
+                .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky, .patreon, .database, .dam,
                 .calendar, .reminders, .contacts,
             ]
         }

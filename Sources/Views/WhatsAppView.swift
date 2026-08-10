@@ -492,7 +492,7 @@ struct WhatsAppView: View {
         for provider in providers {
             if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
                 handled = true
-                _ = provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
+                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
                     var url: URL?
                     if let u = item as? URL { url = u }
                     else if let d = item as? Data { url = URL(dataRepresentation: d, relativeTo: nil) }
@@ -564,10 +564,10 @@ struct WhatsAppView: View {
             try await service.sendMessage(to: chatJID, text: text, mediaPath: attachmentURL?.path)
             composeText = ""
             pendingAttachmentURL = nil
-            // Show it immediately — the bridge doesn't persist messages it
-            // sends via its own REST API back into its SQLite database (see
-            // WhatsAppService.loadMessages), so without this the message
-            // would send successfully but never appear here. For an
+            // Show it instantly — the bridge DOES persist sends to its SQLite
+            // (see loadMessages), but only before its REST response returns;
+            // this placeholder covers the gap until the reload lands, and the
+            // loadMessages merge drops it once the real row is visible. For an
             // attachment, register the LOCAL file directly (no download
             // round-trip needed for our own outgoing image).
             service.appendSentMessage(

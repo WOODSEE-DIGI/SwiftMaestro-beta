@@ -19,6 +19,7 @@ enum MarkdownEditCommand {
 }
 
 /// Shared handle the toolbar uses to reach the live NSTextView.
+@MainActor
 @Observable
 final class MarkdownEditorController {
     weak var textView: NSTextView?

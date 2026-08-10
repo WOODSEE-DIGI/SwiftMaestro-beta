@@ -34,6 +34,7 @@ struct WindowFocusObserver: NSViewRepresentable {
         coordinator.detach()
     }
 
+    @MainActor
     final class Coordinator {
         private let name: Notification.Name
         private let match: (Any?) -> Bool
@@ -55,23 +56,21 @@ struct WindowFocusObserver: NSViewRepresentable {
                 object: nil,
                 queue: .main
             ) { [weak self] note in
-                guard let self else { return }
-                let kindString = (note.object as? WorkspacePanelKind).map { String(describing: $0) } ?? "nil"
-                os_log("WindowFocusObserver received %{public}@, match=%{public}d, hasWindow=%{public}d", log: focusLog, type: .info, kindString, self.match(note.object), self.view?.window != nil)
-                guard self.match(note.object) else { return }
-                guard let window = self.view?.window else { return }
-                // Activating the app is required when the window is behind
-                // another app; `makeKeyAndOrderFront` alone only reorders within
-                // the current app if it is not active.
-                os_log("WindowFocusObserver window=%{public}@ isVisible=%{public}d isKey=%{public}d level=%{public}ld", log: focusLog, type: .info, window.title ?? "<no title>", window.isVisible, window.isKeyWindow, window.level.rawValue)
-                // `makeKeyAndOrderFront` alone can be ignored if the app is not
-                // active or the window is behind another window. `orderFrontRegardless`
-                // orders the window to the front regardless of activation state,
-                // then we make it key.
-                os_log("WindowFocusObserver ordering front regardless", log: focusLog, type: .info)
-                window.orderFrontRegardless()
-                os_log("WindowFocusObserver making key and ordering front", log: focusLog, type: .info)
-                window.makeKeyAndOrderFront(nil)
+                // Extract all data from Notification (non-Sendable) into
+                // Sendable values before crossing into the MainActor Task.
+                let panelKind = note.object as? WorkspacePanelKind
+                let panelString = panelKind.map { String(describing: $0) } ?? "nil"
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    os_log("WindowFocusObserver received %{public}@, hasWindow=%{public}d", log: focusLog, type: .info, panelString, self.view?.window != nil)
+                    guard self.match(panelKind) else { return }
+                    guard let window = self.view?.window else { return }
+                    os_log("WindowFocusObserver window=%{public}@ isVisible=%{public}d isKey=%{public}d level=%{public}ld", log: focusLog, type: .info, window.title, window.isVisible, window.isKeyWindow, window.level.rawValue)
+                    os_log("WindowFocusObserver ordering front regardless", log: focusLog, type: .info)
+                    window.orderFrontRegardless()
+                    os_log("WindowFocusObserver making key and ordering front", log: focusLog, type: .info)
+                    window.makeKeyAndOrderFront(nil)
+                }
             }
         }
 

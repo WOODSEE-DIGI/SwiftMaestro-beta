@@ -1,0 +1,8 @@
+{
+  "id": "bluesky",
+  "name": "Bluesky",
+  "icon": "at",
+  "entry": "index.html",
+  "version": "1.0.0",
+  "capabilities": ["network", "secrets"]
+}

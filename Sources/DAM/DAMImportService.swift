@@ -286,7 +286,7 @@ actor DAMImportService {
     /// fields — a rescan only refreshes file + EXIF metadata.
     private nonisolated static func writeBatch(_ batch: [DAMAsset], to database: DAMDatabase) throws {
         try database.dbQueue.write { db in
-            for var asset in batch {
+            for asset in batch {
                 let existing = try DAMAsset
                     .filter(DAMAsset.Columns.path == asset.path)
                     .fetchOne(db)

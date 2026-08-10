@@ -27,5 +27,12 @@
 	<!-- Apple Events automation (e.g. Notes) for the native macOS integration. -->
 	<key>com.apple.security.automation.apple-events</key>
 	<true/>
+	<!-- Load third-party dylibs signed by other teams (Homebrew libusb/libraw
+	     for tethering). Required once the Debug config signs with a stable
+	     identity: hardened-runtime library validation otherwise rejects them
+	     and dyld aborts at launch. Harmless here — the app is unsandboxed and
+	     already runs arbitrary local tooling/MCP subprocesses by design. -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
 </dict>
 </plist>

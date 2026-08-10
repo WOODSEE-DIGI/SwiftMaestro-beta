@@ -44,16 +44,17 @@ extension MaestroTools {
                 + "you to run a command, start a server, or perform any shell operation. "
                 + "Use `dry_run` to preview the classified command without executing. "
                 + "ALWAYS use `start_background: true` for long-running processes such as HTTP "
-                + "servers, watchers, or daemons so they survive after the command returns. "
+                + "servers, watchers, daemons, or xcodebuild builds (which can take several "
+                + "minutes) so they survive after the command returns. "
                 + "Background processes are tracked and can be listed/stopped. "
                 + "EXACT tool call format example:\n"
                 + "<tool_call>\n<function=execute_command>\n<parameter=command>\n"
                 + "cd /path/to/site && python3 -m http.server 8001\n"
                 + "</parameter>\n</function>\n</tool_call>",
                 properties: [
-                    "command": ["type": "string", "description": "The shell command to execute (e.g. 'ls -la /tmp')."],
+                    "command": ["type": "string", "description": "The shell command to execute. When piping output to a log file (e.g. xcodebuild | tee .build/build.log), always write inside the project directory — never use /tmp/ which is outside authorized roots."],
                     "cwd": ["type": "string", "description": "Optional working directory. Defaults to the agent workspace."],
-                    "timeout": ["type": "integer", "description": "Timeout in seconds (default: 60). Ignored for background processes."],
+                    "timeout": ["type": "integer", "description": "Timeout in SECONDS — not milliseconds. 300 = 5 minutes. Default 60, max 3600. For anything longer (xcodebuild, big downloads), use start_background: true instead — background processes have no timeout."],
                     "dry_run": ["type": "boolean", "description": "If true, classify the command against policy and return the classification without executing."],
                     "start_background": ["type": "boolean", "description": "If true, run the process in the background. Returns immediately with a process ID. Use list_background_processes to check status."],
                 ],
@@ -126,7 +127,34 @@ extension MaestroTools {
                 + "brew update\n</parameter>\n</function>\n</tool_call>"
             )
         }
-        let command = sanitized
+        // 0.4. Fix unclosed double quotes — models (especially small MoE) frequently
+        // emit `echo "Build directory not found` (missing closing `"`), which breaks
+        // zsh. Count quotes and append a closing one if odd.
+        // 0.5. Inject `-quiet` into xcodebuild commands to suppress 170KB+ of noise.
+        let command: String = {
+            var cmd = sanitized
+            let dqCount = cmd.unicodeScalars.filter { $0 == "\"" }.count
+            if dqCount % 2 != 0 {
+                NSLog("[SHELL] fixing unclosed quote in command (found %d double quotes)", dqCount)
+                cmd = cmd + "\""
+            }
+            // Inject -quiet into xcodebuild if not already present
+            if cmd.contains("xcodebuild") && !cmd.contains("-quiet") {
+                let pattern = #"(?<!\w)xcodebuild"#
+                if let regex = try? NSRegularExpression(pattern: pattern),
+                   let match = regex.firstMatch(in: cmd, range: NSRange(cmd.startIndex..., in: cmd)) {
+                    let range = Range(match.range, in: cmd)!
+                    NSLog("[SHELL] injecting -quiet into xcodebuild command")
+                    cmd = cmd.replacingCharacters(in: range, with: "xcodebuild -quiet")
+                }
+            }
+            return cmd
+        }()
+
+        // 0.6. Auto-create parent directories for `tee` targets. Models frequently
+        // pipe build output to `tee .build/build.log` but forget to mkdir first.
+        // Detect `| tee <path>` and ensure the parent directory exists.
+        ensureTeeDirectories(in: command, cwd: args.cwd ?? NSHomeDirectory())
 
         // 1. Check if shell tool is enabled
         guard await MainActor.run(body: { ShellPolicyStore.shared.enabled }) else {
@@ -188,7 +216,61 @@ extension MaestroTools {
         }
 
         // 7. Execute (allowed, unknown, or approved)
-        return await runShellCommand(command, cwd: args.cwd, timeout: args.timeout)
+        return await runShellCommand(command, cwd: args.cwd, timeout: Self.normalizedTimeout(args.timeout))
+    }
+
+    /// Normalize a model-supplied timeout to seconds. Local models frequently
+    /// pass MILLISECONDS (e.g. 300000 for "5 minutes") because that convention
+    /// dominates their training data — the spec says seconds, but a
+    /// 300,000-"second" timeout would let a hung process block the agent loop
+    /// for 83 hours (observed live: an xcodebuild that deadlocked at the
+    /// codesign step outlived its intended 5-minute cap). Heuristic: any value
+    /// above 10,000 is treated as milliseconds (no legitimate foreground agent
+    /// command runs longer than ~2.7 hours), then clamped to [1, 3600].
+    /// Anything longer must go through start_background (no timeout).
+    static func normalizedTimeout(_ raw: Int?) -> Int? {
+        guard let raw else { return nil }
+        var value = raw
+        if value > 10_000 {
+            let converted = max(1, value / 1000)
+            NSLog("[SHELL] timeout \(raw) looks like milliseconds — interpreting as \(converted)s")
+            value = converted
+        }
+        if value > 3600 {
+            NSLog("[SHELL] timeout \(value)s clamped to 3600s (1h max for foreground commands)")
+            value = 3600
+        }
+        return max(1, value)
+    }
+
+    // MARK: - Tee directory auto-creation
+
+    /// Detect `| tee <path>` or `|& tee <path>` in a command and ensure the
+    /// parent directory exists. Models frequently pipe build output to
+    /// `tee .build/build.log` without mkdir -p first — `tee` can't create
+    /// parent directories, so the pipe fails silently.
+    private static func ensureTeeDirectories(in command: String, cwd: String) {
+        // Match: | tee <path> or |& tee <path> (with optional redirect)
+        let pattern = #"\|&?\s+tee\s+([^\s;&|]+)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else { return }
+        let range = NSRange(command.startIndex..<command.endIndex, in: command)
+        for match in regex.matches(in: command, options: [], range: range) {
+            guard match.numberOfRanges > 1,
+                  let pathRange = Range(match.range(at: 1), in: command) else { continue }
+            let rawPath = String(command[pathRange]).trimmingCharacters(in: .whitespaces)
+            // Resolve relative paths against cwd
+            let fullPath: String
+            if rawPath.hasPrefix("/") {
+                fullPath = rawPath
+            } else {
+                fullPath = (cwd as NSString).appendingPathComponent(rawPath)
+            }
+            let dir = (fullPath as NSString).deletingLastPathComponent
+            if !dir.isEmpty {
+                try? FileManager.default.createDirectory(
+                    atPath: dir, withIntermediateDirectories: true)
+            }
+        }
     }
 
     // MARK: - Destructive Command Screen
@@ -412,13 +494,33 @@ extension MaestroTools {
             )
         }
 
+        // Write a wrapper script that exec's the actual command. This avoids
+        // the subshell PID problem: when `nohup cmd > log 2> err &` runs a
+        // command with pipes, the shell creates a subshell for the pipe and
+        // $! gives the subshell's PID (which exits immediately), not the
+        // actual command's PID. Using `exec` replaces the shell process with
+        // the command, so the tracked PID IS the command's PID.
+        let scriptPath = "\(logsDir)/swiftmaestro-bg-\(processID).sh"
+        let scriptContent = "#!/bin/zsh\nexec \(effectiveCommand)"
+        do {
+            try scriptContent.write(toFile: scriptPath, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755],
+                ofItemAtPath: scriptPath
+            )
+        } catch {
+            return errorJSON("Failed to write background wrapper script: \(error.localizedDescription)")
+        }
+
         let process = Process()
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
 
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
         // nohup + disown ensures the process survives the launcher shell's exit.
-        process.arguments = ["-lic", "nohup \(effectiveCommand) > \"\(logPath)\" 2> \"\(errPath)\" &\necho $!"]
+        // The wrapper script uses exec so the tracked PID is the actual command,
+        // not a short-lived subshell.
+        process.arguments = ["-lic", "nohup \"\(scriptPath)\" > \"\(logPath)\" 2> \"\(errPath)\" &\necho $!"]
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
@@ -434,13 +536,28 @@ extension MaestroTools {
 
         process.waitUntilExit()
 
-        // Read the PID from stdout
+        // Read the PID from stdout. The output may contain shell initialization
+        // noise (e.g. zsh prompt setup), so extract just the numeric PID.
         let pidData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let pid = String(data: pidData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
+        let rawPid = String(data: pidData, encoding: .utf8) ?? ""
+        // Extract the last line that looks like a pure number (the PID from echo $!).
+        // NOTE: allSatisfy on an empty string returns true (vacuous truth), so we
+        // must also check !trimmed.isEmpty to avoid matching trailing empty lines.
+        let pid = rawPid.components(separatedBy: .newlines)
+            .last(where: {
+                let trimmed = $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                return !trimmed.isEmpty && trimmed.allSatisfy(\.isNumber)
+            })
+            ?? rawPid.trimmingCharacters(in: .whitespacesAndNewlines)
+        NSLog("[BG-SPAWN] Raw PID output: '\(rawPid.trimmingCharacters(in: .whitespacesAndNewlines))' → parsed: '\(pid)'")
+        if pid.isEmpty {
+            NSLog("[BG-SPAWN] WARNING: Could not parse numeric PID from output, process will not be tracked")
+        }
 
         // Wait a moment and check if the process is actually running
         try? await Task.sleep(nanoseconds: 500_000_000)
         let isRunning = await MainActor.run { BackgroundProcessManager.shared.isProcessRunning(pid: pid) }
+        NSLog("[BG-SPAWN] Health check for PID \(pid): isRunning=\(isRunning)")
 
         if isRunning {
             await MainActor.run {
@@ -645,6 +762,7 @@ private final class BackgroundProcessManager {
     private var processes: [String: TrackedProcess] = [:]
 
     func addProcess(id: String, command: String, cwd: String, logPath: String, errPath: String) {
+        NSLog("[BG-TRACK] Adding process \(id): \(command)")
         processes[id] = TrackedProcess(
             id: id,
             command: command,
@@ -657,10 +775,15 @@ private final class BackgroundProcessManager {
 
     func listProcesses() -> [TrackedProcess] {
         // Prune processes that are no longer running
+        let beforeCount = processes.count
         for (id, _) in processes {
             if !isProcessRunning(pid: id) {
+                NSLog("[BG-TRACK] Pruning dead process \(id)")
                 processes.removeValue(forKey: id)
             }
+        }
+        if beforeCount != processes.count {
+            NSLog("[BG-TRACK] Pruned \(beforeCount - processes.count) dead processes, \(processes.count) remaining")
         }
         return Array(processes.values)
     }
@@ -680,8 +803,13 @@ private final class BackgroundProcessManager {
     }
 
     func isProcessRunning(pid: String) -> Bool {
-        guard let pidNum = pid_t(pid), pidNum > 0 else { return false }
+        let trimmed = pid.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let pidNum = pid_t(trimmed), pidNum > 0 else { return false }
         // kill(pid, 0) checks if process exists without sending a signal
-        return kill(pidNum, 0) == 0
+        let result = kill(pidNum, 0)
+        if result != 0 {
+            NSLog("[BG-TRACK] Process \(trimmed) not running (kill result: \(result), errno: \(errno))")
+        }
+        return result == 0
     }
 }

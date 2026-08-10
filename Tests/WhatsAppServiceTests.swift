@@ -314,6 +314,55 @@ final class WhatsAppServiceTests: XCTestCase {
         )
     }
 
+    func testLoadMessagesDropsLocalPlaceholderWhenDBRowHasEmptyStringMediaType() async throws {
+        // Regression test for the live double-send display bug: the bridge's
+        // sendWhatsAppMessage persists text sends with media_type = '' (empty
+        // string, NOT NULL — extractMediaInfo returns "" for plain text). The
+        // local placeholder uses nil. '' != nil used to defeat the dedup, so
+        // every sent text message rendered twice.
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WhatsAppServiceTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: tempDir.appendingPathComponent("store", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+            WhatsAppService.setBridgeDirectoryOverride(nil)
+        }
+        WhatsAppService.setBridgeDirectoryOverride(tempDir.path)
+
+        let dbPath = tempDir.appendingPathComponent("store/messages.db").path
+        let setupDB = try DatabaseQueue(path: dbPath)
+        try await setupDB.write { db in
+            try db.execute(sql: """
+                CREATE TABLE messages (
+                    id TEXT, chat_jid TEXT, sender TEXT, content TEXT,
+                    timestamp TIMESTAMP, is_from_me BOOLEAN, media_type TEXT,
+                    PRIMARY KEY (id, chat_jid)
+                )
+                """)
+            // Exactly what the bridge writes for a plain-text send: '' media_type.
+            try db.execute(sql: """
+                INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me, media_type)
+                VALUES ('outgoing-real-1', '123@s.whatsapp.net', 'me', 'test from swift', ?, 1, '')
+                """, arguments: [Date()])
+        }
+
+        let service = WhatsAppService()
+        service.appendSentMessage(chatJID: "123@s.whatsapp.net", text: "test from swift")
+        await service.loadMessages(chatJID: "123@s.whatsapp.net")
+
+        let matches = service.messages.filter { $0.content == "test from swift" && $0.isFromMe }
+        XCTAssertEqual(
+            matches.count, 1,
+            "a DB text row (media_type='') must retire the local placeholder (mediaType=nil), not duplicate it"
+        )
+        // The surviving row must be the real DB row, not the placeholder.
+        XCTAssertEqual(matches.first?.id, "outgoing-real-1")
+        XCTAssertNil(matches.first?.mediaType, "empty-string media_type should normalize to nil")
+    }
+
     // MARK: - LID/phone-number conversation reconciliation
     //
     // WhatsApp increasingly addresses a contact via a privacy-preserving LID

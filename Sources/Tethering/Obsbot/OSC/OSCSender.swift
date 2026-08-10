@@ -27,14 +27,8 @@ enum OSCArgument {
         case .int32(let value):
             data.append(contentsOf: value.bigEndianBytes)
         case .float32(let value):
-            var v = value
-            var bytes = Data(count: 4)
-            memcpy(&bytes, &v, 4)
-            // Convert host float to big-endian if necessary.
-            #if arch(littleEndian)
-            bytes.reverse()
-            #endif
-            data.append(bytes)
+            var bigEndian = value.bitPattern.bigEndian
+            data.append(Data(bytes: &bigEndian, count: 4))
         case .string(let value):
             data.append(oscStringBytes(value))
         }

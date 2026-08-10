@@ -187,7 +187,7 @@ extension MaestroTools {
         }
 
         do {
-            let countBefore = try DAMDatabase.shared.assetCount(folder: nil)
+            _ = try DAMDatabase.shared.assetCount(folder: nil)
             let written = try await DAMImportService.shared.importFolder(at: url, database: .shared)
             let countAfter = try DAMDatabase.shared.assetCount(folder: nil)
             return "Import complete. \(written) rows written. Total catalog: \(countAfter) assets."

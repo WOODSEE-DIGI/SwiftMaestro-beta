@@ -226,7 +226,7 @@ actor AgentBus {
     }
 
     /// Encode and persist the current bus history to `~/.ai-context/memory/context/bus/history.json`.
-    private func saveHistory() {
+    private func saveHistory() async {
         guard persistenceEnabled else { return }
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601

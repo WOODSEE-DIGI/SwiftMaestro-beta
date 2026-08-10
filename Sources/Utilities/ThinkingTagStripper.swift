@@ -92,7 +92,39 @@ enum ThinkingTagStripper {
         }
         result = cleaned.joined(separator: "\n")
 
-        // 4. Collapse excessive blank lines and trim leading/trailing newlines.
+        // 4. Remove raw <tool_call>...</tool_call> XML blocks that the model streams
+        //    as text tokens (small MoE models like Gemma 4 / Qwen 3 Coder emit
+        //    these alongside parsed .toolCall events). The executor's
+        //    consumeStreamChunk suppresses them in answer mode, but reasoning
+        //    mode and finalization can let them through — this is the safety net.
+        if let regex = try? NSRegularExpression(
+            pattern: #"(?s)<tool_call>.*?</tool_call>"#, options: []) {
+            let range = NSRange(result.startIndex..., in: result)
+            result = regex.stringByReplacingMatches(
+                in: result, options: [], range: range, withTemplate: "")
+        }
+        // Also strip bare <function=name>...</function> blocks without the
+        // outer <tool_call> wrapper (Qwen 3 Coder emits these).
+        if let regex = try? NSRegularExpression(
+            pattern: #"(?s)<function=[^>]+>.*?</function>"#, options: []) {
+            let range = NSRange(result.startIndex..., in: result)
+            result = regex.stringByReplacingMatches(
+                in: result, options: [], range: range, withTemplate: "")
+        }
+
+        // 5. Fix collapsed numbered lists — Gemma 4 frequently omits newlines
+        //    between numbered items, producing "1. First item.2. Second item.3. Third"
+        //    instead of separate lines. Detect end-of-sentence punctuation followed
+        //    by a list marker (digit + period) on the same line and insert a break.
+        //    Pattern: sentence-ending punct → number.period → space (no newline between)
+        if let regex = try? NSRegularExpression(
+            pattern: #"([.!?:;])\s*(?=\d+\.\s)"#, options: []) {
+            let range = NSRange(result.startIndex..., in: result)
+            result = regex.stringByReplacingMatches(
+                in: result, options: [], range: range, withTemplate: "$1\n")
+        }
+
+        // 6. Collapse excessive blank lines and trim leading/trailing newlines.
         //    Preserve leading/trailing spaces so streaming chunks don't lose
         //    inter-word spacing when small pieces are appended together.
         while result.contains("\n\n\n") {

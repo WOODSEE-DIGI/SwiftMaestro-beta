@@ -36,7 +36,7 @@ enum DocxWriter {
             files["word/media/\(name)"] = data
         }
 
-        try DocEngine.zipPackage(url: url, files: files)
+        _ = try DocEngine.zipPackage(url: url, files: files)
     }
 
     // MARK: - Write context (rels + media collected during a pass)

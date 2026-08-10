@@ -106,45 +106,70 @@ extension MaestroTools {
 
     // MARK: - Args
 
-    private struct GlobFilesArgs: Codable {
+    // Scalar args use Lenient types: small models emit numbers/bools as
+    // strings ("200", "false"), and a strict Int?/Bool? fails the WHOLE
+    // struct decode — the tool then reports a misleading "requires 'pattern'"
+    // error even though the pattern was there (confirmed live: glob_files and
+    // write_file rejecting well-formed arguments from Gemma 4).
+    struct GlobFilesArgs: Decodable {
         let pattern: String?
         let path: String?
-        let limit: Int?
+        let limit: LenientInt?
     }
-    private struct GrepCodeArgs: Codable {
+    struct GrepCodeArgs: Decodable {
         let pattern: String?
         let path: String?
         let glob: String?
-        let case_sensitive: Bool?
-        let limit: Int?
+        let case_sensitive: LenientBool?
+        let limit: LenientInt?
     }
-    private struct EditFileArgs: Codable {
+    struct EditFileArgs: Decodable {
         let path: String?
         let old_string: String?
         let new_string: String?
-        let replace_all: Bool?
+        let replace_all: LenientBool?
     }
     private struct GitPathArgs: Codable {
         let path: String?
     }
-    private struct GitDiffArgs: Codable {
+    struct GitDiffArgs: Decodable {
         let path: String?
         let file: String?
-        let staged: Bool?
+        let staged: LenientBool?
     }
-    private struct GitLogArgs: Codable {
+    struct GitLogArgs: Decodable {
         let path: String?
-        let limit: Int?
+        let limit: LenientInt?
         let file: String?
     }
 
     // MARK: - glob_files
 
-    private static func globFiles(_ call: ToolCall) async -> String {
-        guard let args = decodeArgs(call, as: GlobFilesArgs.self),
-              let pattern = args.pattern?.trimmingCharacters(in: .whitespaces), !pattern.isEmpty else {
-            return errorJSON("glob_files requires 'pattern'")
+    /// Small models over-escape path separators when mimicking JSON output,
+    /// producing patterns like `**\/*.swift` that silently match NOTHING —
+    /// confirmed live: three identical zero-match glob calls in a row because
+    /// the tool never normalized the pattern. A backslash before a slash is
+    /// never meaningful in our glob syntax, so collapse it; also strip one
+    /// layer of surrounding quotes the model may wrap the pattern in.
+    static func normalizeGlobPattern(_ pattern: String) -> String {
+        var p = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\\/", with: "/")
+        if p.count >= 2, p.hasPrefix("\""), p.hasSuffix("\"") {
+            p = String(p.dropFirst().dropLast())
         }
+        return p
+    }
+
+    private static func globFiles(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: GlobFilesArgs.self) else {
+            return errorJSON(
+                "glob_files could not decode its arguments (\(argDiagnostics(call))). "
+                    + "Pass 'pattern' as a string and optional 'limit' as a number.")
+        }
+        guard let rawPattern = args.pattern?.trimmingCharacters(in: .whitespaces), !rawPattern.isEmpty else {
+            return errorJSON("glob_files requires 'pattern' (\(argDiagnostics(call)))")
+        }
+        let pattern = normalizeGlobPattern(rawPattern)
         let roots = authorizedRoots()
         let explicitPath: String? = {
             guard let raw = args.path?.trimmingCharacters(in: .whitespaces), !raw.isEmpty else { return nil }
@@ -159,7 +184,7 @@ extension MaestroTools {
         } else {
             searchRoots = roots
         }
-        let limit = max(1, min(1000, args.limit ?? 200))
+        let limit = max(1, min(1000, args.limit?.value ?? 200))
         let matcher = GlobMatcher(pattern: pattern)
         var matches: [String] = []
         for root in searchRoots {
@@ -190,9 +215,13 @@ extension MaestroTools {
     // MARK: - grep_code
 
     private static func grepCode(_ call: ToolCall) async -> String {
-        guard let args = decodeArgs(call, as: GrepCodeArgs.self),
-              let pattern = args.pattern?.trimmingCharacters(in: .whitespaces), !pattern.isEmpty else {
-            return errorJSON("grep_code requires 'pattern'")
+        guard let args = decodeArgs(call, as: GrepCodeArgs.self) else {
+            return errorJSON(
+                "grep_code could not decode its arguments (\(argDiagnostics(call))). "
+                    + "Pass 'pattern' as a string; 'case_sensitive' and 'limit' accept booleans/numbers.")
+        }
+        guard let pattern = args.pattern?.trimmingCharacters(in: .whitespaces), !pattern.isEmpty else {
+            return errorJSON("grep_code requires 'pattern' (\(argDiagnostics(call)))")
         }
         let roots = authorizedRoots()
         let explicitPath: String? = {
@@ -208,9 +237,9 @@ extension MaestroTools {
         } else {
             searchRoots = roots
         }
-        let limit = max(1, min(500, args.limit ?? 100))
-        let globFilter = args.glob?.trimmingCharacters(in: .whitespaces).nilIfEmpty
-        let caseSensitive = args.case_sensitive ?? true
+        let limit = max(1, min(500, args.limit?.value ?? 100))
+        let globFilter = args.glob.map { normalizeGlobPattern($0) }.flatMap { $0.nilIfEmpty }
+        let caseSensitive = args.case_sensitive?.value ?? true
         let matcher: GlobMatcher? = globFilter.map { GlobMatcher(pattern: $0) }
         var regex: NSRegularExpression
         do {
@@ -262,11 +291,16 @@ extension MaestroTools {
     // MARK: - edit_file
 
     private static func editFile(_ call: ToolCall) async -> String {
-        guard let args = decodeArgs(call, as: EditFileArgs.self),
-              let rawPath = args.path?.trimmingCharacters(in: .whitespaces), !rawPath.isEmpty,
+        guard let args = decodeArgs(call, as: EditFileArgs.self) else {
+            return errorJSON(
+                "edit_file could not decode its arguments (\(argDiagnostics(call))). "
+                    + "Pass 'path', 'old_string', and 'new_string' as strings.")
+        }
+        guard let rawPath = args.path?.trimmingCharacters(in: .whitespaces), !rawPath.isEmpty,
               let oldString = args.old_string,
               let newString = args.new_string else {
-            return errorJSON("edit_file requires 'path', 'old_string', and 'new_string'")
+            return errorJSON(
+                "edit_file requires 'path', 'old_string', and 'new_string' (\(argDiagnostics(call)))")
         }
         guard let resolved = resolveAbsolute(rawPath) else {
             return errorJSON("edit_file requires an absolute path")
@@ -279,19 +313,25 @@ extension MaestroTools {
               let original = String(data: data, encoding: .utf8) else {
             return errorJSON("could not read file at \(resolved)")
         }
-        let replaceAll = args.replace_all ?? false
+        let replaceAll = args.replace_all?.value ?? false
         let updated: String
         let count: Int
         if replaceAll {
             let parts = original.components(separatedBy: oldString)
             count = parts.count - 1
             guard count > 0 else {
-                return errorJSON("old_string not found in \(resolved)")
+                return errorJSON(
+                    "old_string not found in \(resolved). "
+                    + "The file may have changed since you last read it. "
+                    + "Re-read the file with read_file, then retry the edit with the CURRENT content.")
             }
             updated = parts.joined(separator: newString)
         } else {
             guard let range = original.range(of: oldString) else {
-                return errorJSON("old_string not found in \(resolved)")
+                return errorJSON(
+                    "old_string not found in \(resolved). "
+                    + "The file may have changed since you last read it. "
+                    + "Re-read the file with read_file, then retry the edit with the CURRENT content.")
             }
             updated = original.replacingCharacters(in: range, with: newString)
             count = 1
@@ -372,7 +412,7 @@ extension MaestroTools {
             return errorJSON("git_diff: failed to decode arguments")
         }
         var gitArgs = ["diff"]
-        if args.staged == true {
+        if args.staged?.value == true {
             gitArgs.append("--cached")
         }
         if let file = args.file?.trimmingCharacters(in: .whitespaces), !file.isEmpty {
@@ -385,7 +425,7 @@ extension MaestroTools {
         guard let args = decodeArgs(call, as: GitLogArgs.self) else {
             return errorJSON("git_log: failed to decode arguments")
         }
-        let limit = max(1, min(100, args.limit ?? 10))
+        let limit = max(1, min(100, args.limit?.value ?? 10))
         var gitArgs = ["log", "--oneline", "--max-count=\(limit)"]
         if let file = args.file?.trimmingCharacters(in: .whitespaces), !file.isEmpty {
             gitArgs.append("--")

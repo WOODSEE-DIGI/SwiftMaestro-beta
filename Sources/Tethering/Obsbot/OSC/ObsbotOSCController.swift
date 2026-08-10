@@ -193,7 +193,9 @@ final class ObsbotOSCController: @unchecked Sendable {
     private func startHeartbeat() {
         heartbeatTimer?.invalidate()
         heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-            self?.send(.message(address: "/OBSBOT/WebCam/General/Connected", arguments: [.int32(1)]))
+            Task { @MainActor [weak self] in
+                self?.send(.message(address: "/OBSBOT/WebCam/General/Connected", arguments: [.int32(1)]))
+            }
         }
     }
 

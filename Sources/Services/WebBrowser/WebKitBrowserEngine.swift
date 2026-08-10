@@ -177,13 +177,13 @@ final class WebKitBrowserEngine: NSObject {
 }
 
 extension WebKitBrowserEngine: WKNavigationDelegate {
-    func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+    func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse) async -> WKNavigationResponsePolicy {
         // Capture the main-frame HTTP status so dead links (404 etc.) are detectable.
         if navigationResponse.isForMainFrame,
            let http = navigationResponse.response as? HTTPURLResponse {
             lastHTTPStatus = http.statusCode
         }
-        decisionHandler(.allow)
+        return .allow
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -194,7 +194,7 @@ extension WebKitBrowserEngine: WKNavigationDelegate {
         self.error = error.localizedDescription
     }
 
-    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
         // Cmd+click or middle-click on a link opens it in a background tab instead
         // of navigating the current one. Everything else is left alone.
         if navigationAction.navigationType == .linkActivated,
@@ -203,11 +203,10 @@ extension WebKitBrowserEngine: WKNavigationDelegate {
                 || navigationAction.buttonNumber == 2
             if openInBackground {
                 onRequestNewTab?(url, true)
-                decisionHandler(.cancel)
-                return
+                return .cancel
             }
         }
-        decisionHandler(.allow)
+        return .allow
     }
 }
 

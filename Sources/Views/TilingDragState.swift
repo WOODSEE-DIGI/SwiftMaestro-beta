@@ -46,6 +46,17 @@ final class TilingDragState {
         }
     }
 
+    /// Called by a tile the drag has left. Only clears the target when the
+    /// exited tile IS the current target — entering tile B before tile A's
+    /// exit event fires (the normal event order crossing a boundary) must not
+    /// wipe B's fresh preview, and A's exit arriving after must not clear B.
+    /// This is what prevented stale/overlapping highlights on tile edges.
+    func clearTarget(ifCurrent kind: WorkspacePanelKind) {
+        guard targetKind == kind else { return }
+        targetKind = nil
+        targetZone = nil
+    }
+
     /// Called when the drag begins.
     func beginDrag(_ kind: WorkspacePanelKind) {
         draggedKind = kind
@@ -69,12 +80,20 @@ final class TilingDragState {
 // MARK: - Drop Zone Geometry
 
 /// Computes the drop zone for a point inside a tile of the given size.
-/// The tile is divided into a center square plus four edge/corner regions.
-/// The center region is 40% of the tile; the remainder is split among the four
-/// cardinal directions, making the preview feel crisp and quadrant-like.
+/// Layout: a center "stack here" rect plus a fixed-thickness band along each
+/// of the four edges. Uniform bands matter: pure nearest-edge (Voronoi)
+/// zoning made the left/right bands vanishingly thin on short row tiles, so
+/// sub-columns ("2 apps side by side under 1") became almost impossible to
+/// target once rows got short; and an earlier inverted axis comparison had
+/// made top/bottom rows unreachable. Bands keep every direction easy to hit
+/// regardless of the tile's aspect ratio; corners resolve by nearest edge.
 enum TilingDropZoneGeometry {
     /// Fraction of the tile reserved for the center "stack here" region.
     static let centerFraction: CGFloat = 0.35
+
+    /// Thickness of each edge's drop band, as a fraction of the tile's
+    /// width (left/right) or height (top/bottom).
+    static let edgeFraction: CGFloat = 0.28
 
     static func zone(for point: CGPoint, in size: CGSize) -> TilingDropZone {
         guard size.width > 0, size.height > 0 else { return .center }
@@ -88,14 +107,27 @@ enum TilingDropZoneGeometry {
         )
         if centerRect.contains(point) { return .center }
 
-        // Outside the center: decide by the dominant axis.
+        let inLeft = point.x < size.width * edgeFraction
+        let inRight = point.x > size.width * (1 - edgeFraction)
+        let inTop = point.y < size.height * edgeFraction
+        let inBottom = point.y > size.height * (1 - edgeFraction)
+
+        // Unambiguous single-band hits.
+        if inLeft, !inTop, !inBottom { return .left }
+        if inRight, !inTop, !inBottom { return .right }
+        if inTop, !inLeft, !inRight { return .top }
+        if inBottom, !inLeft, !inRight { return .bottom }
+
+        // Corner overlap or the ring between band and center: nearest edge
+        // wins. dx/dy are distances to the closest vertical (left/right) and
+        // horizontal (top/bottom) edges — dx < dy means a vertical edge is
+        // closer (this comparison was inverted originally, which confined
+        // .top/.bottom to tiny corner triangles and made rows unstackable).
         let dx = min(point.x, size.width - point.x)
         let dy = min(point.y, size.height - point.y)
-        if dx > dy {
-            // Closer to a vertical edge -> left/right.
+        if dx < dy {
             return point.x < size.width / 2 ? .left : .right
         } else {
-            // Closer to a horizontal edge -> top/bottom.
             return point.y < size.height / 2 ? .top : .bottom
         }
     }

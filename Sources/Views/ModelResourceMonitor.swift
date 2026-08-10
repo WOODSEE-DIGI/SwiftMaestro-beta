@@ -23,7 +23,7 @@ struct ModelResourceMonitor: View {
 
         return allIDs
             .compactMap { id -> ModelActivity? in
-                if var activity = sampler.models[id] {
+                if let activity = sampler.models[id] {
                     return activity
                 }
                 guard let readout = engine.residentModelsReadout.first(where: { $0.id == id }) else {

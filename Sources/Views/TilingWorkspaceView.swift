@@ -113,7 +113,11 @@ struct TilingSplitView: View {
         GeometryReader { geometry in
             let total = axis == .horizontal ? geometry.size.width : geometry.size.height
             let ratio = layout.ratio(for: path)
-            let firstLength = max(0, total * ratio)
+            // Cap firstLength so the divider itself always fits — otherwise at
+            // extreme ratios on small tiles the children's frames summed to
+            // more than `total` and the second child rendered overlapping the
+            // divider/first child.
+            let firstLength = min(max(0, total * ratio), max(0, total - dividerThickness))
             let secondLength = max(0, total - firstLength - dividerThickness)
 
             if axis == .horizontal {

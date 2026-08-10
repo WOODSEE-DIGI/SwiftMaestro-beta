@@ -108,7 +108,7 @@ final class InProcessMLXBackend: GenerationBackend {
         var images: [UserInput.Image] = []
         for (index, msg) in convo.enumerated() {
             let content = msg["content"]
-            if let string = content as? String { continue }
+            if let _ = content as? String { continue }
             guard let parts = content as? [[String: Any]] else {
                 if content != nil {
                     NSLog("[InProcessMLXBackend] message \(index) has non-array content: \(type(of: content))")

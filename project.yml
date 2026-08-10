@@ -50,10 +50,14 @@ targets:
     platform: macOS
     sources:
       - path: Sources
-        exclude:
+        excludes:
           - "**/.gitignore"
-          - "Resources/browser-start.html"
-          - "Resources/swiftmaestro-clipper.js"
+          # Plugins ship only via the folder reference below — including them
+          # in the Sources glob too flattens every plugin's files into one
+          # Resources dir, and same-named files (index.html, app.js…) collide.
+          # (browser-start.html / swiftmaestro-clipper.js intentionally stay in
+          # the glob — they load from the bundle root.)
+          - "Resources/Plugins/**"
       - path: Sources/App
       - path: Sources/Views
       - path: Sources/ViewModels
@@ -66,9 +70,8 @@ targets:
       # + its own relative css/js) rather than individual flattened file refs.
       - path: Sources/Resources/Plugins
         type: folder
-    resources:
-      - Sources/Resources/browser-start.html
-      - Sources/Resources/swiftmaestro-clipper.js
+    # NOTE: xcodegen has no top-level `resources:` key — a previous block here
+    # was silently ignored. Resource files ship via the Sources glob above.
     settings:
       base:
         DEFINES_MODULE: YES
@@ -89,8 +92,13 @@ targets:
         SWIFT_OBJC_INTEROP_MODE: objcxx
       configs:
         Debug:
+          # Ad-hoc ("-") signatures change every rebuild, which makes the
+          # Keychain treat each build as a different app — "Always Allow" was
+          # forgotten and the login-keychain password prompt returned after
+          # every rebuild. Sign with the stable development identity instead.
           CODE_SIGN_STYLE: Automatic
-          CODE_SIGN_IDENTITY: "-"
+          CODE_SIGN_IDENTITY: "Apple Development"
+          DEVELOPMENT_TEAM: "3BMZ2ULZ54"
         Release:
           CODE_SIGN_STYLE: Manual
           CODE_SIGN_IDENTITY: "Developer ID Application"

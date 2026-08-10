@@ -67,7 +67,6 @@ enum ModelFileHealthService {
     ) -> [String] {
         guard let localPath = model.localPath else { return [] }
         let directory = URL(fileURLWithPath: localPath)
-        let fm = FileManager.default
         var missing: [String] = []
 
         let hasProcessorConfig = fileExists("processor_config.json", in: directory)
@@ -302,7 +301,7 @@ enum ModelFileHealthService {
             throw HealthError.noLocalPath
         }
         let directory = URL(fileURLWithPath: localPath)
-        var missing = missingFiles(for: model, includeOptional: true)
+        let missing = missingFiles(for: model, includeOptional: true)
             .filter { !$0.hasSuffix(".safetensors") && $0 != "model.safetensors.index.json" }
 
         guard !missing.isEmpty else { return }
@@ -345,7 +344,7 @@ enum ModelFileHealthService {
             NSLog("[ModelFileHealthService] skipping %@: already present at %@", filename, directory.path)
             return
         }
-        try await HuggingFaceDownloadService.shared.download(
+        _ = try await HuggingFaceDownloadService.shared.download(
             repoID: repoID,
             localDir: directory.path,
             allowPatterns: [filename],

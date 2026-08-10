@@ -1,288 +1,17 @@
 import Foundation
 
-// VENDORED from apple-mail-tracker-private/Sources/TrackingRelayServer
-// (2026-07-31). Was `import MailTrackerShared` — now same-module.
-// Keep in sync with the private repo when the rewriter evolves.
-
-struct RelayRewriteResult {
-    let rewrittenMessage: String
-    let envelope: TrackingHeaderEnvelope
-    let recipient: String?
-    let trackingApplied: Bool
-    let rewrittenLinkCount: Int
-    let openPixelURL: URL?
-    let notes: [String]
-}
-
-enum RelayMessageRewriterError: Error {
-    case malformedMessage
-}
-
-struct RelayMessageRewriter {
-    private let headerBuilder: TrackingHeaderBuilder
-    private let issuer: HeaderEnvelopeIssuer
-
-    init(configuration: RelayConfiguration) {
-        let signer = TrackingSigner(secret: configuration.signingSecret)
-        self.headerBuilder = TrackingHeaderBuilder(signer: signer)
-        self.issuer = HeaderEnvelopeIssuer(signingSecret: configuration.signingSecret, relayBaseURL: configuration.baseURL)
-    }
-
-    func rewrite(rawMessage: String, recipientOverride: String?) throws -> RelayRewriteResult {
-        var entity = try MIMEEntity.parse(rawMessage)
-        let envelope = try resolveEnvelope(entity: entity)
-        let recipient = recipientOverride ?? envelope.recipients.first
-
-        guard envelope.mode != .disabled else {
-            return RelayRewriteResult(
-                rewrittenMessage: rawMessage,
-                envelope: envelope,
-                recipient: recipient,
-                trackingApplied: false,
-                rewrittenLinkCount: 0,
-                openPixelURL: nil,
-                notes: ["Tracking mode is disabled for this message."],
-            )
-        }
-
-        guard let recipient else {
-            return RelayRewriteResult(
-                rewrittenMessage: rawMessage,
-                envelope: envelope,
-                recipient: nil,
-                trackingApplied: false,
-                rewrittenLinkCount: 0,
-                openPixelURL: nil,
-                notes: ["No recipient available for per-recipient token generation."],
-            )
-        }
-
-        let openToken = try issuer.token(
-            messageID: envelope.messageID,
-            recipient: recipient,
-            kind: .open
-        )
-        let clickToken = try issuer.token(
-            messageID: envelope.messageID,
-            recipient: recipient,
-            kind: .click
-        )
-        let openPixelURL = issuer.pixelURL(for: openToken)
-
-        var stats = RewriteStats()
-        rewriteEntity(
-            &entity,
-            clickToken: clickToken,
-            openPixelURL: openPixelURL,
-            stats: &stats
-        )
-
-        return RelayRewriteResult(
-            rewrittenMessage: entity.serialized(),
-            envelope: envelope,
-            recipient: recipient,
-            trackingApplied: stats.trackingApplied,
-            rewrittenLinkCount: stats.rewrittenLinkCount,
-            openPixelURL: openPixelURL,
-            notes: stats.notes
-        )
-    }
-
-    private func resolveEnvelope(entity: MIMEEntity) throws -> TrackingHeaderEnvelope {
-        let headers = entity.headersDictionary()
-        if let decoded = try? headerBuilder.decode(headers: headers) {
-            return decoded
-        }
-        return fallbackEnvelope(headers: headers)
-    }
-
-    private func fallbackEnvelope(headers: [String: [String]]) -> TrackingHeaderEnvelope {
-        let messageID = firstHeader("message-id", headers: headers)?
-            .trimmingCharacters(in: CharacterSet(charactersIn: "<>"))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .nonEmpty ?? UUID().uuidString.lowercased()
-
-        let sender = parseAddressList(firstHeader("from", headers: headers)).first
-            ?? firstHeader("from", headers: headers)
-            ?? "unknown@relay.local"
-
-        let recipients = parseAddressList(firstHeader("to", headers: headers))
-            + parseAddressList(firstHeader("cc", headers: headers))
-            + parseAddressList(firstHeader("bcc", headers: headers))
-
-        return TrackingHeaderEnvelope(
-            messageID: messageID,
-            sender: sender,
-            recipients: Array(Set(recipients)).sorted(),
-            mode: .opensAndClicks,
-            metadata: [
-                "subject": firstHeader("subject", headers: headers) ?? "",
-                "envelope_source": "relay-fallback",
-            ]
-        )
-    }
-
-    private func firstHeader(_ key: String, headers: [String: [String]]) -> String? {
-        if let direct = headers[key]?.first {
-            return direct
-        }
-        return headers.first(where: { $0.key.lowercased() == key.lowercased() })?.value.first
-    }
-
-    private func parseAddressList(_ value: String?) -> [String] {
-        guard let value, !value.isEmpty else {
-            return []
-        }
-
-        var results: [String] = []
-        let fullRange = NSRange(value.startIndex..<value.endIndex, in: value)
-        let angled = try? NSRegularExpression(pattern: "<([^>]+)>", options: [])
-        angled?.matches(in: value, options: [], range: fullRange).forEach { match in
-            guard let range = Range(match.range(at: 1), in: value) else {
-                return
-            }
-            results.append(String(value[range]))
-        }
-
-        if results.isEmpty {
-            value
-                .split(separator: ",")
-                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-                .forEach { token in
-                    if token.contains("@") {
-                        results.append(token)
-                    }
-                }
-        }
-
-        return Array(Set(results)).sorted()
-    }
-
-    private func rewriteEntity(
-        _ entity: inout MIMEEntity,
-        clickToken: String,
-        openPixelURL: URL,
-        stats: inout RewriteStats
-    ) {
-        if entity.isMultipart {
-            for index in entity.children.indices {
-                rewriteEntity(
-                    &entity.children[index],
-                    clickToken: clickToken,
-                    openPixelURL: openPixelURL,
-                    stats: &stats
-                )
-            }
-            return
-        }
-
-        let contentType = (entity.headerValue("Content-Type") ?? "text/plain").lowercased()
-        if contentType.contains("text/html") {
-            let html = entity.decodedTextBody()
-            let rewritten = rewriteHTML(
-                html: html,
-                clickToken: clickToken,
-                openPixelURL: openPixelURL
-            )
-            entity.setDecodedTextBody(rewritten.value)
-            stats.rewrittenLinkCount += rewritten.rewrittenLinks
-            stats.trackingApplied = true
-            if rewritten.insertedPixel {
-                stats.notes.append("Injected tracking pixel into HTML body.")
-            }
-            return
-        }
-
-        if contentType.contains("text/plain") {
-            let plain = entity.decodedTextBody()
-            let rewritten = rewritePlainText(plain, clickToken: clickToken)
-            if rewritten.rewrittenLinks > 0 {
-                entity.setDecodedTextBody(rewritten.value)
-                stats.rewrittenLinkCount += rewritten.rewrittenLinks
-                stats.trackingApplied = true
-                stats.notes.append("Rewrote links in plain text body.")
-            }
-        }
-    }
-
-    private func rewriteHTML(
-        html: String,
-        clickToken: String,
-        openPixelURL: URL
-    ) -> (value: String, rewrittenLinks: Int, insertedPixel: Bool) {
-        var rewritten = html
-        let linkRewrite = rewriteLinks(in: rewritten, clickToken: clickToken)
-        rewritten = linkRewrite.value
-
-        let pixelTag = "<img src=\"\(openPixelURL.absoluteString)\" width=\"1\" height=\"1\" alt=\"\" style=\"display:none;\" />"
-        if rewritten.contains(openPixelURL.absoluteString) {
-            return (rewritten, linkRewrite.rewrittenLinks, false)
-        }
-
-        if let bodyRange = rewritten.range(
-            of: "</body>",
-            options: [.caseInsensitive, .backwards]
-        ) {
-            rewritten.replaceSubrange(bodyRange, with: "\(pixelTag)\n</body>")
-            return (rewritten, linkRewrite.rewrittenLinks, true)
-        }
-
-        rewritten += "\n\(pixelTag)"
-        return (rewritten, linkRewrite.rewrittenLinks, true)
-    }
-
-    private func rewritePlainText(_ text: String, clickToken: String) -> (value: String, rewrittenLinks: Int) {
-        rewriteLinks(in: text, clickToken: clickToken)
-    }
-
-    private func rewriteLinks(in text: String, clickToken: String) -> (value: String, rewrittenLinks: Int) {
-        let pattern = #"https?://[^\s<>"']+|www\.[^\s<>"']+"#
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
-            return (text, 0)
-        }
-
-        let fullRange = NSRange(text.startIndex..<text.endIndex, in: text)
-        let matches = regex.matches(in: text, options: [], range: fullRange)
-        if matches.isEmpty {
-            return (text, 0)
-        }
-
-        var rewritten = text
-        var rewrittenLinks = 0
-        for match in matches.reversed() {
-            guard let range = Range(match.range, in: rewritten) else {
-                continue
-            }
-            let originalURLString = String(rewritten[range])
-            let normalizedDestinationString: String
-            if originalURLString.lowercased().hasPrefix("www.") {
-                normalizedDestinationString = "https://\(originalURLString)"
-            } else {
-                normalizedDestinationString = originalURLString
-            }
-            guard let destination = URL(string: normalizedDestinationString) else {
-                continue
-            }
-            let tracked = issuer.clickURL(for: clickToken, destination: destination).absoluteString
-            rewritten.replaceSubrange(range, with: tracked)
-            rewrittenLinks += 1
-        }
-
-        return (rewritten, rewrittenLinks)
-    }
-}
-
-private struct RewriteStats {
-    var trackingApplied = false
-    var rewrittenLinkCount = 0
-    var notes: [String] = []
-}
+// MARK: - MIME Header
 
 struct MIMEHeader {
     var name: String
     var value: String
 }
 
+// MARK: - MIME Entity
+
+/// Lightweight MIME parser for email message bodies. Extracted from the
+/// mail-tracking relay code to serve `MailBodyStore`'s email body parsing
+/// without pulling in the full tracking infrastructure.
 struct MIMEEntity {
     var headers: [MIMEHeader]
     var body: String
@@ -370,10 +99,23 @@ struct MIMEEntity {
     }
 }
 
+// MARK: - MIME Parsing
+
 extension MIMEEntity {
+
+    enum ParseError: Error, LocalizedError {
+        case malformedMessage
+
+        var errorDescription: String? {
+            switch self {
+            case .malformedMessage: return "Malformed MIME message."
+            }
+        }
+    }
+
     static func parse(_ raw: String, defaultNewline: String) throws -> MIMEEntity {
         guard let split = splitHeaderBody(raw, newline: defaultNewline) else {
-            throw RelayMessageRewriterError.malformedMessage
+            throw ParseError.malformedMessage
         }
 
         let headers = parseHeaders(split.headerBlock, newline: split.newline)
@@ -594,11 +336,5 @@ extension MIMEEntity {
         default:
             return nil
         }
-    }
-}
-
-private extension String {
-    var nonEmpty: String? {
-        isEmpty ? nil : self
     }
 }

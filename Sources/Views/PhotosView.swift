@@ -118,7 +118,7 @@ struct PhotosView: View {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
                 Button {
-                    service.openPhotos()
+                    _ = service.openPhotos()
                 } label: {
                     Label("Open Photos", systemImage: "arrow.up.forward.app")
                 }
@@ -312,7 +312,7 @@ struct PhotosView: View {
         service.refreshStatus()
 
         if service.status == .authorized || service.status == .limited {
-            albums = await service.fetchAlbums()
+            albums = service.fetchAlbums()
             await loadAssets()
         } else {
             errorMessage = "Photos access was denied. Grant it in System Settings → Privacy & Security → Photos."
@@ -322,7 +322,7 @@ struct PhotosView: View {
     private func loadAssets() async {
         isLoading = true
         defer { isLoading = false }
-        assets = await service.fetchAssets(
+        assets = service.fetchAssets(
             inAlbumLocalIdentifier: selectedAlbumID,
             limit: assetLimit
         )

@@ -71,6 +71,9 @@ Run `~/.ai-context/scripts/sync-mcp.sh` to push config to all tools.
 | **MaestroURI** | `Sources/MaestroURI.swift` | Memory URI scheme |
 | **KeychainService** | `Sources/Services/KeychainService.swift` | macOS Keychain wrapper (legacy login keychain; iCloud-sync aware) |
 | **SecretsStore** | `Sources/Services/SecretsStore.swift` | Secret metadata index, `secret://` resolution, redaction |
+| **PluginBridge** | `Sources/Services/PluginBridge.swift` | JS↔Swift bridge for WKWebView plugins; capabilities: `network`, `secrets`, `tools`, `oauth` |
+| **OAuthLoopbackServer** | `Sources/Services/OAuthLoopbackServer.swift` | Generic loopback-only OAuth callback server (plugin `startOAuth`) |
+| **Bundled plugins** | `Sources/Resources/Plugins/{mastodon,bluesky,patreon}/` | WKWebView panel plugins (folder reference; excluded from Sources glob in project.yml) |
 
 ---
 
@@ -98,9 +101,12 @@ xcodegen generate
 open SwiftMaestro.xcodeproj
 # Cmd+R in Xcode
 
-# Headless build check
+# Headless build check (signed — do NOT pass CODE_SIGNING_REQUIRED=NO: an
+# unsigned build gets a per-build ad-hoc cdhash identity, which makes the
+# login Keychain treat every rebuild as a different app and re-prompt for
+# the keychain password on every launch)
 xcodebuild -project SwiftMaestro.xcodeproj -scheme SwiftMaestro -configuration Debug \
-  -destination "platform=macOS" CODE_SIGNING_REQUIRED=NO build
+  -destination "platform=macOS" build
 ```
 
 ---

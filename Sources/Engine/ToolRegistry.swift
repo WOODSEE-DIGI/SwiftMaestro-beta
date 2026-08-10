@@ -41,6 +41,7 @@ extension MaestroTools {
         await registerDeepWebTools()
         await registerBrowserTools()
         await registerBlueskyTools()
+        await registerPatreonTools()
         await registerDatabaseTools()
         await registerDAMTools()
 

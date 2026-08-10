@@ -131,7 +131,7 @@ final class VisionProxyService {
         return try await engine.captionWithFastVLM(
             proxyModel: proxyModel,
             image: .ciImage(ciImage),
-            prompt: captionPrompt,
+            prompt: augmentedPrompt,
             maxTokens: config.maxCaptionTokens)
     }
 
@@ -318,12 +318,11 @@ final class VisionProxyService {
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = true
         request.automaticallyDetectsLanguage = true
-        request.usesCPUOnly = false
 
         let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
         do {
             try handler.perform([request])
-            let observations = request.results as? [VNRecognizedTextObservation] ?? []
+            let observations = request.results ?? []
             let lines = observations.compactMap { $0.topCandidates(1).first?.string }
             return lines.isEmpty ? nil : lines.joined(separator: "\n")
         } catch {

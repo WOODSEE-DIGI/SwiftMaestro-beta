@@ -86,7 +86,7 @@ final class NotesViewModel {
 
         // One-time migration: move the old app-support notes vault into Documents.
         Task {
-            await Self.migrateFromAppSupportIfNeeded(to: url)
+            Self.migrateFromAppSupportIfNeeded(to: url)
         }
     }
 
@@ -113,12 +113,14 @@ final class NotesViewModel {
             guard let self else { return }
             let savedPath = UserDefaults.standard.string(forKey: NotesViewModel.vaultPathKey)
             guard savedPath == nil || savedPath?.isEmpty == true else { return }
-            let newURL = Self.resolveVaultURL()
-            if self.vaultURL.path != newURL.path {
-                self.vaultURL = newURL
-                self.service = NotesService(vaultURL: newURL)
-                self.isCloudSyncEnabled = NotesiCloudSupport.isEnabled
-                Task { await self.load() }
+            Task { @MainActor in
+                let newURL = Self.resolveVaultURL()
+                if self.vaultURL.path != newURL.path {
+                    self.vaultURL = newURL
+                    self.service = NotesService(vaultURL: newURL)
+                    self.isCloudSyncEnabled = NotesiCloudSupport.isEnabled
+                    await self.load()
+                }
             }
         }
     }

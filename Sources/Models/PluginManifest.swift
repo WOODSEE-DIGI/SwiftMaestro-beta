@@ -96,4 +96,10 @@ enum PluginCapability: String, Codable, Hashable, Sendable {
     /// letting a plugin's data be reachable by agents too (or vice versa).
     /// Not required for a read/write-only plugin; opt in deliberately.
     case tools
+    /// Unlocks `swiftMaestro.startOAuth(options)` — opens an authorize URL in
+    /// the default browser and captures the redirect on a loopback-only
+    /// listener (`OAuthLoopbackServer`), returning the authorization code.
+    /// The token exchange itself happens via `swiftMaestro.fetch`, so the
+    /// host never sees the client secret or the resulting tokens.
+    case oauth
 }

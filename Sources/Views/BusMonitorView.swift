@@ -17,6 +17,8 @@ final class BusMonitorViewModel {
     var autoRefresh = true
     var lastRefresh: Date?
 
+    // nonisolated(unsafe): deinit is nonisolated and must be able to cancel
+    // the task. The task is only ever written from MainActor contexts.
     nonisolated(unsafe) private var refreshTask: Task<Void, Never>?
     private let refreshInterval: Duration = .seconds(2)
 
@@ -41,40 +43,36 @@ final class BusMonitorViewModel {
 
     func refresh() async {
         self.isLoading = true
-        do {
-            let allTopics = await AgentBus.shared.topics()
-            var snapshots: [BusTopicSnapshot] = []
-            for topic in allTopics {
-                let count = await AgentBus.shared.read(topic: topic, agentID: BusMonitorViewModel.agentID).count
-                snapshots.append(BusTopicSnapshot(topic: topic, messageCount: count))
-            }
-            let selected = self.selectedTopic ?? snapshots.first?.topic
-            let msgs: [AgentBusMessage]
-            let subs: [String]
-            if let selected {
-                msgs = await AgentBus.shared.read(
-                    topic: selected,
-                    agentID: BusMonitorViewModel.agentID,
-                    limit: 100)
-                subs = await AgentBus.shared.subscriptions(for: BusMonitorViewModel.agentID)
-                    .filter { $0 == selected }
-                    .sorted()
-            } else {
-                msgs = []
-                subs = []
-            }
-
-            self.topics = snapshots
-            if self.selectedTopic == nil || !snapshots.contains(where: { $0.topic == self.selectedTopic }) {
-                self.selectedTopic = selected
-            }
-            self.messages = msgs
-            self.subscribers = subs
-            self.lastRefresh = Date()
-            self.errorMessage = nil
-        } catch {
-            self.errorMessage = error.localizedDescription
+        let allTopics = await AgentBus.shared.topics()
+        var snapshots: [BusTopicSnapshot] = []
+        for topic in allTopics {
+            let count = await AgentBus.shared.read(topic: topic, agentID: BusMonitorViewModel.agentID).count
+            snapshots.append(BusTopicSnapshot(topic: topic, messageCount: count))
         }
+        let selected = self.selectedTopic ?? snapshots.first?.topic
+        let msgs: [AgentBusMessage]
+        let subs: [String]
+        if let selected {
+            msgs = await AgentBus.shared.read(
+                topic: selected,
+                agentID: BusMonitorViewModel.agentID,
+                limit: 100)
+            subs = await AgentBus.shared.subscriptions(for: BusMonitorViewModel.agentID)
+                .filter { $0 == selected }
+                .sorted()
+        } else {
+            msgs = []
+            subs = []
+        }
+
+        self.topics = snapshots
+        if self.selectedTopic == nil || !snapshots.contains(where: { $0.topic == self.selectedTopic }) {
+            self.selectedTopic = selected
+        }
+        self.messages = msgs
+        self.subscribers = subs
+        self.lastRefresh = Date()
+        self.errorMessage = nil
         self.isLoading = false
     }
 

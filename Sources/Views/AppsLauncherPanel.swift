@@ -1,8 +1,7 @@
 import SwiftUI
 
-/// The movable "Apple Apps / Studio / Swift Apps / Plugins" launcher, rendered
-/// as a normal tiling panel. Each section is collapsible. Studio rows show a
-/// lock badge while the Studio add-on is disabled.
+/// The movable "Apple Apps / Swift Apps / Plugins" launcher, rendered
+/// as a normal tiling panel. Each section is collapsible.
 struct AppsLauncherPanel: View {
     @Environment(PluginService.self) private var pluginService
     @Environment(ThemeStore.self) private var theme
@@ -24,18 +23,27 @@ struct AppsLauncherPanel: View {
             // category/app hides its row, and a section with no visible apps is
             // omitted entirely so no empty headers linger.
             ForEach(AppCategory.allCases, id: \.self) { category in
-                let visible = appEnablement.visibleKinds(in: category)
-                if !visible.isEmpty {
-                    collapsibleSection(category.title) {
-                        ForEach(visible, id: \.self) { kind in
-                            sidebarRow(kind.staticDisplayName ?? kind.themeStorageKey, kind: kind)
+                if !category.isHidden {
+                    let visible = appEnablement.visibleKinds(in: category)
+                    if !visible.isEmpty {
+                        collapsibleSection(category.title) {
+                            ForEach(visible, id: \.self) { kind in
+                                sidebarRow(kind.staticDisplayName ?? kind.themeStorageKey, kind: kind)
+                            }
                         }
                     }
                 }
             }
+            // The Plugins section mixes built-in native panels that behave
+            // like plugins to the user (WhatsApp, Discord) with the
+            // manifest-driven WKWebView plugins (Bluesky, Mastodon, Patreon).
+            let visibleBuiltIns = AppCategory.builtInPluginKinds.filter { appEnablement.showsBuiltInPlugin($0) }
             let visiblePlugins = pluginService.plugins.filter { appEnablement.showsPlugin($0.id) }
-            if !visiblePlugins.isEmpty {
+            if !visibleBuiltIns.isEmpty || !visiblePlugins.isEmpty {
                 collapsibleSection("Plugins") {
+                    ForEach(visibleBuiltIns, id: \.self) { kind in
+                        sidebarRow(kind.staticDisplayName ?? kind.themeStorageKey, kind: kind)
+                    }
                     ForEach(visiblePlugins) { manifest in
                         sidebarRow(manifest.name, kind: .plugin(manifest.id), icon: manifest.icon)
                     }
@@ -93,7 +101,16 @@ struct AppsLauncherPanel: View {
         }
         .contentShape(Rectangle())
         .onTapGesture {
-            NotificationCenter.default.post(name: .openWorkspacePanel, object: kind)
+            // Capture modifier flags NOW (while the click event is still the
+            // most recent NSEvent) and pass them through userInfo so the
+            // receiver doesn't have to re-read NSEvent.modifierFlags after
+            // the modifiers may have been released.
+            let flags = NSEvent.modifierFlags
+            NotificationCenter.default.post(
+                name: .openWorkspacePanel,
+                object: kind,
+                userInfo: ["modifierFlags": flags]
+            )
         }
     }
 }

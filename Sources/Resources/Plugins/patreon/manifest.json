@@ -1,0 +1,8 @@
+{
+  "id": "patreon",
+  "name": "Patreon",
+  "icon": "heart.circle",
+  "entry": "index.html",
+  "version": "1.0.0",
+  "capabilities": ["network", "secrets", "oauth"]
+}

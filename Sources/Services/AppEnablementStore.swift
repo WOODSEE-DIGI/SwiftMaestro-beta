@@ -22,29 +22,49 @@ enum AppCategory: String, CaseIterable, Codable, Sendable {
         }
     }
 
+    /// Whether this category is completely hidden from the UI (launcher,
+    /// Settings, and everywhere else). Hidden categories still exist in the
+    /// enum for type-safety but are invisible to users. Set this to `false`
+    /// when the feature is ready to ship.
+    var isHidden: Bool {
+        switch self {
+        case .studio: return true          // Not ready — hide entirely
+        case .appleApps, .swiftApps: return false
+        }
+    }
+
     /// The apps in this category, in launcher display order.
     var kinds: [WorkspacePanelKind] {
         switch self {
         case .appleApps:
             return [.appleNotes, .calendar, .reminders, .contacts, .numbers, .maps, .photos, .mail]
         case .studio:
-            return [.tethering, .streamIngest, .broadcast, .streamMixer, .ndiBrowser, .colorAdjustments, .scenes]
+            return []                      // Hidden — no apps exposed
         case .swiftApps:
-            return [.whatsapp, .discord, .busMonitor, .audioControl, .notesMD, .canvas, .kanban, .terminal, .webBrowser, .damBrowser, .maestroDocs, .maestroBooks, .maestroDB]
+            return [.busMonitor, .audioControl, .notesMD, .canvas, .kanban, .terminal, .webBrowser, .damBrowser, .maestroDocs, .maestroBooks, .maestroDB]
         }
     }
+
+    /// Built-in native panels that live in the launcher under **Plugins**
+    /// alongside the manifest-driven WKWebView plugins (Bluesky, Mastodon,
+    /// Patreon). They're not plugins technically — they're grouped there
+    /// because they're the same kind of thing to the user (social/account
+    /// panels) — and they share the plugins' enablement toggles, keyed by
+    /// `themeStorageKey` in the same `disabledPlugins` set.
+    static let builtInPluginKinds: [WorkspacePanelKind] = [.whatsapp, .discord]
 }
 
 extension WorkspacePanelKind {
     /// The launcher category this panel belongs to, or `nil` for non-launcher
-    /// chrome (agents, appLauncher, agentChat, plugin) which can't be toggled.
+    /// chrome (agents, appLauncher, agentChat, plugin) and for the built-in
+    /// plugin-section panels (whatsapp/discord — toggled as plugins instead).
     var appCategory: AppCategory? {
         switch self {
         case .appleNotes, .calendar, .reminders, .contacts, .numbers, .maps, .photos, .mail:
             return .appleApps
         case .tethering, .streamIngest, .broadcast, .streamMixer, .ndiBrowser, .colorAdjustments, .scenes:
             return .studio
-        case .whatsapp, .discord, .busMonitor, .audioControl, .notesMD, .canvas, .kanban, .terminal, .webBrowser, .damBrowser, .maestroDocs, .maestroBooks, .maestroDB:
+        case .busMonitor, .audioControl, .notesMD, .canvas, .kanban, .terminal, .webBrowser, .damBrowser, .maestroDocs, .maestroBooks, .maestroDB:
             return .swiftApps
         default:
             return nil
@@ -135,6 +155,13 @@ final class AppEnablementStore {
     /// section must be enabled AND the plugin itself must not be disabled.
     func showsPlugin(_ id: String) -> Bool {
         pluginsSectionEnabled && isPluginEnabled(id)
+    }
+
+    /// Whether a built-in plugin-section panel (whatsapp/discord) should
+    /// appear in the launcher — same rule as manifest plugins, keyed by
+    /// `themeStorageKey` so Settings can show a friendly per-app toggle.
+    func showsBuiltInPlugin(_ kind: WorkspacePanelKind) -> Bool {
+        pluginsSectionEnabled && isPluginEnabled(kind.themeStorageKey)
     }
 
     // MARK: - Mutations

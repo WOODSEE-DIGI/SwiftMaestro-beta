@@ -91,12 +91,14 @@ struct WindowSizeConfigurator: NSViewRepresentable {
 
         func startTimer() {
             timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-                guard let self else { return }
-                self.attempts += 1
-                self.configure?()
-                if self.attempts >= 30 {
-                    self.timer?.invalidate()
-                    self.timer = nil
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.attempts += 1
+                    self.configure?()
+                    if self.attempts >= 30 {
+                        self.timer?.invalidate()
+                        self.timer = nil
+                    }
                 }
             }
         }

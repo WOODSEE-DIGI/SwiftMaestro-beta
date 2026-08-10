@@ -187,3 +187,33 @@ final class ToolArgumentRepairTests: XCTestCase {
         XCTAssertNotEqual(a, b)
     }
 }
+
+extension ToolArgumentRepairTests {
+    /// A write_file-style blob whose 'content' value was truncated mid-token
+    /// must be closed and still decode — previously the whole args JSON died
+    /// and the tool reported "requires 'path' and 'content'".
+    func testTruncatedContentValueIsClosedAndDecoded() {
+        let input = ##"{"path":"/tmp/x.md","content":"# Report\n\nSome text that cuts off mid-sen"##
+        let repaired = ToolArgumentRepair.repair(input)
+        guard let data = repaired.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            XCTFail("truncated args did not repair into valid JSON: \(repaired)")
+            return
+        }
+        XCTAssertEqual(obj["path"] as? String, "/tmp/x.md")
+        XCTAssertNotNil(obj["content"], "content key must survive truncation repair")
+    }
+
+    /// Unbalanced braces with a complete string must close too.
+    func testUnbalancedBracesAreClosed() {
+        let input = ##"{"path":"/tmp/x.md","nested":{"a":1"##
+        let repaired = ToolArgumentRepair.repair(input)
+        guard let data = repaired.data(using: .utf8),
+              (try? JSONSerialization.jsonObject(with: data)) != nil
+        else {
+            XCTFail("unbalanced braces did not repair into valid JSON: \(repaired)")
+            return
+        }
+    }
+}

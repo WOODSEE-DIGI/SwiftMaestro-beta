@@ -262,7 +262,7 @@ private final class StaticFileServer {
         }
     }
 
-    private func processHTTPRequest(_ request: String, directory: String) -> Data? {
+    nonisolated private func processHTTPRequest(_ request: String, directory: String) -> Data? {
         // Parse the first line: "GET /path HTTP/1.1"
         let lines = request.components(separatedBy: "\r\n")
         guard let firstLine = lines.first else {
@@ -315,7 +315,7 @@ private final class StaticFileServer {
         return headerData
     }
 
-    private static func errorResponse(status: Int, body: String) -> Data {
+    nonisolated private static func errorResponse(status: Int, body: String) -> Data {
         let reason: String
         switch status {
         case 400: reason = "Bad Request"
@@ -328,7 +328,7 @@ private final class StaticFileServer {
         return response.data(using: .utf8) ?? Data()
     }
 
-    private static func mimeType(for path: String) -> String {
+    nonisolated private static func mimeType(for path: String) -> String {
         let ext = (path as NSString).pathExtension.lowercased()
         switch ext {
         case "html", "htm": return "text/html"

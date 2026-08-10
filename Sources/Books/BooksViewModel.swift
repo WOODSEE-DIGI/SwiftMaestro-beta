@@ -314,7 +314,7 @@ final class BooksViewModel {
         currency: String? = nil, taxRate: Double? = nil, taxLabel: String? = nil
     ) throws -> BooksInvoice {
         let client = try findOrCreateClient(named: clientName, email: clientEmail)
-        guard let clientID = client.id else { throw CocoaError(.coreDataError) }
+        guard let clientID = client.id else { throw CocoaError(.coreData) }
         let due = dueDays > 0
             ? Calendar.current.date(byAdding: .day, value: dueDays, to: Date()) : nil
         // Overrides let agents invoice a foreign client in their currency;
@@ -367,7 +367,7 @@ final class BooksViewModel {
     func publishSelectedInvoice() async throws -> URL {
         guard let invoice = selectedInvoice, let invoiceID = invoice.id,
               let client = selectedClient else {
-            throw CocoaError(.coreDataError)
+            throw CocoaError(.coreData)
         }
         isPublishing = true
         defer { isPublishing = false }
@@ -377,7 +377,7 @@ final class BooksViewModel {
         // Template designer wins when the user has saved one; otherwise the
         // built-in CoreGraphics layout (always available, zero setup).
         if BooksTemplate.templateExists {
-            try InvoiceTemplateRenderer.render(
+            _ = try InvoiceTemplateRenderer.render(
                 invoice: invoice, client: client, items: selectedItems,
                 payments: selectedPayments, seller: seller,
                 templateURL: BooksTemplate.templateFileURL, to: dest)

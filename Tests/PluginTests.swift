@@ -164,4 +164,48 @@ final class PluginTests: XCTestCase {
         let result = try await bridge.handle(type: "getSecret", payload: ["name": "unitTestToken"])
         XCTAssertEqual(result as? String, "sekrit-value")
     }
+
+    // MARK: - bridgeResultJSON (the app-wide SIGTRAP regression)
+    //
+    // A handler returning String?.none (getSecret for a missing key) reached
+    // resolve() as a non-nil Any? holding Optional.none; JSONSerialization
+    // then raised an uncatchable NSInvalidArgumentException and killed the
+    // whole app whenever a plugin panel restored without stored secrets.
+
+    func testBridgeResultJSONWithMissingSecretOptionalIsNull() {
+        let result: Any? = Optional<String>.none as Any
+        XCTAssertEqual(PluginBridge.bridgeResultJSON(result), "null")
+    }
+
+    func testBridgeResultJSONWithNilIsNull() {
+        XCTAssertEqual(PluginBridge.bridgeResultJSON(nil), "null")
+    }
+
+    func testBridgeResultJSONWithStringScalar() {
+        XCTAssertEqual(PluginBridge.bridgeResultJSON("sekrit"), "\"sekrit\"")
+    }
+
+    func testBridgeResultJSONWithIntScalar() {
+        XCTAssertEqual(PluginBridge.bridgeResultJSON(42), "42")
+    }
+
+    func testBridgeResultJSONWithFetchStyleDictionary() throws {
+        let payload: [String: Any] = [
+            "status": 200,
+            "headers": ["Content-Type": "application/json"],
+            "body": "{\"ok\":true}",
+        ]
+        let json = PluginBridge.bridgeResultJSON(payload)
+        let decoded = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
+        XCTAssertEqual(decoded?["status"] as? Int, 200)
+        XCTAssertEqual((decoded?["headers"] as? [String: String])?["Content-Type"], "application/json")
+        XCTAssertEqual(decoded?["body"] as? String, "{\"ok\":true}")
+    }
+
+    func testBridgeResultJSONWithNestedDictionaryOptionals() {
+        // getSecret→dict paths: a dictionary is fine, but nested Optional
+        // values inside must not crash either.
+        let result: Any? = Optional<[String: String]>.some(["code": "abc"]) as Any
+        XCTAssertEqual(PluginBridge.bridgeResultJSON(result), "{\"code\":\"abc\"}")
+    }
 }

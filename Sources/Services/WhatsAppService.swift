@@ -276,7 +276,7 @@ final class WhatsAppService {
             var config = GRDB.Configuration()
             config.readonly = true
             let db = try DatabaseQueue(path: dbPath, configuration: config)
-            let rows = try await db.read { db in
+            let rows = try db.read { db in
                 try Row.fetchAll(db, sql: """
                     SELECT jid, name, last_message_time FROM chats
                     ORDER BY last_message_time DESC LIMIT 300
@@ -351,7 +351,7 @@ final class WhatsAppService {
             let placeholders = allJIDs.map { _ in "?" }.joined(separator: ", ")
             var arguments: [DatabaseValueConvertible?] = allJIDs
             arguments.append(limit)
-            let rows = try await db.read { db in
+            let rows = try db.read { db in
                 try Row.fetchAll(db, sql: """
                     SELECT id, chat_jid, sender, content, timestamp, is_from_me, media_type
                     FROM messages WHERE chat_jid IN (\(placeholders))
@@ -361,30 +361,33 @@ final class WhatsAppService {
             // Normalize every row to the caller's chatJID regardless of
             // which underlying raw chat_jid it actually came from, so the
             // merge logic below (and the UI) treats this as one conversation.
+            // Also normalize media_type: the bridge stores "" (not NULL) for
+            // plain-text messages, while locally appended sent placeholders
+            // use nil — leaving "" as-is breaks the pending-placeholder dedup
+            // below and shows every sent text message TWICE.
             let loaded = rows.map {
-                WhatsAppMessage(
+                let rawMediaType: String? = $0["media_type"]
+                return WhatsAppMessage(
                     id: $0["id"], chatJID: chatJID, sender: $0["sender"],
                     content: $0["content"], timestamp: $0["timestamp"],
-                    isFromMe: $0["is_from_me"], mediaType: $0["media_type"])
+                    isFromMe: $0["is_from_me"],
+                    mediaType: (rawMediaType?.isEmpty == false) ? rawMediaType : nil)
             }.sorted { ($0.timestamp ?? .distantPast) < ($1.timestamp ?? .distantPast) }
 
-            // The bridge's `/api/send` handler never writes the message it
-            // just sent back into its own SQLite database, and whatsmeow
-            // doesn't deliver a self-echo `events.Message` for a send made by
-            // THIS client instance (only messages arriving from elsewhere —
-            // the phone, another linked device — get persisted that way). So
-            // a message you just sent would never appear in a DB reload even
-            // though WhatsApp itself confirms delivery. Keep any locally
-            // appended "sent" placeholders (see `appendSentMessage`) that the
-            // DB doesn't know about yet, and drop one only once a real row
-            // with matching content shows up (e.g. from a future history
-            // sync), so the outgoing message never visually disappears and
-            // never duplicates.
+            // The bridge's `/api/send` handler persists the message it just
+            // sent into this same database (see sendWhatsAppMessage in the
+            // bridge). Locally appended "sent" placeholders (see
+            // `appendSentMessage`) exist purely so an outgoing message renders
+            // instantly, before this reload lands — drop each one the moment a
+            // real row with matching content shows up, so the message appears
+            // exactly once. mediaType is compared nil/empty-tolerantly: the
+            // bridge writes "" for text while placeholders use nil.
             let stillPendingLocalOnly = messages.filter { message in
                 message.chatJID == chatJID
                     && message.id.hasPrefix(Self.localMessageIDPrefix)
                     && !loaded.contains {
-                        $0.isFromMe && $0.content == message.content && $0.mediaType == message.mediaType
+                        $0.isFromMe && $0.content == message.content
+                            && ($0.mediaType ?? "") == (message.mediaType ?? "")
                     }
             }
             messages = (loaded + stillPendingLocalOnly)
@@ -410,7 +413,7 @@ final class WhatsAppService {
             var config = GRDB.Configuration()
             config.readonly = true
             let db = try DatabaseQueue(path: dbPath, configuration: config)
-            let rows = try await db.read { db in
+            let rows = try db.read { db in
                 try Row.fetchAll(db, sql: "SELECT lid, pn FROM whatsmeow_lid_map")
             }
             var map: [String: String] = [:]
@@ -493,7 +496,7 @@ final class WhatsAppService {
             var config = GRDB.Configuration()
             config.readonly = true
             let db = try DatabaseQueue(path: dbPath, configuration: config)
-            let rows = try await db.read { db in
+            let rows = try db.read { db in
                 try Row.fetchAll(db, sql: """
                     SELECT their_jid, first_name, full_name, push_name, business_name
                     FROM whatsmeow_contacts

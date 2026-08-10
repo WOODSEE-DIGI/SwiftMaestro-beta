@@ -14,7 +14,7 @@ import SwiftMaestroKit
 //   - Stocks: app launcher (no public API).
 //   - News: app/URL launcher (no public API).
 //   - Mail: launch Mail, compose drafts (JXA or mailto:), read the selected
-//     message, and query OwnTrack open/click stats from the local relay.
+//     message.
 extension MaestroTools {
 
     /// Each of these tools belongs to its own category so users can enable
@@ -60,8 +60,6 @@ extension MaestroTools {
                 handler: { call in await composeMailTool(call) }),
             ToolDefinition(name: "apple_mail_selected_message", spec: appleAppsToolSpecs[14], category: ToolCategory.mail.rawValue,
                 handler: { _ in await mailSelectedMessageTool() }),
-            ToolDefinition(name: "apple_mail_tracking_summary", spec: appleAppsToolSpecs[15], category: ToolCategory.mail.rawValue,
-                handler: { call in await mailTrackingSummaryTool(call) }),
         ])
     }
 
@@ -139,7 +137,7 @@ extension MaestroTools {
                 "Open Apple's Mail.app (the macOS system email client). This is NOT MaestroMail, the standalone email app.",
                 properties: [:], required: []),
             rawSpec("open_apple_mail_panel",
-                "Open the SwiftMaestro in-app Mail panel (compose into Mail.app + OwnTrack tracking inspector for Mail.app messages).",
+                "Open the SwiftMaestro in-app Mail panel (compose into Mail.app).",
                 properties: [:], required: []),
             rawSpec("compose_apple_mail",
                 "Compose a new email draft in Apple's Mail.app. By default creates a visible draft inside Mail.app (requires Automation permission); set use_mail_app=false to open a mailto: URL in the user's default email client instead (which may not be Mail.app).",
@@ -153,11 +151,6 @@ extension MaestroTools {
             rawSpec("apple_mail_selected_message",
                 "Read the message currently selected in Mail.app's front viewer: subject, sender, Message-ID, recipients. Requires Automation permission for Mail.",
                 properties: [:], required: []),
-            rawSpec("apple_mail_tracking_summary",
-                "Fetch OwnTrack open/click/reply tracking stats for a message sent from Mail.app, from the embedded tracking relay. Pass a Message-ID, or omit it to use the message currently selected in Mail.app.",
-                properties: [
-                    "message_id": ["type": "string", "description": "RFC 822 Message-ID (angle brackets optional). Omit to use Mail.app's current selection."],
-                ], required: []),
         ]
     }
 
@@ -311,7 +304,7 @@ extension MaestroTools {
                 "status": "searched",
                 "panel": "maps",
                 "query": query,
-                "mode": searchMode,
+                "mode": searchMode ?? "unknown",
                 "placement": searchResult,
             ].merging(found) { current, _ in current })
         } catch {
@@ -325,9 +318,9 @@ extension MaestroTools {
             "latitude": location.latitude,
             "longitude": location.longitude,
             "address": location.formattedAddress,
-            "city": location.city,
-            "state": location.state,
-            "country": location.country,
+            "city": location.city ?? "",
+            "state": location.state ?? "",
+            "country": location.country ?? "",
         ]
     }
 
@@ -336,9 +329,9 @@ extension MaestroTools {
             "name": poi.name,
             "latitude": poi.latitude,
             "longitude": poi.longitude,
-            "address": poi.address,
-            "phone": poi.phone,
-            "url": poi.url,
+            "address": poi.address ?? "",
+            "phone": poi.phone ?? "",
+            "url": poi.url ?? "",
         ]
     }
 
@@ -417,7 +410,7 @@ extension MaestroTools {
         let args = decodeArgs(call, as: OpenNewsArgs.self)
         let ok = await sharedNewsService.openNews(url: args?.url, search: args?.search)
         return ok
-            ? jsonString(["status": "opened", "url": args?.url, "search": args?.search])
+            ? jsonString(["status": "opened", "url": args?.url ?? "", "search": args?.search ?? ""])
             : errorJSON("could not open Apple News")
     }
 
@@ -451,7 +444,6 @@ extension MaestroTools {
         let body: String?
         let use_mail_app: FlexibleBool?
     }
-    private struct MailTrackingArgs: Codable { let message_id: String? }
 
     // MARK: - Mail implementations
 
@@ -520,71 +512,6 @@ extension MaestroTools {
             return jsonString(dict)
         } catch {
             return errorJSON("could not read Mail's selection: \(error.localizedDescription)")
-        }
-    }
-
-    static func mailTrackingSummaryTool(_ call: ToolCall) async -> String {
-        let args = decodeArgs(call, as: MailTrackingArgs.self)
-        var messageID = args?.message_id?.trimmingCharacters(in: .whitespaces)
-
-        if messageID?.isEmpty != false {
-            // Fall back to Mail's current selection.
-            do {
-                messageID = try await sharedMailService.selectedMessage()?.messageID
-            } catch {
-                return errorJSON("no message_id given and Mail selection unreadable: \(error.localizedDescription)")
-            }
-        }
-        guard let rawID = messageID, !rawID.isEmpty else {
-            return errorJSON("apple_mail_tracking_summary needs 'message_id' or a selected message in Mail.app")
-        }
-        let normalized = AppleMailService.normalizeMessageID(rawID)
-
-        guard await sharedMailService.ensureRelayRunning() else {
-            return errorJSON("No OwnTrack relay reachable at \(await sharedMailService.relayBaseURLString) and the embedded relay failed to start")
-        }
-
-        do {
-            async let summaryFetch = sharedMailService.trackingSummary(messageID: normalized)
-            async let eventsFetch = sharedMailService.trackingEvents(messageID: normalized)
-            let summary = try await summaryFetch
-            let events = try await eventsFetch
-
-            // Built piecemeal — a single large dictionary literal trips the
-            // type-checker's expression-time limit.
-            let recentEvents: [[String: Any]] = events
-                .sorted(by: { $0.timestamp > $1.timestamp })
-                .prefix(10)
-                .map { event in
-                    var dict: [String: Any] = [
-                        "type": event.type.rawValue,
-                        "timestamp": event.timestamp.timeIntervalSince1970,
-                    ]
-                    if let recipient = event.recipient { dict["recipient"] = recipient }
-                    if let quality = event.attributes["openQuality"] { dict["openQuality"] = quality }
-                    return dict
-                }
-
-            var result: [String: Any] = [
-                "messageID": summary.messageID,
-                "subject": summary.subject ?? "",
-                "recipients": summary.recipients,
-                "sent": summary.sentCount,
-                "opens": summary.openCount,
-                "clicks": summary.clickCount,
-                "replies": summary.replyCount,
-                "uniqueOpenRecipients": summary.uniqueOpenRecipients,
-                "uniqueClickRecipients": summary.uniqueClickRecipients,
-                "openQuality": summary.openQualityCounts,
-                "recentEvents": recentEvents,
-            ]
-            if let firstOpened = summary.firstOpenedAt { result["firstOpenedAt"] = firstOpened.timeIntervalSince1970 }
-            if let lastOpened = summary.lastOpenedAt { result["lastOpenedAt"] = lastOpened.timeIntervalSince1970 }
-            if let firstClicked = summary.firstClickedAt { result["firstClickedAt"] = firstClicked.timeIntervalSince1970 }
-            if let firstReplied = summary.firstRepliedAt { result["firstRepliedAt"] = firstReplied.timeIntervalSince1970 }
-            return jsonString(result)
-        } catch {
-            return errorJSON("tracking lookup failed for \(normalized): \(error.localizedDescription)")
         }
     }
 }

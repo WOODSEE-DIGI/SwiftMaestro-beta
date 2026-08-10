@@ -146,15 +146,26 @@ final class AgentExecutor: Sendable {
                     // crawl chains are never cut off early.
                     var round = 0
                     let hardMaxRounds = 100
-                    var didUseTool = false       // any tool ran this turn
-                    var usedMutator = false      // a todo/plan/message/workspace/delegation tool ran
+                    var usedMutator = false      // a mutating tool ran this turn (verb-classified)
+                    var lastRoundContent = ""    // previous round's cleaned text (anti-repeat guard)
+                    var ditherRounds = 0         // CONSECUTIVE hesitation-only rounds ("Wait, I'll check…")
                     var autoNudges = 0           // CONSECUTIVE unproductive nudges
                     let maxAutoNudges = 4
                     var finalWrapUpSent = false  // bounded-run wrap-up issued
                     var fileOpCount = 0          // file ops since last auto-save
                     let autoSaveThreshold = 5    // trigger auto-save after N file ops
                     // Per-tool call budgets to stop small-model loops (e.g. web_search).
-                    let perToolBudget = maxToolCallsPerTool ?? [:]
+                    // Default cap: 5 calls per tool per turn. Prevents unlimited
+                    // repetition when the model ignores nudges (177-tool prompt).
+                    var effectivePerToolBudget = maxToolCallsPerTool ?? [:]
+                    let defaultPerToolCap = 5
+                    for spec in toolSpecs {
+                        if let name = MaestroTools.toolName(from: spec),
+                           effectivePerToolBudget[name] == nil {
+                            effectivePerToolBudget[name] = defaultPerToolCap
+                        }
+                    }
+                    let perToolBudget = effectivePerToolBudget
                     var toolCallCounts: [String: Int] = [:]
                     var toolBudgetExceededNames = Set<String>()
                     // Consecutive-identical-FAILURE circuit breaker (stability only, not
@@ -172,9 +183,20 @@ final class AgentExecutor: Sendable {
                     // also re-call the SAME tool with the SAME arguments and get the
                     // SAME result forever — the 14:06 run re-read ONE LUNAR page NINE
                     // times (~8K context tokens per read) while the table stayed empty.
-                    // Tracks (tool|args) counts: warn at 3 identical calls, disable at 4.
+                    // Tracks (tool|args) counts: nudge+disable at 2, hard-stop at 3.
                     var repeatedArgsCounts: [String: Int] = [:]
                     var disabledArgCombos = Set<String>()
+                    // BLIND-READ TRACKER: consecutive rounds where the model emits
+                    // file-read tool calls with zero analysis content. Small models
+                    // (Qwen 3 Coder, Gemma 4) get stuck reading the same file over
+                    // and over without ever editing it. This catches the pattern
+                    // BEFORE the per-args loop guard fires.
+                    var blindReadCount = 0
+                    // EMPTY-ARGS TRACKER: consecutive empty-args calls per tool
+                    // name. Small models (Qwen 3 Coder Next) emit tool calls with
+                    // {} args as context degrades — this catches the pattern and
+                    // injects a nudge with required parameter names.
+                    var emptyArgsCounts: [String: Int] = [:]
                     // DB-turn WRITE GUARD (research→DB rhythm): the 04:08 production
                     // run created the base/table/fields then browsed 36 rounds with
                     // ZERO db_add_rows calls — schema built, pages read, table left
@@ -304,6 +326,55 @@ final class AgentExecutor: Sendable {
                             NSLog("[AGENT] round \(round): tools=\(specsThisRound.count) content=\(cleanContent.count) chars, toolCalls=[\(callNames)]")
                         }
 
+                        // BLIND-READ DETECTOR: if the model emits file-read tool
+                        // calls with zero content text, it's not analyzing — just
+                        // mechanically re-reading. Inject a forceful nudge to break
+                        // the pattern before the tools even execute.
+                        if cleanContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            && !rawToolCalls.isEmpty {
+                            let fileReadTools: Set<String> = ["read_file", "read_file_range",
+                                                               "read_directory", "list_directory"]
+                            let allReads = rawToolCalls.allSatisfy { fileReadTools.contains($0.name) }
+                            if allReads {
+                                blindReadCount += 1
+                                if blindReadCount >= 2 {
+                                    NSLog("[AGENT] BLIND READ: \(blindReadCount) consecutive rounds with zero-content file reads — injecting nudge")
+                                    let nudgeMsg = "SYSTEM: CRITICAL — you have now made "
+                                        + "\(blindReadCount) consecutive rounds of file reads with "
+                                        + "ZERO analysis text. Reading without thinking is token burn. "
+                                        + "You MUST now: (1) state what you learned from the file, "
+                                        + "(2) identify the specific problem to fix, "
+                                        + "(3) use edit_file or write_file to make the change. "
+                                        + "If edit_file fails with 'old_string not found', the file "
+                                        + "was already modified — re-read it ONCE, then edit the "
+                                        + "CURRENT content. Do NOT call read_file more than once."
+                                    convo.append([
+                                        "role": "user",
+                                        "content": nudgeMsg,
+                                    ])
+                                }
+                            } else {
+                                blindReadCount = 0
+                            }
+                        } else {
+                            blindReadCount = 0
+                        }
+
+                        // EMPTY-ARGS PRE-EXECUTION DETECTOR: if every tool call
+                        // in this round has empty args ({}), the model is emitting
+                        // tool names but forgetting parameters — a sign of context
+                        // degradation. Inject a nudge BEFORE execution to avoid
+                        // wasting tokens on error responses.
+                        if !rawToolCalls.isEmpty
+                            && rawToolCalls.allSatisfy({
+                                $0.arguments.trimmingCharacters(in: .whitespacesAndNewlines) == "{}"
+                            }) {
+                            let toolNames = rawToolCalls.map(\.name).joined(separator: ", ")
+                            NSLog("[AGENT] EMPTY ARGS PRE-EXEC: all calls have empty args: \(toolNames)")
+                            // Let the first call execute so the model sees the error,
+                            // but append a nudge after the round for the remaining ones.
+                        }
+
                         // Fallback: some backends (notably Gemma 4 with the .gemma4
                         // format) stream raw XML tool-call blocks without surfacing them
                         // as parsed `.toolCall` events. If the backend parsed nothing,
@@ -324,7 +395,51 @@ final class AgentExecutor: Sendable {
                         // The forced wrap-up round IS the final answer.
                         if finalWrapUpSent { break iterations }
 
+                        // Anti-repeat guard: a tool-free round whose content is
+                        // IDENTICAL to the previous round's has nothing new to
+                        // say. Ending here (instead of evaluating nudges) stops
+                        // nudge loops that forced the model to re-emit the same
+                        // claim over and over — each copy streamed into the
+                        // chat bubble (the "Test message sent to X.X.X.X.X"
+                        // duplication the user reported).
+                        if effectiveToolCalls.isEmpty,
+                           !cleanContent.isEmpty,
+                           cleanContent == lastRoundContent {
+                            NSLog("[AGENT] round \(round): identical content to previous round — ending turn without nudging")
+                            break iterations
+                        }
+                        lastRoundContent = cleanContent
+
                         if effectiveToolCalls.isEmpty {
+                            // DITHER BUDGET: a round with no tool call whose
+                            // content is hesitation narration ("Wait, I'll
+                            // check…", "Actually, let me verify…") gets ONE
+                            // chance; two consecutive hesitation rounds force a
+                            // tool-free final answer. Without this, a small
+                            // model second-guesses itself across nudge cycles
+                            // and streams multi-thousand-char walls of "Wait"
+                            // (confirmed live: an 8.5K-char single bubble).
+                            if !finalWrapUpSent, Self.containsHesitation(cleanContent) {
+                                ditherRounds += 1
+                                if ditherRounds >= 2 {
+                                    NSLog("[AGENT] dither budget hit after \(ditherRounds) hesitation rounds — forcing final answer")
+                                    finalWrapUpSent = true
+                                    convo.append(["role": "assistant", "content": cleanContent])
+                                    convo.append([
+                                        "role": "user",
+                                        "content":
+                                            "[automated check — NOT a message from the user] Stop "
+                                            + "re-checking. You already have enough information. "
+                                            + "Do NOT call any more tools and do NOT narrate further "
+                                            + "hesitation — give your final answer to the original "
+                                            + "request now, as plain concise text.",
+                                    ])
+                                    continue iterations
+                                }
+                            } else if !Self.containsHesitation(cleanContent) {
+                                ditherRounds = 0
+                            }
+
                             // Small models end a turn either (a) NARRATING a future
                             // action ("I'll mark it done now") after using a tool, or
                             // (b) CLAIMING in past tense that they changed a plan/
@@ -357,7 +472,15 @@ final class AgentExecutor: Sendable {
                             // writing is a tool-use failure — it should use write_file.
                             let unexecutedFileWrite = !specsThisRound.isEmpty
                                 && Self.containsUnexecutedFileWrite(cleanContent)
-                            if !specsThisRound.isEmpty, autoNudges < maxAutoNudges,
+                            // A message asking the USER for something (folder
+                            // authorization, permission, credentials, install)
+                            // is a legitimate terminal answer, not a stall —
+                            // the model CANNOT proceed without the user's
+                            // action, so nudging it to "emit the tool call" is
+                            // pointless and just manufactures repeated text
+                            // (the LaunchAgents authorization-ask loop).
+                            let asksUser = Self.asksUserForAction(cleanContent)
+                            if !specsThisRound.isEmpty, autoNudges < maxAutoNudges, !asksUser,
                                 falseClaim || futureNarration || unexecutedShell || unexecutedFileWrite {
                                 autoNudges += 1
                                 let reason: String
@@ -397,7 +520,6 @@ final class AgentExecutor: Sendable {
                             }
                             break iterations  // final answer already streamed
                         }
-                        didUseTool = true
                         // A real tool call means the last nudge (if any) worked — reset
                         // the budget so it caps CONSECUTIVE refusals, not total nudges.
                         // Multi-step tasks (scrape -> blocked -> search -> retry) need
@@ -407,6 +529,7 @@ final class AgentExecutor: Sendable {
                         if effectiveToolCalls.contains(where: {
                             Self.agentScopedTools.contains($0.name)
                                 || Self.nonInjectedMutators.contains($0.name)
+                                || Self.isMutatorToolName($0.name)
                         }) {
                             usedMutator = true
                         }
@@ -421,6 +544,10 @@ final class AgentExecutor: Sendable {
                         // Execute each tool and feed the result back.
                         for tc in effectiveToolCalls {
                             continuation.yield(.toolCall(name: tc.name))
+                            // Reset empty-args counter when the model provides args.
+                            if tc.arguments.trimmingCharacters(in: .whitespacesAndNewlines) != "{}" {
+                                emptyArgsCounts[tc.name] = 0
+                            }
                             // Failure-breaker hard stop: a tool disabled after repeated
                             // identical failures is intercepted here (executeTool resolves
                             // against a global registry, so it would still run otherwise).
@@ -449,15 +576,26 @@ final class AgentExecutor: Sendable {
                             // db_add_field meltdown was invisible to this guard.
                             let argSignature = Self.normalizedGuardSignature(tc.name + "|" + tc.arguments)
                             if disabledArgCombos.contains(argSignature) {
-                                NSLog("[AGENT] LOOP GUARD: intercepted repeated call \(tc.name) (these args already ran 4+ times)")
-                                convo.append([
-                                    "role": "tool",
-                                    "tool_call_id": tc.id,
-                                    "content": "{\"error\":\"You have already run \(tc.name) with these EXACT "
+                                NSLog("[AGENT] LOOP GUARD: intercepted repeated call \(tc.name) (these args already ran 3+ times)")
+                                let isFileRead = tc.name == "read_file" || tc.name == "read_file_range"
+                                    || tc.name == "read_directory" || tc.name == "list_directory"
+                                let errorMsg: String
+                                if isFileRead {
+                                    errorMsg = "BLOCKED: You have already read this file with these EXACT "
+                                        + "arguments multiple times. You have the contents — use edit_file "
+                                        + "to fix the issue or write_file to replace the file. Do NOT "
+                                        + "repeat this read."
+                                } else {
+                                    errorMsg = "BLOCKED: You have already run \(tc.name) with these EXACT "
                                         + "arguments multiple times and received the identical result. The page "
                                         + "has not changed — the data you need is NOT there. Do NOT repeat this "
                                         + "call. Use browser_links to find a different page, or enter the data "
-                                        + "you already have with db_add_rows now.\"}",
+                                        + "you already have with db_add_rows now."
+                                }
+                                convo.append([
+                                    "role": "tool",
+                                    "tool_call_id": tc.id,
+                                    "content": "{\"error\":\"\(errorMsg)\"}",
                                 ])
                                 continue
                             }
@@ -469,15 +607,16 @@ final class AgentExecutor: Sendable {
                             // until a write lands. Any successful db write re-arms this.
                             if tc.name == "browser_open", dbWorkflowTurn, readsSinceLastDbWrite >= 4 {
                                 NSLog("[AGENT] WRITE GUARD: blocked browser_open after \(readsSinceLastDbWrite) reads with no db write")
+                                let wgMsg = "{\"error\":\"browser_open is blocked: you have read "
+                                    + "\(readsSinceLastDbWrite) pages without saving ANYTHING to your "
+                                    + "table. Call db_add_rows NOW with the data you already have "
+                                    + "(2-3 rows), then browsing resumes. If earlier pages had no "
+                                    + "usable data, use browser_links on an open tab to drill to a "
+                                    + "PRODUCT page instead of opening new URLs.\"}"
                                 convo.append([
                                     "role": "tool",
                                     "tool_call_id": tc.id,
-                                    "content": "{\"error\":\"browser_open is blocked: you have read "
-                                        + "\(readsSinceLastDbWrite) pages without saving ANYTHING to your "
-                                        + "table. Call db_add_rows NOW with the data you already have "
-                                        + "(2-3 rows), then browsing resumes. If earlier pages had no "
-                                        + "usable data, use browser_links on an open tab to drill to a "
-                                        + "PRODUCT page instead of opening new URLs.\"}",
+                                    "content": wgMsg,
                                 ])
                                 continue
                             }
@@ -518,14 +657,7 @@ final class AgentExecutor: Sendable {
                                         NSLog("[AGENT] WRITE GUARD: 2 unread reads in db turn — nudging db_add_rows")
                                         convo.append([
                                             "role": "user",
-                                            "content": "SYSTEM: you have read 2 pages in a database task "
-                                                + "WITHOUT saving any rows — the table stays empty while you "
-                                                + "keep browsing. Call db_add_rows RIGHT NOW with whatever "
-                                                + "data you have already collected (2-3 rows is fine — saved "
-                                                + "data beats held data), THEN continue browsing. If the "
-                                                + "pages you read had no usable data, call browser_links on "
-                                                + "one of them to find PRODUCT pages instead of opening "
-                                                + "more listing pages.",
+                                            "content": "SYSTEM: you have read 2 pages in a database task WITHOUT saving any rows — the table stays empty while you keep browsing. Call db_add_rows RIGHT NOW with whatever data you have already collected (2-3 rows is fine — saved data beats held data), THEN continue browsing. If the pages you read had no usable data, call browser_links on one of them to find PRODUCT pages instead of opening more listing pages.",
                                         ])
                                     }
                                 default: break
@@ -533,25 +665,134 @@ final class AgentExecutor: Sendable {
                             }
                             // Repeated-args loop guard: count (tool|args) regardless of
                             // success — identical inputs mean identical outputs, so
-                            // re-calling is pure token burn. Warn at 3, disable at 4.
-                            // (The failure breaker below only sees ERRORS; this sees the
-                            // "successful" stuck loop, like 9 identical page reads.)
+                            // re-calling is pure token burn. Nudge AND disable at 2,
+                            // hard-stop at 3. (The failure breaker below only sees
+                            // ERRORS; this sees the "successful" stuck loop, like
+                            // 9 identical page reads.)
                             repeatedArgsCounts[argSignature, default: 0] += 1
                             let argRepeats = repeatedArgsCounts[argSignature] ?? 1
-                            if argRepeats == 3, !result.hasPrefix("{\"error\"") {
+                            if argRepeats == 2, !result.hasPrefix("{\"error\"") {
+                                let isFileRead = tc.name == "read_file" || tc.name == "read_file_range"
+                                    || tc.name == "read_directory" || tc.name == "list_directory"
+                                let nudgeMessage: String
+                                if isFileRead {
+                                    nudgeMessage = "SYSTEM: WARNING — you have now called \(tc.name) TWICE "
+                                        + "with identical arguments and received identical results. "
+                                        + "You have the file contents. STOP re-reading. You MUST now "
+                                        + "use edit_file or write_file to make changes. If you call "
+                                        + "\(tc.name) a third time with these args it will be BLOCKED."
+                                } else {
+                                    nudgeMessage = "SYSTEM: WARNING — you have now called \(tc.name) TWICE "
+                                        + "with identical arguments and received identical results. "
+                                        + "The data has not changed. Do NOT call it again with these "
+                                        + "arguments. Use a different approach or move on."
+                                }
                                 convo.append([
                                     "role": "user",
-                                    "content": "SYSTEM: you have now called \(tc.name) with the IDENTICAL "
-                                        + "arguments \(argRepeats) times this turn and received identical "
-                                        + "results. The page has not changed — the data you need is NOT "
-                                        + "there. Do NOT call it again with these arguments. If you are "
-                                        + "hunting for a price: use browser_links on the current page to "
-                                        + "find the PRODUCT link and open THAT, or enter the data you "
-                                        + "already have with db_add_rows now.",
+                                    "content": nudgeMessage,
                                 ])
-                            } else if argRepeats >= 4, !disabledArgCombos.contains(argSignature) {
+                                // Also disable NOW so the 3rd call is blocked even if
+                                // the model ignores the nudge in this same round.
+                                disabledArgCombos.insert(argSignature)
+                            } else if argRepeats >= 3, !disabledArgCombos.contains(argSignature) {
                                 disabledArgCombos.insert(argSignature)
                                 NSLog("[AGENT] LOOP GUARD: disabled \(tc.name) with these args after \(argRepeats) identical calls")
+                            }
+                            // EMPTY-ARGS NUDGE: when a tool call arrives with no
+                            // arguments ({}), the model emitted the tool name but
+                            // forgot the parameters. Inject a one-time nudge with
+                            // the required parameter names so it can self-correct
+                            // instead of retrying blindly (Qwen 3 Coder Next: 30+
+                            // rounds of `read_file` with empty args).
+                            //
+                            // SPEC-AWARE: only nudge when the tool actually has
+                            // required parameters. Tools like list_background_processes
+                            // take no args — {} is correct for them and nudging
+                            // confuses the model into sending wrong params.
+                            //
+                            // FALLBACK MAP: when a tool has been budget-exhausted,
+                            // it's removed from specsThisRound, so the spec lookup
+                            // returns nil and the breaker never fires. A hardcoded
+                            // map of known tools with required params ensures the
+                            // breaker works even after budget exhaustion.
+                            if tc.arguments == "{}" || tc.arguments.trimmingCharacters(in: .whitespacesAndNewlines) == "{}" {
+                                // Look up the tool spec to find required params.
+                                // Try specsThisRound first; fall back to hardcoded map.
+                                let requiredParams: [String] = {
+                                    if let spec = specsThisRound.first(where: {
+                                        MaestroTools.toolName(from: $0) == tc.name
+                                    }),
+                                    let function = spec["function"] as? [String: any Sendable],
+                                    let parameters = function["parameters"] as? [String: any Sendable],
+                                    let required = parameters["required"] as? [String] {
+                                        return required
+                                    }
+                                    // Hardcoded fallback: known tools that ALWAYS require
+                                    // params. This prevents the breaker from being skipped
+                                    // when the tool is budget-exhausted and absent from
+                                    // specsThisRound.
+                                    let knownRequired: [String: [String]] = [
+                                        "read_file": ["path"],
+                                        "edit_file": ["path", "old_string", "new_string"],
+                                        "write_file": ["path", "content"],
+                                        "execute_command": ["command"],
+                                        "search_replace": ["path", "old", "new"],
+                                        "fetch_url": ["url"],
+                                        "send_agent_message": ["to_agent", "message"],
+                                        "browser_open": ["url"],
+                                        "browser_type": ["ref", "text"],
+                                        "browser_click": ["ref"],
+                                        "browser_press_key": ["key"],
+                                        "browser_select_option": ["ref", "value"],
+                                        "browser_scroll": ["ref"],
+                                        "browser_evaluate": ["code"],
+                                        "browser_wait": [],
+                                        "open_panel": ["panel"],
+                                        "create_todo_list": ["todos"],
+                                        "create_plan": ["plan"],
+                                        "edit_plan": ["plan"],
+                                        "db_create_base": ["name"],
+                                        "db_create_table": ["base_id", "name"],
+                                        "db_add_field": ["base_id", "table_id", "field_name"],
+                                        "db_add_rows": ["base_id", "table_id", "rows"],
+                                        "db_add_row": ["base_id", "table_id", "row"],
+                                        "db_upsert_rows": ["base_id", "table_id", "rows"],
+                                        "db_list_rows": ["base_id", "table_id"],
+                                        "db_table_schema": ["base_id", "table_id"],
+                                    ]
+                                    return knownRequired[tc.name] ?? []
+                                }()
+                                // Skip nudge entirely for tools with no required params.
+                                if requiredParams.isEmpty {
+                                    NSLog("[AGENT] EMPTY ARGS: \(tc.name) called with {} but has no required params — skipping nudge")
+                                } else {
+                                    emptyArgsCounts[tc.name, default: 0] += 1
+                                    if emptyArgsCounts[tc.name] == 1 {
+                                        let paramList = requiredParams.joined(separator: ", ")
+                                        NSLog("[AGENT] EMPTY ARGS: \(tc.name) called with {} — nudging (required: \(paramList))")
+                                        convo.append([
+                                            "role": "user",
+                                            "content":
+                                                "[automated check — NOT a message from the user] "
+                                                + "You called \(tc.name) with EMPTY arguments ({}). "
+                                                + "This tool REQUIRES these parameters: \(paramList). "
+                                                + "Call it again with the correct arguments. "
+                                                + "Do NOT call it without arguments.",
+                                        ])
+                                    } else if let count = emptyArgsCounts[tc.name], count >= 3, !disabledLoopTools.contains(tc.name) {
+                                        disabledLoopTools.insert(tc.name)
+                                        NSLog("[AGENT] EMPTY ARGS BREAKER: disabled \(tc.name) after \(count) empty-args calls")
+                                        convo.append([
+                                            "role": "tool",
+                                            "tool_call_id": tc.id,
+                                            "content": "{\"error\":\"\(tc.name) is disabled for the rest of this turn "
+                                                + "after \(count) consecutive calls with empty arguments. "
+                                                + "Required parameters: \(requiredParams.joined(separator: ", ")). "
+                                                + "Do NOT call it again.\"}",
+                                        ])
+                                        continue
+                                    }
+                                }
                             }
                             // Consecutive-identical-failure circuit breaker. If the same
                             // tool keeps returning the same error, first nudge with a
@@ -600,14 +841,22 @@ final class AgentExecutor: Sendable {
                                 fileOpCount += 1
                                 if fileOpCount >= autoSaveThreshold && !finalWrapUpSent {
                                     NSLog("[AGENT] AUTO-SAVE: \(fileOpCount) file ops reached threshold")
+                                    let hasEditTools = convo.contains { ($0["content"] as? String ?? "").contains("edit_file") }
+                                    let saveMsg: String
+                                    if hasEditTools {
+                                        saveMsg = "SYSTEM: You've performed \(fileOpCount) file operations "
+                                            + "including edits. Pause and verify your changes compile — run "
+                                            + "xcodebuild or the project's build command. If there are errors, "
+                                            + "fix them before continuing."
+                                    } else {
+                                        saveMsg = "SYSTEM: You've performed \(fileOpCount) file read operations. "
+                                            + "You should have enough context now — use edit_file to make the "
+                                            + "needed changes, or write_file to create/replace files. Do NOT "
+                                            + "keep reading without acting."
+                                    }
                                     convo.append([
                                         "role": "user",
-                                        "content":
-                                            "SYSTEM: Auto-save trigger. You've performed "
-                                            + "\(fileOpCount) file read operations. "
-                                            + "Call write_file to save your current progress to disk "
-                                            + "before continuing. Include: files processed so far, "
-                                            + "key findings, and files remaining.",
+                                        "content": saveMsg,
                                     ])
                                     fileOpCount = 0
                                 }
@@ -628,6 +877,87 @@ final class AgentExecutor: Sendable {
                                         + "have and provide your final answer now.",
                                 ])
                             }
+                        }
+                        // POST-EXECUTION EMPTY-ARGS NUDGE: if tool calls in
+                        // this round had empty args and returned errors, inject a
+                        // consolidated nudge with the required param names.
+                        // SPEC-AWARE: only include tools that actually have required
+                        // params — tools with no params (e.g. list_background_processes)
+                        // are correct with {}.
+                        // Uses the same hardcoded fallback map as the pre-execution
+                        // nudge to handle budget-exhausted tools absent from specsThisRound.
+                        let knownRequiredArgs: [String: [String]] = [
+                            "read_file": ["path"],
+                            "edit_file": ["path", "old_string", "new_string"],
+                            "write_file": ["path", "content"],
+                            "execute_command": ["command"],
+                            "search_replace": ["path", "old", "new"],
+                            "fetch_url": ["url"],
+                            "send_agent_message": ["to_agent", "message"],
+                            "browser_open": ["url"],
+                            "browser_type": ["ref", "text"],
+                            "browser_click": ["ref"],
+                            "browser_press_key": ["key"],
+                            "browser_select_option": ["ref", "value"],
+                            "browser_scroll": ["ref"],
+                            "browser_evaluate": ["code"],
+                            "open_panel": ["panel"],
+                            "create_todo_list": ["todos"],
+                            "create_plan": ["plan"],
+                            "edit_plan": ["plan"],
+                            "db_create_base": ["name"],
+                            "db_create_table": ["base_id", "name"],
+                            "db_add_field": ["base_id", "table_id", "field_name"],
+                            "db_add_rows": ["base_id", "table_id", "rows"],
+                            "db_add_row": ["base_id", "table_id", "row"],
+                            "db_upsert_rows": ["base_id", "table_id", "rows"],
+                            "db_list_rows": ["base_id", "table_id"],
+                            "db_table_schema": ["base_id", "table_id"],
+                        ]
+                        let toolsNeedingParams = effectiveToolCalls.filter { tc in
+                            tc.arguments.trimmingCharacters(in: .whitespacesAndNewlines) == "{}"
+                            && (
+                                // Check specsThisRound first
+                                specsThisRound.contains(where: {
+                                    guard let name = MaestroTools.toolName(from: $0),
+                                          name == tc.name,
+                                          let function = $0["function"] as? [String: any Sendable],
+                                          let parameters = function["parameters"] as? [String: any Sendable],
+                                          let required = parameters["required"] as? [String] else { return false }
+                                    return !required.isEmpty
+                                })
+                                // Fall back to hardcoded map for budget-exhausted tools
+                                || (knownRequiredArgs[tc.name]?.isEmpty == false)
+                            )
+                        }
+                        if !toolsNeedingParams.isEmpty {
+                            let toolDetails = toolsNeedingParams.compactMap { tc -> String? in
+                                // Try specsThisRound first, fall back to hardcoded map
+                                let required: [String]
+                                if let spec = specsThisRound.first(where: {
+                                    MaestroTools.toolName(from: $0) == tc.name
+                                }),
+                                let function = spec["function"] as? [String: any Sendable],
+                                let parameters = function["parameters"] as? [String: any Sendable],
+                                let req = parameters["required"] as? [String] {
+                                    required = req
+                                } else if let fallback = knownRequiredArgs[tc.name] {
+                                    required = fallback
+                                } else {
+                                    return nil
+                                }
+                                return "\(tc.name)(required: \(required.joined(separator: ", ")))"
+                            }
+                            let detailList = toolDetails.joined(separator: ", ")
+                            NSLog("[AGENT] POST-EXEC EMPTY ARGS: tools needing params: \(detailList)")
+                            convo.append([
+                                "role": "user",
+                                "content":
+                                    "[automated check — NOT a message from the user] "
+                                    + "Tool calls with EMPTY arguments ({}): \(detailList). "
+                                    + "You MUST include the required parameters listed above. "
+                                    + "Do NOT emit tool calls without parameters.",
+                            ])
                         }
                         // Drain any delegation streaming events and yield them
                         // so the UI can show real-time sub-agent activity.
@@ -815,7 +1145,7 @@ final class AgentExecutor: Sendable {
     /// take ("I'll delegate now", "Now I'll mark it done", "I will now:") but the
     /// turn ends without the tool call actually firing? Catches the model's pattern
     /// of announcing intent and then stopping.
-    private static func claimsFutureAction(_ text: String) -> Bool {
+    static func claimsFutureAction(_ text: String) -> Bool {
         let t = text.lowercased()
         guard !t.isEmpty else { return false }
         let intents = [
@@ -841,6 +1171,13 @@ final class AgentExecutor: Sendable {
             "let me now", "let me start", "let me help",
             "next, i'll", "next i'll", "next, let me", "next let me",
             "now let me", "good, i'll", "i have the",
+            // "Proceeding" phrasing — the 03:28 stall: the model ended its
+            // turn with "I am now proceeding to find the source files…" (a
+            // promise of work, no tool call) and NO existing pattern matched,
+            // so nothing nudged it and the run silently parked for 6 hours.
+            "i am now proceeding", "i'm now proceeding", "i am proceeding to",
+            "i'm proceeding to", "now proceeding to", "proceeding to find",
+            "i will proceed", "i'll proceed", "proceeding with the next",
             "step 1:", "step 2:", "step 3:", "step 4:", "step 5:",
             "first, i will", "then i will", "finally, i will",
             "first, i'll", "then i'll", "finally, i'll",
@@ -1094,8 +1431,11 @@ final class AgentExecutor: Sendable {
             }
         }
 
-        guard !args.isEmpty,
-              let argsData = try? JSONSerialization.data(withJSONObject: args),
+        // Return tool calls even with empty args so the handler can return a
+        // meaningful error (e.g. "read_file requires 'path'"). Silently dropping
+        // the call leaves the model blind to why it failed, causing empty-args
+        // retry loops (Qwen 3 Coder Next: 30+ rounds of `read_file` with {}).
+        guard let argsData = try? JSONSerialization.data(withJSONObject: args),
               let argsJSON = String(data: argsData, encoding: .utf8)
         else { return nil }
         return RoundToolCall(id: UUID().uuidString, name: functionName, arguments: argsJSON)
@@ -1194,10 +1534,72 @@ final class AgentExecutor: Sendable {
 
     /// Mutating tools that are NOT agent-scoped (no agent_id injection) but still
     /// count as "real work this turn" so a legitimate result isn't re-nudged.
+    /// Detects hesitation/second-guessing narration ("Wait, I'll check…",
+    /// "Actually, let me verify…") that small models spiral into. Word-bounded
+    /// so "await"/"waiting room" don't false-positive. Only meaningful in
+    /// aggregate — see the dither budget in the agentic loop.
+    /// Internal (not private) so tests can pin the patterns.
+    static func containsHesitation(_ text: String) -> Bool {
+        let t = text.lowercased()
+        let patterns = [
+            #"\bwait\b"#, #"\bhmm+\b"#, #"\bon second thought\b"#,
+            #"\bsecond-?guess"#, #"\blet me re-?check\b"#,
+            #"\blet me double-?check\b"#, #"\blet me re-?read\b"#,
+            #"\blet me verify (that |once )?(again|more)\b"#,
+            #"\blet me just\b"#, #"\bactually,?\b"#,
+        ]
+        return patterns.contains { t.range(of: $0, options: .regularExpression) != nil }
+    }
+
+    /// Detects content that asks the USER to do something the model cannot:
+    /// authorize folders, grant permissions, provide credentials, install
+    /// something, sign in. Such a message is a valid final answer — nudging
+    /// it as "future narration" forces the model to parrot the same request
+    /// again (confirmed live: the ask repeated verbatim until the
+    /// identical-round guard ended the turn).
+    /// Internal (not private) so tests can pin the patterns.
+    static func asksUserForAction(_ text: String) -> Bool {
+        let t = text.lowercased()
+        let asks = [
+            "please add", "please authorize", "please authorise", "please grant",
+            "please provide", "please give", "please enable", "please allow",
+            "please unlock", "please install", "please sign in", "please log in",
+            "please share", "please tell me", "please confirm",
+            "i don't have permission", "i do not have permission",
+            "i don't have access", "i do not have access",
+            "access denied", "permission denied", "not authorized", "not authorised",
+            "outside the authorized", "outside of the authorized",
+            "you'll need to", "you will need to", "you need to add",
+            "could you add", "could you provide", "could you share", "can you provide",
+        ]
+        return asks.contains { t.contains($0) }
+    }
+
     private static let nonInjectedMutators: Set<String> = [
         "create_project_agent", "archive_project_agent",
         "ask_project_agent", "ask_project_agents",
     ]
+
+    /// Verb-prefix classification for "this tool changes something" — used by
+    /// the falseClaim nudge to know a claimed mutation really happened. The
+    /// explicit sets above only covered plan/todo/message/workspace tools, so
+    /// a successful send (e.g. send_whatsapp_message) left `usedMutator`
+    /// false and the model's legitimate "Message sent!" confirmation was
+    /// nudged as a FALSE claim — forcing it to repeat the claim, with every
+    /// copy streaming into the chat bubble (user-reported duplication).
+    /// Prefix match on the leading verb keeps this robust as tools are added;
+    /// read-only verbs (get/list/read/search/fetch…) are deliberately absent.
+    /// Internal (not private) so tests can pin the classification.
+    static func isMutatorToolName(_ name: String) -> Bool {
+        let verbs = [
+            "send", "post", "like", "unlike", "repost", "unrepost",
+            "create", "add", "update", "edit", "write", "delete",
+            "move", "set", "start", "stop", "archive", "upload",
+            "mark", "follow", "unfollow", "publish", "run",
+        ]
+        let lower = name.lowercased()
+        return verbs.contains { lower == $0 || lower.hasPrefix("\($0)_") }
+    }
 
     /// Encode a Message into an OpenAI chat message. Plain text uses string
     /// content; when images are attached, content becomes an array of text +
@@ -1291,9 +1693,14 @@ final class AgentExecutor: Sendable {
         // without requiring manual Settings → Context entries).
         MaestroTools.workingDirectory = workingDirectory
         NSLog("[executeTool] name=%@ args=%@ workingDirectory=%@", tc.name, argsJSON, workingDirectory ?? "(none)")
+        let toolID = UUID().uuidString
+        let toolStartTime = Date()
+        AIBroadcastService.broadcastToolStarted(name: tc.name, id: toolID)
         if await MaestroTools.handles(tc.name) {
             let result = await MaestroTools.execute(call)
             NSLog("[executeTool] result for %@: %@", tc.name, String(result.prefix(300)))
+            AIBroadcastService.broadcastToolCompleted(
+                name: tc.name, id: toolID, duration: Date().timeIntervalSince(toolStartTime))
             // If create_project_agent returned "already_exists", rewrite the
             // result into a hard error so the model is forced to use
             // ask_project_agent instead of looping on create.
@@ -1306,9 +1713,14 @@ final class AgentExecutor: Sendable {
         if let mcp, await mcp.handles(tc.name) {
             let result = await mcp.execute(call)
             NSLog("[executeTool] MCP result for %@: %@", tc.name, String(result.prefix(300)))
+            AIBroadcastService.broadcastToolCompleted(
+                name: tc.name, id: toolID, duration: Date().timeIntervalSince(toolStartTime))
             return result
         }
-        return await MaestroTools.execute(call)
+        let result = await MaestroTools.execute(call)
+        AIBroadcastService.broadcastToolCompleted(
+            name: tc.name, id: toolID, duration: Date().timeIntervalSince(toolStartTime))
+        return result
     }
 
     // MARK: - VLM tool result support
@@ -1566,12 +1978,13 @@ final class AgentExecutor: Sendable {
             navigator: false, liteMode: subIsLite,
             enabledCategories: enabledCategories, compactMode: compactMode)
         if let mcp {
-            let mcpSchemas = await mcp.currentSchemas(audience: .delegate)
             if let enabledCategories {
                 if enabledCategories.contains(.mcp) {
+                    let mcpSchemas = await mcp.currentSchemas(forCategories: enabledCategories)
                     specs += mcpSchemas
                 }
             } else {
+                let mcpSchemas = await mcp.currentSchemas(audience: .delegate)
                 specs += mcpSchemas
             }
         }
@@ -1688,12 +2101,13 @@ final class AgentExecutor: Sendable {
         var specs = await MaestroTools.schemas(
             navigator: false, enabledCategories: enabledCategories, compactMode: compactMode)
         if let mcp {
-            let mcpSchemas = await mcp.currentSchemas(audience: .delegate)
             if let enabledCategories {
                 if enabledCategories.contains(.mcp) {
+                    let mcpSchemas = await mcp.currentSchemas(forCategories: enabledCategories)
                     specs += mcpSchemas
                 }
             } else {
+                let mcpSchemas = await mcp.currentSchemas(audience: .delegate)
                 specs += mcpSchemas
             }
         }

@@ -5,8 +5,10 @@ import SwiftMaestroKit
 // MARK: - Native Bluesky / AT Protocol tools
 //
 // Public, read-only Bluesky queries via https://api.bsky.app (no authentication
-// required for search/profile/feed/thread lookups). Auth-gated actions
-// (posting, timelines, notifications) are out of scope for this initial set.
+// required for search/profile/feed/thread lookups). Authenticated actions
+// (timeline, posting, like/repost) reuse the session the user created in the
+// Bluesky plugin panel — tokens live in the Keychain under plugin.bluesky.*,
+// so signing in once in the panel enables these agent tools too.
 
 extension MaestroTools {
 
@@ -32,6 +34,30 @@ extension MaestroTools {
                 name: "search_bluesky_actors", spec: blueskyToolSpecs[4],
                 category: ToolCategory.bluesky.rawValue,
                 handler: { call in await searchBlueskyActors(call) }),
+            ToolDefinition(
+                name: "get_bluesky_timeline", spec: blueskyToolSpecs[5],
+                category: ToolCategory.bluesky.rawValue,
+                handler: { call in await getBlueskyTimeline(call) }),
+            ToolDefinition(
+                name: "post_bluesky", spec: blueskyToolSpecs[6],
+                category: ToolCategory.bluesky.rawValue,
+                handler: { call in await postBluesky(call) }),
+            ToolDefinition(
+                name: "like_bluesky_post", spec: blueskyToolSpecs[7],
+                category: ToolCategory.bluesky.rawValue,
+                handler: { call in await likeBlueskyPost(call) }),
+            ToolDefinition(
+                name: "unlike_bluesky_post", spec: blueskyToolSpecs[8],
+                category: ToolCategory.bluesky.rawValue,
+                handler: { call in await unlikeBlueskyPost(call) }),
+            ToolDefinition(
+                name: "repost_bluesky_post", spec: blueskyToolSpecs[9],
+                category: ToolCategory.bluesky.rawValue,
+                handler: { call in await repostBlueskyPost(call) }),
+            ToolDefinition(
+                name: "unrepost_bluesky_post", spec: blueskyToolSpecs[10],
+                category: ToolCategory.bluesky.rawValue,
+                handler: { call in await unrepostBlueskyPost(call) }),
         ])
     }
 
@@ -67,6 +93,38 @@ extension MaestroTools {
                     "query": ["type": "string", "description": "Search query string."],
                     "limit": ["type": "integer", "description": "Max users to return (default 10, max 100)."],
                 ], required: ["query"]),
+            rawSpec("get_bluesky_timeline",
+                "Get the signed-in user's Bluesky home timeline. Requires sign-in via the Bluesky plugin panel.",
+                properties: [
+                    "limit": ["type": "integer", "description": "Max posts to return (default 20, max 100)."],
+                ], required: []),
+            rawSpec("post_bluesky",
+                "Create a Bluesky post as the signed-in user (max 300 characters). URLs in the text become clickable links automatically. Requires sign-in via the Bluesky plugin panel.",
+                properties: [
+                    "text": ["type": "string", "description": "Post text, max 300 characters."],
+                ], required: ["text"]),
+            rawSpec("like_bluesky_post",
+                "Like a Bluesky post as the signed-in user. Returns the like record URI (needed to unlike). Requires sign-in via the Bluesky plugin panel.",
+                properties: [
+                    "uri": ["type": "string", "description": "AT URI of the post to like."],
+                    "cid": ["type": "string", "description": "CID of the post to like."],
+                ], required: ["uri", "cid"]),
+            rawSpec("unlike_bluesky_post",
+                "Remove a like from a Bluesky post. Requires sign-in via the Bluesky plugin panel.",
+                properties: [
+                    "like_uri": ["type": "string", "description": "AT URI of the like record to delete (returned by like_bluesky_post or the post's viewer state)."],
+                ], required: ["like_uri"]),
+            rawSpec("repost_bluesky_post",
+                "Repost a Bluesky post as the signed-in user. Returns the repost record URI (needed to undo). Requires sign-in via the Bluesky plugin panel.",
+                properties: [
+                    "uri": ["type": "string", "description": "AT URI of the post to repost."],
+                    "cid": ["type": "string", "description": "CID of the post to repost."],
+                ], required: ["uri", "cid"]),
+            rawSpec("unrepost_bluesky_post",
+                "Undo a repost on Bluesky. Requires sign-in via the Bluesky plugin panel.",
+                properties: [
+                    "repost_uri": ["type": "string", "description": "AT URI of the repost record to delete (returned by repost_bluesky_post or the post's viewer state)."],
+                ], required: ["repost_uri"]),
         ]
     }
 
@@ -246,6 +304,348 @@ extension MaestroTools {
         } catch {
             return errorJSON("Bluesky actor search failed: \(error.localizedDescription)")
         }
+    }
+
+    // MARK: - Authenticated session (shared with the Bluesky plugin panel)
+    //
+    // The plugin stores its session in the Keychain under plugin.bluesky.*
+    // (see PluginBridge's per-plugin namespace). These tools read the same
+    // entries, so the user signs in once in the panel and agents can act on
+    // their behalf. Refreshing a token here writes it back to the same place.
+
+    private struct BlueskySession {
+        let pds: String
+        let did: String
+        let handle: String
+        let accessJwt: String
+        let refreshJwt: String
+    }
+
+    private enum BlueskyAuthError: LocalizedError {
+        case notSignedIn
+        case refreshFailed
+        case requestFailed(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .notSignedIn:
+                return "Not signed in to Bluesky. Sign in via the Bluesky plugin panel first (handle + app password)."
+            case .refreshFailed:
+                return "Bluesky session refresh failed — sign in again via the Bluesky plugin panel."
+            case .requestFailed(let detail):
+                return detail
+            }
+        }
+    }
+
+    private static func loadBlueskySession() -> BlueskySession? {
+        guard
+            let access = try? KeychainService.read(account: "plugin.bluesky.accessJwt"),
+            !access.isEmpty,
+            let refresh = try? KeychainService.read(account: "plugin.bluesky.refreshJwt"),
+            !refresh.isEmpty,
+            let did = try? KeychainService.read(account: "plugin.bluesky.did"),
+            !did.isEmpty
+        else { return nil }
+        let pds = (try? KeychainService.read(account: "plugin.bluesky.pds")) ?? nil
+        let handle = (try? KeychainService.read(account: "plugin.bluesky.handle")) ?? nil
+        return BlueskySession(
+            pds: (pds?.isEmpty == false) ? pds! : "https://bsky.social",
+            did: did,
+            handle: handle ?? "",
+            accessJwt: access,
+            refreshJwt: refresh
+        )
+    }
+
+    /// Authenticated XRPC request against the user's PDS. On an ExpiredToken
+    /// response it refreshes the session once (writing new tokens back to the
+    /// plugin's Keychain entries) and retries the original request once.
+    private static func blueskyAuthedRequest(
+        path: String,
+        query: [String: String]?,
+        body: [String: Any]?,
+        retryOnExpired: Bool = true
+    ) async throws -> (Data, HTTPURLResponse) {
+        guard let session = loadBlueskySession() else { throw BlueskyAuthError.notSignedIn }
+
+        var components = URLComponents(string: session.pds + path)!
+        if let query {
+            components.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) }
+        }
+        guard let url = components.url else {
+            throw BlueskyAuthError.requestFailed("Invalid Bluesky request URL")
+        }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = blueskyTimeout
+        request.setValue("SwiftMaestro", forHTTPHeaderField: "User-Agent")
+        request.setValue("Bearer \(session.accessJwt)", forHTTPHeaderField: "Authorization")
+        if let body {
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        }
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw BlueskyAuthError.requestFailed("Non-HTTP response from Bluesky")
+        }
+
+        if retryOnExpired, blueskyIsExpiredToken(data: data, status: http.statusCode) {
+            try await refreshBlueskySession()
+            return try await blueskyAuthedRequest(
+                path: path, query: query, body: body, retryOnExpired: false)
+        }
+        return (data, http)
+    }
+
+    private static func blueskyIsExpiredToken(data: Data, status: Int) -> Bool {
+        guard status == 400,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let error = object["error"] as? String
+        else { return false }
+        return error == "ExpiredToken"
+    }
+
+    private static func refreshBlueskySession() async throws {
+        guard let session = loadBlueskySession() else { throw BlueskyAuthError.notSignedIn }
+        guard let url = URL(string: session.pds + "/xrpc/com.atproto.server.refreshSession") else {
+            throw BlueskyAuthError.requestFailed("Invalid PDS URL")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = blueskyTimeout
+        request.setValue("Bearer \(session.refreshJwt)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw BlueskyAuthError.refreshFailed
+        }
+        struct RefreshResponse: Decodable {
+            let accessJwt: String
+            let refreshJwt: String?
+        }
+        let parsed = try JSONDecoder().decode(RefreshResponse.self, from: data)
+        try KeychainService.store(
+            account: "plugin.bluesky.accessJwt", value: parsed.accessJwt, synchronizable: false)
+        if let refresh = parsed.refreshJwt, !refresh.isEmpty {
+            try KeychainService.store(
+                account: "plugin.bluesky.refreshJwt", value: refresh, synchronizable: false)
+        }
+    }
+
+    // MARK: - Authenticated implementations
+
+    private struct GetBlueskyTimelineArgs: Decodable {
+        let limit: LenientInt?
+    }
+
+    private struct PostBlueskyArgs: Decodable {
+        let text: String?
+    }
+
+    private struct BlueskyRecordActionArgs: Decodable {
+        let uri: String?
+        let cid: String?
+    }
+
+    private struct BlueskyUndoActionArgs: Decodable {
+        let likeUri: String?
+        let repostUri: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case likeUri = "like_uri"
+            case repostUri = "repost_uri"
+        }
+    }
+
+    private struct BlueskyCreateRecordResponse: Decodable {
+        let uri: String
+        let cid: String
+    }
+
+    private static func getBlueskyTimeline(_ call: ToolCall) async -> String {
+        let args = decodeArgs(call, as: GetBlueskyTimelineArgs.self)
+        let limit = max(min(args?.limit?.value ?? 20, 100), 1)
+        do {
+            let (data, http) = try await blueskyAuthedRequest(
+                path: "/xrpc/app.bsky.feed.getTimeline",
+                query: ["limit": String(limit)],
+                body: nil
+            )
+            guard (200..<300).contains(http.statusCode) else {
+                return errorJSON("Bluesky API returned \(http.statusCode)")
+            }
+            let payload = try blueskyJSON(data, as: BlueskyAuthorFeedResponse.self)
+            return jsonString([
+                "count": payload.feed.count,
+                "posts": payload.feed.map { $0.post.asDictionary() },
+            ])
+        } catch {
+            return errorJSON("Bluesky timeline failed: \(error.localizedDescription)")
+        }
+    }
+
+    private static func postBluesky(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: PostBlueskyArgs.self),
+              let text = args.text?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty
+        else { return errorJSON("post_bluesky requires 'text'") }
+        // Bluesky's limit is 300 grapheme clusters — Swift's String.count
+        // counts exactly those.
+        guard text.count <= 300 else {
+            return errorJSON("post_bluesky text is \(text.count) characters; the limit is 300")
+        }
+        guard let session = loadBlueskySession() else {
+            return errorJSON(BlueskyAuthError.notSignedIn.localizedDescription)
+        }
+        do {
+            var record: [String: Any] = [
+                "$type": "app.bsky.feed.post",
+                "text": text,
+                "createdAt": ISO8601DateFormatter().string(from: Date()),
+            ]
+            let facets = detectBlueskyLinkFacets(in: text)
+            if !facets.isEmpty { record["facets"] = facets }
+            let (data, http) = try await blueskyAuthedRequest(
+                path: "/xrpc/com.atproto.repo.createRecord",
+                query: nil,
+                body: [
+                    "repo": session.did,
+                    "collection": "app.bsky.feed.post",
+                    "record": record,
+                ]
+            )
+            guard (200..<300).contains(http.statusCode) else {
+                return errorJSON("Bluesky post failed with status \(http.statusCode)")
+            }
+            let created = try blueskyJSON(data, as: BlueskyCreateRecordResponse.self)
+            return jsonString(["posted": true, "uri": created.uri, "cid": created.cid])
+        } catch {
+            return errorJSON("Bluesky post failed: \(error.localizedDescription)")
+        }
+    }
+
+    private static func likeBlueskyPost(_ call: ToolCall) async -> String {
+        await createBlueskySubjectRecord(
+            call, collection: "app.bsky.feed.like", actionName: "like_bluesky_post")
+    }
+
+    private static func repostBlueskyPost(_ call: ToolCall) async -> String {
+        await createBlueskySubjectRecord(
+            call, collection: "app.bsky.feed.repost", actionName: "repost_bluesky_post")
+    }
+
+    private static func unlikeBlueskyPost(_ call: ToolCall) async -> String {
+        await deleteBlueskyRecord(
+            call, uriKeyPath: \.likeUri, collection: "app.bsky.feed.like",
+            actionName: "unlike_bluesky_post")
+    }
+
+    private static func unrepostBlueskyPost(_ call: ToolCall) async -> String {
+        await deleteBlueskyRecord(
+            call, uriKeyPath: \.repostUri, collection: "app.bsky.feed.repost",
+            actionName: "unrepost_bluesky_post")
+    }
+
+    /// Shared handler for like/repost: both are createRecord calls whose
+    /// record is just { subject: { uri, cid }, createdAt }.
+    private static func createBlueskySubjectRecord(
+        _ call: ToolCall, collection: String, actionName: String
+    ) async -> String {
+        guard let args = decodeArgs(call, as: BlueskyRecordActionArgs.self),
+              let uri = args.uri?.trimmingCharacters(in: .whitespaces),
+              !uri.isEmpty,
+              let cid = args.cid?.trimmingCharacters(in: .whitespaces),
+              !cid.isEmpty
+        else { return errorJSON("\(actionName) requires 'uri' and 'cid'") }
+        guard let session = loadBlueskySession() else {
+            return errorJSON(BlueskyAuthError.notSignedIn.localizedDescription)
+        }
+        do {
+            let (data, http) = try await blueskyAuthedRequest(
+                path: "/xrpc/com.atproto.repo.createRecord",
+                query: nil,
+                body: [
+                    "repo": session.did,
+                    "collection": collection,
+                    "record": [
+                        "$type": collection,
+                        "subject": ["uri": uri, "cid": cid],
+                        "createdAt": ISO8601DateFormatter().string(from: Date()),
+                    ],
+                ]
+            )
+            guard (200..<300).contains(http.statusCode) else {
+                return errorJSON("\(actionName) failed with status \(http.statusCode)")
+            }
+            let created = try blueskyJSON(data, as: BlueskyCreateRecordResponse.self)
+            return jsonString([
+                "ok": true, "collection": collection, "record_uri": created.uri,
+            ])
+        } catch {
+            return errorJSON("\(actionName) failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Shared handler for unlike/unrepost: deleteRecord by the record's own
+    /// AT URI (the rkey is its final path segment).
+    private static func deleteBlueskyRecord(
+        _ call: ToolCall,
+        uriKeyPath: KeyPath<BlueskyUndoActionArgs, String?>,
+        collection: String,
+        actionName: String
+    ) async -> String {
+        guard let args = decodeArgs(call, as: BlueskyUndoActionArgs.self),
+              let recordURI = args[keyPath: uriKeyPath]?.trimmingCharacters(in: .whitespaces),
+              !recordURI.isEmpty
+        else { return errorJSON("\(actionName) requires the record URI to delete") }
+        guard recordURI.hasPrefix("at://"), recordURI.contains("/\(collection)/"),
+              let rkey = recordURI.split(separator: "/").last, !rkey.isEmpty
+        else { return errorJSON("\(actionName) got an invalid \(collection) record URI") }
+        guard let session = loadBlueskySession() else {
+            return errorJSON(BlueskyAuthError.notSignedIn.localizedDescription)
+        }
+        do {
+            let (_, http) = try await blueskyAuthedRequest(
+                path: "/xrpc/com.atproto.repo.deleteRecord",
+                query: nil,
+                body: [
+                    "repo": session.did,
+                    "collection": collection,
+                    "rkey": String(rkey),
+                ]
+            )
+            guard (200..<300).contains(http.statusCode) else {
+                return errorJSON("\(actionName) failed with status \(http.statusCode)")
+            }
+            return jsonString(["ok": true, "deleted": recordURI])
+        } catch {
+            return errorJSON("\(actionName) failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Builds richtext link facets (UTF-8 byte offsets) so URLs in agent
+    /// posts render as clickable links, matching the plugin's composer.
+    /// Internal (not private) so tests can verify byte-offset math directly.
+    static func detectBlueskyLinkFacets(in text: String) -> [[String: Any]] {
+        var facets: [[String: Any]] = []
+        let pattern = #"https?://[^\s)>\]]+"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let nsText = text as NSString
+        let matches = regex.matches(
+            in: text, range: NSRange(location: 0, length: nsText.length))
+        for match in matches {
+            let urlString = nsText.substring(with: match.range)
+            let prefix = nsText.substring(with: NSRange(location: 0, length: match.range.location))
+            let byteStart = prefix.utf8.count
+            facets.append([
+                "index": ["byteStart": byteStart, "byteEnd": byteStart + urlString.utf8.count],
+                "features": [["$type": "app.bsky.richtext.facet#link", "uri": urlString]],
+            ])
+        }
+        return facets
     }
 
     // MARK: - Response models

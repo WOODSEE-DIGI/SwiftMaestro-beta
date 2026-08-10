@@ -268,9 +268,24 @@ final class WorkspaceStore {
     /// otherwise the defaults for the agent's kind.
     func enabledToolCategories(for agentID: UUID) -> Set<ToolCategory> {
         guard let agent = agent(id: agentID) else { return [] }
+        let baseline = agent.category?.defaultToolCategories
         if let saved = agent.enabledToolCategories {
             let valid = Set(saved.compactMap { ToolCategory(rawValue: $0) })
-            if !valid.isEmpty { return valid }
+            if !valid.isEmpty {
+                // If a category baseline exists (e.g. .coding → 11 tools), narrow
+                // the saved set to only categories the agent actually needs. This
+                // prevents legacy migrations from keeping all 28 categories / 177
+                // tools loaded for a coding agent that only needs 11.
+                if let baseline, valid.count > baseline.count {
+                    return valid.intersection(baseline)
+                }
+                return valid
+            }
+        }
+        // Fall back to the agent's CATEGORY defaults (e.g. .coding → 11 tools),
+        // not the kind defaults (e.g. .project → 28 tools / 177 tool schemas).
+        if let baseline {
+            return baseline
         }
         return ToolCategory.defaultEnabled(for: agent.kind)
     }
@@ -286,14 +301,15 @@ final class WorkspaceStore {
             let kind = agents[i].kind
             let saved = Set(agents[i].enabledToolCategories?.compactMap { ToolCategory(rawValue: $0) } ?? [])
             // If nothing is saved, the defaults will already provide the right baseline.
-            // If a saved set exists, top it up to the agent's baseline without
-            // adding unrelated categories.
+            // If a saved set exists, NARROW it to the agent's baseline — the old
+            // code unioned baseline into saved which only ever grew the set; agents
+            // that started with all 28 categories stayed at 28 forever.
             let baseline = agents[i].category?.defaultToolCategories
                 ?? Set(ToolCategory.defaultEnabled(for: kind))
             if !saved.isEmpty {
-                let merged = saved.union(baseline)
-                if merged != saved {
-                    agents[i].enabledToolCategories = Array(merged.map(\.rawValue))
+                let narrowed = saved.intersection(baseline)
+                if narrowed != saved {
+                    agents[i].enabledToolCategories = Array(narrowed.map(\.rawValue))
                     changed = true
                 }
             }

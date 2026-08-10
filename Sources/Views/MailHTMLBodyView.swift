@@ -8,10 +8,10 @@ import AppKit
 /// and backgrounds — in a WKWebView, like Apple Mail does. Plain-text emails
 /// don't come through here (the caller renders those as themed text).
 ///
-/// Privacy: remote resources (images, stylesheets, fonts — i.e. tracking
-/// pixels) are blocked by default via a WKContentRuleList. The caller shows
-/// a "Load remote content" affordance; when allowed (per-message or via the
-/// persisted default), the rule list is removed and the body reloads.
+/// Privacy: remote resources (images, stylesheets, fonts) are blocked by
+/// default via a WKContentRuleList. The caller shows a "Load remote content"
+/// affordance; when allowed (per-message or via the persisted default), the
+/// rule list is removed and the body reloads.
 struct MailHTMLBodyView: NSViewRepresentable {
     let html: String
     let remoteContentAllowed: Bool
@@ -81,21 +81,18 @@ struct MailHTMLBodyView: NSViewRepresentable {
         /// Links open in the user's default browser, never inside the app.
         func webView(
             _ webView: WKWebView,
-            decidePolicyFor navigationAction: WKNavigationAction,
-            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
-        ) {
+            decidePolicyFor navigationAction: WKNavigationAction
+        ) async -> WKNavigationActionPolicy {
             guard let url = navigationAction.request.url,
                   let scheme = url.scheme else {
-                decisionHandler(.allow)
-                return
+                return .allow
             }
             if scheme == "http" || scheme == "https",
                navigationAction.navigationType == .linkActivated {
                 NSWorkspace.shared.open(url)
-                decisionHandler(.cancel)
-                return
+                return .cancel
             }
-            decisionHandler(.allow)
+            return .allow
         }
     }
 }

@@ -1006,7 +1006,7 @@ struct ChatView: View {
                 }
             } else if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
                 handled = true
-                _ = provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
+                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
                     var url: URL?
                     if let u = item as? URL { url = u }
                     else if let d = item as? Data {

@@ -1,124 +1,19 @@
 import SwiftUI
 import AppKit
 
-// MARK: - Mail settings tab (OwnTrack relay)
+// MARK: - Mail settings tab
 
-/// Settings for the Apple Mail integration and the embedded OwnTrack
-/// tracking relay. The relay listens on localhost:8087 and serves tracking
-/// pixels / click redirects for messages sent through Mail.app.
+/// Settings for the Apple Mail integration: Full Disk Access for the
+/// Envelope Index and the Mail automation bridge.
 struct MailSettingsTab: View {
     @Environment(ThemeStore.self) private var theme
     @State private var mailService = AppleMailService.shared
-    @State private var relayManager = OwnTrackRelayManager.shared
     @State private var envelope = MailEnvelopeIndex.shared
-    @State private var health: Bool?
-    @State private var showAPIKey = false
     @AppStorage("appleMail.loadRemoteImages") private var loadRemoteImages = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                GroupBox("Embedded Tracking Relay") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack(spacing: 8) {
-                            Circle()
-                                .fill(statusColor)
-                                .frame(width: 8, height: 8)
-                            Text(statusText)
-                                .font(.callout)
-                            Spacer()
-                            if relayManager.isRunning {
-                                Button("Stop Relay") { relayManager.stopRelay(); refreshHealth() }
-                            } else {
-                                Button("Start Relay") { relayManager.startRelay(); refreshHealth() }
-                            }
-                        }
-                        if let error = relayManager.lastError {
-                            Text(error)
-                                .font(.caption)
-                                .foregroundStyle(.red)
-                        }
-                        Toggle("Start relay automatically at launch", isOn: Bindable(relayManager).autoStartRelay)
-                        Text("The relay runs inside SwiftMaestro — nothing external to install. It records "
-                            + "open and click events for tracked messages and persists them as JSON.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    .padding(8)
-                }
-
-                GroupBox("Relay Endpoint") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        LabeledContent("Base URL") {
-                            TextField("http://localhost:8087", text: Bindable(mailService).relayBaseURLString)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.caption.monospaced())
-                                .onChange(of: mailService.relayBaseURLString) { _, newValue in
-                                    // Sync the pixel-injection URL so tracked emails
-                                    // point recipients at the same public endpoint.
-                                    if let url = URL(string: newValue) {
-                                        relayManager.publicBaseURL = url
-                                    }
-                                }
-                        }
-                        Text("Localhost works for tracking messages you open yourself. For tracking opens "
-                            + "on other people's machines, set this to a publicly reachable URL "
-                            + "(e.g. https://swiftmaestro.com/tracking) — the pixel "
-                            + "fires on the recipient's device.")
-                            .font(.caption).foregroundStyle(.secondary)
-                        LabeledContent("Event store") {
-                            HStack {
-                                Text(relayManager.storeURL.path)
-                                    .font(.caption.monospaced())
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                Button("Reveal") {
-                                    try? FileManager.default.createDirectory(
-                                        at: relayManager.storeURL.deletingLastPathComponent(),
-                                        withIntermediateDirectories: true)
-                                    NSWorkspace.shared.activateFileViewerSelecting([relayManager.storeURL])
-                                }
-                                .font(.caption)
-                            }
-                        }
-                        Text("Same JSON format as the standalone TrackingRelayServer — existing "
-                            + "relay-store.json files can be dropped in directly.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    .padding(8)
-                }
-
-                GroupBox("Tracking API Key") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Your API key identifies you to the external relay. Only you can see your tracking events.")
-                            .font(.caption).foregroundStyle(.secondary)
-                        HStack {
-                            if showAPIKey {
-                                Text(relayManager.relayAPIKey)
-                                    .font(.caption.monospaced())
-                                    .textSelection(.enabled)
-                            } else {
-                                Text(String(repeating: "•", count: 64))
-                                    .font(.caption.monospaced())
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Button(showAPIKey ? "Hide" : "Show") {
-                                showAPIKey.toggle()
-                            }
-                            .font(.caption)
-                            Button("Copy") {
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(relayManager.relayAPIKey, forType: .string)
-                            }
-                            .font(.caption)
-                        }
-                        Text("Never share this key. It controls who can see your email tracking events.")
-                            .font(.caption).foregroundStyle(.orange)
-                    }
-                    .padding(8)
-                }
-
                 GroupBox("Message Index (Full Disk Access)") {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack(spacing: 8) {
@@ -152,7 +47,7 @@ struct MailSettingsTab: View {
                             + "control Mail — grant it once and it sticks.")
                             .font(.caption).foregroundStyle(.secondary)
                         Toggle("Load remote images in emails", isOn: $loadRemoteImages)
-                        Text("Off by default: remote images are also tracking pixels. You can still load "
+                        Text("Off by default: remote images can be used for tracking. You can still load "
                             + "them per message from the banner above an email's body.")
                             .font(.caption).foregroundStyle(.secondary)
                         Button("Open Mail") { mailService.openMail() }
@@ -166,7 +61,6 @@ struct MailSettingsTab: View {
         }
         .scrollContentBackground(.hidden)
         .onAppear {
-            refreshHealth()
             if !envelope.isAvailable { envelope.open() }
         }
     }
@@ -180,28 +74,5 @@ struct MailSettingsTab: View {
         if envelope.isAvailable { return "Envelope Index readable" }
         if envelope.needsFullDiskAccess { return "Blocked — grant Full Disk Access and relaunch" }
         return "Not readable: \(envelope.lastError ?? "unknown")"
-    }
-
-    private var statusColor: Color {
-        switch health {
-        case .some(true): return .green
-        case .some(false): return .red
-        case .none: return .secondary
-        }
-    }
-
-    private var statusText: String {
-        switch health {
-        case .some(true):
-            return relayManager.isRunning ? "Embedded relay running" : "Relay reachable (external)"
-        case .some(false): return "Relay offline"
-        case .none: return "Checking…"
-        }
-    }
-
-    private func refreshHealth() {
-        Task {
-            health = await mailService.checkRelayHealth()
-        }
     }
 }

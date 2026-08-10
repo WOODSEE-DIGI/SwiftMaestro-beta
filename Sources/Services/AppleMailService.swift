@@ -16,9 +16,6 @@ import ApplicationServices
 ///     apple-events` entitlement is already present).
 ///   - Inspect the currently selected message in Mail's front message viewer
 ///     (subject, sender, Message-ID) via JXA.
-///   - Query the local OwnTrack tracking relay (the `TrackingRelayServer`
-///     executable from the apple-mail-tracker-private project) for open/click/
-///     reply stats on tracked messages.
 @Observable
 @MainActor
 final class AppleMailService {
@@ -140,11 +137,23 @@ final class AppleMailService {
         return try await AppleScriptRunner.run(script, arguments: [subject, content, payloadJSON])
     }
 
+    // MARK: - Message-ID normalization
+
+    /// Normalize an RFC 822 Message-ID: trim whitespace and angle brackets.
+    /// Pure function — safe to call from any actor.
+    nonisolated static func normalizeMessageID(_ messageID: String) -> String {
+        let trimmed = messageID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = trimmed
+            .trimmingCharacters(in: CharacterSet(charactersIn: "<>"))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized.isEmpty ? trimmed : normalized
+    }
+
     // MARK: - Selected message inspection
 
     /// Snapshot of the message currently selected in Mail's front message
     /// viewer. `messageID` is the RFC 822 Message-ID header (angle brackets
-    /// included as Mail reports them — normalize before relay lookups).
+    /// included as Mail reports them).
     struct SelectedMailMessage: Codable, Sendable {
         let messageID: String?
         let subject: String?
@@ -179,135 +188,4 @@ final class AppleMailService {
         }
         return try JSONDecoder().decode(SelectedMailMessage.self, from: data)
     }
-
-    // MARK: - OwnTrack tracking relay
-
-    /// Base URL of the local OwnTrack relay (`TrackingRelayServer` from the
-    /// apple-mail-tracker-private project). Persisted so it survives relaunches
-    /// and can follow a non-default relay configuration.
-    var relayBaseURLString: String {
-        didSet { UserDefaults.standard.set(relayBaseURLString, forKey: Self.relayBaseURLKey) }
-    }
-
-    /// Result of the most recent `/health` probe: true = relay reachable,
-    /// false = unreachable, nil = not checked yet this session.
-    private(set) var relayOnline: Bool?
-
-    private static let relayBaseURLKey = "appleMail.relayBaseURL"
-    static let defaultRelayBaseURL = "http://localhost:8087"
-
-    init() {
-        relayBaseURLString = UserDefaults.standard.string(forKey: Self.relayBaseURLKey)
-            ?? Self.defaultRelayBaseURL
-    }
-
-    /// Normalize an RFC 822 Message-ID the same way the relay does
-    /// (`normalizeMessageID` in RelayHTTPServer): trim whitespace and angle
-    /// brackets. The relay also tries bracket-wrapped candidates server-side,
-    /// but sending the normalized form keeps URLs clean.
-    /// Pure function — safe to call from any actor.
-    nonisolated static func normalizeMessageID(_ messageID: String) -> String {
-        let trimmed = messageID.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalized = trimmed
-            .trimmingCharacters(in: CharacterSet(charactersIn: "<>"))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return normalized.isEmpty ? trimmed : normalized
-    }
-
-    enum RelayError: LocalizedError {
-        case invalidBaseURL
-        case httpError(Int)
-
-        var errorDescription: String? {
-            switch self {
-            case .invalidBaseURL:
-                return "The OwnTrack relay base URL is not a valid URL."
-            case .httpError(let status):
-                return "OwnTrack relay returned HTTP \(status)."
-            }
-        }
-    }
-
-    /// Probe the relay's `/health` endpoint and update `relayOnline`.
-    @discardableResult
-    func checkRelayHealth() async -> Bool {
-        guard let url = URL(string: "\(relayBaseURLString)/health") else {
-            relayOnline = false
-            return false
-        }
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 3
-        do {
-            let (_, response) = try await URLSession.shared.data(for: request)
-            let ok = (response as? HTTPURLResponse)?.statusCode == 200
-            relayOnline = ok
-            return ok
-        } catch {
-            relayOnline = false
-            return false
-        }
-    }
-
-    /// Makes sure *some* relay answers at `relayBaseURLString` — starts the
-    /// embedded OwnTrack relay (OwnTrackRelayManager) when nothing is
-    /// listening. Returns true when a relay is reachable after the call.
-    @discardableResult
-    func ensureRelayRunning() async -> Bool {
-        if await checkRelayHealth() { return true }
-        guard relayBaseURLString == Self.defaultRelayBaseURL else {
-            return false // custom relay URL: not ours to start
-        }
-        guard OwnTrackRelayManager.shared.startRelay() else { return false }
-        // Give NWListener a beat to bind before re-probing.
-        try? await Task.sleep(for: .milliseconds(300))
-        return await checkRelayHealth()
-    }
-
-    /// Fetch the aggregate open/click/reply summary for a tracked message.
-    func trackingSummary(messageID: String) async throws -> MessageTrackingSummary {
-        let base = relayBaseURLString
-        let normalized = Self.normalizeMessageID(messageID)
-        guard let encoded = normalized.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
-              let url = URL(string: "\(base)/v1/messages/\(encoded)/summary") else {
-            throw RelayError.invalidBaseURL
-        }
-        let (data, response) = try await URLSession.shared.data(from: url)
-        guard let http = response as? HTTPURLResponse else { throw RelayError.invalidBaseURL }
-        guard http.statusCode == 200 else { throw RelayError.httpError(http.statusCode) }
-        let decoded = try Self.trackingDecoder.decode(MessageSummaryResponse.self, from: data)
-        return decoded.summary
-    }
-
-    /// Fetch the raw event list for a tracked message (sent/open/click/reply).
-    /// When using an external (non-localhost) relay, includes the API key for
-    /// per-user event isolation and uses `/events` (PHP relay path).
-    func trackingEvents(messageID: String) async throws -> [TrackingEvent] {
-        let base = relayBaseURLString
-        let normalized = Self.normalizeMessageID(messageID)
-        // External (PHP) relay uses /events; embedded relay uses /v1/events
-        let eventsPath = base.contains("localhost") ? "/v1/events" : "/events"
-        guard var components = URLComponents(string: "\(base)\(eventsPath)") else {
-            throw RelayError.invalidBaseURL
-        }
-        var queryItems = [URLQueryItem(name: "messageId", value: normalized)]
-        // Include API key for external relays (not localhost)
-        if !base.contains("localhost") {
-            let apiKey = OwnTrackRelayManager.shared.relayAPIKey
-            queryItems.append(URLQueryItem(name: "apikey", value: apiKey))
-        }
-        components.queryItems = queryItems
-        guard let url = components.url else { throw RelayError.invalidBaseURL }
-        let (data, response) = try await URLSession.shared.data(from: url)
-        guard let http = response as? HTTPURLResponse else { throw RelayError.invalidBaseURL }
-        guard http.statusCode == 200 else { throw RelayError.httpError(http.statusCode) }
-        let decoded = try Self.trackingDecoder.decode(EventListResponse.self, from: data)
-        return decoded.events
-    }
-
-    /// Matches `JSONDecoder.trackingDecoder` in MailTrackerShared (ISO 8601).
-    private static let trackingDecoder: JSONDecoder = {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return decoder
-    }()
 }

@@ -760,10 +760,11 @@ enum SyntaxHighlighter {
         if !keywords.isEmpty {
             let keywordPattern = "\\b(" + keywords.joined(separator: "|") + ")\\b"
             let keywordRegex = try! NSRegularExpression(pattern: keywordPattern)
+            let codeFont = NSFont.monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
             keywordRegex.enumerateMatches(in: code, range: fullRange) { match, _, _ in
                 guard let range = match?.range, let swiftRange = Range(range, in: result) else { return }
                 result[swiftRange].foregroundColor = NSColor(red: 0.68, green: 0.50, blue: 0.85, alpha: 1.0)
-                result[swiftRange].font = NSFont.monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
+                result[swiftRange].font = codeFont
             }
         }
 

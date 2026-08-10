@@ -97,7 +97,7 @@ public struct ShellApprovalBanner: View {
             // Action buttons
             HStack(spacing: 12) {
                 Button("Deny") {
-                    approvalStore.deny(id: approval.id)
+                    _ = approvalStore.deny(id: approval.id)
                     onDeny(approval.id)
                 }
                 .buttonStyle(.bordered)
@@ -163,7 +163,7 @@ public struct ShellApprovalBanner: View {
                 return
             }
         }
-        approvalStore.approve(id: id, remember: remember)
+        _ = approvalStore.approve(id: id, remember: remember)
         onApprove(id, remember)
     }
 
@@ -175,7 +175,9 @@ public struct ShellApprovalBanner: View {
 
     private func startExpirationTimer() {
         expirationTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-            approvalStore.cleanupExpired()
+            Task { @MainActor in
+                approvalStore.cleanupExpired()
+            }
         }
     }
 }
