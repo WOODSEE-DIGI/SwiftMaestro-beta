@@ -66,6 +66,10 @@ struct DAMAsset: Codable, FetchableRecord, PersistableRecord, TableRecord,
 
     var perceptualHash: String?
     var xattrKeywords: String?
+    /// JSON dict mapping tag names to Finder color indices (0=none,
+    /// 1=gray, 2=green, 3=purple, 4=blue, 5=yellow, 6=red, 7=orange).
+    /// Migration v5.
+    var tagColors: String?
     var aiCaption: String?
     var aiKeywords: String?
     var ocrText: String?
@@ -92,7 +96,7 @@ struct DAMAsset: Codable, FetchableRecord, PersistableRecord, TableRecord,
         case id, path, filename, folder, uti, fileSize, fileModDate, width, height,
              duration, rating, colorLabel, flag, captureDate, cameraMake,
              cameraModel, lensModel, iso, aperture, shutterSpeed, focalLength,
-             gpsLat, gpsLon, orientation, perceptualHash, xattrKeywords,
+             gpsLat, gpsLon, orientation, perceptualHash, xattrKeywords, tagColors,
              aiCaption, aiKeywords, ocrText, userKeywords, indexedAt, aiIndexedAt
     }
 

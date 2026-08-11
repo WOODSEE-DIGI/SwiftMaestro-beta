@@ -38,6 +38,7 @@ struct DAMBrowserView: View {
         .task {
             await viewModel.reload()
             await viewModel.refreshFolderTree()
+            viewModel.startBackgroundEnrichment()
         }
     }
 
@@ -72,6 +73,14 @@ struct DAMBrowserView: View {
             .disabled(viewModel.isImporting)
 
             if viewModel.isImporting {
+                Button {
+                    viewModel.cancelImport()
+                } label: {
+                    Label("Cancel Import", systemImage: "xmark.circle")
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.red)
+
                 Text("Scanning \(viewModel.importScanned) files · \(viewModel.importWritten) cataloged")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -100,6 +109,50 @@ struct DAMBrowserView: View {
                 }
             }
             .frame(width: 110)
+
+            // Tag color filter
+            Menu {
+                Button("All tags") { viewModel.filterTagColor = nil }
+                Divider()
+                Button("Green") { viewModel.filterTagColor = 2 }
+                Button("Purple") { viewModel.filterTagColor = 3 }
+                Button("Blue") { viewModel.filterTagColor = 4 }
+                Button("Yellow") { viewModel.filterTagColor = 5 }
+                Button("Red") { viewModel.filterTagColor = 6 }
+                Button("Orange") { viewModel.filterTagColor = 7 }
+                Divider()
+                Button("Tagged only") { viewModel.filterTagged = true }
+                Button("Untagged only") { viewModel.filterTagged = false }
+                Button("Clear tag filter") { viewModel.filterTagged = nil }
+            } label: {
+                Label("Tags", systemImage: "tag")
+            }
+            .frame(width: 80)
+
+            // File type filter
+            Picker("Type", selection: Binding(
+                get: { viewModel.filterFileType },
+                set: { viewModel.filterFileType = $0 }
+            )) {
+                Text("All types").tag(nil as String?)
+                Text("Images").tag("image" as String?)
+                Text("RAW").tag("raw" as String?)
+                Text("Video").tag("movie" as String?)
+                Text("Audio").tag("audio" as String?)
+                Text("PDF").tag("pdf" as String?)
+            }
+            .frame(width: 100)
+
+            // Flag filter
+            Picker("Flag", selection: Binding(
+                get: { viewModel.filterFlag },
+                set: { viewModel.filterFlag = $0 }
+            )) {
+                Text("All flags").tag(nil as DAMFlag?)
+                Text("Picked").tag(DAMFlag.pick as DAMFlag?)
+                Text("Rejected").tag(DAMFlag.reject as DAMFlag?)
+            }
+            .frame(width: 90)
 
             TextField("Search catalog", text: Binding(
                 get: { viewModel.searchText },
@@ -154,6 +207,16 @@ struct DAMBrowserView: View {
                         Text(node.name)
                             .lineLimit(1)
                             .truncationMode(.middle)
+                        // Colored tag dots for this folder
+                        if let colors = viewModel.folderTagColors[node.path] {
+                            HStack(spacing: 2) {
+                                ForEach(colors, id: \.self) { idx in
+                                    Circle()
+                                        .fill(DAMBrowserView.finderColor(for: idx))
+                                        .frame(width: 6, height: 6)
+                                }
+                            }
+                        }
                         Spacer()
                         Text("\(node.count)")
                             .font(.caption)
@@ -178,11 +241,21 @@ struct DAMBrowserView: View {
                     ForEach(Array(components.enumerated()), id: \.offset) { index, name in
                         Text("›")
                             .foregroundStyle(.secondary)
+                        let prefix = "/" + components.prefix(index + 1).joined(separator: "/")
                         Button(name) {
-                            let prefix = "/" + components.prefix(index + 1).joined(separator: "/")
                             viewModel.selectedFolder = prefix
                         }
                         .buttonStyle(.link)
+                        // Show colored tag dots after folder names in breadcrumb
+                        if let colors = viewModel.folderTagColors[prefix] {
+                            HStack(spacing: 1) {
+                                ForEach(colors, id: \.self) { idx in
+                                    Circle()
+                                        .fill(DAMBrowserView.finderColor(for: idx))
+                                        .frame(width: 5, height: 5)
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -521,13 +594,7 @@ struct DAMBrowserView: View {
             }
         }
         if let xattr = asset.xattrKeywords, !xattr.isEmpty {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Finder Tags")
-                    .font(.subheadline.weight(.semibold))
-                Text(xattr)
-                    .font(.caption)
-                    .textSelection(.enabled)
-            }
+            DAMTagPillsView(tags: xattr, colorsJSON: asset.tagColors)
         }
         if let ai = asset.aiKeywords, !ai.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
@@ -641,6 +708,25 @@ private struct DAMThumbnailCell: View {
     @State private var image: NSImage?
     @State private var loadFailed = false
 
+    /// All distinct non-gray Finder tag colors for this asset, in the
+    /// order they appear in the tagColors map. Used to draw the thumbnail
+    /// border: solid for one color, rainbow gradient for multiple.
+    private var tagBorderColors: [Color] {
+        guard let json = asset.tagColors,
+              let data = json.data(using: .utf8),
+              let map = try? JSONSerialization.jsonObject(with: data) as? [String: Int]
+        else { return [] }
+        // Collect non-gray colors (skip 0=none, 1=gray), deduplicated
+        var seen = Set<Int>()
+        var colors: [Color] = []
+        for (_, idx) in map where idx > 1 {
+            if seen.insert(idx).inserted {
+                colors.append(DAMBrowserView.finderColor(for: idx))
+            }
+        }
+        return colors
+    }
+
     var body: some View {
         VStack(spacing: 4) {
             ZStack {
@@ -663,8 +749,26 @@ private struct DAMThumbnailCell: View {
             }
             .frame(height: 120)
             .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(isSelected ? Color.accentColor : .clear, lineWidth: 3)
+                Group {
+                    if isSelected {
+                        RoundedRectangle(cornerRadius: 8)
+                            .strokeBorder(Color.accentColor, lineWidth: 3)
+                    } else if tagBorderColors.count > 1 {
+                        // Rainbow border: angular gradient cycling through
+                        // all tag colors, stacked for a multi-color edge.
+                        RoundedRectangle(cornerRadius: 8)
+                            .strokeBorder(
+                                AngularGradient(
+                                    colors: tagBorderColors + [tagBorderColors[0]],
+                                    center: .center
+                                ),
+                                lineWidth: 2.5
+                            )
+                    } else if let single = tagBorderColors.first {
+                        RoundedRectangle(cornerRadius: 8)
+                            .strokeBorder(single, lineWidth: 2)
+                    }
+                }
             )
 
             Text(asset.filename)
@@ -701,4 +805,59 @@ private struct DAMThumbnailCell: View {
 private extension String {
     /// nil when the string is empty — handy for optional-joined display values.
     var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
+extension DAMBrowserView {
+    /// Maps Finder color index to SwiftUI Color.
+    /// 0=none(gray), 1=gray, 2=green, 3=purple, 4=blue, 5=yellow, 6=red, 7=orange
+    static func finderColor(for index: Int) -> Color {
+        switch index {
+        case 1: return .gray
+        case 2: return .green
+        case 3: return .purple
+        case 4: return .blue
+        case 5: return .yellow
+        case 6: return .red
+        case 7: return .orange
+        default: return .gray.opacity(0.4)
+        }
+    }
+}
+
+/// Displays Finder tags as colored pills, matching macOS Finder's style.
+private struct DAMTagPillsView: View {
+    let tags: String
+    let colorsJSON: String?
+
+    private var tagNames: [String] {
+        tags.components(separatedBy: ", ")
+    }
+
+    private var colorMap: [String: Int] {
+        guard let json = colorsJSON,
+              let data = json.data(using: .utf8),
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Int]
+        else { return [:] }
+        return dict
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Finder Tags")
+                .font(.subheadline.weight(.semibold))
+            FlowLayout(spacing: 4) {
+                ForEach(tagNames, id: \.self) { tag in
+                    Text(tag)
+                        .font(.caption)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(
+                            Capsule()
+                                .fill(DAMBrowserView.finderColor(for: colorMap[tag] ?? 0).opacity(0.85))
+                        )
+                        .foregroundStyle((colorMap[tag] ?? 0) == 0 ? Color.primary : Color.white)
+                }
+            }
+        }
+    }
 }

@@ -1,5 +1,8 @@
 import AppKit
 import Foundation
+import GRDB
+import ImageIO
+import UniformTypeIdentifiers
 
 // MARK: - MaestroDAM Browser View Model
 //
@@ -33,6 +36,22 @@ final class DAMViewModel {
     var sortOrder: DAMDatabase.DAMSortOrder = .captureDateDesc {
         didSet { Task { await reload() } }
     }
+    /// Filter by tag color (nil = all, 2-7 = specific color)
+    var filterTagColor: Int? = nil {
+        didSet { Task { await reload() } }
+    }
+    /// Filter by file type category (nil = all)
+    var filterFileType: String? = nil {
+        didSet { Task { await reload() } }
+    }
+    /// Show only tagged or untagged files (nil = all)
+    var filterTagged: Bool? = nil {
+        didSet { Task { await reload() } }
+    }
+    /// Filter by flag (nil = all)
+    var filterFlag: DAMFlag? = nil {
+        didSet { Task { await reload() } }
+    }
     /// Folder-tree scope (nil = whole catalog). Mirrors Bridge's Folders tab.
     var selectedFolder: String? {
         didSet {
@@ -55,6 +74,10 @@ final class DAMViewModel {
     private(set) var importScanned = 0
     private(set) var importWritten = 0
     private(set) var errorMessage: String?
+
+    /// Folder path → Finder tag color indices, for colored dots in the
+    /// folder tree sidebar. Populated during refreshFolderTree.
+    private(set) var folderTagColors: [String: [Int]] = [:]
 
     /// The single selected asset, when exactly one row is selected — drives
     /// the Bridge-style Preview + File Properties panel.
@@ -79,6 +102,8 @@ final class DAMViewModel {
         guard selection != [id] || primarySelectedID != id else { return }
         selection = [id]
         primarySelectedID = id
+        // On-demand enrichment: read metadata for this file immediately.
+        enrichIfNeeded(id)
     }
 
     /// Replace the selection (Table/list views drive this via a Binding).
@@ -132,11 +157,63 @@ final class DAMViewModel {
     private let pageSize = 500
     private var canLoadMore = true
     private var searchTask: Task<Void, Never>?
+    private var importTask: Task<Int, any Error>?
 
     private let database: DAMDatabase
 
     init(database: DAMDatabase = .shared) {
         self.database = database
+    }
+
+    // MARK: - On-demand metadata enrichment
+
+    /// Reads metadata for a single file immediately when selected.
+    private func enrichIfNeeded(_ id: DAMAsset.ID) {
+        guard let id, let asset = assets.first(where: { $0.id == id }) else { return }
+        guard asset.fileSize == nil || asset.xattrKeywords == nil else { return }
+
+        let path = asset.path
+        Task.detached(priority: .userInitiated) { [database] in
+            guard let updated = await DAMImportService.enrichSingleFile(
+                path: path, database: database
+            ) else { return }
+
+            await MainActor.run { [weak self] in
+                guard let self,
+                      let index = self.assets.firstIndex(where: { $0.path == path }) else { return }
+                self.assets[index] = updated
+            }
+        }
+    }
+
+
+
+    // MARK: - Background enrichment
+
+    /// Starts a background enrichment pass for any cataloged assets
+    /// still missing xattr tags, file size, or EXIF metadata. Runs
+    /// automatically on browser appear and after each import.
+    private(set) var isEnriching = false
+    private(set) var enrichProgress = ""
+
+    func startBackgroundEnrichment() {
+        guard !isEnriching else { return }
+        isEnriching = true
+        enrichProgress = "Enriching metadata..."
+        Task.detached(priority: .utility) {
+            try? await DAMImportService.shared.enrichAll { enriched, total in
+                Task { @MainActor [weak self] in
+                    self?.enrichProgress = "Enriched \(enriched)/\(total)"
+                }
+            }
+            await MainActor.run { [weak self] in
+                self?.isEnriching = false
+                self?.enrichProgress = ""
+            }
+            // Reload to pick up enriched metadata
+            await self.reload()
+            await self.refreshFolderTree()
+        }
     }
 
     // MARK: - Loading
@@ -146,9 +223,15 @@ final class DAMViewModel {
         do {
             let folder = selectedFolder
             let rating = minimumRating
+            let tagColor = filterTagColor
+            let fileType = filterFileType
+            let tagged = filterTagged
+            let flag = filterFlag
             async let page = fetchPage(offset: 0)
             async let count = Task.detached(priority: .userInitiated) { [database] in
-                try database.assetCount(folder: folder, minRating: rating)
+                try database.assetCount(folder: folder, minRating: rating,
+                                        tagColor: tagColor, fileType: fileType,
+                                        tagged: tagged, flag: flag)
             }.value
             assets = try await page
             totalAssetCount = (try? await count) ?? assets.count
@@ -162,15 +245,60 @@ final class DAMViewModel {
     /// Rebuilds the folder-tree sidebar from the catalog's distinct folders.
     /// Called on appear and after each import — NOT on every reload (search
     /// keystrokes shouldn't re-query thousands of folders).
+    /// Also reads xattr Finder tag colors for each folder path.
     func refreshFolderTree() async {
         do {
             let counts = try await Task.detached(priority: .userInitiated) { [database] in
                 try database.folderCounts()
             }.value
             folderTree = Self.buildTree(from: counts)
+
+            // Read Finder tag colors for each folder (xattr on directories)
+            let folders = counts.map(\.folder)
+            let colors = await Task.detached(priority: .utility) {
+                Self.readFolderTagColors(for: folders)
+            }.value
+            folderTagColors = colors
         } catch {
             NSLog("[DAM] folder tree refresh failed: %@", String(describing: error))
         }
+    }
+
+    /// Reads Finder tag color indices from folder xattrs. Returns a dict of
+    /// folder path → array of color indices (for multi-tag rainbow dots).
+    /// Runs on a background thread — safe to call from any context.
+    nonisolated static func readFolderTagColors(
+        for folders: [String]
+    ) -> [String: [Int]] {
+        var result: [String: [Int]] = [:]
+        for folder in folders {
+            let (_, colorsJSON) = DAMImportService.readXattrTags(
+                at: URL(fileURLWithPath: folder)
+            )
+            guard let json = colorsJSON,
+                  let data = json.data(using: .utf8),
+                  let map = try? JSONSerialization.jsonObject(with: data) as? [String: Int]
+            else { continue }
+            // Use cached consensus; fall back to inline Spotlight vote
+            // when the cache hasn't been populated yet (first launch).
+            var indices: [Int] = []
+            let consensus = DAMImportService.cachedConsensus ?? [:]
+            for (tag, color) in map {
+                var resolved = consensus[tag] ?? color
+                if consensus.isEmpty || consensus[tag] == nil {
+                    if let vote = DAMImportService.diskWideColorVote(forTag: tag) {
+                        resolved = vote
+                    }
+                }
+                if resolved > 1 {
+                    indices.append(resolved)
+                }
+            }
+            if !indices.isEmpty {
+                result[folder] = indices.sorted()
+            }
+        }
+        return result
     }
 
     /// Builds the nested folder tree from flat (folder, count) rows.
@@ -234,11 +362,17 @@ final class DAMViewModel {
         let folder = selectedFolder
         let sort = sortOrder
         let limit = pageSize
+        let tagColor = filterTagColor
+        let fileType = filterFileType
+        let tagged = filterTagged
+        let flag = filterFlag
         return try await Task.detached(priority: .userInitiated) { [database] in
             if query.isEmpty {
                 return try database.assets(
                     folder: folder, minRating: rating, sort: sort,
-                    limit: limit, offset: offset)
+                    limit: limit, offset: offset,
+                    tagColor: tagColor, fileType: fileType,
+                    tagged: tagged, flag: flag)
             }
             let ids = try database.searchAssetIDs(matching: query, folder: folder, limit: limit)
             guard !ids.isEmpty else { return [DAMAsset]() }
@@ -280,29 +414,67 @@ final class DAMViewModel {
         isImporting = true
         importScanned = 0
         importWritten = 0
-        defer { isImporting = false }
 
-        do {
-            try await DAMImportService.shared.importFolder(at: url) { [weak self] scanned, written in
-                Task { @MainActor in
-                    guard let self else { return }
-                    self.importScanned = scanned
-                    self.importWritten = written
-                    // Progressive fill: refresh the grid every 5K cataloged
-                    // rows so a huge import doesn't leave the panel empty
-                    // until the very end. WAL mode makes these reads safe
-                    // alongside the import's writer; thumbnails come from
-                    // cache so re-renders are cheap.
-                    if written % 5_000 == 0 {
-                        await self.reload()
-                    }
+        // Launch the import on a detached task. The progress callback
+        // hops to @MainActor to update the UI counters. We use
+        // withCheckedContinuation so the MainActor stays free to process
+        // the progress callback Tasks during the scan.
+        let task = Task.detached(priority: .userInitiated) { [database] in
+            try await DAMImportService.shared.importFolder(at: url, database: database) {
+                scanned, written in
+                Task { @MainActor [weak self] in
+                    self?.importScanned = scanned
+                    self?.importWritten = written
                 }
             }
-            await reload()
-            await refreshFolderTree()
-        } catch {
-            errorMessage = "Import failed: \(error.localizedDescription)"
         }
+        importTask = task
+
+        await withCheckedContinuation { continuation in
+            Task.detached {
+                let result: Result<Int, Error>
+                do {
+                    let count = try await task.value
+                    result = .success(count)
+                } catch {
+                    result = .failure(error)
+                }
+                await MainActor.run {
+                    switch result {
+                    case .success(let written):
+                        self.importScanned = written
+                        self.importWritten = written
+                    case .failure(let error) where error is CancellationError:
+                        self.errorMessage = "Import cancelled."
+                    case .failure(let error):
+                        self.errorMessage = "Import failed: \(error.localizedDescription)"
+                    }
+                    self.isImporting = false
+                    self.importTask = nil
+                    continuation.resume()
+                }
+            }
+        }
+
+        await reload()
+        await refreshFolderTree()
+
+        // Background enrichment: read xattr tags for all cataloged files
+        // that are missing them. Runs after the UI is responsive.
+        Task.detached(priority: .utility) {
+            try? await DAMImportService.shared.enrichAll { enriched, total in
+                // Optionally update a status indicator here
+            }
+            await MainActor.run {
+                Task { await self.reload() }
+            }
+        }
+    }
+
+    /// Cancel a running import. The next `Task.checkCancellation()` in the
+    /// scan loop will throw and unwind the enumerator.
+    func cancelImport() {
+        importTask?.cancel()
     }
 
     // MARK: - Rating edits

@@ -197,6 +197,12 @@ final class DAMDatabase: Sendable {
             }
         }
 
+        migrator.registerMigration("v5-tag-colors") { db in
+            try db.alter(table: "asset") { t in
+                t.add(column: "tagColors", .text)
+            }
+        }
+
         return migrator
     }()
 
@@ -238,9 +244,32 @@ final class DAMDatabase: Sendable {
     /// deliberately simple for the scaffold — GRDB ValueObservation-driven
     /// live updates come with Phase 1.
     func assets(folder: String?, minRating: Int, sort: DAMSortOrder,
-                limit: Int, offset: Int) throws -> [DAMAsset] {
+                 limit: Int, offset: Int,
+                 tagColor: Int? = nil, fileType: String? = nil,
+                 tagged: Bool? = nil, flag: DAMFlag? = nil) throws -> [DAMAsset] {
         try dbQueue.read { db in
             var request = DAMAsset.filter(DAMAsset.Columns.rating >= minRating)
+            if let tagColor {
+                let pattern = "%\":\(tagColor),%"
+                let patternEnd = "%\":\(tagColor)}"
+                request = request.filter(
+                    Column("tagColors").like(pattern)
+                    || Column("tagColors").like(patternEnd)
+                )
+            }
+            if let fileType {
+                request = request.filter(Column("uti").like("%\(fileType)%"))
+            }
+            if let tagged {
+                if tagged {
+                    request = request.filter(Column("xattrKeywords") != nil && Column("xattrKeywords") != "")
+                } else {
+                    request = request.filter(Column("xattrKeywords") == nil || Column("xattrKeywords") == "")
+                }
+            }
+            if let flag {
+                request = request.filter(Column("flag") == flag.rawValue)
+            }
             if let folder {
                 // Recursive folder scope without LIKE/GLOB escaping hazards:
                 // exact match, or range scan [folder+"/", folder+"0") which
@@ -266,9 +295,34 @@ final class DAMDatabase: Sendable {
 
     /// Total assets matching the current filters — the "N items" figure in
     /// the Bridge-style status bar.
-    func assetCount(folder: String?, minRating: Int) throws -> Int {
+    func assetCount(folder: String?, minRating: Int,
+                     tagColor: Int? = nil, fileType: String? = nil,
+                     tagged: Bool? = nil, flag: DAMFlag? = nil) throws -> Int {
         try dbQueue.read { db in
             var request = DAMAsset.filter(DAMAsset.Columns.rating >= minRating)
+            if let tagColor {
+                // Match any tag in the JSON dict with this color index
+                // e.g. {"2024":7,"Alastair":1} matches tagColor=7
+                let pattern = "%\":\(tagColor),%"  // mid-dict: "tag":7,
+                let patternEnd = "%\":\(tagColor)}" // end-dict: "tag":7}
+                request = request.filter(
+                    Column("tagColors").like(pattern)
+                    || Column("tagColors").like(patternEnd)
+                )
+            }
+            if let fileType {
+                request = request.filter(Column("uti").like("%\(fileType)%"))
+            }
+            if let tagged {
+                if tagged {
+                    request = request.filter(Column("xattrKeywords") != nil && Column("xattrKeywords") != "")
+                } else {
+                    request = request.filter(Column("xattrKeywords") == nil || Column("xattrKeywords") == "")
+                }
+            }
+            if let flag {
+                request = request.filter(Column("flag") == flag.rawValue)
+            }
             if let folder {
                 request = request.filter(
                     DAMAsset.Columns.folder == folder
