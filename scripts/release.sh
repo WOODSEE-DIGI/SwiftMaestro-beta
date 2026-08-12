@@ -106,55 +106,36 @@ echo ""
 echo "Appcast preview:"
 grep -E "<enclosure|<title|sparkle:version|sparkle:channel" "$DIST_DIR/appcast.xml" | head -40
 
-# Optional upload to swiftmaestro.com via the dedicated upload script.
+# Upload pipeline (UPLOAD=1):
+#   DMGs (full + beta) → Onidel Object Storage (Sydney) via upload-to-onidel.sh
+#   appcast.xml        → Onidel Object Storage (Sydney) via upload-to-onidel.sh
+#   Website HTML/CSS   → 1984 shared hosting via deploy.sh (SFTP)
+#
+# DMGs are large (28GB) and must NOT go to the 1984 shared host.
 if [ "${UPLOAD:-0}" = "1" ]; then
-    UPLOAD_SCRIPT="${UPLOAD_SCRIPT:-$HOME/GitHub/FUSV/Websites/swiftmaestro-site/upload-release.sh}"
-    if [ ! -x "$UPLOAD_SCRIPT" ]; then
-        echo "Upload script not found at $UPLOAD_SCRIPT"
+    ONIDEL_UPLOAD="${ONIDEL_UPLOAD:-$HOME/GitHub/FUSV/Websites/swiftmaestro-site/upload-to-onidel.sh}"
+    if [ ! -x "$ONIDEL_UPLOAD" ]; then
+        echo "Upload script not found at $ONIDEL_UPLOAD"
         exit 1
     fi
 
     echo ""
-    echo "--- Uploading DMGs to swiftmaestro.com ---"
-    "$UPLOAD_SCRIPT" "$DIST_DIR/${APP_NAME}-${VERSION}-full.dmg"
-    "$UPLOAD_SCRIPT" "$DIST_DIR/${APP_NAME}-${VERSION}-beta.dmg"
+    echo "--- Uploading DMGs to Onidel Object Storage (Sydney) ---"
+    "$ONIDEL_UPLOAD" "$DIST_DIR/${APP_NAME}-${VERSION}-full.dmg"
+    "$ONIDEL_UPLOAD" "$DIST_DIR/${APP_NAME}-${VERSION}-beta.dmg"
 
-    # The appcast is also served from /download/ alongside the DMGs.
-    # The upload script only handles .dmg files, so we upload the appcast directly.
     echo ""
-    echo "--- Uploading appcast.xml ---"
-    # No host/user is hardcoded — they must come from the environment / Secrets
-    # so personal infrastructure details never live in the repo.
-    SFTP_USER="${SM_SFTP_USER:-}"
-    SFTP_HOST="${SM_SFTP_HOST:-}"
-    SFTP_PORT="${SM_SFTP_PORT:-2222}"
-    if [ -z "$SFTP_USER" ] || [ -z "$SFTP_HOST" ]; then
-        echo "SFTP host/user not configured. Set SM_SFTP_HOST and SM_SFTP_USER (see Settings → Secrets)."
-        exit 1
+    echo "--- Uploading appcast.xml to Onidel ---"
+    "$ONIDEL_UPLOAD" --appcast "$DIST_DIR/appcast.xml"
+
+    echo ""
+    echo "--- Deploying website to 1984 hosting ---"
+    DEPLOY_SCRIPT="${DEPLOY_SCRIPT:-$HOME/GitHub/FUSV/Websites/swiftmaestro-site/deploy.sh}"
+    if [ -x "$DEPLOY_SCRIPT" ]; then
+        "$DEPLOY_SCRIPT"
+    else
+        echo "Deploy script not found at $DEPLOY_SCRIPT — skipping website deploy"
     fi
-    REMOTE_DIR="htdocs/download"
-    if [ -z "${SM_SFTP_PASS:-}" ]; then
-        SM_SFTP_PASS="$(security find-generic-password -s 'swiftmaestro-1984-sftp' -a "$SFTP_USER" -w 2>/dev/null || true)"
-    fi
-    if [ -z "${SM_SFTP_PASS:-}" ]; then
-        echo "SFTP password not found. Set SM_SFTP_PASS or add the Keychain item."
-        exit 1
-    fi
-    LFTP_PASSWORD="$SM_SFTP_PASS" \
-    lftp --env-password -u "$SFTP_USER" -p "$SFTP_PORT" "sftp://${SFTP_HOST}" <<EOF
-set sftp:auto-confirm yes
-set ssl:verify-certificate no
-set net:timeout 60
-set net:max-retries 5
-set net:reconnect-interval-base 10
-set net:reconnect-interval-multiplier 2
-set sftp:max-packets-in-flight 64
-mkdir -p '${REMOTE_DIR}'
-set cmd:fail-exit yes
-put -c '$DIST_DIR/appcast.xml' -o '${REMOTE_DIR}/appcast.xml'
-cls --size '${REMOTE_DIR}/appcast.xml'
-bye
-EOF
 fi
 
 echo ""
