@@ -106,6 +106,8 @@ struct WorkspacePanelContentView: View {
             MaestroBooksView()
         case .maestroDB:
             MaestroDBView()
+        case .overlayBuilder:
+            OverlayBuilderView()
         }
         }
     }

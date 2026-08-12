@@ -78,6 +78,9 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
     /// MaestroDB — dynamic-schema database (Airtable/Notion alternative) with
     /// grid + shared-kanban board views on GRDB.
     case maestroDB
+    /// Overlay Builder — live video production overlay designer with
+    /// transparent PNG export (lower thirds, title cards, tickers, etc.).
+    case overlayBuilder
 
     var icon: String {
         switch self {
@@ -113,6 +116,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .maestroDocs: return "doc.richtext"
         case .maestroBooks: return "dollarsign.circle"
         case .maestroDB: return "tablecells"
+        case .overlayBuilder: return "rectangle.dashed"
         }
     }
 
@@ -155,6 +159,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .maestroDocs: return "maestroDocs"
         case .maestroBooks: return "maestroBooks"
         case .maestroDB: return "maestroDB"
+        case .overlayBuilder: return "overlayBuilder"
         }
     }
 
@@ -195,6 +200,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .maestroDocs: return "MaestroDocs"
         case .maestroBooks: return "MaestroBooks"
         case .maestroDB: return "MaestroDB"
+        case .overlayBuilder: return "Overlay Builder"
         }
     }
 
@@ -247,6 +253,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .maestroDocs: return "maestroDocs"
         case .maestroBooks: return "maestroBooks"
         case .maestroDB: return "maestroDB"
+        case .overlayBuilder: return "overlayBuilder"
         }
     }
 }
