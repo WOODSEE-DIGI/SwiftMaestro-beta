@@ -26,6 +26,7 @@ if ! command -v xcodegen >/dev/null 2>&1; then
     brew install xcodegen
 fi
 xcodegen generate
+python3 scripts/post-xcodegen-fixup.py
 
 # Start from a clean output dir. We manage this ourselves because `xcodebuild
 # clean` refuses to delete a SYMROOT it did not create (a pre-existing ./build).
