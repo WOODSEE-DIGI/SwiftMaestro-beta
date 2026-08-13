@@ -29,3 +29,6 @@ store/
 node_modules/
 SwiftMaestro-0.1.0-full.dmg
 SwiftMaestro-0.1.0-beta.dmg
+**/.swiftpm/
+Vendor/**/*.xcodeproj
+Vendor/**/*.xcworkspace
