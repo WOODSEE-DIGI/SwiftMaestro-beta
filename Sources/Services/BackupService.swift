@@ -84,6 +84,8 @@ final class BackupService: @unchecked Sendable {
            let decoded = try? JSONDecoder().decode([BackupLogEntry].self, from: logData) {
             logs = decoded
         }
+        // Also load launchd logs from the shell backup script
+        loadLaunchdLogs()
     }
 
     func save() {
@@ -133,6 +135,120 @@ final class BackupService: @unchecked Sendable {
     }
 
     // MARK: - Operations
+
+    /// Trigger a backup via the launchd shell script (runs independently of the app).
+    func triggerLaunchdBackup() async throws {
+        let scriptPath = NSHomeDirectory() + "/Scripts/backups/woodsee-backup.sh"
+        guard FileManager.default.isExecutableFile(atPath: scriptPath) else {
+            throw BackupError.binaryNotFound
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-c", scriptPath]
+
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = NSHomeDirectory() + "/bin:/usr/local/bin:/opt/homebrew/bin:" + (env["PATH"] ?? "")
+        process.environment = env
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+
+        currentProcess = process
+
+        try process.run()
+    }
+
+    /// Kickstart the launchd job (re-runs it immediately).
+    func kickstartLaunchdJob() {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        process.arguments = ["kickstart", "-k", "gui/\(getuid())/com.woodsee.offsite-backup"]
+        try? process.run()
+        process.waitUntilExit()
+    }
+
+    /// Load backup logs from the launchd shell script's log files.
+    private func loadLaunchdLogs() {
+        let logDir = NSHomeDirectory() + "/Library/Logs/woodsee-backup"
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: logDir) else { return }
+
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyyMMdd-HHmmss"
+
+        for file in files where file.hasPrefix("backup-") && file.hasSuffix(".log") {
+            let logPath = (logDir as NSString).appendingPathComponent(file)
+            guard let content = try? String(contentsOfFile: logPath, encoding: .utf8) else { continue }
+
+            // Parse the log file to extract backup info
+            let lines = content.components(separatedBy: "\n")
+            var startedAt = Date()
+            var filesScanned = 0
+            var totalSizeBytes: Int64 = 0
+            var status: BackupLogEntry.Status = .completed
+            var snapshotID: String?
+
+            for line in lines {
+                if line.contains("Starting backup") {
+                    // Extract timestamp from log line: [2026-08-13 02:00:07]
+                    if let dateRange = line.range(of: #"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]"#, options: .regularExpression) {
+                        let dateStr = String(line[dateRange]).trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+                        if let date = ISO8601DateFormatter().date(from: dateStr.replacingOccurrences(of: " ", with: "T")) {
+                            startedAt = date
+                        }
+                    }
+                }
+                if line.contains("scan finished") {
+                    // Extract file count and size
+                    if let match = line.range(of: #"(\d+) files, ([\d.]+) TiB"#, options: .regularExpression) {
+                        let scanned = String(line[match])
+                        // Parse the numbers
+                        let parts = scanned.components(separatedBy: " ")
+                        if let count = Int(parts[0]) {
+                            filesScanned = count
+                        }
+                        if parts.count > 2, let size = Double(parts[2]) {
+                            totalSizeBytes = Int64(size * 1_099_511_627_776) // TiB to bytes
+                        }
+                    }
+                }
+                if line.contains("snapshot") && line.contains("saved") {
+                    // Extract snapshot ID
+                    if let match = line.range(of: #"[a-f0-9]{8,}"#, options: .regularExpression) {
+                        snapshotID = String(line[match])
+                    }
+                }
+                if line.contains("error") || line.contains("failed") {
+                    status = .failed
+                }
+            }
+
+            // Create a log entry if we found useful info
+            if filesScanned > 0 || status == .failed {
+                let jobID = jobs.first?.id ?? UUID()
+                var logEntry = BackupLogEntry(jobID: jobID, startedAt: startedAt)
+                logEntry.finishedAt = Date()
+                logEntry.status = status
+                logEntry.filesScanned = filesScanned
+                logEntry.totalSizeBytes = totalSizeBytes
+                logEntry.snapshotID = snapshotID
+                if status == .failed {
+                    logEntry.errorMessage = "Backup may have failed"
+                }
+
+                // Avoid duplicates by checking timestamp
+                let alreadyExists = logs.contains { existing in
+                    abs(existing.startedAt.timeIntervalSince(logEntry.startedAt)) < 60
+                }
+                if !alreadyExists {
+                    logs.append(logEntry)
+                }
+            }
+        }
+
+        // Sort logs by date, newest first
+        logs.sort { $0.startedAt > $1.startedAt }
+    }
 
     func initRepository(destination: BackupDestination, password: String) async throws -> String {
         let repoURL = Self.repositoryURL(for: destination)
