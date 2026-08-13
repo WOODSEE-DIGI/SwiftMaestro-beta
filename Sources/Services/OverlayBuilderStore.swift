@@ -209,10 +209,13 @@ final class OverlayBuilderStore {
 
     private let presetsKey = "overlayBuilder.presets"
     private let globalsKey = "overlayBuilder.globals"
+    private let currentFieldsKey = "overlayBuilder.currentFields"
+    private let currentTypeKey = "overlayBuilder.currentType"
 
     private init() {
         loadPresets()
         loadGlobals()
+        loadCurrentState()
         if currentFields.isEmpty {
             currentFields = OverlayConfig.defaults(for: selectedType).fields
         }
@@ -255,6 +258,27 @@ final class OverlayBuilderStore {
         UserDefaults.standard.set(data, forKey: globalsKey)
     }
 
+    // MARK: - Autosave
+
+    private func loadCurrentState() {
+        if let data = UserDefaults.standard.data(forKey: currentFieldsKey),
+           let decoded = try? JSONDecoder().decode([String: String].self, from: data) {
+            currentFields = decoded
+        }
+        if let typeRaw = UserDefaults.standard.string(forKey: currentTypeKey),
+           let type = OverlayType(rawValue: typeRaw) {
+            selectedType = type
+        }
+    }
+
+    private func autosaveCurrentState() {
+        if let data = try? JSONEncoder().encode(currentFields) {
+            UserDefaults.standard.set(data, forKey: currentFieldsKey)
+        }
+        UserDefaults.standard.set(selectedType.rawValue, forKey: currentTypeKey)
+        saveGlobals()
+    }
+
     struct Globals: Codable {
         var font: String
         var opacity: Double
@@ -279,6 +303,7 @@ final class OverlayBuilderStore {
         guard let config = presets[name] else { return }
         selectedType = config.type
         currentFields = config.fields
+        autosaveCurrentState()
     }
 
     func deletePreset(name: String) {
@@ -288,14 +313,15 @@ final class OverlayBuilderStore {
 
     func selectType(_ type: OverlayType) {
         selectedType = type
-        // Load defaults if switching type, keep current fields if same
         if currentFields.isEmpty {
             currentFields = OverlayConfig.defaults(for: type).fields
         }
+        autosaveCurrentState()
     }
 
     func resetToDefaults() {
         currentFields = OverlayConfig.defaults(for: selectedType).fields
+        autosaveCurrentState()
     }
 
     // MARK: - Field Access
@@ -306,6 +332,7 @@ final class OverlayBuilderStore {
 
     func setField(_ key: String, value: String) {
         currentFields[key] = value
+        autosaveCurrentState()
     }
 
     func colorField(_ key: String) -> Color {
