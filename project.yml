@@ -7,25 +7,21 @@ options:
 
 packages:
   SwiftMaestroKit:
-    path: ../../AI-ML-Agents/SwiftMaestroKit
+    path: Vendor/SwiftMaestroKit
   mlx-swift-lm:
-    path: ../../AI-ML-Agents/mlx-swift-lm
+    path: Vendor/mlx-swift-lm
   swift-transformers:
-    url: https://github.com/huggingface/swift-transformers
-    majorVersion: 1.3.0
+    path: Vendor/swift-transformers
   mcp-swift-sdk:
-    path: ../../AI-ML-Agents/mcp-swift-sdk
+    path: Vendor/mcp-swift-sdk
   whisperkit:
-    path: ../../AI-ML-Agents/WhisperKit
+    path: Vendor/WhisperKit
   GRDB:
-    url: https://github.com/groue/GRDB.swift
-    majorVersion: 7.0.0
+    path: Vendor/GRDB.swift
   SwiftTerm:
-    url: https://github.com/migueldeicaza/SwiftTerm
-    majorVersion: 1.14.0
+    path: Vendor/SwiftTerm
   Sparkle:
-    url: https://github.com/sparkle-project/Sparkle
-    majorVersion: 2.0
+    path: Vendor/Sparkle
 
 groups:
   - Sources
