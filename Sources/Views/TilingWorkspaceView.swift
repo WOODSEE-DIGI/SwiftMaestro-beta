@@ -344,19 +344,21 @@ private struct StackTabButton: View {
     let action: () -> Void
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(PluginService.self) private var pluginService
+    @Environment(ThemeStore.self) private var theme
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: 4) {
                 Image(systemName: kind.icon)
                     .font(.caption2)
+                    .foregroundStyle(theme.panelAccent(for: kind))
                 Text(shortTitle)
                     .font(.caption2)
                     .lineLimit(1)
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .background(isSelected ? Color.white.opacity(0.12) : Color.clear)
+            .background(isSelected ? theme.panelAccent(for: kind).opacity(0.2) : Color.clear)
             .cornerRadius(4)
         }
         .buttonStyle(.plain)

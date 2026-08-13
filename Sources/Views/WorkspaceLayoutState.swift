@@ -81,6 +81,8 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
     /// Overlay Builder — live video production overlay designer with
     /// transparent PNG export (lower thirds, title cards, tickers, etc.).
     case overlayBuilder
+    /// Backup management panel — Restic-backed offsite/local backups.
+    case backup
 
     var icon: String {
         switch self {
@@ -117,6 +119,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .maestroBooks: return "dollarsign.circle"
         case .maestroDB: return "tablecells"
         case .overlayBuilder: return "rectangle.dashed"
+        case .backup: return "arrow.triangle.2.circlepath"
         }
     }
 
@@ -160,6 +163,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .maestroBooks: return "maestroBooks"
         case .maestroDB: return "maestroDB"
         case .overlayBuilder: return "overlayBuilder"
+        case .backup: return "backup"
         }
     }
 
@@ -201,6 +205,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .maestroBooks: return "MaestroBooks"
         case .maestroDB: return "MaestroDB"
         case .overlayBuilder: return "Overlay Builder"
+        case .backup: return "Backup"
         }
     }
 
@@ -254,6 +259,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .maestroBooks: return "maestroBooks"
         case .maestroDB: return "maestroDB"
         case .overlayBuilder: return "overlayBuilder"
+        case .backup: return "backup"
         }
     }
 }

@@ -108,6 +108,8 @@ struct WorkspacePanelContentView: View {
             MaestroDBView()
         case .overlayBuilder:
             OverlayBuilderView()
+        case .backup:
+            BackupStatusPanel()
         }
         }
     }
