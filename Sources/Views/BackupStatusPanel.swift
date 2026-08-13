@@ -577,7 +577,10 @@ struct EditJobSheet: View {
                         }
                     }
                     Button {
-                        showingPathPicker = true
+                        openDirectoryPicker { urls in
+                            sourcePaths.append(contentsOf: urls.map(\.path))
+                            sourcePaths = Array(Set(sourcePaths)).sorted()
+                        }
                     } label: {
                         Label("Add Directory", systemImage: "plus.circle.fill")
                     }
@@ -620,7 +623,14 @@ struct EditJobSheet: View {
                         }
                     }
                     Button {
-                        showingExcludePicker = true
+                        openDirectoryPicker { urls in
+                            for url in urls {
+                                let name = url.lastPathComponent
+                                if !excludePatterns.contains(name) {
+                                    excludePatterns.append(name)
+                                }
+                            }
+                        }
                     } label: {
                         Label("Exclude Directory", systemImage: "plus.circle.fill")
                     }
@@ -652,18 +662,18 @@ struct EditJobSheet: View {
             .padding()
         }
         .frame(width: 500, height: 600)
-        .fileImporter(isPresented: $showingPathPicker, allowedContentTypes: [.folder], allowsMultipleSelection: true) { result in
-            if case .success(let urls) = result {
-                sourcePaths.append(contentsOf: urls.map(\.path))
-                sourcePaths = Array(Set(sourcePaths)).sorted()
-            }
-        }
-        .fileImporter(isPresented: $showingExcludePicker, allowedContentTypes: [.folder]) { result in
-            if case .success(let url) = result {
-                let name = url.lastPathComponent
-                if !excludePatterns.contains(name) {
-                    excludePatterns.append(name)
-                }
+    }
+
+    private func openDirectoryPicker(completion: @escaping ([URL]) -> Void) {
+        let panel = NSOpenPanel()
+        panel.title = "Select Directories"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.begin { response in
+            if response == .OK {
+                completion(panel.urls)
             }
         }
     }
