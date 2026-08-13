@@ -66,6 +66,7 @@ struct BackupStatusPanel: View {
     private var header: some View {
         HStack {
             Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.title2)
                 .foregroundStyle(Color.accentColor)
             Text("Backup")
                 .font(.headline)
@@ -179,6 +180,7 @@ struct BackupStatusPanel: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Image(systemName: "externaldrive")
+                    .font(.body)
                     .foregroundStyle(Color.accentColor)
                 Text("Destinations")
                     .font(.subheadline.weight(.semibold))
@@ -205,8 +207,9 @@ struct BackupStatusPanel: View {
     private func destinationRow(_ dest: BackupDestination) -> some View {
         HStack {
             Image(systemName: dest.kind.icon)
+                .font(.title3)
                 .foregroundStyle(Color.accentColor)
-                .frame(width: 20)
+                .frame(width: 28)
             VStack(alignment: .leading, spacing: 2) {
                 Text(dest.name)
                     .font(.subheadline)
@@ -240,6 +243,7 @@ struct BackupStatusPanel: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Image(systemName: "list.bullet.rectangle")
+                    .font(.body)
                     .foregroundStyle(Color.accentColor)
                 Text("Backup Jobs")
                     .font(.subheadline.weight(.semibold))
@@ -311,6 +315,7 @@ struct BackupStatusPanel: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Image(systemName: "clock.arrow.circlepath")
+                    .font(.body)
                     .foregroundStyle(Color.accentColor)
                 Text("History")
                     .font(.subheadline.weight(.semibold))
@@ -428,6 +433,9 @@ struct EditDestinationSheet: View {
     @State private var s3AccessKey: String
     @State private var s3SecretKey: String
     @State private var s3Region: String
+    @State private var isTesting = false
+    @State private var testResult: String?
+    @State private var testPassed: Bool?
 
     init(backupService: BackupService, destination: BackupDestination) {
         self.backupService = backupService
@@ -453,6 +461,9 @@ struct EditDestinationSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
+                Image(systemName: "externaldrive")
+                    .font(.title3)
+                    .foregroundStyle(Color.accentColor)
                 Text("Edit Destination")
                     .font(.headline)
                 Spacer()
@@ -476,12 +487,41 @@ struct EditDestinationSheet: View {
                         TextField("Region", text: $s3Region)
                     }
                 }
+
+                // Test result
+                if let result = testResult {
+                    Section("Connection Test") {
+                        HStack {
+                            Image(systemName: testPassed == true ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                .foregroundStyle(testPassed == true ? .green : .red)
+                                .font(.title3)
+                            Text(result)
+                                .font(.caption)
+                                .foregroundStyle(testPassed == true ? .green : .red)
+                        }
+                    }
+                }
             }
             .formStyle(.grouped)
 
             Divider()
 
             HStack {
+                // Test Connection button
+                if case .s3 = destination.kind {
+                    Button {
+                        Task { await testConnection() }
+                    } label: {
+                        if isTesting {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Label("Test Connection", systemImage: "network")
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isTesting || s3AccessKey.isEmpty || s3SecretKey.isEmpty)
+                }
                 Spacer()
                 Button("Save") {
                     var dest = destination
@@ -503,7 +543,55 @@ struct EditDestinationSheet: View {
             }
             .padding()
         }
-        .frame(width: 450, height: 450)
+        .frame(width: 500, height: 550)
+    }
+
+    private func testConnection() async {
+        isTesting = true
+        testResult = nil
+        testPassed = nil
+
+        // Build a test destination with the current form values
+        let config = BackupDestination.S3Config(
+            endpoint: s3Endpoint,
+            bucket: s3Bucket,
+            accessKeyID: s3AccessKey,
+            secretAccessKey: s3SecretKey,
+            region: s3Region,
+            usePathStyle: true
+        )
+        let testDest = BackupDestination(name: "test", kind: .s3(config))
+
+        // Generate a random test password for the init
+        let testPass = "test-\(UUID().uuidString)"
+        let testFile = NSTemporaryDirectory() + "/restic-test-pass.txt"
+        try? testPass.write(toFile: testFile, atomically: true, encoding: .utf8)
+
+        do {
+            let output = try await backupService.initRepository(destination: testDest, password: testPass)
+            testResult = "Connected — bucket is accessible"
+            testPassed = true
+            // Clean up the test repository
+            _ = try? await backupService.runRestic(args: [
+                "-r", BackupService.repositoryURL(for: testDest),
+                "forget", "--host", Host.current().localizedName ?? "test", "--keep-last", "0", "--prune"
+            ], environment: BackupService.environment(for: testDest, password: testPass))
+        } catch {
+            let msg = error.localizedDescription
+            if msg.contains("already exists") {
+                testResult = "Connected — repository exists (OK)"
+                testPassed = true
+            } else if msg.contains("config") || msg.contains("auth") || msg.contains("403") {
+                testResult = "Auth failed — check Access Key and Secret Key"
+                testPassed = false
+            } else {
+                testResult = "Failed: \(msg.prefix(80))"
+                testPassed = false
+            }
+        }
+
+        try? FileManager.default.removeItem(atPath: testFile)
+        isTesting = false
     }
 }
 

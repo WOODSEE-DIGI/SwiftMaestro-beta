@@ -423,7 +423,7 @@ final class BackupService: @unchecked Sendable {
 
     // MARK: - Process Execution
 
-    private func runRestic(args: [String], environment: [String: String]) async throws -> String {
+    func runRestic(args: [String], environment: [String: String]) async throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: Self.resticPath)
         process.arguments = args
