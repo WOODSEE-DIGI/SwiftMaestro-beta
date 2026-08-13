@@ -109,11 +109,14 @@ grep -E "<enclosure|<title|sparkle:version|sparkle:channel" "$DIST_DIR/appcast.x
 # Upload pipeline (UPLOAD=1):
 #   DMGs (full + beta) → Onidel Object Storage (Sydney) via upload-to-onidel.sh
 #   appcast.xml        → Onidel Object Storage (Sydney) via upload-to-onidel.sh
+#   appcast.xml        → 1984 shared hosting (same-origin for website JavaScript)
 #   Website HTML/CSS   → 1984 shared hosting via deploy.sh (SFTP)
 #
 # DMGs are large (28GB) and must NOT go to the 1984 shared host.
 if [ "${UPLOAD:-0}" = "1" ]; then
     ONIDEL_UPLOAD="${ONIDEL_UPLOAD:-$HOME/GitHub/FUSV/Websites/swiftmaestro-site/upload-to-onidel.sh}"
+    DEPLOY_SCRIPT="${DEPLOY_SCRIPT:-$HOME/GitHub/FUSV/Websites/swiftmaestro-site/deploy.sh}"
+
     if [ ! -x "$ONIDEL_UPLOAD" ]; then
         echo "Upload script not found at $ONIDEL_UPLOAD"
         exit 1
@@ -129,8 +132,27 @@ if [ "${UPLOAD:-0}" = "1" ]; then
     "$ONIDEL_UPLOAD" --appcast "$DIST_DIR/appcast.xml"
 
     echo ""
+    echo "--- Uploading appcast.xml to 1984 hosting (same-origin for website JS) ---"
+    SFTP_USER="${SM_SFTP_USER:-pooh@swiftmaestro.com}"
+    SFTP_HOST="${SM_SFTP_HOST:-beth.shared.1984.is}"
+    SFTP_PORT="${SM_SFTP_PORT:-2222}"
+    SFTP_PASS="$(security find-generic-password -s 'swiftmaestro-1984-sftp' -a "$SFTP_USER" -w 2>/dev/null || true)"
+    if [ -n "$SFTP_PASS" ]; then
+        LFTP_PASSWORD="$SFTP_PASS" lftp --env-password -u "$SFTP_USER" -p "$SFTP_PORT" "sftp://${SFTP_HOST}" <<LPFTP
+set sftp:auto-confirm yes
+set ssl:verify-certificate no
+set net:timeout 30
+mkdir -p htdocs/download
+put '$DIST_DIR/appcast.xml' -o htdocs/download/appcast.xml
+bye
+LPFTP
+        echo "appcast.xml uploaded to 1984 hosting"
+    else
+        echo "WARNING: SFTP password not found — skipping 1984 appcast upload"
+    fi
+
+    echo ""
     echo "--- Deploying website to 1984 hosting ---"
-    DEPLOY_SCRIPT="${DEPLOY_SCRIPT:-$HOME/GitHub/FUSV/Websites/swiftmaestro-site/deploy.sh}"
     if [ -x "$DEPLOY_SCRIPT" ]; then
         "$DEPLOY_SCRIPT"
     else
