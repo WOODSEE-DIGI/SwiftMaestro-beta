@@ -308,11 +308,10 @@ struct BackupStatusPanel: View {
     // MARK: - Actions
 
     private func runBackup(_ job: BackupJob) async {
-        backupService.currentState = BackupState(jobID: job.id, phase: .scanning)
-        try? await backupService.triggerLaunchdBackup()
-        try? await Task.sleep(for: .seconds(2))
-        backupService.load()
-        backupService.currentState.phase = .idle
+        guard let dest = backupService.destinations.first(where: { $0.id == job.destinationID }) else { return }
+        let password = (try? KeychainService.read(service: "com.woodseedigi.swiftmaestro", account: "backup-repo-\(dest.id.uuidString)")) ?? ""
+        guard !password.isEmpty else { return }
+        try? await backupService.runBackup(job: job, destination: dest, password: password)
     }
 
     private func verifyAll() async {

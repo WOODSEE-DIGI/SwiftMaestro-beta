@@ -224,7 +224,10 @@ struct BackupSettingsTab: View {
     // MARK: - Run Backup
 
     private func runBackup(_ job: BackupJob) async {
-        try? await backupService.triggerLaunchdBackup()
+        guard let dest = backupService.destinations.first(where: { $0.id == job.destinationID }) else { return }
+        let password = (try? KeychainService.read(service: "com.woodseedigi.swiftmaestro", account: "backup-repo-\(dest.id.uuidString)")) ?? ""
+        guard !password.isEmpty else { return }
+        try? await backupService.runBackup(job: job, destination: dest, password: password)
     }
 }
 
