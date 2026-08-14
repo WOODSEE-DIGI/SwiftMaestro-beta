@@ -309,7 +309,12 @@ struct BackupStatusPanel: View {
 
     private func runBackup(_ job: BackupJob) async {
         guard let dest = backupService.destinations.first(where: { $0.id == job.destinationID }) else { return }
-        let password = (try? KeychainService.read(service: "com.woodseedigi.swiftmaestro", account: "backup-repo-\(dest.id.uuidString)")) ?? ""
+        // Try Keychain first, then password file
+        var password = (try? KeychainService.read(service: "com.woodseedigi.swiftmaestro", account: "backup-repo-\(dest.id.uuidString)")) ?? ""
+        if password.isEmpty {
+            let pwFile = NSHomeDirectory() + "/.restic-password"
+            password = (try? String(contentsOfFile: pwFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)) ?? ""
+        }
         guard !password.isEmpty else { return }
         try? await backupService.runBackup(job: job, destination: dest, password: password)
     }
