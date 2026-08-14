@@ -4,8 +4,6 @@ import SwiftUI
 
 struct BackupStatusPanel: View {
     @State private var backupService = BackupService()
-    @State private var isVerifying = false
-    @State private var verifyResult: String?
     @State private var editingDestinationID: UUID?
     @State private var editingJobID: UUID?
     @State private var showingNewDestination = false
@@ -17,10 +15,6 @@ struct BackupStatusPanel: View {
             Divider()
             if backupService.currentState.phase != .idle {
                 statusSection
-                Divider()
-            }
-            if let result = verifyResult {
-                verifyBanner(result)
                 Divider()
             }
             ScrollView {
@@ -54,19 +48,6 @@ struct BackupStatusPanel: View {
             Text("Backup")
                 .font(.title2.bold())
             Spacer()
-            Button {
-                Task { await verifyAll() }
-            } label: {
-                if isVerifying {
-                    ProgressView().controlSize(.small)
-                } else {
-                    Label("Verify", systemImage: "checkmark.shield")
-                        .font(.subheadline)
-                }
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .disabled(isVerifying)
         }
         .padding(.horizontal)
         .padding(.vertical, 12)
@@ -75,51 +56,53 @@ struct BackupStatusPanel: View {
     // MARK: - Status
 
     private var statusSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
+            // Current step
             HStack {
-                Circle().fill(Color.accentColor).frame(width: 10, height: 10)
-                    .opacity(backupService.currentState.phase == .finished ? 0 : 1)
-                Text(statusText).font(.subheadline.weight(.medium))
+                Text(statusText)
+                    .font(.headline)
                 Spacer()
                 if backupService.currentState.phase != .idle && backupService.currentState.phase != .finished {
                     Button("Cancel") { backupService.cancelBackup() }
                         .buttonStyle(.bordered).controlSize(.small)
                 }
             }
+
+            // Progress bar
             if backupService.currentState.totalBytes > 0 {
-                ProgressView(value: backupService.currentState.progressFraction).tint(Color.accentColor)
-                HStack {
-                    Text(ByteCountFormatter.string(fromByteCount: backupService.currentState.bytesUploaded, countStyle: .file)).font(.caption.monospacedDigit())
-                    Text("/")
-                    Text(ByteCountFormatter.string(fromByteCount: backupService.currentState.totalBytes, countStyle: .file)).font(.caption.monospacedDigit())
-                    Spacer()
-                }.foregroundStyle(.secondary)
+                ProgressView(value: backupService.currentState.progressFraction)
+                    .tint(Color.accentColor)
+                    .animation(.easeInOut, value: backupService.currentState.bytesUploaded)
             }
-        }.padding(.horizontal).padding(.vertical, 10)
+
+            // Stats line
+            HStack(spacing: 16) {
+                if backupService.currentState.filesScanned > 0 {
+                    Label("\(backupService.currentState.filesScanned.formatted()) files scanned", systemImage: "doc")
+                }
+                if backupService.currentState.totalBytes > 0 {
+                    Label("\(ByteCountFormatter.string(fromByteCount: backupService.currentState.bytesUploaded, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: backupService.currentState.totalBytes, countStyle: .file))", systemImage: "arrow.up.circle")
+                }
+                if backupService.currentState.speed > 0 {
+                    Label("\(ByteCountFormatter.string(fromByteCount: Int64(backupService.currentState.speed), countStyle:.file))/s", systemImage: "speedometer")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 10)
+        .background(Color.accentColor.opacity(0.05))
     }
 
     private var statusText: String {
         switch backupService.currentState.phase {
         case .idle: return "Idle"
         case .scanning: return "Scanning files..."
-        case .uploading: return "Uploading..."
+        case .uploading: return "Uploading to VPS..."
         case .pruning: return "Pruning old snapshots..."
         case .finished: return "Backup complete"
         }
-    }
-
-    // MARK: - Verify
-
-    private func verifyBanner(_ result: String) -> some View {
-        HStack {
-            Image(systemName: result.contains("✅") ? "checkmark.circle.fill" : "xmark.circle.fill")
-                .foregroundStyle(result.contains("✅") ? .green : .red)
-            Text(result).font(.caption).lineLimit(2)
-            Spacer()
-            Button { verifyResult = nil } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
-                .buttonStyle(.plain)
-        }.padding(.horizontal).padding(.vertical, 6)
-            .background(result.contains("✅") ? Color.green.opacity(0.1) : Color.red.opacity(0.1))
     }
 
     // MARK: - Destinations
@@ -319,16 +302,4 @@ struct BackupStatusPanel: View {
         try? await backupService.runBackup(job: job, destination: dest, password: password)
     }
 
-    private func verifyAll() async {
-        isVerifying = true; verifyResult = nil
-        for dest in backupService.destinations where dest.isEnabled {
-            let password = (try? KeychainService.read(service: "com.woodseedigi.swiftmaestro", account: "backup-repo-\(dest.id.uuidString)")) ?? ""
-            guard !password.isEmpty else { continue }
-            let result = try? await backupService.verifyRepository(destination: dest, password: password)
-            if let result = result {
-                verifyResult = result.passed ? "✅ \(dest.name): Integrity verified" : "❌ \(dest.name): \(result.output.prefix(100))"
-            }
-        }
-        isVerifying = false
-    }
 }
