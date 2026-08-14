@@ -218,7 +218,10 @@ final class BackupService: @unchecked Sendable {
                         snapshotID = String(line[match])
                     }
                 }
-                if line.contains("error") || line.contains("failed") {
+                if line.contains("Backup complete") || line.contains("All jobs complete") {
+                    status = .completed
+                }
+                if line.contains("ERROR:") && !line.contains("permission denied") {
                     status = .failed
                 }
             }
