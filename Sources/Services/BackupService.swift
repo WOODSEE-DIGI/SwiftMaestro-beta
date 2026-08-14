@@ -261,7 +261,7 @@ final class BackupService: @unchecked Sendable {
 
     func runBackup(job: BackupJob, destination: BackupDestination, password: String) async throws {
         let logEntry = BackupLogEntry(jobID: job.id)
-        currentState = BackupState(jobID: job.id, phase: .scanning)
+        currentState = BackupState(jobID: job.id, phase: .running)
         currentProcess = nil
         logs.insert(logEntry, at: 0)
         save()
@@ -400,11 +400,9 @@ final class BackupService: @unchecked Sendable {
             case "status":
                 if let filesNew = json["files_new"] as? Int {
                     currentState.filesScanned = filesNew
-                    currentState.phase = .scanning
                 }
                 if let bytesAdded = json["bytes_added"] as? Int64 {
                     currentState.bytesUploaded = bytesAdded
-                    currentState.phase = .uploading
                 }
                 if let totalBytes = json["total_bytes"] as? Int64 {
                     currentState.totalBytes = totalBytes
@@ -413,10 +411,12 @@ final class BackupService: @unchecked Sendable {
                 if let totalFiles = json["files_new"] as? Int {
                     currentState.filesScanned = totalFiles
                     currentState.totalFiles = totalFiles
+                    currentState.scanComplete = true
                 }
                 if let totalBytes = json["total_bytes"] as? Int64 {
                     currentState.totalBytes = totalBytes
                     currentState.bytesUploaded = totalBytes
+                    currentState.uploadComplete = true
                 }
             default:
                 break

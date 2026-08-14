@@ -156,12 +156,13 @@ struct BackupState: Sendable {
     var bytesUploaded: Int64 = 0
     var totalBytes: Int64 = 0
     var currentFile: String = ""
-    var speed: Double = 0 // bytes per second
+    var speed: Double = 0
+    var scanComplete: Bool = false
+    var uploadComplete: Bool = false
 
     enum Phase: String, Sendable {
         case idle
-        case scanning
-        case uploading
+        case running
         case pruning
         case finished
     }

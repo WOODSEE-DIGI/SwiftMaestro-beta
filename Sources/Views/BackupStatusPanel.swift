@@ -56,53 +56,123 @@ struct BackupStatusPanel: View {
     // MARK: - Status
 
     private var statusSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            // Current step
+        VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text(statusText)
+                Text("Backup in Progress")
                     .font(.headline)
                 Spacer()
-                if backupService.currentState.phase != .idle && backupService.currentState.phase != .finished {
-                    Button("Cancel") { backupService.cancelBackup() }
-                        .buttonStyle(.bordered).controlSize(.small)
+                Button("Cancel") { backupService.cancelBackup() }
+                    .buttonStyle(.bordered).controlSize(.small)
+            }
+            .padding(.bottom, 8)
+
+            Text("Scanning identifies changed files, then uploads them to your VPS. Both happen together.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.bottom, 12)
+
+            // Step 1: Scanning
+            let scanDone = backupService.currentState.scanComplete
+            let scanActive = backupService.currentState.phase == .running && !scanDone
+            stepRow(
+                number: 1,
+                label: "Scanning files",
+                detail: scanDone
+                    ? "\(backupService.currentState.filesScanned.formatted()) files identified"
+                    : scanActive
+                        ? "\(backupService.currentState.filesScanned.formatted()) files so far..."
+                        : "Waiting to start",
+                isDone: scanDone,
+                isActive: scanActive
+            )
+
+            // Step 2: Uploading (runs in parallel with scanning)
+            let uploadActive = backupService.currentState.phase == .running
+            let uploadDone = backupService.currentState.uploadComplete
+            stepRow(
+                number: 2,
+                label: "Uploading to VPS",
+                detail: uploadDone
+                    ? "\(ByteCountFormatter.string(fromByteCount: backupService.currentState.totalBytes, countStyle: .file)) uploaded"
+                    : uploadActive && backupService.currentState.totalBytes > 0
+                        ? "\(ByteCountFormatter.string(fromByteCount: backupService.currentState.bytesUploaded, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: backupService.currentState.totalBytes, countStyle: .file))"
+                        : "Waiting for scan",
+                isDone: uploadDone,
+                isActive: uploadActive
+            )
+
+            // Progress bar during upload
+            if uploadActive && backupService.currentState.totalBytes > 0 {
+                VStack(alignment: .leading, spacing: 4) {
+                    ProgressView(value: backupService.currentState.progressFraction)
+                        .tint(Color.accentColor)
+                    HStack {
+                        Text("Speed: \(ByteCountFormatter.string(fromByteCount: Int64(backupService.currentState.speed), countStyle:.file))/s")
+                        Spacer()
+                        Text("\(Int(backupService.currentState.progressFraction * 100))%")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
+                .padding(.leading, 28)
+                .padding(.top, 4)
+                .padding(.bottom, 8)
             }
 
-            // Progress bar
-            if backupService.currentState.totalBytes > 0 {
-                ProgressView(value: backupService.currentState.progressFraction)
-                    .tint(Color.accentColor)
-                    .animation(.easeInOut, value: backupService.currentState.bytesUploaded)
-            }
+            // Step 3: Pruning
+            let pruneActive = backupService.currentState.phase == .pruning
+            let pruneDone = backupService.currentState.phase == .finished
+            stepRow(
+                number: 3,
+                label: "Pruning old snapshots",
+                detail: nil,
+                isDone: pruneDone,
+                isActive: pruneActive
+            )
 
-            // Stats line
-            HStack(spacing: 16) {
-                if backupService.currentState.filesScanned > 0 {
-                    Label("\(backupService.currentState.filesScanned.formatted()) files scanned", systemImage: "doc")
-                }
-                if backupService.currentState.totalBytes > 0 {
-                    Label("\(ByteCountFormatter.string(fromByteCount: backupService.currentState.bytesUploaded, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: backupService.currentState.totalBytes, countStyle: .file))", systemImage: "arrow.up.circle")
-                }
-                if backupService.currentState.speed > 0 {
-                    Label("\(ByteCountFormatter.string(fromByteCount: Int64(backupService.currentState.speed), countStyle:.file))/s", systemImage: "speedometer")
-                }
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
+            // Step 4: Complete
+            stepRow(
+                number: 4,
+                label: "Backup complete",
+                detail: nil,
+                isDone: backupService.currentState.phase == .finished,
+                isActive: false
+            )
         }
         .padding(.horizontal)
-        .padding(.vertical, 10)
+        .padding(.vertical, 12)
         .background(Color.accentColor.opacity(0.05))
     }
 
-    private var statusText: String {
-        switch backupService.currentState.phase {
-        case .idle: return "Idle"
-        case .scanning: return "Scanning files..."
-        case .uploading: return "Uploading to VPS..."
-        case .pruning: return "Pruning old snapshots..."
-        case .finished: return "Backup complete"
+    private func stepRow(number: Int, label: String, detail: String?, isDone: Bool, isActive: Bool) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            if isDone {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                    .font(.title3)
+            } else if isActive {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Circle()
+                    .stroke(.secondary, lineWidth: 2)
+                    .frame(width: 20, height: 20)
+                    .overlay(Text("\(number)").font(.caption2).foregroundStyle(.secondary))
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label)
+                    .font(isActive ? .subheadline.weight(.semibold) : .subheadline)
+                    .foregroundStyle(!isDone && !isActive ? .secondary : .primary)
+                if let detail = detail {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
         }
+        .padding(.vertical, 6)
     }
 
     // MARK: - Destinations
