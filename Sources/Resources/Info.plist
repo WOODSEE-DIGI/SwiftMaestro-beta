@@ -49,7 +49,7 @@
 	<key>SUFeedURL</key>
 	<string>https://s3.ap-southeast-2.onidel.cloud/swiftmaestro-releases/appcast.xml</string>
 	<key>SUPublicEDKey</key>
-	<string>TTIO4DYLbmp/OPA3VtOvE8IERZ328cWiidD3gdKo+SY=</string>
+	<string>EXGKAotTuYwRmUIiiZaeGnr+Tk5vF0MFFuCB+0V2ZzU=</string>
 	<key>SUScheduledCheckInterval</key>
 	<integer>86400</integer>
 	<key>UTExportedTypeDeclarations</key>

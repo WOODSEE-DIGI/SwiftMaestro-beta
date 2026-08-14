@@ -10,11 +10,19 @@ struct InlineDestinationEditor: View {
 
     @State private var name: String
     @State private var isEnabled: Bool
+    // S3
     @State private var s3Endpoint: String
     @State private var s3Bucket: String
     @State private var s3AccessKey: String
     @State private var s3SecretKey: String
     @State private var s3Region: String
+    // SSH
+    @State private var sshHost: String
+    @State private var sshPort: String
+    @State private var sshUser: String
+    @State private var sshKeyPath: String
+    @State private var sshRepoPath: String
+    // Test
     @State private var isTesting = false
     @State private var testResult: String?
     @State private var testPassed: Bool?
@@ -32,9 +40,23 @@ struct InlineDestinationEditor: View {
             _s3AccessKey = State(initialValue: config.accessKeyID)
             _s3SecretKey = State(initialValue: config.secretAccessKey)
             _s3Region = State(initialValue: config.region)
-        case .sftp, .local:
+            _sshHost = State(initialValue: ""); _sshPort = State(initialValue: "22")
+            _sshUser = State(initialValue: "root"); _sshKeyPath = State(initialValue: "")
+            _sshRepoPath = State(initialValue: "")
+        case .sftp(let config):
             _s3Endpoint = State(initialValue: ""); _s3Bucket = State(initialValue: "")
             _s3AccessKey = State(initialValue: ""); _s3SecretKey = State(initialValue: ""); _s3Region = State(initialValue: "")
+            _sshHost = State(initialValue: config.host)
+            _sshPort = State(initialValue: "\(config.port)")
+            _sshUser = State(initialValue: config.username)
+            _sshKeyPath = State(initialValue: config.keyPath)
+            _sshRepoPath = State(initialValue: config.repositoryPath)
+        case .local:
+            _s3Endpoint = State(initialValue: ""); _s3Bucket = State(initialValue: "")
+            _s3AccessKey = State(initialValue: ""); _s3SecretKey = State(initialValue: ""); _s3Region = State(initialValue: "")
+            _sshHost = State(initialValue: ""); _sshPort = State(initialValue: "22")
+            _sshUser = State(initialValue: "root"); _sshKeyPath = State(initialValue: "")
+            _sshRepoPath = State(initialValue: "")
         }
     }
 
@@ -49,6 +71,13 @@ struct InlineDestinationEditor: View {
                 SecureField("Secret Access Key", text: $s3SecretKey).textFieldStyle(.roundedBorder)
                 TextField("Region", text: $s3Region).textFieldStyle(.roundedBorder)
             }
+            if case .sftp = destination.kind {
+                TextField("Host", text: $sshHost).textFieldStyle(.roundedBorder)
+                TextField("Port", text: $sshPort).textFieldStyle(.roundedBorder)
+                TextField("Username", text: $sshUser).textFieldStyle(.roundedBorder)
+                TextField("SSH Key Path", text: $sshKeyPath).textFieldStyle(.roundedBorder)
+                TextField("Repository Path", text: $sshRepoPath).textFieldStyle(.roundedBorder)
+            }
             if let result = testResult {
                 HStack {
                     Image(systemName: testPassed == true ? "checkmark.circle.fill" : "xmark.circle.fill")
@@ -57,14 +86,12 @@ struct InlineDestinationEditor: View {
                 }
             }
             HStack {
-                if case .s3 = destination.kind {
-                    Button {
-                        Task { await testConnection() }
-                    } label: {
-                        if isTesting { ProgressView().controlSize(.small) } else { Label("Test Connection", systemImage: "network") }
-                    }.buttonStyle(.bordered).controlSize(.small)
-                        .disabled(isTesting || s3AccessKey.isEmpty || s3SecretKey.isEmpty)
-                }
+                Button {
+                    Task { await testConnection() }
+                } label: {
+                    if isTesting { ProgressView().controlSize(.small) } else { Label("Test Connection", systemImage: "network") }
+                }.buttonStyle(.bordered).controlSize(.small)
+                    .disabled(isTesting)
                 Spacer()
                 Button("Cancel") { onDone() }.buttonStyle(.bordered).controlSize(.small)
                 Button("Save") {
@@ -74,6 +101,11 @@ struct InlineDestinationEditor: View {
                         config.accessKeyID = s3AccessKey; config.secretAccessKey = s3SecretKey; config.region = s3Region
                         dest.kind = .s3(config)
                     }
+                    if case .sftp = destination.kind {
+                        let port = Int(sshPort) ?? 22
+                        let config = BackupDestination.SFTPConfig(host: sshHost, port: port, username: sshUser, keyPath: sshKeyPath, repositoryPath: sshRepoPath)
+                        dest.kind = .sftp(config)
+                    }
                     backupService.updateDestination(dest); onDone()
                 }.buttonStyle(.borderedProminent).controlSize(.small).disabled(name.isEmpty)
             }
@@ -82,17 +114,27 @@ struct InlineDestinationEditor: View {
 
     private func testConnection() async {
         isTesting = true; testResult = nil; testPassed = nil
-        let config = BackupDestination.S3Config(endpoint: s3Endpoint, bucket: s3Bucket, accessKeyID: s3AccessKey, secretAccessKey: s3SecretKey, region: s3Region, usePathStyle: true)
-        let testDest = BackupDestination(name: "test", kind: .s3(config))
         let testPass = "test-\(UUID().uuidString)"
+        let testDest: BackupDestination
+        switch destination.kind {
+        case .s3:
+            let config = BackupDestination.S3Config(endpoint: s3Endpoint, bucket: s3Bucket, accessKeyID: s3AccessKey, secretAccessKey: s3SecretKey, region: s3Region, usePathStyle: true)
+            testDest = BackupDestination(name: "test", kind: .s3(config))
+        case .sftp:
+            let port = Int(sshPort) ?? 22
+            let config = BackupDestination.SFTPConfig(host: sshHost, port: port, username: sshUser, keyPath: sshKeyPath, repositoryPath: sshRepoPath)
+            testDest = BackupDestination(name: "test", kind: .sftp(config))
+        case .local:
+            testResult = "Local backup — no connection test needed"; testPassed = true; isTesting = false; return
+        }
         do {
             _ = try await backupService.initRepository(destination: testDest, password: testPass)
-            testResult = "Connected — bucket is accessible"; testPassed = true
+            testResult = "Connected — repository accessible"; testPassed = true
             _ = try? await backupService.runRestic(args: ["-r", BackupService.repositoryURL(for: testDest), "forget", "--keep-last", "0", "--prune"], environment: BackupService.environment(for: testDest, password: testPass))
         } catch {
             let msg = error.localizedDescription
             if msg.contains("already exists") { testResult = "Connected — repository exists (OK)"; testPassed = true }
-            else { testResult = "Failed: \(msg.prefix(80))"; testPassed = false }
+            else { testResult = "Failed: \(msg.prefix(100))"; testPassed = false }
         }
         isTesting = false
     }
