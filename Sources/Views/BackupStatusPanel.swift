@@ -74,42 +74,47 @@ struct BackupStatusPanel: View {
             // Step 1: Scanning
             let scanDone = backupService.currentState.scanComplete
             let scanActive = backupService.currentState.phase == .running && !scanDone
+            let filesScanned = backupService.currentState.filesScanned
             stepRow(
                 number: 1,
                 label: "Scanning files",
                 detail: scanDone
-                    ? "\(backupService.currentState.filesScanned.formatted()) files identified"
+                    ? "\(filesScanned.formatted()) files identified"
                     : scanActive
-                        ? "\(backupService.currentState.filesScanned.formatted()) files so far..."
+                        ? filesScanned > 0 ? "\(filesScanned.formatted()) files so far..." : "Counting files..."
                         : "Waiting to start",
                 isDone: scanDone,
                 isActive: scanActive
             )
 
-            // Step 2: Uploading (runs in parallel with scanning)
-            let uploadActive = backupService.currentState.phase == .running
+            // Step 2: Uploading
+            let uploadActive = backupService.currentState.phase == .running && scanDone
             let uploadDone = backupService.currentState.uploadComplete
+            let totalBytes = backupService.currentState.totalBytes
+            let uploadedBytes = backupService.currentState.bytesUploaded
             stepRow(
                 number: 2,
                 label: "Uploading to VPS",
                 detail: uploadDone
-                    ? "\(ByteCountFormatter.string(fromByteCount: backupService.currentState.totalBytes, countStyle: .file)) uploaded"
-                    : uploadActive && backupService.currentState.totalBytes > 0
-                        ? "\(ByteCountFormatter.string(fromByteCount: backupService.currentState.bytesUploaded, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: backupService.currentState.totalBytes, countStyle: .file))"
-                        : "Waiting for scan",
+                    ? "\(ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)) uploaded"
+                    : uploadActive && totalBytes > 0
+                        ? "\(ByteCountFormatter.string(fromByteCount: uploadedBytes, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file))"
+                        : "Waiting for scan to finish",
                 isDone: uploadDone,
                 isActive: uploadActive
             )
 
-            // Progress bar during upload
-            if uploadActive && backupService.currentState.totalBytes > 0 {
+            // Progress bar only during active upload
+            if uploadActive && totalBytes > 0 {
                 VStack(alignment: .leading, spacing: 4) {
                     ProgressView(value: backupService.currentState.progressFraction)
                         .tint(Color.accentColor)
                     HStack {
-                        Text("Speed: \(ByteCountFormatter.string(fromByteCount: Int64(backupService.currentState.speed), countStyle:.file))/s")
+                        let speed = backupService.currentState.speed
+                        Text(speed > 0 ? "Speed: \(ByteCountFormatter.string(fromByteCount: Int64(speed), countStyle:.file))/s" : "Calculating speed...")
                         Spacer()
-                        Text("\(Int(backupService.currentState.progressFraction * 100))%")
+                        let pct = Int(backupService.currentState.progressFraction * 100)
+                        Text("\(pct)%")
                     }
                     .font(.caption)
                     .foregroundStyle(.secondary)
