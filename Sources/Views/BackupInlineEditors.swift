@@ -114,7 +114,15 @@ struct InlineDestinationEditor: View {
 
     private func testConnection() async {
         isTesting = true; testResult = nil; testPassed = nil
-        let testPass = "test-\(UUID().uuidString)"
+
+        // Read the real password from file
+        let pwFile = NSHomeDirectory() + "/.restic-password"
+        let realPassword = (try? String(contentsOfFile: pwFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)) ?? ""
+        guard !realPassword.isEmpty else {
+            testResult = "No password found — create ~/.restic-password first"
+            testPassed = false; isTesting = false; return
+        }
+
         let testDest: BackupDestination
         switch destination.kind {
         case .s3:
@@ -127,14 +135,29 @@ struct InlineDestinationEditor: View {
         case .local:
             testResult = "Local backup — no connection test needed"; testPassed = true; isTesting = false; return
         }
+
+        // Test: list existing snapshots in the repository
         do {
-            _ = try await backupService.initRepository(destination: testDest, password: testPass)
-            testResult = "Connected — repository accessible"; testPassed = true
-            _ = try? await backupService.runRestic(args: ["-r", BackupService.repositoryURL(for: testDest), "forget", "--keep-last", "0", "--prune"], environment: BackupService.environment(for: testDest, password: testPass))
+            let output = try await backupService.listSnapshots(destination: testDest, password: realPassword)
+            let count = output.components(separatedBy: "\n").filter { $0.contains("snapshot") }.count
+            testResult = "Connected — \(count) snapshot(s) found in repository"
+            testPassed = true
         } catch {
             let msg = error.localizedDescription
-            if msg.contains("already exists") { testResult = "Connected — repository exists (OK)"; testPassed = true }
-            else { testResult = "Failed: \(msg.prefix(100))"; testPassed = false }
+            if msg.contains("repository") && msg.contains("not found") {
+                // Repository doesn't exist yet — try to create it
+                do {
+                    _ = try await backupService.initRepository(destination: testDest, password: realPassword)
+                    testResult = "Connected — new repository created"
+                    testPassed = true
+                } catch {
+                    testResult = "Failed: \(error.localizedDescription.prefix(100))"
+                    testPassed = false
+                }
+            } else {
+                testResult = "Failed: \(msg.prefix(100))"
+                testPassed = false
+            }
         }
         isTesting = false
     }
