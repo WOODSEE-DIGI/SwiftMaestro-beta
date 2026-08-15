@@ -9,7 +9,7 @@ These are mandatory working agreements for this repo. Follow them every session.
 
 1. **Never launch the app.** Do not `open`, launch, relaunch, kill (`pkill`/`killall`), screenshot, or UI-drive SwiftMaestro (any copy — Debug, Release, `/Applications`, DMG). Do not touch its processes, windows, or TCC prompts. Verification ends at `xcodebuild ... build` → `** BUILD SUCCEEDED **`; the user launches and tests the app themselves and reports what they see. The only sanctioned shipping step is the package pipeline producing a DMG — never a launch.
 2. **Orient before acting.** Before changing code, read this file and `~/.ai-context/README.md`, and query the `ai-context-bridge` MCP memory for relevant prior context. Confirm where the project stands before editing.
-3. **Verify every build.** After code changes, run `xcodegen generate` if files were added/removed, then run `xcodebuild ... build` and confirm `** BUILD SUCCEEDED **` before claiming a task is done. Do not commit generated `SwiftMaestro.xcodeproj/` or `.derivedData/` output.
+3. **Verify every build.** After code changes, run `./scripts/gen-project.sh` if files were added/removed (it runs `xcodegen generate` + a post-fixup that removes vendored-package folder references — plain `xcodegen generate` reintroduces them), then run `xcodebuild ... build` and confirm `** BUILD SUCCEEDED **` before claiming a task is done. Do not commit generated `SwiftMaestro.xcodeproj/` or `.derivedData/` output.
 4. **Protect the Mac with large models.** Never trigger a second large in-process model load (the 122B is ~65GB resident). Confirm no other large model is loaded before loading another.
 5. **Scan downloads.** Any downloaded file gets a two-stage malware scan: quick scan, then deep scan, before use.
 6. **Before any public push.** Deep-scrub for PII that could be used maliciously. The name `woodsee` may remain.
@@ -94,8 +94,9 @@ Models stored at: `~/Ai-models/models` by default; configurable in **Settings �
 ## Build & Run
 
 ```bash
-# Generate Xcode project (xcodeproj is gitignored — regenerate after pulling)
-xcodegen generate
+# Generate Xcode project (xcodeproj is gitignored — regenerate after pulling;
+# the wrapper also removes vendored-package folder refs xcodegen emits)
+./scripts/gen-project.sh
 
 # Build and run
 open SwiftMaestro.xcodeproj

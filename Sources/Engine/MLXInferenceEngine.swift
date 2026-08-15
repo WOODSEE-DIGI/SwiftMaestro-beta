@@ -795,12 +795,18 @@ final class MLXInferenceEngine {
                                 tools: toolSchemas?.map { $0 as [String: any Sendable] }
                             )
                         }
-                        for await generation in stream {
+                        var roundContent = ""
+                        streamLoop: for await generation in stream {
                             guard !Task.isCancelled else { break iterations }
                             switch generation {
                             case .chunk(let chunk):
                                 ProcessResourceSampler.shared.recordToken()
                                 ModelActivitySampler.shared.recordToken(id: model.id)
+                                roundContent += chunk
+                                if Self.degenerateTrimmed(roundContent) != nil {
+                                    NSLog("[ENGINE] degeneration guard: repetition loop detected — stopping the round")
+                                    break streamLoop
+                                }
                                 continuation.yield(.token(chunk))
                             case .info(let info):
                                 NSLog("[PERF] prompt=\(info.promptTokenCount) tok in \(String(format: "%.2f", info.promptTime))s (\(String(format: "%.0f", info.promptTokensPerSecond)) tok/s prefill); gen=\(info.generationTokenCount) tok in \(String(format: "%.2f", info.generateTime))s (\(String(format: "%.1f", info.tokensPerSecond)) tok/s)")
@@ -1072,13 +1078,18 @@ final class MLXInferenceEngine {
         var toolCalls: [RoundToolCall] = []
         ProcessResourceSampler.shared.startGeneration()
         ModelActivitySampler.shared.startGeneration(id: model.id)
-        for await generation in stream {
+        streamLoop: for await generation in stream {
             if Task.isCancelled { break }
             switch generation {
             case .chunk(let chunk):
                 ProcessResourceSampler.shared.recordToken()
                 ModelActivitySampler.shared.recordToken(id: model.id)
                 content += chunk
+                if let trimmed = Self.degenerateTrimmed(content) {
+                    NSLog("[ENGINE] degeneration guard: repetition loop detected — truncated and stopped the round")
+                    content = trimmed
+                    break streamLoop
+                }
                 onToken(chunk)
             case .info(let info):
                 NSLog("[PERF] prompt=\(info.promptTokenCount) tok (\(String(format: "%.0f", info.promptTokensPerSecond)) tok/s prefill); gen=\(info.generationTokenCount) tok (\(String(format: "%.1f", info.tokensPerSecond)) tok/s)")
@@ -1231,13 +1242,18 @@ final class MLXInferenceEngine {
         var toolCalls: [RoundToolCall] = []
         ProcessResourceSampler.shared.startGeneration()
         ModelActivitySampler.shared.startGeneration(id: model.id)
-        for await generation in stream {
+        streamLoop: for await generation in stream {
             if Task.isCancelled { break }
             switch generation {
             case .chunk(let chunk):
                 ProcessResourceSampler.shared.recordToken()
                 ModelActivitySampler.shared.recordToken(id: model.id)
                 content += chunk
+                if let trimmed = Self.degenerateTrimmed(content) {
+                    NSLog("[ENGINE] degeneration guard: repetition loop detected — truncated and stopped the round")
+                    content = trimmed
+                    break streamLoop
+                }
                 onToken(chunk)
             case .info(let info):
                 NSLog("[PERF] prompt=\(info.promptTokenCount) tok (\(String(format: "%.0f", info.promptTokensPerSecond)) tok/s prefill); gen=\(info.generationTokenCount) tok (\(String(format: "%.1f", info.tokensPerSecond)) tok/s)")
@@ -1259,6 +1275,47 @@ final class MLXInferenceEngine {
         ModelActivitySampler.shared.stopGeneration(id: model.id)
         state = .ready(model.displayName)
         return (content, toolCalls)
+    }
+
+    // MARK: - Degeneration Guard
+
+    /// Index in `tail` where a back-to-back repeating chunk run starts, or nil.
+    /// Catches model repetition loops ("<br>"×500, hex-blob echoes) early
+    /// enough to stop the round instead of streaming garbage for minutes.
+    /// Chunks made of one repeated character ("----", "====") are ignored so
+    /// markdown rules and ASCII art never false-trip.
+    static func degenerationRunStart(in tail: Substring) -> Substring.Index? {
+        let minRepeats = 8
+        var chunkLen = 4
+        while chunkLen <= 64, tail.count >= chunkLen * minRepeats {
+            defer { chunkLen += 1 }
+            let chunkStart = tail.index(tail.endIndex, offsetBy: -chunkLen)
+            let chunk = tail[chunkStart...]
+            if Set(chunk).count == 1 { continue }
+            var runStart = chunkStart
+            var repeats = 1
+            while repeats < minRepeats,
+                  let prev = tail.index(runStart, offsetBy: -chunkLen, limitedBy: tail.startIndex) {
+                if tail[prev..<runStart] == chunk {
+                    runStart = prev
+                    repeats += 1
+                } else { break }
+            }
+            if repeats >= minRepeats { return runStart }
+        }
+        return nil
+    }
+
+    /// When the tail of `content` is a repetition loop, returns the content
+    /// with the repeated run removed (one occurrence kept). Nil when clean.
+    /// Only inspected once content passes 512 chars; the scan window is the
+    /// trailing 4096 chars so the per-token cost stays negligible.
+    static func degenerateTrimmed(_ content: String) -> String? {
+        guard content.count > 512 else { return nil }
+        let tailCount = min(4096, content.count)
+        let tail = content.suffix(tailCount)
+        guard let runStart = degenerationRunStart(in: tail) else { return nil }
+        return String(content.prefix(content.count - tailCount)) + tail[..<runStart]
     }
 
     // MARK: - Vision Proxy

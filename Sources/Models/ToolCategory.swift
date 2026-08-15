@@ -247,7 +247,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .mail:
             return [
                 "open_apple_mail", "open_apple_mail_panel", "compose_apple_mail",
-                "apple_mail_selected_message", "apple_mail_tracking_summary",
+                "apple_mail_selected_message",
             ]
         case .whatsapp:
             return [

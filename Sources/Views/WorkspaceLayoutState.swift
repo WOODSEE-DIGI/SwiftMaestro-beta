@@ -1,5 +1,152 @@
 import SwiftUI
 
+// MARK: - Canvas Grid
+
+/// The workspace grid: 12 columns × 8 rows with gutters. Tiles occupy whole
+/// cell spans, so tiles can never overlap — empty cells are the visible
+/// "space available" for new panels. Grid units scale with the window, so
+/// resizing the window re-flows tiles proportionally.
+enum CanvasGrid {
+    static let cols = 12
+    static let rows = 8
+    static let gap: Double = 10
+
+    static func cellSize(in canvas: CGSize) -> CGSize {
+        CGSize(
+            width: (Double(canvas.width) - gap * Double(cols + 1)) / Double(cols),
+            height: (Double(canvas.height) - gap * Double(rows + 1)) / Double(rows)
+        )
+    }
+
+    /// Pixel frame of a cell span within a canvas.
+    static func frame(col: Int, row: Int, colSpan: Int, rowSpan: Int, in canvas: CGSize) -> CGRect {
+        let cell = cellSize(in: canvas)
+        let x = gap + Double(col) * (cell.width + gap)
+        let y = gap + Double(row) * (cell.height + gap)
+        let w = Double(colSpan) * cell.width + Double(colSpan - 1) * gap
+        let h = Double(rowSpan) * cell.height + Double(rowSpan - 1) * gap
+        return CGRect(x: x, y: y, width: w, height: h)
+    }
+
+    /// The cell containing a canvas-space point (clamped into the grid).
+    static func cell(at point: CGPoint, in canvas: CGSize) -> (col: Int, row: Int) {
+        let cell = cellSize(in: canvas)
+        let col = Int((Double(point.x) - gap) / (cell.width + gap))
+        let row = Int((Double(point.y) - gap) / (cell.height + gap))
+        return (min(max(0, col), cols - 1), min(max(0, row), rows - 1))
+    }
+
+    /// Whether two cell spans intersect.
+    static func spansIntersect(_ a: (col: Int, row: Int, colSpan: Int, rowSpan: Int),
+                               _ b: (col: Int, row: Int, colSpan: Int, rowSpan: Int)) -> Bool {
+        a.col < b.col + b.colSpan && b.col < a.col + a.colSpan
+            && a.row < b.row + b.rowSpan && b.row < a.row + a.rowSpan
+    }
+}
+
+// MARK: - Canvas Tile Model
+
+/// One tile on the workspace canvas grid. `kinds` holds a tab stack (dropping
+/// a tile onto another's center merges them). Position is in GRID CELLS —
+/// pixels are derived per canvas size, so tiles scale with the window and can
+/// never overlap.
+struct CanvasTile: Identifiable, Codable, Hashable, Sendable {
+    /// The main window's canvas. Other UUIDs = secondary canvas windows.
+    static let mainCanvasID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+
+    var id: UUID = UUID()
+    var kinds: [WorkspacePanelKind]
+    var col: Int
+    var row: Int
+    var colSpan: Int
+    var rowSpan: Int
+    var z: Int
+    /// Which canvas window this tile lives on (main window by default).
+    var canvasID: UUID = CanvasTile.mainCanvasID
+
+    var cellSpan: (col: Int, row: Int, colSpan: Int, rowSpan: Int) { (col, row, colSpan, rowSpan) }
+
+    /// Pixel frame within a canvas of the given size.
+    func frame(in canvas: CGSize) -> CGRect {
+        CanvasGrid.frame(col: col, row: row, colSpan: colSpan, rowSpan: rowSpan, in: canvas)
+    }
+
+    /// Smallest sane span (a kind with a wide minimum column gets more cells).
+    var minColSpan: Int {
+        let minWidth = kinds.map(\.minColumnWidth).max() ?? 280
+        return minWidth > 560 ? 5 : minWidth > 420 ? 4 : 3
+    }
+    var minRowSpan: Int { 2 }
+
+    /// Memberwise init (explicit because the custom decoder suppresses the
+    /// synthesized one).
+    init(id: UUID = UUID(), kinds: [WorkspacePanelKind], col: Int, row: Int,
+         colSpan: Int, rowSpan: Int, z: Int, canvasID: UUID = CanvasTile.mainCanvasID) {
+        self.id = id
+        self.kinds = kinds
+        self.col = col
+        self.row = row
+        self.colSpan = colSpan
+        self.rowSpan = rowSpan
+        self.z = z
+        self.canvasID = canvasID
+    }
+
+    // Custom Codable: the legacy pixel keys (x/y/w/h) are decode-only inputs
+    // for migration — they're never written, so encoding is explicit.
+    private enum CodingKeys: String, CodingKey {
+        case id, kinds, col, row, colSpan, rowSpan, z, canvasID
+        case x, y, w, h  // legacy pixel model (decode-only)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(kinds, forKey: .kinds)
+        try c.encode(col, forKey: .col)
+        try c.encode(row, forKey: .row)
+        try c.encode(colSpan, forKey: .colSpan)
+        try c.encode(rowSpan, forKey: .rowSpan)
+        try c.encode(z, forKey: .z)
+        try c.encode(canvasID, forKey: .canvasID)
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        kinds = try c.decode([WorkspacePanelKind].self, forKey: .kinds)
+        z = try c.decode(Int.self, forKey: .z)
+        canvasID = try c.decodeIfPresent(UUID.self, forKey: .canvasID) ?? Self.mainCanvasID
+
+        if let decodedCol = try c.decodeIfPresent(Int.self, forKey: .col) {
+            col = decodedCol
+            row = try c.decode(Int.self, forKey: .row)
+            colSpan = try c.decode(Int.self, forKey: .colSpan)
+            rowSpan = try c.decode(Int.self, forKey: .rowSpan)
+        } else {
+            // Quantize the legacy pixel frame (nominal 1400×900 canvas) into cells.
+            let px = try c.decodeIfPresent(Double.self, forKey: .x) ?? 16
+            let py = try c.decodeIfPresent(Double.self, forKey: .y) ?? 16
+            let pw = try c.decodeIfPresent(Double.self, forKey: .w) ?? 560
+            let ph = try c.decodeIfPresent(Double.self, forKey: .h) ?? 440
+            let nominal = CGSize(width: 1_400, height: 900)
+            let originCell = CanvasGrid.cell(at: CGPoint(x: px, y: py), in: nominal)
+            col = originCell.col
+            row = originCell.row
+            colSpan = min(CanvasGrid.cols - col, max(3, Int((pw / 1400.0 * 12).rounded())))
+            rowSpan = min(CanvasGrid.rows - row, max(2, Int((ph / 900.0 * 8).rounded())))
+        }
+    }
+}
+
+/// A secondary canvas window (the main window's canvas is implicit).
+struct CanvasWindowInfo: Identifiable, Codable, Hashable, Sendable {
+    var id: UUID
+    var name: String
+    var createdAt: Date = Date()
+}
+
+
 // MARK: - Workspace Panel Kind
 //
 // Identifies a *top-level* panel the user can have open in the main workspace
@@ -83,6 +230,9 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
     case overlayBuilder
     /// Backup management panel — Restic-backed offsite/local backups.
     case backup
+    /// Voice Notes — record-first voice memos: audio streams to disk
+    /// immediately, transcription follows as a background process.
+    case voiceNotes
 
     var icon: String {
         switch self {
@@ -120,6 +270,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .maestroDB: return "tablecells"
         case .overlayBuilder: return "rectangle.dashed"
         case .backup: return "arrow.triangle.2.circlepath"
+        case .voiceNotes: return "mic.circle"
         }
     }
 
@@ -164,6 +315,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .maestroDB: return "maestroDB"
         case .overlayBuilder: return "overlayBuilder"
         case .backup: return "backup"
+        case .voiceNotes: return "voiceNotes"
         }
     }
 
@@ -206,6 +358,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .maestroDB: return "MaestroDB"
         case .overlayBuilder: return "Overlay Builder"
         case .backup: return "Backup"
+        case .voiceNotes: return "Voice Notes"
         }
     }
 
@@ -216,7 +369,10 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
     /// value exists to prevent. Simpler single-content panels can go narrower.
     var minColumnWidth: CGFloat {
         switch self {
-        case .agentChat: return 560
+        // Chats host nested Plans/Tasks sub-panels, so they want room — but
+        // 560 was a hard floor that stopped users resizing the chat smaller
+        // on the canvas grid. 380 keeps it readable; go narrower by choice.
+        case .agentChat: return 380
         default: return 320
         }
     }
@@ -260,6 +416,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .maestroDB: return "maestroDB"
         case .overlayBuilder: return "overlayBuilder"
         case .backup: return "backup"
+        case .voiceNotes: return "voiceNotes"
         }
     }
 }
@@ -544,27 +701,55 @@ final class WorkspaceLayoutState {
 
     static let shared = WorkspaceLayoutState()
 
-    /// The root of the binary tiling tree. `nil` means an empty workspace.
-    private(set) var root: LayoutNode?
+    /// Legacy binary tiling tree — retained ONLY to migrate saved layouts into
+    /// canvas tiles on first launch after the canvas cutover. No longer drives
+    /// any UI; do not add new references.
+    private var root: LayoutNode?
+
+    /// The workspace canvas: free-positioned tiles with absolute frames.
+    /// Empty space is just where no tile is; opening a panel uses free space
+    /// instead of re-dividing existing tiles. Tiles are scoped per canvas
+    /// window (`CanvasTile.canvasID`) — the main window plus any secondary
+    /// canvas windows (e.g. a group of panels on a second monitor).
+    private(set) var canvasTiles: [CanvasTile] = []
+
+    /// Secondary canvas windows (the main window's canvas is implicit and not
+    /// listed). Persisted so canvas windows reopen on launch.
+    private(set) var canvasWindows: [CanvasWindowInfo] = []
+
+    /// Per-canvas measured size (runtime only — not persisted).
+    private var canvasSizes: [UUID: CGSize] = [:]
 
     /// Panels currently open in their own floating window rather than docked
-    /// into the tree. New panels open floating by default (see `open(_:)`)
-    /// after the very first one, which docks immediately so the main window
-    /// is never empty on first launch.
+    /// on the canvas. Panels opened with Option (nil zone) float immediately.
     private(set) var floatingPanels: Set<WorkspacePanelKind> = []
 
     /// When `true`, the workspace layout is locked and panels cannot be dragged
     /// or dropped. The lock toggle lives in the main toolbar.
     var isLocked = false
 
-    /// Persisted split ratio per split node. Keyed by a deterministic hash of
-    /// the split's path and the panels it contains, so the ratio survives a
-    /// rebuild of the tree. Values are between 0.1 and 0.9.
+    /// Persisted split ratio per split node — legacy tree state, unused by the
+    /// canvas. Retained so a pre-cutover install's data round-trips harmlessly.
     private var splitRatios: [String: Double] = [:]
 
-    /// The most recently measured width of the workspace content area.
-    /// Used to decide whether a newly opened panel fits comfortably.
-    var availableWidth: CGFloat = 1_000
+    /// The most recently measured size of the workspace canvas area. Used for
+    /// new-tile placement and to clamp tiles on window resize.
+    /// (Main window's canvas — secondary canvases report via `canvasSizes`.)
+    var canvasSize: CGSize {
+        get { canvasSizes[CanvasTile.mainCanvasID] ?? CGSize(width: 1_200, height: 900) }
+        set { canvasSizes[CanvasTile.mainCanvasID] = newValue }
+    }
+
+    /// Measured size of a specific canvas window (default until it reports).
+    func canvasSize(for canvasID: UUID) -> CGSize {
+        canvasSizes[canvasID] ?? CGSize(width: 1_200, height: 900)
+    }
+
+    /// Back-compat shim for older callers that only know the width.
+    var availableWidth: CGFloat {
+        get { canvasSize.width }
+        set { canvasSize.width = max(1, newValue) }
+    }
 
     private let defaultsKey = "SwiftMaestro.WorkspaceLayout"
     private static let minRatio: Double = 0.1
@@ -577,30 +762,22 @@ final class WorkspaceLayoutState {
     // MARK: - Queries
 
     func isOpen(_ kind: WorkspacePanelKind) -> Bool {
-        floatingPanels.contains(kind) || root?.contains(kind) == true
+        floatingPanels.contains(kind) || canvasTiles.contains { $0.kinds.contains(kind) }
     }
 
     func isFloating(_ kind: WorkspacePanelKind) -> Bool {
         floatingPanels.contains(kind)
     }
 
-    /// All panels currently docked in the tree, in a stable traversal order.
+    /// All panels currently docked on the canvas, front-to-back (z order),
+    /// then floating panels.
     var allOpenPanels: [WorkspacePanelKind] {
-        root?.allPanels() ?? []
+        canvasTiles.sorted { $0.z > $1.z }.flatMap(\.kinds) + floatingPanels
     }
 
-    /// Path of the given panel in the tree, or `nil` if floating or closed.
-    func path(of kind: WorkspacePanelKind) -> LayoutPath? {
-        root?.path(to: kind)
-    }
-
-    /// Whether the tree contains at least one split node.
+    /// Whether the canvas holds more than one tile.
     var hasMultipleTiles: Bool {
-        guard let root else { return false }
-        switch root {
-        case .leaf, .stack: return false
-        case .split: return true
-        }
+        canvasTiles.count > 1
     }
 
     // MARK: - Open / close / float
@@ -613,138 +790,122 @@ final class WorkspaceLayoutState {
         case floated
     }
 
-    /// Open a panel. By default it docks to the right of the existing layout.
-    /// Pass `.bottom` (Shift) for a new row, or `nil` zone to float (Option).
+    /// Open a panel. By default it lands in the largest free canvas area.
+    /// Pass a nil zone (Option) to float it as its own window instead.
     @discardableResult
     func open(_ kind: WorkspacePanelKind, zone: TilingDropZone? = .right) -> OpenResult {
         guard !isOpen(kind) else { return .alreadyOpen }
 
-        if root == nil && floatingPanels.isEmpty {
-            root = .leaf(kind)
-            save()
-            return .dockedDirectly
-        }
-
-        guard let zone else {
-            // nil zone → float
+        guard zone != nil else {
             floatingPanels.insert(kind)
             save()
             return .floated
         }
 
-        // Dock a brand-new panel into the tree. Instead of splitting the
-        // entire root (which would squish everything to 50%), find the
-        // rightmost content leaf and insert relative to it.
-        guard let current = self.root else {
-            self.root = .leaf(kind)
+        if let tile = newTile(kind) {
+            canvasTiles.append(tile)
             save()
             return .dockedDirectly
         }
-
-        if zone == .bottom {
-            // Bottom-docking must create a true second ROW spanning the full
-            // main content width — not a vertical split nested inside the
-            // rightmost column (which renders as just another right panel).
-            // The workspace root is normally `.split(.horizontal, chrome, main)`;
-            // split `main` vertically so the new panel sits below everything.
-            if case .split(axis: .horizontal, let ratio, let first, let second) = current,
-               first.contains(.agents) {
-                self.root = .split(axis: .horizontal, ratio: ratio, first: first,
-                                   second: .split(axis: .vertical, ratio: 0.65,
-                                                  first: second, second: .leaf(kind)))
-            } else {
-                // No chrome column — split the whole root vertically.
-                self.root = .split(axis: .vertical, ratio: 0.65,
-                                   first: current, second: .leaf(kind))
-            }
-            save()
-            return .dockedDirectly
-        }
-
-        // For .right, target the rightmost leaf of the TOP row so a bottom
-        // row (MaestroDB etc.) doesn't capture the new panel next to itself.
-        let targetLeaf = (zone == .right) ? current.rightmostTopLeaf() : current.rightmostLeaf()
-        if let targetKind = targetLeaf,
-           let targetPath = current.path(to: targetKind) {
-            self.root = current.inserting(kind, at: targetPath, zone: zone)
-        } else {
-            // Fallback: split the root directly.
-            switch zone {
-            case .right:
-                self.root = .split(axis: .horizontal, ratio: 0.5, first: current, second: .leaf(kind))
-            case .left:
-                self.root = .split(axis: .horizontal, ratio: 0.5, first: .leaf(kind), second: current)
-            case .top:
-                self.root = .split(axis: .vertical, ratio: 0.5, first: .leaf(kind), second: current)
-            case .bottom, .center:
-                self.root = .split(axis: .vertical, ratio: 0.5, first: current, second: .leaf(kind))
-            }
-        }
+        // No room on the canvas — float as its own window instead of
+        // overlapping (hard rule). Callers open the floating window.
+        floatingPanels.insert(kind)
         save()
-        return .dockedDirectly
+        return .floated
     }
 
-    /// Ensure the navigation "chrome" — the Agents navigator panel with the Apps
-    /// launcher beneath it — is docked as a left-hand column of movable tiles,
-    /// with the main workspace to its right. Called at launch. Only inserts the
-    /// chrome when it's missing, so an existing saved layout keeps its
-    /// right-hand panels untouched.
+    /// Ensure the navigation "chrome" — the Agents navigator panel with the
+    /// Apps launcher beneath it — exists on the canvas, with the navigator's
+    /// chat taking the main area. Called at launch; a saved layout keeps its
+    /// frames untouched (only missing tiles are added).
     func ensureChromeLayout(navigatorID: UUID) {
-        let chrome = LayoutNode.split(
-            axis: .vertical, ratio: 0.55,
-            first: .leaf(.agents), second: .leaf(.appLauncher))
+        var changed = false
 
-        guard let current = root else {
-            root = .split(axis: .horizontal, ratio: 0.3,
-                          first: chrome, second: .leaf(.agentChat(navigatorID)))
-            save()
-            return
+        if !canvasContains(.agents) {
+            canvasTiles.append(CanvasTile(
+                kinds: [.agents], col: 0, row: 0, colSpan: 3, rowSpan: 5, z: nextZ()
+            ))
+            changed = true
         }
-        guard !current.contains(.agents) else { return }
-        root = .split(axis: .horizontal, ratio: 0.3, first: chrome, second: current)
-        save()
+        if !canvasContains(.appLauncher) {
+            canvasTiles.append(CanvasTile(
+                kinds: [.appLauncher], col: 0, row: 5, colSpan: 3, rowSpan: 3, z: nextZ()
+            ))
+            changed = true
+        }
+        let chat = WorkspacePanelKind.agentChat(navigatorID)
+        if !canvasContains(chat) {
+            canvasTiles.append(CanvasTile(
+                kinds: [chat], col: 3, row: 0, colSpan: 9, rowSpan: 8, z: nextZ()
+            ))
+            changed = true
+        }
+        if changed { save() }
     }
 
-    /// Dock a floating panel into the tree in a given direction relative to the
-    /// current root. `.left`/`.right` produce a horizontal (side-by-side column)
-    /// split; `.top`/`.bottom` produce a vertical (stacked row) split. Defaults
-    /// to `.bottom` to preserve the historical "new row underneath" behavior;
-    /// callers that want a column pass an explicit direction (e.g. the floating
-    /// window's "Dock to Right" action).
+    /// Dock a floating panel onto the canvas (largest free area).
+    /// The `zone` parameter is accepted for call-site compatibility; free
+    /// placement supersedes it. No room → the panel stays floating.
     func dock(_ kind: WorkspacePanelKind, zone: TilingDropZone = .bottom) {
         guard floatingPanels.remove(kind) != nil else { return }
-        guard let root else {
-            self.root = .leaf(kind)
-            save()
-            return
-        }
-        switch zone {
-        case .right:
-            self.root = .split(axis: .horizontal, ratio: 0.5, first: root, second: .leaf(kind))
-        case .left:
-            self.root = .split(axis: .horizontal, ratio: 0.5, first: .leaf(kind), second: root)
-        case .top:
-            self.root = .split(axis: .vertical, ratio: 0.5, first: .leaf(kind), second: root)
-        case .bottom, .center:
-            self.root = .split(axis: .vertical, ratio: 0.5, first: root, second: .leaf(kind))
+        if let tile = newTile(kind) {
+            canvasTiles.append(tile)
+        } else {
+            floatingPanels.insert(kind)
         }
         save()
     }
 
-    /// Dock a panel as the root of an otherwise empty workspace — used by the
-    /// background drop target when every panel is floating. Handles both
-    /// floating sources (the normal case) and defensive re-insertion.
+    /// Dock a panel onto the canvas — used by the background drop target when
+    /// a floating panel is dropped onto empty canvas space.
+    /// No room → the panel stays floating.
     func dockAsRoot(_ kind: WorkspacePanelKind) {
-        guard root == nil else { return }
         floatingPanels.remove(kind)
-        root = .leaf(kind)
+        if let tile = newTile(kind) {
+            canvasTiles.append(tile)
+        } else {
+            floatingPanels.insert(kind)
+        }
+        save()
+    }
+
+    /// Dock a floating panel at a specific canvas location (drop position
+    /// quantizes to the containing cell). Falls back to the best free
+    /// placement when the drop cell is occupied; keeps the panel floating
+    /// when the canvas has no room at all — never overlaps.
+    func dockAt(_ kind: WorkspacePanelKind, origin: CGPoint, canvasID: UUID = CanvasTile.mainCanvasID) {
+        floatingPanels.remove(kind)
+        let preferred = preferredSpan(for: kind)
+        var tile = CanvasTile(kinds: [kind], col: 0, row: 0,
+                              colSpan: preferred.colSpan, rowSpan: preferred.rowSpan,
+                              z: nextZ(), canvasID: canvasID)
+        makeRoomIfNeeded(minColSpan: tile.minColSpan, minRowSpan: tile.minRowSpan, canvasID: canvasID)
+        let cell = CanvasGrid.cell(at: origin, in: canvasSize(for: canvasID))
+        let dropCol = min(cell.col, CanvasGrid.cols - tile.colSpan)
+        let dropRow = min(cell.row, CanvasGrid.rows - tile.rowSpan)
+        if let spot = nearestFreeCell(for: tile.cellSpan, canvasID: canvasID, preferring: (dropCol, dropRow)) {
+            tile.col = spot.col
+            tile.row = spot.row
+        } else if let spot = bestPlacement(preferred: preferred,
+                                           minColSpan: tile.minColSpan,
+                                           minRowSpan: tile.minRowSpan,
+                                           canvasID: canvasID) {
+            tile.col = spot.col
+            tile.row = spot.row
+            tile.colSpan = spot.colSpan
+            tile.rowSpan = spot.rowSpan
+        } else {
+            floatingPanels.insert(kind)
+            save()
+            return
+        }
+        canvasTiles.append(tile)
         save()
     }
 
     /// Pop a docked panel back out into its own floating window.
     func float(_ kind: WorkspacePanelKind) {
-        guard root?.contains(kind) == true else { return }
-        root = root?.removing(kind)
+        removeFromCanvas(kind)
         floatingPanels.insert(kind)
         save()
     }
@@ -755,81 +916,510 @@ final class WorkspaceLayoutState {
             save()
             return
         }
-        root = root?.removing(kind)
+        removeFromCanvas(kind)
         save()
     }
 
-    /// Move a panel by dragging it from its current location onto the target
-    /// panel `target` with the requested `zone`. If the source is floating, it
-    /// is removed from the floating set and inserted into the tree. If `target`
-    /// is no longer in the tree after the source is removed (e.g. source and
-    /// target were the same), the source becomes the root leaf.
-    func movePanel(_ kind: WorkspacePanelKind, to target: WorkspacePanelKind, zone: TilingDropZone) {
-        guard !isLocked else { return }
-        guard kind != target || floatingPanels.contains(kind) else { return }
+    // MARK: - Canvas Tile Operations
 
-        // Remove source from wherever it lives.
-        let sourceWasFloating = floatingPanels.remove(kind) != nil
-        if !sourceWasFloating {
-            root = root?.removing(kind)
-        }
-
-        // Locate the target in the post-removal tree.
-        guard root?.contains(target) == true else {
-            if root == nil { root = .leaf(kind) }
-            else { root = root?.inserting(kind, at: LayoutPath(), zone: .right) }
-            save()
-            return
-        }
-
-        guard let targetPath = root?.path(to: target) else {
-            root = .leaf(kind)
-            save()
-            return
-        }
-
-        root = root?.inserting(kind, at: targetPath, zone: zone)
-        save()
+    func canvasTile(id: UUID) -> CanvasTile? {
+        canvasTiles.first { $0.id == id }
     }
 
-    // MARK: - Split ratios
-
-    /// Ratio for the split at the given path. Returns a clamped default if
-    /// no persisted ratio exists.
-    func ratio(for path: LayoutPath) -> Double {
-        splitRatios[path.ratioKey] ?? 0.5
+    func canvasTile(containing kind: WorkspacePanelKind) -> CanvasTile? {
+        canvasTiles.first { $0.kinds.contains(kind) }
     }
 
-    /// Update and persist the ratio for a split.
-    func setRatio(_ ratio: Double, for path: LayoutPath) {
-        splitRatios[path.ratioKey] = max(Self.minRatio, min(Self.maxRatio, ratio))
-        save()
+    func canvasContains(_ kind: WorkspacePanelKind) -> Bool {
+        canvasTiles.contains { $0.kinds.contains(kind) }
     }
 
-    /// Binding to a split ratio so `TilingSplitView` can drive it directly.
-    func ratioBinding(for path: LayoutPath) -> Binding<Double> {
-        Binding(
-            get: { self.ratio(for: path) },
-            set: { newValue in
-                self.setRatio(newValue, for: path)
-            }
+    /// Tiles on one canvas window, back-to-front (paint order).
+    func tiles(for canvasID: UUID) -> [CanvasTile] {
+        canvasTiles.filter { $0.canvasID == canvasID }.sorted { $0.z < $1.z }
+    }
+
+    // MARK: - Canvas windows
+
+    /// Create a secondary canvas window (host it with the "canvas-window"
+    /// WindowGroup scene and openWindow).
+    @discardableResult
+    func createCanvasWindow(named name: String? = nil) -> CanvasWindowInfo {
+        let info = CanvasWindowInfo(
+            id: UUID(),
+            name: name ?? "Canvas \(canvasWindows.count + 2)"
         )
+        canvasWindows.append(info)
+        save()
+        return info
     }
 
-    // MARK: - Legacy reordering API compatibility
+    /// Remove a secondary canvas window; its tiles move back to the main canvas.
+    func removeCanvasWindow(id: UUID) {
+        guard id != CanvasTile.mainCanvasID else { return }
+        canvasWindows.removeAll { $0.id == id }
+        for idx in canvasTiles.indices where canvasTiles[idx].canvasID == id {
+            canvasTiles[idx].canvasID = CanvasTile.mainCanvasID
+        }
+        save()
+    }
 
-    // These methods are no-ops or simplified because the new tiling model is
-    // manipulated by direct drag-and-drop. They are kept to avoid breaking
-    // any remaining call sites that may invoke them.
+    /// Move a tile to another canvas window, placed in that canvas's best
+    /// free area. No room there → the tile stays where it is.
+    func moveTileToCanvas(_ tileID: UUID, canvasID: UUID) {
+        guard let idx = canvasTiles.firstIndex(where: { $0.id == tileID }) else { return }
+        let tile = canvasTiles[idx]
+        let preferred = (colSpan: tile.colSpan, rowSpan: tile.rowSpan)
+        guard let spot = bestPlacement(preferred: preferred,
+                                       minColSpan: tile.minColSpan,
+                                       minRowSpan: tile.minRowSpan,
+                                       canvasID: canvasID) else { return }
+        canvasTiles[idx].canvasID = canvasID
+        canvasTiles[idx].col = spot.col
+        canvasTiles[idx].row = spot.row
+        canvasTiles[idx].colSpan = spot.colSpan
+        canvasTiles[idx].rowSpan = spot.rowSpan
+        canvasTiles[idx].z = nextZ()
+        save()
+    }
 
-    func moveWithinRow(_ kind: WorkspacePanelKind, to newColumnIndex: Int) { }
-    func moveWithinColumn(_ kind: WorkspacePanelKind, direction: MoveDirection) { }
-    func moveOutOfColumn(_ kind: WorkspacePanelKind) { }
-    func moveIntoColumn(_ kind: WorkspacePanelKind, direction: MoveDirection) { }
-    func sendToNewRow(_ kind: WorkspacePanelKind) { }
-    func moveToAdjacentRow(_ kind: WorkspacePanelKind, direction: MoveDirection) { }
+    private func nextZ() -> Int {
+        (canvasTiles.map(\.z).max() ?? 0) + 1
+    }
 
-    enum MoveDirection { case up, down, left, right }
+    /// Preferred grid span for a panel kind (chats get a big area, chrome is
+    /// narrow, utility panels are compact).
+    private func preferredSpan(for kind: WorkspacePanelKind) -> (colSpan: Int, rowSpan: Int) {
+        switch kind {
+        case .agentChat: return (5, 8)
+        case .agents, .appLauncher: return (3, 4)
+        case .terminal: return (4, 4)
+        case .webBrowser, .damBrowser, .maestroDocs, .maestroDB: return (5, 6)
+        case .overlayBuilder: return (6, 8)
+        case .backup, .voiceNotes: return (4, 6)
+        default: return (4, 4)
+        }
+    }
+
+    /// New tile for a panel placed in the best free area of `canvasID`.
+    /// Returns nil when the canvas genuinely has no room even at the tile's
+    /// minimum span — callers then keep/return the panel as a floating window
+    /// instead of overlapping (HARD RULE: docked tiles never overlap).
+    private func newTile(_ kind: WorkspacePanelKind, canvasID: UUID = CanvasTile.mainCanvasID) -> CanvasTile? {
+        let preferred = preferredSpan(for: kind)
+        var tile = CanvasTile(kinds: [kind], col: 0, row: 0,
+                              colSpan: preferred.colSpan, rowSpan: preferred.rowSpan,
+                              z: nextZ(), canvasID: canvasID)
+        makeRoomIfNeeded(minColSpan: tile.minColSpan, minRowSpan: tile.minRowSpan, canvasID: canvasID)
+        guard let spot = bestPlacement(preferred: preferred,
+                                       minColSpan: tile.minColSpan,
+                                       minRowSpan: tile.minRowSpan,
+                                       canvasID: canvasID) else { return nil }
+        tile.col = spot.col
+        tile.row = spot.row
+        tile.colSpan = spot.colSpan
+        tile.rowSpan = spot.rowSpan
+        return tile
+    }
+
+    /// First free placement for a span, scanning top-left → bottom-right.
+    /// Returns nil when nothing fits — NEVER a fallback occupied cell.
+    /// HARD RULE: docked tiles may not overlap; only floating windows may.
+    private func firstFreeCell(colSpan: Int, rowSpan: Int, canvasID: UUID) -> (col: Int, row: Int)? {
+        guard colSpan >= 1, rowSpan >= 1,
+              colSpan <= CanvasGrid.cols, rowSpan <= CanvasGrid.rows else { return nil }
+        let localTiles = canvasTiles.filter { $0.canvasID == canvasID }
+        for row in 0...(CanvasGrid.rows - rowSpan) {
+            for col in 0...(CanvasGrid.cols - colSpan) {
+                let candidate = (col: col, row: row, colSpan: colSpan, rowSpan: rowSpan)
+                if !localTiles.contains(where: { CanvasGrid.spansIntersect($0.cellSpan, candidate) }) {
+                    return (col, row)
+                }
+            }
+        }
+        return nil
+    }
+
+    /// The largest empty rectangle on the canvas (cell units), scanning
+    /// top-left → bottom-right; ties go to the earliest origin. Only
+    /// rectangles at least minColSpan × minRowSpan qualify. This is what lets
+    /// a new panel land in a vacant pocket (e.g. bottom-right) with its span
+    /// clamped to fit instead of demanding the full preferred span or nothing.
+    private func largestFreeRect(minColSpan: Int, minRowSpan: Int, canvasID: UUID) -> (col: Int, row: Int, colSpan: Int, rowSpan: Int)? {
+        let localTiles = canvasTiles.filter { $0.canvasID == canvasID }
+        var free = [[Bool]](repeating: [Bool](repeating: true, count: CanvasGrid.cols), count: CanvasGrid.rows)
+        for tile in localTiles {
+            for r in max(0, tile.row)..<min(tile.row + tile.rowSpan, CanvasGrid.rows) {
+                for c in max(0, tile.col)..<min(tile.col + tile.colSpan, CanvasGrid.cols) {
+                    free[r][c] = false
+                }
+            }
+        }
+        var best: (col: Int, row: Int, colSpan: Int, rowSpan: Int)?
+        var bestArea = 0
+        for row in 0..<CanvasGrid.rows {
+            for col in 0..<CanvasGrid.cols where free[row][col] {
+                // Maximal rectangle anchored at (col,row): grow downward while
+                // shrinking width to each row's free run; score every step.
+                var width = 0
+                while col + width < CanvasGrid.cols && free[row][col + width] { width += 1 }
+                var height = 0
+                var r = row
+                while r < CanvasGrid.rows, width > 0 {
+                    var run = 0
+                    while col + run < CanvasGrid.cols && free[r][col + run] { run += 1 }
+                    width = min(width, run)
+                    if width == 0 { break }
+                    height += 1
+                    let area = width * height
+                    if width >= minColSpan, height >= minRowSpan, area > bestArea {
+                        bestArea = area
+                        best = (col, row, width, height)
+                    }
+                    r += 1
+                }
+            }
+        }
+        return best
+    }
+
+    /// Best free placement for a tile: the full preferred span at the
+    /// top-left-most free cell when it fits; otherwise the largest free
+    /// rectangle anywhere on the canvas with the span clamped into it (never
+    /// below the minimum). Nil only when nothing ≥ the minimum fits — the
+    /// caller then floats the panel instead of overlapping.
+    private func bestPlacement(preferred: (colSpan: Int, rowSpan: Int),
+                               minColSpan: Int, minRowSpan: Int,
+                               canvasID: UUID) -> (col: Int, row: Int, colSpan: Int, rowSpan: Int)? {
+        if let spot = firstFreeCell(colSpan: preferred.colSpan, rowSpan: preferred.rowSpan, canvasID: canvasID) {
+            return (spot.col, spot.row, preferred.colSpan, preferred.rowSpan)
+        }
+        guard let rect = largestFreeRect(minColSpan: minColSpan, minRowSpan: minRowSpan, canvasID: canvasID) else {
+            return nil
+        }
+        return (rect.col, rect.row,
+                max(minColSpan, min(preferred.colSpan, rect.colSpan)),
+                max(minRowSpan, min(preferred.rowSpan, rect.rowSpan)))
+    }
+
+    /// When the grid has no free rectangle at least minColSpan × minRowSpan,
+    /// shrink the largest existing tile (by area, preferring its wider axis)
+    /// until one appears. Bounded; if every tile is at its minimum and the
+    /// grid is genuinely full, gives up — the caller floats the new panel
+    /// instead of overlapping. ("Bump-to-move": new panels push existing ones
+    /// smaller, never on top of each other.)
+    private func makeRoomIfNeeded(minColSpan: Int, minRowSpan: Int, canvasID: UUID) {
+        guard largestFreeRect(minColSpan: minColSpan, minRowSpan: minRowSpan, canvasID: canvasID) == nil else { return }
+
+        for _ in 0..<(CanvasGrid.cols * 2) {
+            var bestIdx: Int?
+            var bestArea = 0
+            for idx in canvasTiles.indices where canvasTiles[idx].canvasID == canvasID {
+                let tile = canvasTiles[idx]
+                let area = tile.colSpan * tile.rowSpan
+                if (tile.colSpan > tile.minColSpan || tile.rowSpan > tile.minRowSpan) && area > bestArea {
+                    bestIdx = idx
+                    bestArea = area
+                }
+            }
+            guard let idx = bestIdx else { break }
+
+            if canvasTiles[idx].colSpan > canvasTiles[idx].minColSpan {
+                canvasTiles[idx].colSpan -= 1
+            } else if canvasTiles[idx].rowSpan > canvasTiles[idx].minRowSpan {
+                canvasTiles[idx].rowSpan -= 1
+            }
+
+            if largestFreeRect(minColSpan: minColSpan, minRowSpan: minRowSpan, canvasID: canvasID) != nil {
+                break
+            }
+        }
+        save()
+    }
+
+    /// Nearest free cell to a preferred position (used for drop placement).
+    private func nearestFreeCell(for span: (col: Int, row: Int, colSpan: Int, rowSpan: Int),
+                                 canvasID: UUID,
+                                 preferring: (col: Int, row: Int)) -> (col: Int, row: Int)? {
+        let localTiles = canvasTiles.filter { $0.canvasID == canvasID }
+        func isFree(_ col: Int, _ row: Int) -> Bool {
+            guard col >= 0, row >= 0, col + span.colSpan <= CanvasGrid.cols, row + span.rowSpan <= CanvasGrid.rows else { return false }
+            let candidate = (col: col, row: row, colSpan: span.colSpan, rowSpan: span.rowSpan)
+            return !localTiles.contains(where: { CanvasGrid.spansIntersect($0.cellSpan, candidate) })
+        }
+        if isFree(preferring.col, preferring.row) { return preferring }
+        // Spiral out from the preferred cell, nearest first.
+        for radius in 1...max(CanvasGrid.cols, CanvasGrid.rows) {
+            var best: (col: Int, row: Int, dist: Int)?
+            for dcol in -radius...radius {
+                for drow in -radius...radius where max(abs(dcol), abs(drow)) == radius {
+                    let col = preferring.col + dcol, row = preferring.row + drow
+                    if isFree(col, row) {
+                        let dist = abs(dcol) + abs(drow)
+                        if best == nil || dist < best!.dist { best = (col, row, dist) }
+                    }
+                }
+            }
+            if let best { return (best.col, best.row) }
+        }
+        return nil
+    }
+
+    /// Move a tile to a new cell origin (drop commit — the view renders the
+    /// live pixel offset during the drag; only the final cell lands here).
+    func moveTile(_ id: UUID, toCol col: Int, row: Int) {
+        guard let idx = canvasTiles.firstIndex(where: { $0.id == id }) else { return }
+        canvasTiles[idx].col = min(max(0, col), CanvasGrid.cols - canvasTiles[idx].colSpan)
+        canvasTiles[idx].row = min(max(0, row), CanvasGrid.rows - canvasTiles[idx].rowSpan)
+        save()
+    }
+
+    /// Resize a tile to a new span. Clamped to its minimum, the grid bounds —
+    /// and its NEIGHBOURS: growth stops at the first occupied cell so a resize
+    /// can never swallow another docked tile (hard no-overlap rule).
+    func resizeTileSpan(_ id: UUID, colSpan: Int, rowSpan: Int) {
+        guard let idx = canvasTiles.firstIndex(where: { $0.id == id }) else { return }
+        let tile = canvasTiles[idx]
+        let others = canvasTiles.filter { $0.canvasID == tile.canvasID && $0.id != id }
+        var newColSpan = min(max(tile.minColSpan, colSpan), CanvasGrid.cols - tile.col)
+        var newRowSpan = min(max(tile.minRowSpan, rowSpan), CanvasGrid.rows - tile.row)
+        // Width growth checks side neighbours against the CURRENT height…
+        while newColSpan > tile.minColSpan,
+              others.contains(where: { CanvasGrid.spansIntersect($0.cellSpan, (tile.col, tile.row, newColSpan, tile.rowSpan)) }) {
+            newColSpan -= 1
+        }
+        // …then height growth checks below neighbours against the FINAL width.
+        while newRowSpan > tile.minRowSpan,
+              others.contains(where: { CanvasGrid.spansIntersect($0.cellSpan, (tile.col, tile.row, newColSpan, newRowSpan)) }) {
+            newRowSpan -= 1
+        }
+        canvasTiles[idx].colSpan = newColSpan
+        canvasTiles[idx].rowSpan = newRowSpan
+        save()
+    }
+
+    func bringTileToFront(_ id: UUID) {
+        guard let idx = canvasTiles.firstIndex(where: { $0.id == id }) else { return }
+        let top = canvasTiles.map(\.z).max() ?? 0
+        guard canvasTiles[idx].z < top else { return }
+        canvasTiles[idx].z = top + 1
+        save()
+    }
+
+    /// Merge one tile into another as a tab stack (center drop).
+    func stackTile(_ sourceID: UUID, onto targetID: UUID) {
+        guard sourceID != targetID,
+              let sourceIdx = canvasTiles.firstIndex(where: { $0.id == sourceID }),
+              let targetIdx = canvasTiles.firstIndex(where: { $0.id == targetID }) else { return }
+        let kinds = canvasTiles[sourceIdx].kinds.filter { !canvasTiles[targetIdx].kinds.contains($0) }
+        canvasTiles[targetIdx].kinds.append(contentsOf: kinds)
+        canvasTiles[targetIdx].z = nextZ()
+        canvasTiles.remove(at: sourceIdx)
+        save()
+    }
+
+    /// Swap two tiles' cell positions (drop onto an occupied cell).
+    func swapTiles(_ a: UUID, _ b: UUID) {
+        guard a != b,
+              let ai = canvasTiles.firstIndex(where: { $0.id == a }),
+              let bi = canvasTiles.firstIndex(where: { $0.id == b }) else { return }
+        let aSpan = canvasTiles[ai].cellSpan
+        canvasTiles[ai].col = canvasTiles[bi].col
+        canvasTiles[ai].row = canvasTiles[bi].row
+        canvasTiles[ai].colSpan = canvasTiles[bi].colSpan
+        canvasTiles[ai].rowSpan = canvasTiles[bi].rowSpan
+        canvasTiles[bi].col = aSpan.col
+        canvasTiles[bi].row = aSpan.row
+        canvasTiles[bi].colSpan = aSpan.colSpan
+        canvasTiles[bi].rowSpan = aSpan.rowSpan
+        canvasTiles[ai].z = nextZ()
+        save()
+    }
+
+    /// Pull one panel kind out of a stacked tile into its own tile. No free
+    /// spot → the kind stays stacked (never an overlapping detach).
+    func detachKind(_ kind: WorkspacePanelKind, from tileID: UUID) {
+        guard let idx = canvasTiles.firstIndex(where: { $0.id == tileID }),
+              canvasTiles[idx].kinds.count > 1,
+              canvasTiles[idx].kinds.contains(kind) else { return }
+        let source = canvasTiles[idx]
+        let preferred = (colSpan: max(source.minColSpan, min(4, source.colSpan)),
+                         rowSpan: max(source.minRowSpan, min(4, source.rowSpan)))
+        let probe = CanvasTile(kinds: [kind], col: 0, row: 0,
+                               colSpan: preferred.colSpan, rowSpan: preferred.rowSpan,
+                               z: 0, canvasID: source.canvasID)
+        guard let spot = bestPlacement(preferred: preferred,
+                                       minColSpan: probe.minColSpan,
+                                       minRowSpan: probe.minRowSpan,
+                                       canvasID: source.canvasID) else { return }
+        canvasTiles[idx].kinds.removeAll { $0 == kind }
+        canvasTiles.append(CanvasTile(kinds: [kind], col: spot.col, row: spot.row,
+                                      colSpan: spot.colSpan, rowSpan: spot.rowSpan,
+                                      z: nextZ(), canvasID: source.canvasID))
+        save()
+    }
+
+    /// Snap a tile to a half (or full) grid area — edge-of-canvas drop.
+    func snapTileToCanvasEdge(_ tileID: UUID, edge: TilingDropZone) {
+        guard let idx = canvasTiles.firstIndex(where: { $0.id == tileID }) else { return }
+        let cols = CanvasGrid.cols, rows = CanvasGrid.rows
+        switch edge {
+        case .left:
+            canvasTiles[idx].col = 0; canvasTiles[idx].row = 0
+            canvasTiles[idx].colSpan = cols / 2; canvasTiles[idx].rowSpan = rows
+        case .right:
+            canvasTiles[idx].col = cols / 2; canvasTiles[idx].row = 0
+            canvasTiles[idx].colSpan = cols / 2; canvasTiles[idx].rowSpan = rows
+        case .top:
+            canvasTiles[idx].col = 0; canvasTiles[idx].row = 0
+            canvasTiles[idx].colSpan = cols; canvasTiles[idx].rowSpan = rows / 2
+        case .bottom:
+            canvasTiles[idx].col = 0; canvasTiles[idx].row = rows / 2
+            canvasTiles[idx].colSpan = cols; canvasTiles[idx].rowSpan = rows / 2
+        case .center:
+            canvasTiles[idx].col = 0; canvasTiles[idx].row = 0
+            canvasTiles[idx].colSpan = cols; canvasTiles[idx].rowSpan = rows
+        }
+        canvasTiles[idx].z = nextZ()
+        save()
+    }
+
+    // MARK: - Default Layout
+
+    /// Rearrange the main canvas's tiles into the canonical layout:
+    /// Agents over Apps launcher in the left column, agent chats center,
+    /// everything else in the right column. Repositions only — nothing opens
+    /// or closes. Other canvas windows are untouched.
+    func resetToDefaultLayout() {
+        let canvasID = CanvasTile.mainCanvasID
+        var agentsTile: CanvasTile?
+        var launcherTile: CanvasTile?
+        var chatTiles: [CanvasTile] = []
+        var otherTiles: [CanvasTile] = []
+
+        for tile in canvasTiles where tile.canvasID == canvasID {
+            if tile.kinds.contains(.agents) { agentsTile = tile }
+            else if tile.kinds.contains(.appLauncher) { launcherTile = tile }
+            else if tile.kinds.contains(where: { if case .agentChat = $0 { return true } else { return false } }) { chatTiles.append(tile) }
+            else { otherTiles.append(tile) }
+        }
+
+        let hasChrome = agentsTile != nil || launcherTile != nil
+        let chromeCols = hasChrome ? 3 : 0
+        let rightCols = otherTiles.isEmpty ? 0 : 3
+        let centerCols = CanvasGrid.cols - chromeCols - rightCols
+
+        var zCounter = 0
+        func place(_ tile: CanvasTile, col: Int, row: Int, colSpan: Int, rowSpan: Int) {
+            guard let idx = canvasTiles.firstIndex(where: { $0.id == tile.id }) else { return }
+            zCounter += 1
+            canvasTiles[idx].col = col
+            canvasTiles[idx].row = row
+            canvasTiles[idx].colSpan = colSpan
+            canvasTiles[idx].rowSpan = rowSpan
+            canvasTiles[idx].z = zCounter
+        }
+
+        if let agentsTile, let launcherTile {
+            place(agentsTile, col: 0, row: 0, colSpan: chromeCols, rowSpan: 5)
+            place(launcherTile, col: 0, row: 5, colSpan: chromeCols, rowSpan: 3)
+        } else if let agentsTile {
+            place(agentsTile, col: 0, row: 0, colSpan: chromeCols, rowSpan: 8)
+        } else if let launcherTile {
+            place(launcherTile, col: 0, row: 0, colSpan: chromeCols, rowSpan: 8)
+        }
+
+        for (i, chat) in chatTiles.enumerated() {
+            let each = centerCols / max(1, chatTiles.count)
+            place(chat, col: chromeCols + i * each, row: 0, colSpan: each, rowSpan: 8)
+        }
+
+        for (i, tile) in otherTiles.enumerated() {
+            let each = max(1, CanvasGrid.rows / otherTiles.count)
+            let row = min(CanvasGrid.rows - each, i * each)
+            place(tile, col: CanvasGrid.cols - rightCols, row: row, colSpan: rightCols, rowSpan: each)
+        }
+
+        save()
+    }
+
+    /// Records a canvas window's measured size (grid is size-independent —
+    /// tiles keep their cell spans and re-flow proportionally).
+    func clampTilesToCanvas(_ size: CGSize, canvasID: UUID = CanvasTile.mainCanvasID) {
+        canvasSizes[canvasID] = size
+    }
+
+    /// Enforce the grid invariant after decoding/migration: clamp spans into
+    /// bounds, then resolve every overlap by moving the lower-z (less recently
+    /// used) tile to the nearest free cell. Pixel-era saved data can decode
+    /// into intersecting spans; grid-era data is already clean.
+    private func repairOverlaps() {
+        let canvasIDs = Set(canvasTiles.map(\.canvasID))
+        for canvasID in canvasIDs {
+            // Front-most tiles claim their cells first.
+            var placed: [(col: Int, row: Int, colSpan: Int, rowSpan: Int)] = []
+            for tile in canvasTiles.filter({ $0.canvasID == canvasID }).sorted(by: { $0.z > $1.z }) {
+                guard let idx = canvasTiles.firstIndex(where: { $0.id == tile.id }) else { continue }
+                // Clamp into grid bounds first.
+                canvasTiles[idx].colSpan = min(max(2, canvasTiles[idx].colSpan), CanvasGrid.cols)
+                canvasTiles[idx].rowSpan = min(max(2, canvasTiles[idx].rowSpan), CanvasGrid.rows)
+                canvasTiles[idx].col = min(max(0, canvasTiles[idx].col), CanvasGrid.cols - canvasTiles[idx].colSpan)
+                canvasTiles[idx].row = min(max(0, canvasTiles[idx].row), CanvasGrid.rows - canvasTiles[idx].rowSpan)
+
+                let span = canvasTiles[idx].cellSpan
+                if placed.contains(where: { CanvasGrid.spansIntersect($0, span) }) {
+                    // Find nearest free spot among already-placed tiles.
+                    if let spot = nearestFreeCellExcluding(span: (span.colSpan, span.rowSpan),
+                                                           canvasID: canvasID,
+                                                           placed: placed,
+                                                           preferring: (span.col, span.row)) {
+                        canvasTiles[idx].col = spot.col
+                        canvasTiles[idx].row = spot.row
+                    }
+                }
+                placed.append(canvasTiles[idx].cellSpan)
+            }
+        }
+    }
+
+    /// Nearest free cell given an explicit already-placed list (repair pass),
+    /// spiraling out from the preferred position.
+    private func nearestFreeCellExcluding(span: (colSpan: Int, rowSpan: Int),
+                                          canvasID: UUID,
+                                          placed: [(col: Int, row: Int, colSpan: Int, rowSpan: Int)],
+                                          preferring: (col: Int, row: Int)) -> (col: Int, row: Int)? {
+        func isFree(_ col: Int, _ row: Int) -> Bool {
+            guard col >= 0, row >= 0,
+                  col + span.colSpan <= CanvasGrid.cols,
+                  row + span.rowSpan <= CanvasGrid.rows else { return false }
+            let candidate = (col: col, row: row, colSpan: span.colSpan, rowSpan: span.rowSpan)
+            return !placed.contains { CanvasGrid.spansIntersect($0, candidate) }
+        }
+        if isFree(preferring.col, preferring.row) { return preferring }
+        for radius in 1...max(CanvasGrid.cols, CanvasGrid.rows) {
+            var best: (col: Int, row: Int, dist: Int)?
+            for dcol in -radius...radius {
+                for drow in -radius...radius where max(abs(dcol), abs(drow)) == radius {
+                    let col = preferring.col + dcol, row = preferring.row + drow
+                    if isFree(col, row) {
+                        let dist = abs(dcol) + abs(drow)
+                        if best == nil || dist < best!.dist { best = (col, row, dist) }
+                    }
+                }
+            }
+            if let best { return (best.col, best.row) }
+        }
+        return nil
+    }
+
+    /// Remove a panel kind from the canvas; a tile that becomes empty disappears.
+    private func removeFromCanvas(_ kind: WorkspacePanelKind) {
+        guard let idx = canvasTiles.firstIndex(where: { $0.kinds.contains(kind) }) else { return }
+        canvasTiles[idx].kinds.removeAll { $0 == kind }
+        if canvasTiles[idx].kinds.isEmpty {
+            canvasTiles.remove(at: idx)
+        }
+    }
 
     // MARK: - Sizing
 
@@ -841,21 +1431,38 @@ final class WorkspaceLayoutState {
     // MARK: - Persistence
 
     private func save() {
-        let rootData = root.flatMap { try? JSONEncoder().encode($0) }
-        UserDefaults.standard.set(rootData, forKey: defaultsKey + ".root")
-        UserDefaults.standard.set(splitRatios.mapValues { Double($0) }, forKey: defaultsKey + ".splitRatios")
+        let tilesData = try? JSONEncoder().encode(canvasTiles)
+        UserDefaults.standard.set(tilesData, forKey: defaultsKey + ".canvasTiles")
+        let windowsData = try? JSONEncoder().encode(canvasWindows)
+        UserDefaults.standard.set(windowsData, forKey: defaultsKey + ".canvasWindows")
         let floatingData = try? JSONEncoder().encode(Array(floatingPanels))
         UserDefaults.standard.set(floatingData, forKey: defaultsKey + ".floatingPanels")
         UserDefaults.standard.set(isLocked, forKey: defaultsKey + ".isLocked")
+        // Note: the legacy tree blob (".root", ".splitRatios") is left in place
+        // untouched — backup-before-destructive; nothing reads it anymore.
     }
 
     private func load() {
-        if let rootData = UserDefaults.standard.data(forKey: defaultsKey + ".root"),
-           let decoded = try? JSONDecoder().decode(LayoutNode.self, from: rootData) {
-            root = decoded
-        } else if let legacyData = UserDefaults.standard.data(forKey: defaultsKey + ".rows"),
-                  let legacyRows = try? JSONDecoder().decode([LegacyRow].self, from: legacyData) {
-            root = migrateLegacyRows(legacyRows)
+        if let tilesData = UserDefaults.standard.data(forKey: defaultsKey + ".canvasTiles"),
+           let decoded = try? JSONDecoder().decode([CanvasTile].self, from: tilesData) {
+            canvasTiles = decoded
+        } else {
+            migrateTreeToCanvas()
+        }
+        // Enforce the grid invariant: migrations from the pixel-era model can
+        // decode into intersecting spans. De-overlap deterministically.
+        repairOverlaps()
+        // One-time canonical layout for installs landing on the grid with a
+        // legacy (pixel or tree) layout: Agents over Apps left, chat(s)
+        // center, everything else right. The flag makes it happen exactly once.
+        let gridLayoutKey = defaultsKey + ".gridLayoutV1.done"
+        if !UserDefaults.standard.bool(forKey: gridLayoutKey) {
+            resetToDefaultLayout()
+            UserDefaults.standard.set(true, forKey: gridLayoutKey)
+        }
+        if let windowsData = UserDefaults.standard.data(forKey: defaultsKey + ".canvasWindows"),
+           let decoded = try? JSONDecoder().decode([CanvasWindowInfo].self, from: windowsData) {
+            canvasWindows = decoded
         }
         if let ratios = UserDefaults.standard.dictionary(forKey: defaultsKey + ".splitRatios") as? [String: Double] {
             splitRatios = ratios
@@ -865,6 +1472,63 @@ final class WorkspaceLayoutState {
             floatingPanels = Set(decoded)
         }
         isLocked = UserDefaults.standard.bool(forKey: defaultsKey + ".isLocked")
+    }
+
+    /// One-time migration: flatten the legacy binary tree into canvas tiles,
+    /// preserving approximate relative positions by walking splits with their
+    /// ratios over a nominal canvas. Stacks (tab groups) stay stacked.
+    private func migrateTreeToCanvas() {
+        // Load the tree (or its legacy rows form) purely as migration input.
+        var tree: LayoutNode?
+        if let rootData = UserDefaults.standard.data(forKey: defaultsKey + ".root"),
+           let decoded = try? JSONDecoder().decode(LayoutNode.self, from: rootData) {
+            tree = decoded
+        } else if let legacyData = UserDefaults.standard.data(forKey: defaultsKey + ".rows"),
+                  let legacyRows = try? JSONDecoder().decode([LegacyRow].self, from: legacyData) {
+            tree = migrateLegacyRows(legacyRows)
+        }
+        guard let tree else { return }
+
+        var tiles: [CanvasTile] = []
+        var zCounter = 0
+
+        // Walk the tree over the 12x8 grid: horizontal splits divide columns,
+        // vertical splits divide rows, stacks stay stacked.
+        func walk(_ node: LayoutNode, col: Int, row: Int, colSpan: Int, rowSpan: Int) {
+            switch node {
+            case .leaf(let kind):
+                zCounter += 1
+                tiles.append(CanvasTile(kinds: [kind], col: col, row: row,
+                                        colSpan: max(1, colSpan), rowSpan: max(1, rowSpan),
+                                        z: zCounter))
+            case .stack(let kinds):
+                zCounter += 1
+                tiles.append(CanvasTile(kinds: kinds, col: col, row: row,
+                                        colSpan: max(1, colSpan), rowSpan: max(1, rowSpan),
+                                        z: zCounter))
+            case .split(let axis, let ratio, let first, let second):
+                let clamped = min(0.9, max(0.1, ratio))
+                if axis == .horizontal {
+                    let c1 = max(1, Int((Double(colSpan) * clamped).rounded()))
+                    if colSpan - c1 < 1 {
+                        walk(.stack(first.allPanels() + second.allPanels()), col: col, row: row, colSpan: colSpan, rowSpan: rowSpan)
+                    } else {
+                        walk(first, col: col, row: row, colSpan: c1, rowSpan: rowSpan)
+                        walk(second, col: col + c1, row: row, colSpan: colSpan - c1, rowSpan: rowSpan)
+                    }
+                } else {
+                    let r1 = max(1, Int((Double(rowSpan) * clamped).rounded()))
+                    if rowSpan - r1 < 1 {
+                        walk(.stack(first.allPanels() + second.allPanels()), col: col, row: row, colSpan: colSpan, rowSpan: rowSpan)
+                    } else {
+                        walk(first, col: col, row: row, colSpan: colSpan, rowSpan: r1)
+                        walk(second, col: col, row: row + r1, colSpan: colSpan, rowSpan: rowSpan - r1)
+                    }
+                }
+            }
+        }
+        walk(tree, col: 0, row: 0, colSpan: CanvasGrid.cols, rowSpan: CanvasGrid.rows)
+        canvasTiles = tiles
     }
 
     /// Convert the old rows/columns/stacks grid into a binary tree.

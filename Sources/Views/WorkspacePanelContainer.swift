@@ -20,8 +20,19 @@ struct WorkspacePanelContainer<Content: View>: View {
     /// `openWindow(id:value:)`.
     var onFloat: ((WorkspacePanelKind) -> Void)? = nil
 
+    /// Canvas mode: when non-nil, dragging the header live-moves the tile
+    /// (no AppKit drag session). Floating-window hosts leave these nil and
+    /// keep the AppKit drag grip so panels can be dropped back onto a canvas.
+    var onHeaderDragChanged: ((DragGesture.Value) -> Void)? = nil
+    var onHeaderDragEnded: ((DragGesture.Value) -> Void)? = nil
+
+    /// The canvas tile hosting this panel (nil when floating in a window).
+    /// Enables the "Move to ▸" canvas-window menu.
+    var canvasTileID: UUID? = nil
+
     @State private var layout = WorkspaceLayoutState.shared
     @Environment(ThemeStore.self) private var theme
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(spacing: 0) {
@@ -32,12 +43,18 @@ struct WorkspacePanelContainer<Content: View>: View {
 
     // MARK: - Header
 
+    @ViewBuilder
     private var header: some View {
-        HStack(spacing: 6) {
-            // Drag grip: the obvious handle for moving the whole tile. AppKit-
-            // backed (`PanelDragGrip`) so the drag session's begin/end hooks
-            // are exact — SwiftUI's `.draggable` never delivers them.
-            if isDraggable {
+        let row = HStack(spacing: 6) {
+            // Drag affordance: canvas tiles live-move via a header gesture;
+            // floating windows keep the AppKit grip (drag-and-drop).
+            if onHeaderDragChanged != nil {
+                Image(systemName: layout.isLocked ? "lock" : "line.3.horizontal")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22, height: 20)
+                    .help(layout.isLocked ? "Workspace is locked" : "Drag to move")
+            } else if isDraggable {
                 PanelDragGrip(kind: kind, title: title, accent: theme.panelAccent(for: kind))
                     .frame(width: 22, height: 20)
             } else {
@@ -91,6 +108,20 @@ struct WorkspacePanelContainer<Content: View>: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
         .background(theme.panelAccent(for: kind).opacity(0.2))
+
+        // Canvas tiles: the whole header is the move handle (the grip icon is
+        // just the affordance). minimumDistance 3 keeps buttons clickable.
+        if let onHeaderDragChanged {
+            row
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 3, coordinateSpace: .named(WorkspaceCanvasCoordinateSpace.name))
+                        .onChanged(onHeaderDragChanged)
+                        .onEnded { value in onHeaderDragEnded?(value) }
+                )
+        } else {
+            row
+        }
     }
 
     // MARK: - Context menu
@@ -103,6 +134,33 @@ struct WorkspacePanelContainer<Content: View>: View {
                 onFloat(kind)
             } label: {
                 Label("Pop Out to Window", systemImage: "rectangle.expand.vertical")
+            }
+        }
+
+        // Move this tile between canvas windows (main + secondary canvases,
+        // e.g. a group of panels living on a second monitor as one window).
+        if let tileID = canvasTileID, let tile = layout.canvasTile(id: tileID) {
+            Menu {
+                if tile.canvasID != CanvasTile.mainCanvasID {
+                    Button("Main Window") {
+                        layout.moveTileToCanvas(tileID, canvasID: CanvasTile.mainCanvasID)
+                    }
+                }
+                ForEach(layout.canvasWindows) { window in
+                    if window.id != tile.canvasID {
+                        Button(window.name) {
+                            layout.moveTileToCanvas(tileID, canvasID: window.id)
+                        }
+                    }
+                }
+                Divider()
+                Button("New Canvas Window…") {
+                    let info = layout.createCanvasWindow()
+                    layout.moveTileToCanvas(tileID, canvasID: info.id)
+                    openWindow(id: "canvas-window", value: info.id)
+                }
+            } label: {
+                Label("Move to", systemImage: "rectangle.portrait.arrowtriangle.2.outward")
             }
         }
     }

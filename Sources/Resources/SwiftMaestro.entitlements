@@ -27,6 +27,13 @@
 	<!-- Apple Events automation (e.g. Notes) for the native macOS integration. -->
 	<key>com.apple.security.automation.apple-events</key>
 	<true/>
+	<!-- Microphone access for Voice Notes + chat push-to-talk dictation.
+	     REQUIRED by the hardened runtime: without this entitlement the audio
+	     subsystem denies input at the process level even when the System
+	     Settings → Privacy & Security → Microphone TCC toggle is ON, and
+	     requestRecordPermission() reports denied regardless of the grant. -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
 	<!-- Load third-party dylibs signed by other teams (Homebrew libusb/libraw
 	     for tethering). Required once the Debug config signs with a stable
 	     identity: hardened-runtime library validation otherwise rejects them

@@ -5,14 +5,17 @@
 #   - SwiftMaestro-<VERSION>-full.dmg  (app + Gemma 4 + WhisperKit)
 #   - SwiftMaestro-<VERSION>-beta.dmg   (app + WhisperKit only)
 # signs them, notarizes them (unless SKIP_NOTARIZE=1), generates the Sparkle
-# appcast, and stages everything in dist/ for upload to swiftmaestro.com.
+# appcast, and stages everything in dist/ for upload.
 #
 # Env overrides:
 #   VERSION=<x.y.z>            (default reads from app Info.plist)
 #   DOWNLOAD_URL_PREFIX=<url>  (default https://s3.ap-southeast-2.onidel.cloud/swiftmaestro-releases/)
 #   SKIP_NOTARIZE=1            (build + sign only; no notarization)
-#   UPLOAD=1                   (upload dist/ to swiftmaestro.com via rsync)
-#   DEPLOY_HOST/USER/PATH      (override upload target)
+#   UPLOAD=1                   (upload: DMGs + appcast → Onidel; appcast → 1984 same-origin)
+#   ONIDEL_UPLOAD / DEPLOY_SCRIPT  (override upload helper paths)
+#   SM_SFTP_USER / SM_SFTP_HOST / SM_SFTP_PORT  (1984 hosting SFTP — REQUIRED for that step,
+#                              never hardcode personal infrastructure in this repo)
+#   SM_SFTP_PASS               (optional; default reads Keychain 'swiftmaestro-1984-sftp')
 set -euo pipefail
 
 APP_NAME="SwiftMaestro"
@@ -29,10 +32,11 @@ VERSION="${VERSION:-$(defaults read "$PWD/$APP_PATH/Contents/Info.plist" CFBundl
 
 echo "=== SwiftMaestro $VERSION release pipeline ==="
 
-# Ensure distribution tools are available.
-SPARKLE_BIN="${SPARKLE_BIN:-/opt/homebrew/Caskroom/sparkle/2.9.4/bin}"
-if [ ! -x "$SPARKLE_BIN/generate_appcast" ]; then
-    echo "Sparkle generate_appcast not found at $SPARKLE_BIN/generate_appcast"
+# Ensure distribution tools are available. Resolve the Sparkle bin dir from
+# Homebrew so a cask version bump doesn't break the path.
+SPARKLE_BIN="${SPARKLE_BIN:-$(find "$(brew --prefix 2>/dev/null || echo /opt/homebrew)/Caskroom/sparkle" -maxdepth 2 -type d -name bin 2>/dev/null | sort -V | tail -1)}"
+if [ -z "${SPARKLE_BIN:-}" ] || [ ! -x "$SPARKLE_BIN/generate_appcast" ]; then
+    echo "Sparkle generate_appcast not found"
     echo "Install: brew install --cask sparkle"
     exit 1
 fi
@@ -58,13 +62,14 @@ echo ""
 echo "--- Generating Sparkle appcast ---"
 
 # Export the private EdDSA key from the Keychain to a temporary directory so
-# generate_appcast can sign the appcast. The temp file is removed immediately after.
+# generate_appcast can sign the appcast. The temp dir is removed on ANY exit —
+# a failure mid-pipeline must never leave the private key behind in /tmp.
 SPARKLE_KEY_DIR="$(mktemp -d)"
+trap 'rm -rf "$SPARKLE_KEY_DIR"' EXIT
 SPARKLE_KEY_FILE="$SPARKLE_KEY_DIR/sparkle-key.pem"
 "$SPARKLE_BIN/generate_keys" -x "$SPARKLE_KEY_FILE" >/dev/null
 if [ ! -s "$SPARKLE_KEY_FILE" ]; then
     echo "ERROR: Could not export Sparkle private key from Keychain"
-    rm -rf "$SPARKLE_KEY_DIR"
     exit 1
 fi
 
@@ -86,8 +91,7 @@ fi
     -o "$DIST_DIR/appcast.xml" \
     "$APPCAST_WORKING"
 
-# Remove the temporary private key directory immediately.
-rm -rf "$SPARKLE_KEY_DIR"
+# appcast signed — key material no longer needed from this point on.
 
 # Clean up the working copy.
 rm -rf "$APPCAST_WORKING"
@@ -133,22 +137,39 @@ if [ "${UPLOAD:-0}" = "1" ]; then
 
     echo ""
     echo "--- Uploading appcast.xml to 1984 hosting (same-origin for website JS) ---"
-    SFTP_USER="${SM_SFTP_USER:-pooh@swiftmaestro.com}"
-    SFTP_HOST="${SM_SFTP_HOST:-beth.shared.1984.is}"
+    # Personal infrastructure details must never be hardcoded in this repo
+    # (they were once scrubbed from git history — don't reintroduce them).
+    SFTP_USER="${SM_SFTP_USER:-}"
+    SFTP_HOST="${SM_SFTP_HOST:-}"
     SFTP_PORT="${SM_SFTP_PORT:-2222}"
-    SFTP_PASS="$(security find-generic-password -s 'swiftmaestro-1984-sftp' -a "$SFTP_USER" -w 2>/dev/null || true)"
-    if [ -n "$SFTP_PASS" ]; then
-        LFTP_PASSWORD="$SFTP_PASS" lftp --env-password -u "$SFTP_USER" -p "$SFTP_PORT" "sftp://${SFTP_HOST}" <<LPFTP
+    if [ -z "$SFTP_USER" ] || [ -z "$SFTP_HOST" ]; then
+        echo "SM_SFTP_USER/SM_SFTP_HOST not set — skipping 1984 appcast upload"
+    else
+        SFTP_PASS="${SM_SFTP_PASS:-$(security find-generic-password -s 'swiftmaestro-1984-sftp' -a "$SFTP_USER" -w 2>/dev/null || true)}"
+        if [ -z "$SFTP_PASS" ]; then
+            echo "WARNING: SFTP password not in env or Keychain — skipping 1984 appcast upload"
+        else
+            # cmd:fail-exit makes lftp exit non-zero if put fails (default: silently
+            # returns 0); the size check proves the file actually landed.
+            LFTP_PASSWORD="$SFTP_PASS" lftp --env-password -u "$SFTP_USER" -p "$SFTP_PORT" "sftp://${SFTP_HOST}" <<LPFTP
+set cmd:fail-exit yes
 set sftp:auto-confirm yes
 set ssl:verify-certificate no
 set net:timeout 30
 mkdir -p htdocs/download
-put '$DIST_DIR/appcast.xml' -o htdocs/download/appcast.xml
+put -c '$DIST_DIR/appcast.xml' -o htdocs/download/appcast.xml
+cls --size htdocs/download/appcast.xml
 bye
 LPFTP
-        echo "appcast.xml uploaded to 1984 hosting"
-    else
-        echo "WARNING: SFTP password not found — skipping 1984 appcast upload"
+            REMOTE_SIZE="$(LFTP_PASSWORD="$SFTP_PASS" lftp --env-password -u "$SFTP_USER" -p "$SFTP_PORT" "sftp://${SFTP_HOST}" -e "set sftp:auto-confirm yes; set ssl:verify-certificate no; cls --size htdocs/download/appcast.xml; bye" 2>/dev/null | awk '{print $1}' | tail -1)"
+            LOCAL_SIZE="$(stat -f%z "$DIST_DIR/appcast.xml")"
+            if [ "$REMOTE_SIZE" = "$LOCAL_SIZE" ]; then
+                echo "appcast.xml uploaded to 1984 hosting ($LOCAL_SIZE bytes, verified)"
+            else
+                echo "ERROR: 1984 appcast upload size mismatch (local=$LOCAL_SIZE remote=${REMOTE_SIZE:-none})"
+                exit 1
+            fi
+        fi
     fi
 
     echo ""

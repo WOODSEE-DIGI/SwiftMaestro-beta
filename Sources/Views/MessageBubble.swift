@@ -45,12 +45,18 @@ struct MessageBubble: View {
 
                 if let reasoning = displayReasoning, !isUser {
                     DisclosureGroup(isExpanded: reasoningExpanded) {
-                        Text(reasoning)
-                            .font(.caption)
-                            .foregroundStyle(theme.chatSecondaryText)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.top, 2)
+                        // Same markdown renderer as the answer: models (Gemma 4
+                        // especially) put real instructions with shell commands
+                        // inside thinking, and plain-text rendering left ```bash
+                        // fences as literal noise. Code blocks get boxes + copy/
+                        // run buttons; the caption font + secondary color keep
+                        // the block visually subordinate to the answer.
+                        RichMarkdownView(text: reasoning, isUser: false, onRunCommand: { command in
+                            Self.openTerminal(with: command)
+                        })
+                        .font(.caption)
+                        .foregroundStyle(theme.chatSecondaryText)
+                        .padding(.top, 2)
                     } label: {
                         Label(reasoningLabel, systemImage: "brain")
                             .font(.caption)

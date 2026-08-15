@@ -555,6 +555,54 @@ final class WhisperKitService: @unchecked Sendable {
         return text
     }
 
+    // MARK: - File Transcription (Voice Notes)
+
+    /// Whether the model is ready for transcription right now.
+    var isReady: Bool { modelState == .loaded && whisperKit != nil }
+
+    /// Transcribe a finished audio file (Voice Notes). Full-file transcription
+    /// is higher quality than the live streaming path and never touches the
+    /// microphone, so it's safe to run while a new recording is in progress.
+    /// Lazily loads the model in the background if needed — callers should
+    /// treat this as a slow, queueable operation, never on the record path.
+    func transcribeAudioFile(at url: URL) async throws -> String {
+        if !isReady {
+            ensureModelLoaded()
+            await loadTask?.value
+        }
+        guard isReady, let kit = whisperKit else {
+            throw VoiceNoteTranscriptionError.modelUnavailable
+        }
+        let options = DecodingOptions(
+            task: .transcribe,
+            language: selectedLanguage,
+            skipSpecialTokens: true,
+            wordTimestamps: false,
+            chunkingStrategy: .vad
+        )
+        let results = try await kit.transcribe(audioPath: url.path, decodeOptions: options)
+        let text = results
+            .map { $0.text }
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty {
+            throw VoiceNoteTranscriptionError.noSpeechDetected
+        }
+        return text
+    }
+
+    enum VoiceNoteTranscriptionError: LocalizedError {
+        case modelUnavailable
+        case noSpeechDetected
+
+        var errorDescription: String? {
+            switch self {
+            case .modelUnavailable: return "Transcription model is not loaded"
+            case .noSpeechDetected: return ""   // handled as a status, not an error
+            }
+        }
+    }
+
     // MARK: - Helpers
 
     private func computeUnits(from key: String) -> MLComputeUnits {

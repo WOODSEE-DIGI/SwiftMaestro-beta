@@ -24,7 +24,7 @@ struct StudioAddonLockedView: View {
             }
             .toggleStyle(.switch)
             .frame(maxWidth: 210)
-            Text("Off by default while it's under development. You can also manage it in Settings → Add-ons.")
+            Text("Off by default while it's under development.")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)

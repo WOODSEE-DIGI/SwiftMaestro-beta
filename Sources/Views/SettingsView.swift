@@ -151,7 +151,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case secrets
     case whisper
     case shell
-    case backup
     case about
 
     var id: String { rawValue }
@@ -171,7 +170,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .secrets: return "Secrets"
         case .whisper: return "Whisper"
         case .shell: return "Shell"
-        case .backup: return "Backup"
         case .about: return "About"
         }
     }
@@ -191,7 +189,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .secrets: return "key.fill"
         case .whisper: return "mic.fill"
         case .shell: return "terminal"
-        case .backup: return "arrow.triangle.2.circlepath"
         case .about: return "info.circle"
         }
     }
@@ -295,7 +292,6 @@ struct SettingsView: View {
         case .secrets: SecretsSettingsTab()
         case .whisper: WhisperKitSettingsTab()
         case .shell: ShellSettingsTab()
-        case .backup: BackupSettingsTab()
         case .about: AboutSettingsTab()
         }
     }
@@ -349,7 +345,7 @@ struct AppearanceSettingsTab: View {
     static let customizablePanels: [WorkspacePanelKind] = [
         .busMonitor, .notesMD, .appleNotes, .calendar, .reminders, .contacts,
         .canvas, .kanban, .numbers, .whatsapp, .terminal,
-        .webBrowser, .damBrowser, .maestroDocs, .maestroBooks, .maestroDB, .overlayBuilder, .backup,
+        .webBrowser, .damBrowser, .maestroDocs, .maestroBooks, .maestroDB, .overlayBuilder, .backup, .voiceNotes,
     ]
 
     // Collapsible section state. "Appearance" and "App Panels" open by

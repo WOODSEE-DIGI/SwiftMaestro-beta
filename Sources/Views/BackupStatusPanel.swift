@@ -3,7 +3,10 @@ import SwiftUI
 // MARK: - Main Panel
 
 struct BackupStatusPanel: View {
-    @State private var backupService = BackupService()
+    /// Shared app-wide instance — a view-owned service would lose all live
+    /// backup state every time SwiftUI destroys/recreates this panel when
+    /// switching workspace panels mid-backup.
+    private let backupService = BackupService.shared
     @State private var editingDestinationID: UUID?
     @State private var editingJobID: UUID?
     @State private var showingNewDestination = false
@@ -56,81 +59,113 @@ struct BackupStatusPanel: View {
     // MARK: - Status
 
     private var statusSection: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        let state = backupService.currentState
+        return VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("Backup in Progress")
+                Text(statusTitle(for: state.phase))
                     .font(.headline)
                 Spacer()
-                Button("Cancel") { backupService.cancelBackup() }
-                    .buttonStyle(.bordered).controlSize(.small)
+                if state.isActive {
+                    Button("Cancel") { backupService.cancelBackup() }
+                        .buttonStyle(.bordered).controlSize(.small)
+                } else {
+                    Button("Clear") { backupService.dismissStatus() }
+                        .buttonStyle(.bordered).controlSize(.small)
+                }
             }
             .padding(.bottom, 8)
 
-            Text("Scanning identifies changed files, then uploads them to your VPS. Both happen together.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.bottom, 12)
+            if state.phase == .failed, let error = state.lastError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .lineLimit(4)
+                    .textSelection(.enabled)
+                    .padding(.bottom, 10)
+            } else {
+                Text("Scanning identifies changed files, then uploads them to your VPS. Both happen together.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, 12)
+            }
 
             // Step 1: Scanning
-            let scanDone = backupService.currentState.scanComplete
-            let scanActive = backupService.currentState.phase == .running && !scanDone
-            let filesScanned = backupService.currentState.filesScanned
+            let scanDone = state.scanComplete
+            let scanActive = state.phase == .running && !scanDone
             stepRow(
                 number: 1,
                 label: "Scanning files",
                 detail: scanDone
-                    ? "\(filesScanned.formatted()) files identified"
+                    ? "\(state.totalFiles.formatted()) files identified (\(Self.formatBytes(state.totalBytes)))"
                     : scanActive
-                        ? filesScanned > 0 ? "\(filesScanned.formatted()) files so far..." : "Counting files..."
-                        : "Waiting to start",
+                        ? state.totalFiles > 0
+                            ? "\(state.totalFiles.formatted()) files found so far (\(Self.formatBytes(state.totalBytes)))..."
+                            : "Counting files..."
+                        : state.phase == .failed && state.totalFiles > 0
+                            ? "\(state.totalFiles.formatted()) files found before failure"
+                            : "Waiting to start",
                 isDone: scanDone,
                 isActive: scanActive
             )
 
-            // Step 2: Uploading
-            let uploadActive = backupService.currentState.phase == .running && scanDone
-            let uploadDone = backupService.currentState.uploadComplete
-            let totalBytes = backupService.currentState.totalBytes
-            let uploadedBytes = backupService.currentState.bytesUploaded
+            // Step 2: Uploading — restic scans and uploads concurrently, so show
+            // live byte progress as soon as the first status line arrives.
+            let uploadDone = state.uploadComplete
             stepRow(
                 number: 2,
                 label: "Uploading to VPS",
                 detail: uploadDone
-                    ? "\(ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)) uploaded"
-                    : uploadActive && totalBytes > 0
-                        ? "\(ByteCountFormatter.string(fromByteCount: uploadedBytes, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file))"
-                        : "Waiting for scan to finish",
+                    ? "\(Self.formatBytes(state.bytesUploaded)) uploaded"
+                    : state.bytesUploaded > 0 || state.totalBytes > 0
+                        ? "\(Self.formatBytes(state.bytesUploaded)) / \(Self.formatBytes(state.totalBytes))"
+                        : scanDone ? "Starting upload..." : "Waiting for scan to finish",
                 isDone: uploadDone,
-                isActive: uploadActive
+                isActive: state.phase == .running && !uploadDone
             )
 
-            // Progress bar only during active upload
-            if uploadActive && totalBytes > 0 {
+            // Progress bar while bytes are flowing
+            if state.phase == .running && state.totalBytes > 0 {
                 VStack(alignment: .leading, spacing: 4) {
-                    ProgressView(value: backupService.currentState.progressFraction)
+                    ProgressView(value: state.progressFraction)
                         .tint(Color.accentColor)
                     HStack {
-                        let speed = backupService.currentState.speed
-                        Text(speed > 0 ? "Speed: \(ByteCountFormatter.string(fromByteCount: Int64(speed), countStyle:.file))/s" : "Calculating speed...")
+                        Text(state.speed > 0 ? "\(Self.formatBytes(Int64(state.speed)))/s" : "Calculating speed...")
+                        if let remaining = state.secondsRemaining, remaining > 1 {
+                            Text("·")
+                            Text("~\(Self.formatDuration(remaining)) left")
+                        }
+                        if state.errorCount > 0 {
+                            Text("·")
+                            Text("\(state.errorCount) unreadable")
+                                .foregroundStyle(.orange)
+                        }
                         Spacer()
-                        let pct = Int(backupService.currentState.progressFraction * 100)
-                        Text("\(pct)%")
+                        Text("\(Int(state.progressFraction * 100))%")
                     }
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                    if !state.currentFile.isEmpty {
+                        Text(state.currentFile)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                 }
                 .padding(.leading, 28)
                 .padding(.top, 4)
                 .padding(.bottom, 8)
             }
 
-            // Step 3: Pruning
-            let pruneActive = backupService.currentState.phase == .pruning
-            let pruneDone = backupService.currentState.phase == .finished
+            // Step 3: Pruning — only shown as active/done now that the service
+            // actually runs forget+prune after each successful backup.
+            let pruneActive = state.phase == .pruning
+            let pruneDone = state.pruneComplete
             stepRow(
                 number: 3,
                 label: "Pruning old snapshots",
-                detail: nil,
+                detail: pruneActive ? "Applying retention policy..." : pruneDone ? "Retention policy applied" : nil,
                 isDone: pruneDone,
                 isActive: pruneActive
             )
@@ -138,15 +173,46 @@ struct BackupStatusPanel: View {
             // Step 4: Complete
             stepRow(
                 number: 4,
-                label: "Backup complete",
-                detail: nil,
-                isDone: backupService.currentState.phase == .finished,
+                label: state.phase == .failed ? "Backup failed" : "Backup complete",
+                detail: state.phase == .finished ? completionSummary(state) : nil,
+                isDone: state.phase == .finished,
                 isActive: false
             )
         }
         .padding(.horizontal)
         .padding(.vertical, 12)
         .background(Color.accentColor.opacity(0.05))
+    }
+
+    private func statusTitle(for phase: BackupState.Phase) -> String {
+        switch phase {
+        case .running, .pruning: return "Backup in Progress"
+        case .finished: return "Backup Finished"
+        case .failed: return "Backup Failed"
+        case .idle: return "Backup"
+        }
+    }
+
+    private func completionSummary(_ state: BackupState) -> String {
+        var parts = ["\(state.filesScanned.formatted()) files", Self.formatBytes(state.bytesUploaded) + " uploaded"]
+        if state.secondsElapsed > 1 {
+            parts.append("in \(Self.formatDuration(state.secondsElapsed))")
+        }
+        if let snapshotID = state.snapshotID {
+            parts.append("snapshot \(snapshotID.prefix(8))")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    static func formatBytes(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    static func formatDuration(_ seconds: Double) -> String {
+        let s = Int(seconds)
+        if s < 60 { return "\(s)s" }
+        if s < 3600 { return "\(s / 60)m \(s % 60)s" }
+        return "\(s / 3600)h \((s % 3600) / 60)m"
     }
 
     private func stepRow(number: Int, label: String, detail: String?, isDone: Bool, isActive: Bool) -> some View {
@@ -277,13 +343,13 @@ struct BackupStatusPanel: View {
                 Button {
                     Task { await runBackup(job) }
                 } label: {
-                    if backupService.currentState.jobID == job.id && backupService.currentState.phase != .idle && backupService.currentState.phase != .finished {
+                    if backupService.currentState.jobID == job.id && backupService.currentState.isActive {
                         ProgressView().controlSize(.small)
                     } else {
                         Label("Run", systemImage: "play.fill").font(.subheadline)
                     }
                 }.buttonStyle(.borderedProminent).controlSize(.small)
-                    .disabled(backupService.currentState.phase != .idle && backupService.currentState.phase != .finished)
+                    .disabled(backupService.currentState.isActive)
             }
             // Show configured paths inline
             VStack(alignment: .leading, spacing: 3) {
@@ -373,8 +439,15 @@ struct BackupStatusPanel: View {
             let pwFile = NSHomeDirectory() + "/.restic-password"
             password = (try? String(contentsOfFile: pwFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)) ?? ""
         }
-        guard !password.isEmpty else { return }
-        try? await backupService.runBackup(job: job, destination: dest, password: password)
+        guard !password.isEmpty else {
+            backupService.currentState = BackupState(jobID: job.id, phase: .failed, lastError: "No restic repository password found in Keychain or ~/.restic-password")
+            return
+        }
+        do {
+            try await backupService.runBackup(job: job, destination: dest, password: password)
+        } catch {
+            // Service already recorded the failure in currentState/logs; nothing more to do.
+        }
     }
 
 }

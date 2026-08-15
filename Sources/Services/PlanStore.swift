@@ -160,6 +160,7 @@ final class PlanStore {
             ])
         items.append(plan)
         plansByScope[scope.key] = items
+        invalidateScopeNameCache()
         Self.save(items, scope)
         Self.writeMarkdown(plan, scope)
         return plan
@@ -236,6 +237,7 @@ final class PlanStore {
         guard let idx = items.firstIndex(where: { $0.id == id }) else { return false }
         items.remove(at: idx)
         plansByScope[scope.key] = items
+        invalidateScopeNameCache()
         Self.save(items, scope)
         try? Self.memoryStore().delete(Self.planMarkdownURI(scope, id))
         return true
@@ -243,6 +245,7 @@ final class PlanStore {
 
     func clear(in scope: PlanScope) {
         plansByScope[scope.key] = []
+        invalidateScopeNameCache()
         Self.save([], scope)
     }
 
@@ -303,6 +306,45 @@ final class PlanStore {
                 }
             }
         }
+    }
+
+    // MARK: - Scope discovery
+
+    /// Project-scope names with plans persisted on disk — INCLUDING scopes
+    /// that match no workspace project (a model can invent one by passing any
+    /// string as the plan's `project`, and a scope nothing surfaces makes its
+    /// plans unreachable). Cached briefly because the Plans UI reads this
+    /// during body evaluation; invalidated on every mutation.
+    func knownProjectNames() -> [String] {
+        if let cache = projectScopeNamesCache,
+           Date().timeIntervalSince(projectScopeNamesFetchedAt) < 10 {
+            return cache
+        }
+        let names = Self.scanProjectScopeNames()
+        projectScopeNamesCache = names
+        projectScopeNamesFetchedAt = Date()
+        return names
+    }
+
+    private var projectScopeNamesCache: [String]?
+    private var projectScopeNamesFetchedAt: Date = .distantPast
+
+    private func invalidateScopeNameCache() {
+        projectScopeNamesCache = nil
+    }
+
+    private nonisolated static func scanProjectScopeNames() -> [String] {
+        let plansURI = MaestroURI(kind: .knowledge, path: ["plans"])
+        guard let children = try? memoryStore().listChildren(of: plansURI) else { return [] }
+        // Both the canonical `project-X.json` and the markdown-mirror dir
+        // `project-X/` appear as children with the same name — dedupe.
+        var names = Set<String>()
+        for child in children where child.name.hasPrefix("project-") {
+            if let scope = PlanScope(fileBase: child.name), case .project(let name) = scope {
+                names.insert(name)
+            }
+        }
+        return names.sorted()
     }
 
     // MARK: - Legacy local storage (fallback + migration source)

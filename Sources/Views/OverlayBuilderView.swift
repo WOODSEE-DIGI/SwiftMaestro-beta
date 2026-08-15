@@ -8,11 +8,10 @@ import UniformTypeIdentifiers
 /// Renders overlays at 1920×1080 and exports transparent PNGs.
 struct OverlayBuilderView: View {
     @State private var store = OverlayBuilderStore.shared
-    @State private var showPresetSheet = false
-    @State private var presetName = ""
     @State private var showExportAll = false
     @State private var showForm = true
     @State private var showSafeAreas = false
+    @State private var exportAlertMessage: String?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -70,7 +69,6 @@ struct OverlayBuilderView: View {
                     .controlSize(.small)
                     .help("Show platform safe area guides on canvas")
 
-                    Button("Save Preset") { showPresetSheet = true }
                     Button("Export PNG") { exportPNG() }
                     Button("Export All") { showExportAll = true }
                         .buttonStyle(.borderedProminent)
@@ -88,12 +86,17 @@ struct OverlayBuilderView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .animation(.easeInOut(duration: 0.2), value: showForm)
-        .sheet(isPresented: $showPresetSheet) {
-            presetNamingSheet
-        }
         .confirmationDialog("Export All Overlays", isPresented: $showExportAll) {
             Button("Export All as PNG") { exportAllPNG() }
             Button("Cancel", role: .cancel) {}
+        }
+        .alert("Export", isPresented: Binding(
+            get: { exportAlertMessage != nil },
+            set: { if !$0 { exportAlertMessage = nil } }
+        )) {
+            Button("OK") { exportAlertMessage = nil }
+        } message: {
+            Text(exportAlertMessage ?? "")
         }
     }
 
@@ -129,10 +132,6 @@ struct OverlayBuilderView: View {
     private func overlayRow(_ type: OverlayType) -> some View {
         Button {
             store.selectType(type)
-            store.currentFields = store.presets.isEmpty
-                ? OverlayConfig.defaults(for: type).fields
-                : (store.presets.first(where: { $0.value.type == type })?.value.fields
-                   ?? OverlayConfig.defaults(for: type).fields)
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: type.icon)
@@ -322,38 +321,9 @@ struct OverlayBuilderView: View {
 
                 Divider()
 
-                // Presets
-                Text("Presets")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .textCase(.uppercase)
-
-                ForEach(Array(store.presets.keys.sorted()), id: \.self) { name in
-                    HStack {
-                        Text(name)
-                            .font(.subheadline)
-                        Spacer()
-                        Button("Load") {
-                            store.loadPreset(name: name)
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-
-                        Button(role: .destructive) {
-                            store.deletePreset(name: name)
-                        } label: {
-                            Image(systemName: "trash")
-                                .controlSize(.small)
-                        }
-                        .buttonStyle(.bordered)
-                    }
-                }
-
-                if store.presets.isEmpty {
-                    Text("No presets saved yet")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
+                // (No presets: every overlay type saves its own settings
+                // automatically — edits persist across type switches and
+                // relaunches, no save button needed.)
             }
             .padding(14)
         }
@@ -503,7 +473,7 @@ struct OverlayBuilderView: View {
             case .image:
                 let path = store.field(field.key)
                 HStack(spacing: 8) {
-                    if !path.isEmpty, let nsImage = NSImage(contentsOfFile: path) {
+                    if let nsImage = store.image(atPath: path) {
                         Image(nsImage: nsImage)
                             .resizable()
                             .scaledToFit()
@@ -620,11 +590,12 @@ struct OverlayBuilderView: View {
                                               dragStart!.x + canvasDeltaX))
                         let newY = max(0, min(Double(store.canvasHeight),
                                               dragStart!.y + canvasDeltaY))
-                        store.setField("posX", value: String(Int(newX)))
-                        store.setField("posY", value: String(Int(newY)))
+                        store.setFieldLive("posX", value: String(Int(newX)))
+                        store.setFieldLive("posY", value: String(Int(newY)))
                     }
                     .onEnded { _ in
                         dragStart = nil
+                        store.flushDraft()
                     }
             )
             .help("Drag to reposition overlay")
@@ -676,74 +647,86 @@ struct OverlayBuilderView: View {
 
     // MARK: - Export
 
-    private func exportPNG() {
+    /// Render the store's current state to PNG data at exact canvas pixel size.
+    private func renderPNG() -> Data? {
         let w = CGFloat(store.canvasWidth), h = CGFloat(store.canvasHeight)
         let renderer = ImageRenderer(content: OverlayCanvasView(store: store, showSafeAreas: false)
             .frame(width: w, height: h))
         renderer.scale = 1
         renderer.proposedSize = ProposedViewSize(width: w, height: h)
 
-        guard let image = renderer.nsImage else { return }
-        guard let tiff = image.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff),
-              let png = rep.representation(using: NSBitmapImageRep.FileType.png, properties: [:]) else { return }
+        guard let image = renderer.nsImage,
+              let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        return rep.representation(using: NSBitmapImageRep.FileType.png, properties: [:])
+    }
+
+    private func exportPNG() {
+        guard let png = renderPNG() else {
+            exportAlertMessage = "Could not render the overlay as a PNG."
+            return
+        }
 
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.png]
-        panel.nameFieldStringValue = "\(store.selectedType.rawValue)-\(w)x\(h).png"
+        panel.nameFieldStringValue = "\(store.selectedType.rawValue)-\(store.canvasWidth)x\(store.canvasHeight).png"
         panel.begin { result in
             guard result == .OK, let url = panel.url else { return }
-            try? png.write(to: url)
+            do {
+                try png.write(to: url)
+            } catch {
+                Task { @MainActor in
+                    exportAlertMessage = "Couldn't save the PNG: \(error.localizedDescription)"
+                }
+            }
         }
     }
 
     private func exportAllPNG() {
-        for type in OverlayType.allCases {
-            store.selectType(type)
-            store.currentFields = OverlayConfig.defaults(for: type).fields
+        // One directory chooser for the whole batch — not 14 stacked save panels.
+        let panel = NSOpenPanel()
+        panel.title = "Choose Export Folder"
+        panel.message = "All overlay PNGs will be written into this folder."
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.prompt = "Export All Here"
+        panel.begin { result in
+            guard result == .OK, let dir = panel.url else { return }
+            Task { @MainActor in
+                // Render every type with default fields WITHOUT saving them:
+                // plain property assignments bypass autosave, and the user's
+                // settings are restored afterwards.
+                let savedType = store.selectedType
+                let savedFields = store.currentFields
+                var exported = 0
+                var failed: [String] = []
 
-            let w = CGFloat(store.canvasWidth), h = CGFloat(store.canvasHeight)
-            let renderer = ImageRenderer(content: OverlayCanvasView(store: store, showSafeAreas: false)
-                .frame(width: w, height: h))
-            renderer.scale = 1
-            renderer.proposedSize = ProposedViewSize(width: w, height: h)
+                for type in OverlayType.allCases {
+                    store.selectedType = type
+                    store.currentFields = OverlayConfig.defaults(for: type).fields
 
-            guard let image = renderer.nsImage else { continue }
-            guard let tiff = image.tiffRepresentation,
-                  let rep = NSBitmapImageRep(data: tiff),
-                  let png = rep.representation(using: NSBitmapImageRep.FileType.png, properties: [:]) else { continue }
-
-            let panel = NSSavePanel()
-            panel.allowedContentTypes = [.png]
-            panel.nameFieldStringValue = "\(type.rawValue)-\(w)x\(h).png"
-            panel.begin { result in
-                guard result == .OK, let url = panel.url else { return }
-                try? png.write(to: url)
-            }
-        }
-    }
-
-    // MARK: - Preset Sheet
-
-    private var presetNamingSheet: some View {
-        VStack(spacing: 16) {
-            Text("Save Preset")
-                .font(.headline)
-            TextField("Preset name", text: $presetName)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 250)
-            HStack {
-                Button("Cancel") { showPresetSheet = false }
-                Button("Save") {
-                    store.saveCurrentAsPreset(name: presetName)
-                    presetName = ""
-                    showPresetSheet = false
+                    guard let png = renderPNG() else {
+                        failed.append(type.displayName)
+                        continue
+                    }
+                    let url = dir.appendingPathComponent("\(type.rawValue)-\(store.canvasWidth)x\(store.canvasHeight).png")
+                    do {
+                        try png.write(to: url)
+                        exported += 1
+                    } catch {
+                        failed.append(type.displayName)
+                    }
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(presetName.isEmpty)
+
+                store.selectedType = savedType
+                store.currentFields = savedFields
+
+                exportAlertMessage = failed.isEmpty
+                    ? "Exported \(exported) overlays to \(dir.lastPathComponent)."
+                    : "Exported \(exported) overlays; failed: \(failed.joined(separator: ", "))."
             }
         }
-        .padding(24)
     }
 }
 
@@ -771,38 +754,37 @@ struct OverlayCanvasView: View {
 
     private func drawOverlay(context: GraphicsContext, size: CGSize) {
         let W = size.width, H = size.height
-        let font = fontForContext()
         let r = store.globalCornerRadius
 
         switch store.selectedType {
         case .lowerThird:
-            drawLowerThird(context: context, W: W, H: H, font: font, r: r, withIcon: false)
+            drawLowerThird(context: context, W: W, H: H, r: r, withIcon: false)
         case .lowerThirdIcon:
-            drawLowerThird(context: context, W: W, H: H, font: font, r: r, withIcon: true)
+            drawLowerThird(context: context, W: W, H: H, r: r, withIcon: true)
         case .titleCard:
-            drawTitleCard(context: context, W: W, H: H, font: font)
+            drawTitleCard(context: context, W: W, H: H)
         case .chapter:
-            drawChapter(context: context, W: W, H: H, font: font)
+            drawChapter(context: context, W: W, H: H)
         case .ticker:
-            drawTicker(context: context, W: W, H: H, font: font)
+            drawTicker(context: context, W: W, H: H)
         case .alert:
-            drawAlert(context: context, W: W, H: H, font: font)
+            drawAlert(context: context, W: W, H: H)
         case .webcamFrame:
             drawWebcamFrame(context: context, W: W, H: H)
         case .cornerBug:
-            drawCornerBug(context: context, W: W, H: H, font: font)
+            drawCornerBug(context: context, W: W, H: H)
         case .infoPill:
-            drawInfoPill(context: context, W: W, H: H, font: font)
+            drawInfoPill(context: context, W: W, H: H)
         case .stepCounter:
-            drawStepCounter(context: context, W: W, H: H, font: font)
+            drawStepCounter(context: context, W: W, H: H)
         case .webLink:
-            drawWebLink(context: context, W: W, H: H, font: font)
+            drawWebLink(context: context, W: W, H: H)
         case .countdown:
-            drawCountdown(context: context, W: W, H: H, font: font)
+            drawCountdown(context: context, W: W, H: H)
         case .brb:
-            drawBRB(context: context, W: W, H: H, font: font)
+            drawBRB(context: context, W: W, H: H)
         case .ending:
-            drawEnding(context: context, W: W, H: H, font: font)
+            drawEnding(context: context, W: W, H: H)
         }
     }
 
@@ -816,8 +798,9 @@ struct OverlayCanvasView: View {
 
         let opacity = store.safeAreaOpacity / 100.0
         let saColor = Color(hex6: store.safeAreaColorHex)
+        // Style picker: 0 = Outline, 1 = Fill, 2 = Both.
         let fillOnly = store.safeAreaStyle == 1
-        let outlineOnly = store.safeAreaStyle == 2
+        let outlineOnly = store.safeAreaStyle == 0
 
         func drawZone(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, label: String) {
             let rect = CGRect(x: x, y: y, width: w, height: h)
@@ -860,17 +843,19 @@ struct OverlayCanvasView: View {
 
     // MARK: - Font Resolution
 
-    private func fontForContext() -> Font {
+    /// Global font design from the Global Style picker. sysFont defaults to it
+    /// so every overlay text element follows the selection.
+    private var globalDesign: Font.Design {
         switch store.globalFont {
-        case "mono":    return .system(size: 16, weight: .regular, design: .monospaced)
-        case "rounded": return .system(size: 16, weight: .regular, design: .rounded)
-        case "serif":   return .system(size: 16, weight: .regular, design: .serif)
-        default:        return .system(size: 16, weight: .regular, design: .default)
+        case "mono":    return .monospaced
+        case "rounded": return .rounded
+        case "serif":   return .serif
+        default:        return .default
         }
     }
 
-    private func sysFont(_ size: Double, _ weight: Font.Weight = .regular, _ design: Font.Design = .default) -> Font {
-        .system(size: size, weight: weight, design: design)
+    private func sysFont(_ size: Double, _ weight: Font.Weight = .regular, _ design: Font.Design? = nil) -> Font {
+        .system(size: size, weight: weight, design: design ?? globalDesign)
     }
 
     // MARK: - Panel Drawing
@@ -898,7 +883,7 @@ struct OverlayCanvasView: View {
 
     // MARK: - Individual Renderers
 
-    private func drawLowerThird(context: GraphicsContext, W: Double, H: Double, font: Font, r: Double, withIcon: Bool) {
+    private func drawLowerThird(context: GraphicsContext, W: Double, H: Double, r: Double, withIcon: Bool) {
         let title = store.field("title")
         let sub = store.field("subtitle")
         let accent = store.colorField("accent")
@@ -923,7 +908,7 @@ struct OverlayCanvasView: View {
             context.fill(Path(ellipseIn: iconRect), with: .color(accent.opacity(0.15)))
 
             let imagePath = store.field("iconImage")
-            if !imagePath.isEmpty, let nsImage = NSImage(contentsOfFile: imagePath) {
+            if let nsImage = store.image(atPath: imagePath) {
                 context.draw(Image(nsImage: nsImage), in: iconRect)
             } else {
                 let emoji = store.field("iconEmoji").isEmpty ? "⭐" : store.field("iconEmoji")
@@ -940,7 +925,7 @@ struct OverlayCanvasView: View {
         drawGradientLine(context: context, x: tx, y: py + ph - 8, w: pw - 44, color: accent)
     }
 
-    private func drawTitleCard(context: GraphicsContext, W: Double, H: Double, font: Font) {
+    private func drawTitleCard(context: GraphicsContext, W: Double, H: Double) {
         let bg = store.colorField("bgColor")
         let px = store.numField("posX"), py = store.numField("posY")
         context.fill(Path(CGRect(x: 0, y: 0, width: W, height: H)), with: .color(bg))
@@ -961,7 +946,7 @@ struct OverlayCanvasView: View {
         }
     }
 
-    private func drawChapter(context: GraphicsContext, W: Double, H: Double, font: Font) {
+    private func drawChapter(context: GraphicsContext, W: Double, H: Double) {
         let bg = store.colorField("bgColor")
         let accent = store.colorField("accent")
         let px = store.numField("posX"), py = store.numField("posY")
@@ -978,7 +963,7 @@ struct OverlayCanvasView: View {
                      at: CGPoint(x: cx + 20, y: cy + 35), anchor: .leading)
     }
 
-    private func drawTicker(context: GraphicsContext, W: Double, H: Double, font: Font) {
+    private func drawTicker(context: GraphicsContext, W: Double, H: Double) {
         let accent = store.colorField("accent")
         let labelBg = store.colorField("labelBg")
         let px = store.numField("posX"), py = store.numField("posY")
@@ -1000,7 +985,7 @@ struct OverlayCanvasView: View {
                      at: CGPoint(x: px + lw + 20, y: py + barH / 2), anchor: .leading)
     }
 
-    private func drawAlert(context: GraphicsContext, W: Double, H: Double, font: Font) {
+    private func drawAlert(context: GraphicsContext, W: Double, H: Double) {
         let accent = store.colorField("accent")
         let px = store.numField("posX"), py = store.numField("posY")
         let pw: Double = 500, ph: Double = 100
@@ -1025,7 +1010,7 @@ struct OverlayCanvasView: View {
         context.stroke(rect, with: .color(accent), lineWidth: bw)
     }
 
-    private func drawCornerBug(context: GraphicsContext, W: Double, H: Double, font: Font) {
+    private func drawCornerBug(context: GraphicsContext, W: Double, H: Double) {
         let accent = store.colorField("accent")
         let text = store.field("text")
         let px = store.numField("posX"), py = store.numField("posY")
@@ -1037,7 +1022,7 @@ struct OverlayCanvasView: View {
                      at: CGPoint(x: px, y: py + 16), anchor: .center)
     }
 
-    private func drawInfoPill(context: GraphicsContext, W: Double, H: Double, font: Font) {
+    private func drawInfoPill(context: GraphicsContext, W: Double, H: Double) {
         let accent = store.colorField("accent")
         let label = store.field("label"), badge = store.field("badge")
         let px = store.numField("posX"), py = store.numField("posY")
@@ -1056,9 +1041,18 @@ struct OverlayCanvasView: View {
 
         context.draw(Text(label).font(sysFont(14, .semibold)),
                      at: CGPoint(x: px + 30, y: py + ph / 2), anchor: .leading)
+
+        // Badge pill on the trailing end (bw was already factored into the width).
+        if !badge.isEmpty {
+            let badgeRect = Path(roundedRect: CGRect(x: px + pw - bw - 8, y: py + 7, width: bw, height: ph - 14),
+                                 cornerRadius: (ph - 14) / 2)
+            context.fill(badgeRect, with: .color(accent))
+            context.draw(Text(badge).font(sysFont(12, .bold)),
+                         at: CGPoint(x: px + pw - bw / 2 - 8, y: py + ph / 2), anchor: .center)
+        }
     }
 
-    private func drawStepCounter(context: GraphicsContext, W: Double, H: Double, font: Font) {
+    private func drawStepCounter(context: GraphicsContext, W: Double, H: Double) {
         let accent = store.colorField("accent")
         let step = store.field("step"), total = store.field("total")
         let px = store.numField("posX"), py = store.numField("posY")
@@ -1075,7 +1069,7 @@ struct OverlayCanvasView: View {
                      at: CGPoint(x: px + nw + 12, y: py + 24), anchor: .leading)
     }
 
-    private func drawWebLink(context: GraphicsContext, W: Double, H: Double, font: Font) {
+    private func drawWebLink(context: GraphicsContext, W: Double, H: Double) {
         let accent = store.colorField("accent")
         let url = store.field("url")
         let px = store.numField("posX"), py = store.numField("posY")
@@ -1088,7 +1082,7 @@ struct OverlayCanvasView: View {
                      at: CGPoint(x: px + 16, y: py + 42), anchor: .leading)
     }
 
-    private func drawCountdown(context: GraphicsContext, W: Double, H: Double, font: Font) {
+    private func drawCountdown(context: GraphicsContext, W: Double, H: Double) {
         let bg = store.colorField("bgColor")
         let accent = store.colorField("accent")
         let px = store.numField("posX"), py = store.numField("posY")
@@ -1109,7 +1103,7 @@ struct OverlayCanvasView: View {
         }
     }
 
-    private func drawBRB(context: GraphicsContext, W: Double, H: Double, font: Font) {
+    private func drawBRB(context: GraphicsContext, W: Double, H: Double) {
         let bg = store.colorField("bgColor")
         let px = store.numField("posX"), py = store.numField("posY")
         context.fill(Path(CGRect(x: 0, y: 0, width: W, height: H)), with: .color(bg))
@@ -1121,7 +1115,7 @@ struct OverlayCanvasView: View {
                      at: CGPoint(x: cx, y: cy + 50), anchor: .center)
     }
 
-    private func drawEnding(context: GraphicsContext, W: Double, H: Double, font: Font) {
+    private func drawEnding(context: GraphicsContext, W: Double, H: Double) {
         let bg = store.colorField("bgColor")
         let px = store.numField("posX"), py = store.numField("posY")
         context.fill(Path(CGRect(x: 0, y: 0, width: W, height: H)), with: .color(bg))

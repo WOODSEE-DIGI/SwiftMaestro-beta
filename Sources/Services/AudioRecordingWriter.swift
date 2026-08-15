@@ -50,6 +50,49 @@ actor AudioRecordingWriter {
         handle.write(data)
     }
 
+    /// Appends a self-contained tap buffer (slice semantics — every sample in
+    /// the array is written). Use this from an AVAudioEngine tap, where each
+    /// callback delivers only the latest chunk. `append(samples:)` is for
+    /// WhisperKit's cumulative growing buffer and must not be mixed with this.
+    func appendSlice(_ samples: [Float]) throws {
+        guard let handle = fileHandle else { throw AudioRecordingWriterError.fileNotOpen }
+        guard !samples.isEmpty else { return }
+        totalSamples += samples.count
+        let data = samples.withUnsafeBytes { buffer in
+            var int16 = [Int16]()
+            int16.reserveCapacity(samples.count)
+            if let base = buffer.baseAddress?.assumingMemoryBound(to: Float.self) {
+                for i in 0 ..< samples.count {
+                    let clipped = max(-1.0, min(1.0, base[i]))
+                    int16.append(Int16(clipped * Float(Int16.max)))
+                }
+            }
+            return Data(bytes: int16, count: int16.count * MemoryLayout<Int16>.size)
+        }
+        handle.write(data)
+    }
+
+    /// Reads a WAV file's sample rate from its header and computes duration
+    /// from the actual file size. Used to recover orphaned recordings after a
+    /// crash (a killed mid-write header may claim 0 samples, but the file size
+    /// tells the truth).
+    static func recoveredDuration(fileURL: URL) -> TimeInterval {
+        guard let handle = try? FileHandle(forReadingFrom: fileURL),
+              let header = try? handle.read(upToCount: 44), header.count >= 44,
+              header.prefix(4).elementsEqual("RIFF".utf8) else {
+            return 0
+        }
+        try? handle.close()
+        // Sample rate is a little-endian UInt32 at byte offset 24. Assembled
+        // byte-by-byte — Data isn't guaranteed aligned for a typed load.
+        let sampleRate = UInt32(header[24]) | UInt32(header[25]) << 8
+            | UInt32(header[26]) << 16 | UInt32(header[27]) << 24
+        let fileSize = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int) ?? 0
+        let dataBytes = max(0, fileSize - 44)
+        guard sampleRate > 0 else { return 0 }
+        return TimeInterval(dataBytes / 2) / TimeInterval(sampleRate) // 16-bit mono
+    }
+
     func close() throws {
         guard let handle = fileHandle else { return }
         try handle.seek(toOffset: 0)

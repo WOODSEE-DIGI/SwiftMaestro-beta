@@ -418,6 +418,7 @@ enum MaestroTools {
                     "title": ["type": "string", "description": "Short plan title."],
                     "content": ["type": "string", "description": "Plan body in markdown."],
                     "project": ["type": "string", "description": projectScopeDesc],
+                    "force": ["type": "boolean", "description": "true = create even when a similar plan already exists in another scope (skips the near-duplicate guard)."],
                 ], required: ["title", "content"]),
             rawSpec("edit_plan",
                 "Edit an existing plan, identified by 'plan_id' (preferred) or 'title'. "
@@ -899,6 +900,7 @@ enum MaestroTools {
 
     private struct PlanCreateArgs: Codable {
         let title: String?; let content: String?; let project: String?; let agent_id: String?
+        let force: Bool?
     }
     private struct PlanEditArgs: Decodable {
         let plan_id: String?; let title: String?; let new_title: String?
@@ -947,11 +949,54 @@ enum MaestroTools {
         }
     }
 
+    /// Lowercased, alnum-only token set form of a plan title.
+    private static func planTitleTokens(_ s: String) -> Set<String> {
+        Set(s.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty })
+    }
+
+    /// Fuzzy title match for the create_plan near-duplicate guard: catches
+    /// "YouTube Audio Bridge Implementation Plan" vs an existing
+    /// "YouTube-to-Resolve Bridge Implementation Plan" (word-order/punctuation
+    /// differences) via normalized containment or ≥60% token overlap of the
+    /// smaller title (minimum 3 shared tokens, so generic words alone don't
+    /// trip it).
+    private static func planTitlesSimilar(_ a: String, _ b: String) -> Bool {
+        let tokensA = planTitleTokens(a), tokensB = planTitleTokens(b)
+        guard !tokensA.isEmpty, !tokensB.isEmpty else { return false }
+        if tokensA == tokensB { return true }
+        let normalizedA = tokensA.isEmpty ? "" : a.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }.joined(separator: " ")
+        let normalizedB = b.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }.joined(separator: " ")
+        if normalizedA.contains(normalizedB) || normalizedB.contains(normalizedA) { return true }
+        let overlap = tokensA.intersection(tokensB).count
+        let smaller = min(tokensA.count, tokensB.count)
+        return overlap >= 3 && Double(overlap) / Double(smaller) >= 0.6
+    }
+
+    /// Every scope worth searching for a plan: scopes already cached in the
+    /// store PLUS any project scope persisted on disk — including scopes a
+    /// model invented (which match no workspace project and were never loaded
+    /// this session, so `plansByScope` alone would miss them).
+    @MainActor
+    private static func allSearchableScopes(store: PlanStore) -> [PlanScope] {
+        var scopes = store.plansByScope.keys.compactMap { PlanScope(key: $0) }
+        for name in store.knownProjectNames() {
+            let scope = PlanScope.project(name)
+            if !scopes.contains(scope) { scopes.append(scope) }
+        }
+        return scopes
+    }
+
     private static func planCreate(_ call: ToolCall) async -> String {
         guard let args = decodeArgs(call, as: PlanCreateArgs.self) else {
             return errorJSON("could not parse arguments")
         }
-        guard let scope = planScope(agentID: args.agent_id, project: args.project) else {
+        guard let requestedScope = planScope(agentID: args.agent_id, project: args.project) else {
             return errorJSON("missing agent context (agent_id is injected automatically; just call the tool again)")
         }
         let title = sanitizeModelText(args.title ?? "")
@@ -959,6 +1004,28 @@ enum MaestroTools {
         let content = sanitizeModelInline(args.content ?? "")
         return await MainActor.run {
             guard let store = planStore else { return errorJSON("plan store unavailable") }
+            // Phantom-scope guard: a model can pass ANY string as `project`,
+            // which would create a scope no Plans panel or sheet ever shows
+            // (panels list workspace projects only) — the plan would vanish
+            // from the UI even though it saved fine. Normalize real project
+            // names to their canonical casing; redirect unknown ones to the
+            // agent's personal scope and say so.
+            var scope = requestedScope
+            var scopeNote = ""
+            if case .project(let name) = requestedScope {
+                if let match = workspace?.visibleProjects.first(where: {
+                    $0.name.caseInsensitiveCompare(name) == .orderedSame
+                }) {
+                    scope = .project(match.name)
+                } else if let id = agentUUID(args.agent_id) {
+                    scope = .agent(id)
+                    scopeNote = " NOTE: there is no project named \"\(name)\" in the workspace, "
+                        + "so the plan was saved to your PERSONAL plans instead — a project "
+                        + "scope that matches nothing would be invisible in the Plans UI. "
+                        + "To share it project-wide, create the project first or pass an "
+                        + "existing project name."
+                }
+            }
             // Duplicate guard: small models re-issue the identical create_plan call
             // a round later (production: same title twice, two UUIDs) — return the
             // EXISTING plan and point at edit_plan instead of stacking duplicates.
@@ -969,8 +1036,26 @@ enum MaestroTools {
                     + "in \(scopeLabel(scope)) — do NOT create it again. Use edit_plan with "
                     + "this plan_id to change it."
             }
+            // Cross-scope near-duplicate guard: a fuzzy same-topic title in ANY
+            // scope means this should almost certainly be an edit, not a new plan
+            // (production: "YouTube Audio Bridge Implementation Plan" created while
+            // "YouTube-to-Resolve Bridge Implementation Plan" already existed in
+            // another scope — two plans for one project).
+            if args.force != true {
+                for candidateScope in allSearchableScopes(store: store) {
+                    if let similar = store.plans(in: candidateScope).first(where: {
+                        planTitlesSimilar($0.title, title)
+                    }) {
+                        return "A similar plan already exists: \"\(similar.title)\" "
+                            + "(id \(similar.id.uuidString)) in \(scopeLabel(candidateScope)). "
+                            + "If the user means THAT plan, use edit_plan with its plan_id "
+                            + "instead of creating a new one. To deliberately create a "
+                            + "separate plan, call create_plan again with force=true."
+                    }
+                }
+            }
             let plan = store.create(title: title, content: content, in: scope)
-            return "Created \(scopeLabel(scope)) plan \"\(plan.title)\" (id \(plan.id.uuidString))."
+            return "Created \(scopeLabel(scope)) plan \"\(plan.title)\" (id \(plan.id.uuidString)).\(scopeNote)"
         }
     }
 
@@ -998,16 +1083,15 @@ enum MaestroTools {
         let sanitizedContent = args.content.map { sanitizeModelInline($0) }
         return await MainActor.run {
             guard let store = planStore else { return errorJSON("plan store unavailable") }
-            // Find the plan: try specified scope first, then search all scopes.
+            // Find the plan: try specified scope first, then search all scopes
+            // (including disk-only project scopes not yet loaded this session).
             var target: Plan?
             var foundScope = scope
             if let t = store.find(idOrTitle: key, in: scope) {
                 target = t
             } else {
-                for (scopeKey, _) in store.plansByScope {
-                    if let fallbackScope = PlanScope(key: scopeKey),
-                       fallbackScope != scope,
-                       let t = store.find(idOrTitle: key, in: fallbackScope) {
+                for fallbackScope in allSearchableScopes(store: store) where fallbackScope != scope {
+                    if let t = store.find(idOrTitle: key, in: fallbackScope) {
                         target = t
                         foundScope = fallbackScope
                         break
@@ -1046,9 +1130,11 @@ enum MaestroTools {
                !projectName.isEmpty {
                 allPlans += store.plans(in: .project(projectName))
             } else if agentScope != nil {
-                // No project filter: include all project-scoped plans too
-                for (key, plans) in store.plansByScope where key.hasPrefix("project:") {
-                    allPlans += plans
+                // No project filter: include all project-scoped plans too —
+                // from disk, so scopes created this session (or invented by a
+                // model) are discoverable, not just the cached ones.
+                for name in store.knownProjectNames() {
+                    allPlans += store.plans(in: .project(name))
                 }
             }
             // Deduplicate by plan ID
@@ -1075,11 +1161,9 @@ enum MaestroTools {
             if let plan = store.find(idOrTitle: key, in: scope) {
                 return renderPlan(plan)
             }
-            // Search across all scopes
-            for (scopeKey, _) in store.plansByScope {
-                if let fallbackScope = PlanScope(key: scopeKey),
-                   fallbackScope != scope,
-                   let plan = store.find(idOrTitle: key, in: fallbackScope) {
+            // Search across all scopes (cached + disk-persisted project scopes).
+            for fallbackScope in allSearchableScopes(store: store) where fallbackScope != scope {
+                if let plan = store.find(idOrTitle: key, in: fallbackScope) {
                     return renderPlan(plan)
                 }
             }

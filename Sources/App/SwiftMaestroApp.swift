@@ -23,6 +23,35 @@ enum SwiftMaestroDefaultsMigration {
             defaults.set(targetModel, forKey: modelKey)
         }
         defaults.set(true, forKey: modelMigrationKey)
+
+        purgeMailTrackingStateIfNeeded(defaults: defaults)
+    }
+
+    /// One-time purge of the removed mail-tracking feature's leftover state
+    /// (the privacy cleanup deleted the code but not its data). The tracking
+    /// event store is ARCHIVED, not deleted — it's user data (per-message
+    /// open/click history) and the destructive-ops rule requires a recoverable
+    /// backup. UserDefaults keys and the dead service's Keychain items go.
+    private static func purgeMailTrackingStateIfNeeded(defaults: UserDefaults) {
+        let purgeKey = "migration.mailTrackingPurge.v1"
+        guard !defaults.bool(forKey: purgeKey) else { return }
+        defaults.set(true, forKey: purgeKey)
+
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let trackerDir = appSupport.appendingPathComponent("SwiftMaestro/mailtracker", isDirectory: true)
+        if FileManager.default.fileExists(atPath: trackerDir.path) {
+            let archiveDir = appSupport.appendingPathComponent(
+                "SwiftMaestro/mailtracker-purged-20260814", isDirectory: true)
+            try? FileManager.default.moveItem(at: trackerDir, to: archiveDir)
+        }
+
+        for key in ["owntrack.autoStartRelay", "owntrack.publicBaseURL",
+                    "owntrack.signingSecret.fallback", "appleMail.relayBaseURL"] {
+            defaults.removeObject(forKey: key)
+        }
+        for account in ["owntrack-signing-secret", "owntrack-relay-api-key"] {
+            try? KeychainService.delete(account: account)
+        }
     }
 }
 
@@ -36,6 +65,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var whatsAppService: WhatsAppService?
 
     func applicationWillTerminate(_ notification: Notification) {
+        // Finalize any in-progress voice note (header flush + duration). The
+        // audio data is already on disk; this just makes the WAV well-formed.
+        VoiceNotesStore.shared.finalizeForAppQuit()
         if let mcpService {
             Task { await mcpService.shutdown() }
         }
@@ -49,6 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct SwiftMaestroApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @Environment(\.openWindow) private var openWindow
     @State private var engine = MLXInferenceEngine()
     @State private var catalog = ModelCatalog()
     @State private var workspace = WorkspaceStore()
@@ -104,6 +137,7 @@ struct SwiftMaestroApp: App {
     @State private var busWorker: BusWorker? = nil
     @State private var sparkleUpdater = SparkleUpdaterService.shared
     @State private var webBrowserStore = WebBrowserStore.shared
+    @State private var workspaceLayout = WorkspaceLayoutState.shared
     private let mcpService = MCPClientService()
 
 
@@ -233,6 +267,13 @@ struct SwiftMaestroApp: App {
                     // Eagerly load WhisperKit so the mic button is ready.
                     whisperService.notesVaultURL = notesViewModel.vaultURL
                     whisperService.ensureModelLoaded()
+                    // Voice Notes: wire the transcription + Notes.md export
+                    // services (also kicks off any recovered/queued notes).
+                    VoiceNotesStore.shared.attach(whisper: whisperService, notesVault: notesViewModel.vaultURL)
+                    // Reopen secondary canvas windows from the last session.
+                    for window in WorkspaceLayoutState.shared.canvasWindows {
+                        openWindow(id: "canvas-window", value: window.id)
+                    }
                     // Snapshot all user settings to ~/.config/SwiftMaestro/ so they
                     // survive plist deletion and can be synced via Chezmoi.
                     SettingsBackupService.shared.backup()
@@ -240,6 +281,28 @@ struct SwiftMaestroApp: App {
         }
         .defaultSize(width: 1100, height: 760)
         .windowResizability(.contentMinSize)
+        .commands {
+            // Window > panel recovery menu. All dynamic lists are computed
+            // HERE in the scene body so @Observable tracking rebuilds the
+            // menus the moment the layout, agents, plugins, or app-enablement
+            // state changes — never inside the Commands value, which SwiftUI
+            // would not observe.
+            PanelCommands(
+                layout: workspaceLayout,
+                navigator: workspace.navigator,
+                agentGroups: workspace.projectAgentsByCategory(),
+                categorizedPanels: AppCategory.allCases.filter { !$0.isHidden }.map { category in
+                    (category: category, kinds: AppEnablementStore.shared.visibleKinds(in: category))
+                }.filter { !$0.kinds.isEmpty },
+                builtInPlugins: AppCategory.builtInPluginKinds.filter {
+                    AppEnablementStore.shared.showsBuiltInPlugin($0)
+                },
+                plugins: pluginService.plugins.filter {
+                    AppEnablementStore.shared.showsPlugin($0.id)
+                },
+                openPanels: Set(workspaceLayout.allOpenPanels)
+            )
+        }
 
 
         // Standalone, resizable reading window for a single plan. Data-driven so
@@ -321,6 +384,41 @@ struct SwiftMaestroApp: App {
         .windowResizability(.contentMinSize)
 
 
+        // Secondary canvas windows: each hosts a full free-tile canvas (the
+        // same view as the main workspace), so a group of panels can live as
+        // ONE window on a second display rather than N floating windows.
+        // Tiles travel between canvases via the panel's ⋯ → "Move to" menu.
+        WindowGroup("Canvas", id: "canvas-window", for: UUID.self) { $canvasID in
+            if let canvasID {
+                CanvasWorkspaceView(canvasID: canvasID)
+                    .environment(engine)
+                    .environment(catalog)
+                    .environment(visionProxyService)
+                    .environment(workspace)
+                    .environment(todoStore)
+                    .environment(planStore)
+                    .environment(messageStore)
+                    .environment(theme)
+                    .environment(whisperService)
+                    .environment(notesViewModel)
+                    .environment(eventKitStore)
+                    .environment(appleNotesService)
+                    .environment(contactsService)
+                    .environment(canvasStore)
+                    .environment(kanbanStore)
+                    .environment(numbersService)
+                    .environment(mapsService)
+                    .environment(photosService)
+                    .environment(mailService)
+                    .environment(whatsAppService)
+                    .environment(discordService)
+                    .environment(pluginService)
+                    .environment(webBrowserStore)
+            }
+        }
+        .defaultSize(width: 1_100, height: 800)
+        .windowResizability(.contentMinSize)
+
         #if os(macOS)
         Settings {
             SettingsView()
@@ -348,5 +446,138 @@ struct SwiftMaestroApp: App {
         // available screen space (e.g. see the Appearance preview without scrolling).
         .windowResizability(.contentMinSize)
         #endif
+    }
+}
+
+// MARK: - Window Menu Panel Commands
+
+/// Window > panel commands: open, reopen, or focus any workspace panel.
+/// This is the recovery path when a panel was closed (the ✕ on its tile) or
+/// its floating window vanished — previously the only way back was the
+/// Agents / Apps Launcher panels, which could themselves be closed with no
+/// way back. All dynamic content is snapshotted by the app scene body (which
+/// owns the @Observable tracking) and passed in as plain values, so the menus
+/// are always current when opened.
+private struct PanelCommands: Commands {
+    let layout: WorkspaceLayoutState
+    let navigator: AgentRecord
+    let agentGroups: [(category: AgentCategory, agents: [AgentRecord])]
+    let categorizedPanels: [(category: AppCategory, kinds: [WorkspacePanelKind])]
+    let builtInPlugins: [WorkspacePanelKind]
+    let plugins: [PluginManifest]
+    /// Open panel kinds at body-evaluation time — drives the checkmarks.
+    let openPanels: Set<WorkspacePanelKind>
+
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        CommandGroup(before: .windowArrangement) {
+            // Recovery-critical chrome first: if these get closed there is no
+            // other in-app path back to the navigator or the launcher.
+            panelButton(.agents)
+                .keyboardShortcut("0", modifiers: .command)
+            panelButton(.appLauncher)
+
+            Divider()
+
+            agentChatsMenu
+            panelsMenu
+
+            Divider()
+
+            Button("Reset Layout to Default") {
+                layout.resetToDefaultLayout()
+            }
+
+            Divider()
+        }
+    }
+
+    // MARK: Agent Chats submenu
+
+    @ViewBuilder
+    private var agentChatsMenu: some View {
+        Menu("Agent Chats") {
+            panelButton(.agentChat(navigator.id), title: navigator.name)
+            if !agentGroups.isEmpty {
+                Divider()
+                ForEach(agentGroups, id: \.category) { group in
+                    Section(group.category.displayName) {
+                        ForEach(group.agents) { agent in
+                            panelButton(.agentChat(agent.id), title: agent.name)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: Panels submenu
+
+    @ViewBuilder
+    private var panelsMenu: some View {
+        Menu("Panels") {
+            ForEach(categorizedPanels, id: \.category) { group in
+                Section(group.category.title) {
+                    ForEach(group.kinds, id: \.self) { kind in
+                        panelButton(kind)
+                    }
+                }
+            }
+            if !builtInPlugins.isEmpty || !plugins.isEmpty {
+                Section("Plugins") {
+                    ForEach(builtInPlugins, id: \.self) { kind in
+                        panelButton(kind)
+                    }
+                    ForEach(plugins) { manifest in
+                        panelButton(.plugin(manifest.id), title: manifest.name, icon: manifest.icon)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: One menu item
+
+    /// A checkmark replaces the icon while the panel is open; clicking an
+    /// open panel focuses it rather than closing it (these are not toggles).
+    private func panelButton(
+        _ kind: WorkspacePanelKind,
+        title: String? = nil,
+        icon: String? = nil
+    ) -> some View {
+        let isOpen = openPanels.contains(kind)
+        return Button {
+            openOrFocus(kind)
+        } label: {
+            Label(
+                title ?? kind.staticDisplayName ?? "Panel",
+                systemImage: isOpen ? "checkmark" : (icon ?? kind.icon)
+            )
+        }
+    }
+
+    // MARK: Open / focus
+
+    /// Mirrors `ContentView.openPanel`: open when closed; when already open,
+    /// front the floating window or raise the docked tile, and ping the
+    /// bring-to-front notifications so detached agent windows respond too.
+    private func openOrFocus(_ kind: WorkspacePanelKind) {
+        switch layout.open(kind) {
+        case .floated:
+            openWindow(id: "workspace-panel-window", value: WorkspacePanelWindowID(kind: kind))
+        case .alreadyOpen:
+            if layout.isFloating(kind) {
+                openWindow(id: "workspace-panel-window", value: WorkspacePanelWindowID(kind: kind))
+            } else if let tile = layout.canvasTile(containing: kind) {
+                layout.bringTileToFront(tile.id)
+            }
+            NotificationCenter.default.post(name: .bringWorkspacePanelToFront, object: kind)
+            if case .agentChat(let id) = kind {
+                NotificationCenter.default.post(name: .bringAgentChatToFront, object: id)
+            }
+        case .dockedDirectly:
+            break
+        }
     }
 }

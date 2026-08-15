@@ -47,6 +47,27 @@ struct BackupDestination: Identifiable, Codable, Hashable, Sendable {
     }
 }
 
+extension BackupDestination.Kind {
+    var icon: String {
+        switch self {
+        case .s3: return "cloud"
+        case .sftp: return "server.rack"
+        case .local: return "externaldrive"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .s3(let config):
+            return "S3 · \(config.bucket) · \(config.endpoint)"
+        case .sftp(let config):
+            return "SSH · \(config.username)@\(config.host):\(config.repositoryPath)"
+        case .local(let config):
+            return "Local · \(config.path)"
+        }
+    }
+}
+
 // MARK: - Backup Job
 
 /// A set of directories to back up to a destination with a schedule.
@@ -151,24 +172,36 @@ struct BackupLogEntry: Identifiable, Codable, Sendable {
 struct BackupState: Sendable {
     var jobID: UUID?
     var phase: Phase = .idle
-    var filesScanned: Int = 0
-    var totalFiles: Int = 0
-    var bytesUploaded: Int64 = 0
-    var totalBytes: Int64 = 0
+    var filesScanned: Int = 0        // files fully processed by restic (files_done / total_files_processed)
+    var totalFiles: Int = 0          // files found by the scanner so far (total_files)
+    var bytesUploaded: Int64 = 0     // bytes written to the repo (bytes_done / data_added)
+    var totalBytes: Int64 = 0        // total bytes the scanner has found (total_bytes / total_bytes_processed)
     var currentFile: String = ""
-    var speed: Double = 0
+    var speed: Double = 0            // bytes/sec, derived from bytes_done / seconds_elapsed
+    var secondsElapsed: Double = 0
+    var secondsRemaining: Double?
+    var errorCount: Int = 0
+    var snapshotID: String?
     var scanComplete: Bool = false
     var uploadComplete: Bool = false
+    var pruneComplete: Bool = false
+    var lastError: String?
 
     enum Phase: String, Sendable {
         case idle
         case running
         case pruning
         case finished
+        case failed
     }
 
     var progressFraction: Double {
         guard totalBytes > 0 else { return 0 }
-        return Double(bytesUploaded) / Double(totalBytes)
+        return min(1, Double(bytesUploaded) / Double(totalBytes))
+    }
+
+    /// True while a backup run is actively displayed in the status section.
+    var isActive: Bool {
+        phase == .running || phase == .pruning
     }
 }

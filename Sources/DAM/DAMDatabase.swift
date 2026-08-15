@@ -302,7 +302,7 @@ final class DAMDatabase: Sendable {
             var request = DAMAsset.filter(DAMAsset.Columns.rating >= minRating)
             if let tagColor {
                 // Match any tag in the JSON dict with this color index
-                // e.g. {"2024":7,"Alastair":1} matches tagColor=7
+                // e.g. {"2024":7,"Work":1} matches tagColor=7
                 let pattern = "%\":\(tagColor),%"  // mid-dict: "tag":7,
                 let patternEnd = "%\":\(tagColor)}" // end-dict: "tag":7}
                 request = request.filter(
@@ -393,6 +393,103 @@ final class DAMDatabase: Sendable {
                 WHERE assetSearch MATCH ?
                 ORDER BY rank LIMIT ?
                 """, arguments: [phrase, limit])
+        }
+    }
+
+    // MARK: - Search + Filters
+
+    /// Shared WHERE clause for the toolbar filters, for both the plain browse
+    /// path and FTS search. Columns are referenced with the `a.` alias (the
+    /// asset table). Keeping this in one place is what guarantees the results
+    /// list and the "N items" count can never disagree.
+    private static func assetFilterSQL(
+        minRating: Int, tagColor: Int?, fileType: String?,
+        tagged: Bool?, flag: DAMFlag?, folder: String?
+    ) -> (sql: String, args: [any DatabaseValueConvertible]) {
+        var clauses = ["a.rating >= ?"]
+        var args: [any DatabaseValueConvertible] = [minRating]
+        if let tagColor {
+            // Match any tag in the JSON dict with this color index
+            clauses.append(#"(a.tagColors LIKE ? OR a.tagColors LIKE ?)"#)
+            args.append("%\":\(tagColor),%")   // mid-dict: "tag":7,
+            args.append("%\":\(tagColor)}")    // end-dict: "tag":7}
+        }
+        if let fileType {
+            clauses.append("a.uti LIKE ?")
+            args.append("%\(fileType)%")
+        }
+        if let tagged {
+            clauses.append(tagged
+                ? "(a.xattrKeywords IS NOT NULL AND a.xattrKeywords != '')"
+                : "(a.xattrKeywords IS NULL OR a.xattrKeywords = '')")
+        }
+        if let flag {
+            clauses.append("a.flag = ?")
+            args.append(flag.rawValue)
+        }
+        if let folder {
+            // Range scan [folder+"/", folder+"0") covers the subtree, indexed.
+            clauses.append("(a.folder = ? OR (a.folder >= ? AND a.folder < ?))")
+            args.append(folder)
+            args.append(folder + "/")
+            args.append(folder + "0")
+        }
+        return (clauses.joined(separator: " AND "), args)
+    }
+
+    /// Quote a raw search string as an FTS5 phrase so special characters
+    /// (hyphens, colons) aren't parsed as FTS5 operators.
+    private static func ftsPhrase(for query: String) -> String {
+        "\"\(query.replacingOccurrences(of: "\"", with: "\"\""))\""
+    }
+
+    /// FTS search WITH the toolbar filters applied, rank-ordered and paginated.
+    /// (The old searchAssetIDs path ignored filters and offset, so filtered
+    /// counts disagreed and "load more" repeated page 1.)
+    func searchAssets(
+        matching query: String, folder: String?, minRating: Int,
+        tagColor: Int? = nil, fileType: String? = nil,
+        tagged: Bool? = nil, flag: DAMFlag? = nil,
+        limit: Int, offset: Int
+    ) throws -> [DAMAsset] {
+        let phrase = Self.ftsPhrase(for: query)
+        let (filterSQL, filterArgs) = Self.assetFilterSQL(
+            minRating: minRating, tagColor: tagColor, fileType: fileType,
+            tagged: tagged, flag: flag, folder: folder)
+        return try dbQueue.read { db in
+            var args: [any DatabaseValueConvertible] = [phrase]
+            args.append(contentsOf: filterArgs)
+            args.append(limit)
+            args.append(offset)
+            return try DAMAsset.fetchAll(db, sql: """
+                SELECT a.* FROM asset a
+                JOIN assetSearch ON assetSearch.rowid = a.id
+                WHERE assetSearch MATCH ? AND \(filterSQL)
+                ORDER BY assetSearch.rank
+                LIMIT ? OFFSET ?
+                """, arguments: StatementArguments(args))
+        }
+    }
+
+    /// Count of FTS search results with the same filters — keeps the
+    /// "N items" label consistent with what's actually shown.
+    func searchAssetCount(
+        matching query: String, folder: String?, minRating: Int,
+        tagColor: Int? = nil, fileType: String? = nil,
+        tagged: Bool? = nil, flag: DAMFlag? = nil
+    ) throws -> Int {
+        let phrase = Self.ftsPhrase(for: query)
+        let (filterSQL, filterArgs) = Self.assetFilterSQL(
+            minRating: minRating, tagColor: tagColor, fileType: fileType,
+            tagged: tagged, flag: flag, folder: folder)
+        return try dbQueue.read { db in
+            var args: [any DatabaseValueConvertible] = [phrase]
+            args.append(contentsOf: filterArgs)
+            return try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM asset a
+                JOIN assetSearch ON assetSearch.rowid = a.id
+                WHERE assetSearch MATCH ? AND \(filterSQL)
+                """, arguments: StatementArguments(args)) ?? 0
         }
     }
 }

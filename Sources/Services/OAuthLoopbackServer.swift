@@ -73,8 +73,11 @@ final class OAuthLoopbackServer: @unchecked Sendable {
                         page = "<h2>Connected.</h2><p>You can close this tab "
                             + "and return to SwiftMaestro.</p>"
                     case .failure(let error):
+                        // Escape provider-supplied text (error_description is
+                        // attacker-controlled on a crafted redirect) before
+                        // reflecting it into the HTML response.
                         page = "<h2>Sign-in failed.</h2>"
-                            + "<p>\(error.localizedDescription)</p>"
+                            + "<p>\(Self.htmlEscaped(error.localizedDescription))</p>"
                     }
                     let html = "<!doctype html><html><body style='font-family:sans-serif;"
                         + "margin:3em'>\(page)</body></html>"
@@ -103,6 +106,14 @@ final class OAuthLoopbackServer: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    /// Minimal HTML-escaping for text interpolated into the callback page.
+    private static func htmlEscaped(_ text: String) -> String {
+        text.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
     }
 
     /// Holder resuming exactly once.

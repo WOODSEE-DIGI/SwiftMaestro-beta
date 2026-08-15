@@ -428,47 +428,6 @@ final class ModelCatalog {
             downloadURL: "https://huggingface.co/lmstudio-community/gemma-4-26B-A4B-it-MLX-8bit"
         ),
 
-        // ── Remote: Kimi K3 API ─────────────────────────────────────────────
-
-        // Kimi K3 via Moonshot AI's OpenAI-compatible API. 2.8T MoE, 1M context,
-        // native vision, $3/M input ($0.30 cached), $15/M output.
-        // Requires API key in Keychain (Settings → Secrets → "kimi-k3-api-key").
-        MaestroModel(
-            id: "remote-kimi-k3",
-            displayName: "Kimi K3 (API, 1M ctx)",
-            huggingFaceID: "kimi-k3",
-            isVision: true,
-            estimatedMemoryGB: 0,
-            supportsTools: true,
-            toolCallFormat: .xmlFunction,
-            recTemperature: 0.7, recTopP: 0.8, recRepetitionPenalty: 1.0,
-            recMaxTokens: 32_768,
-            recContextLength: 1_048_576,
-            activeParamsB: 104,
-            remoteBaseURL: "https://api.moonshot.ai"
-        ),
-
-        // Kimi K3 2.8T run LOCALLY via Deltafin's OpenAI-compatible server —
-        // full, unpruned, byte-exact weights expert-streamed from NVMe by the
-        // native Rust runtime. Requires M1 Ultra 128 GB or newer with ~2 TB
-        // free internal storage (full corpus) or ~250 GB (stream mode);
-        // server lifecycle is managed in Settings → Kimi K3. Expect seconds
-        // per token: this is a deep-research/batch model, not interactive.
-        MaestroModel(
-            id: "local-kimi-k3-deltafin",
-            displayName: "Kimi K3 2.8T (local · Deltafin)",
-            huggingFaceID: "deltafin-kimi-k3",
-            isVision: false,
-            estimatedMemoryGB: 0,
-            supportsTools: false,
-            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.0,
-            recMaxTokens: 2_048,
-            recContextLength: 8_192,
-            activeParamsB: 104,
-            remoteBaseURL: DeltafinK3Service.baseURL,
-            remoteRequestTimeout: 3_600
-        ),
-
         // ── Alternative: Large Dense ───────────────────────────────────────
 
         // Open-weight alternative — dense architecture, ~60 GB.
@@ -501,28 +460,6 @@ final class ModelCatalog {
             activeParamsB: 3,
             compactionThreshold: 24_000,
             downloadURL: "https://huggingface.co/lmstudio-community/Qwen3.6-35B-A3B-MLX-4bit"
-        ),
-
-        // ── Frontier: Self-Hosted (512GB+ Unified Memory Required) ───────────
-
-        // Kimi K3 self-hosted — Moonshot AI's 2.8T MoE flagship, open-weight.
-        // 896 experts, 16 active per token, native vision, 1M context.
-        // Smallest GGUF: Q1_0 at 466GB — needs 512GB M3 Ultra Mac Studio.
-        // Requires llama.cpp KDA support (not yet available as of Aug 2026).
-        // Prefer the API entry above for immediate access.
-        MaestroModel(
-            id: "hub-kimi-k3",
-            displayName: "Kimi K3 (2.8T, 512GB Mac Studio)",
-            huggingFaceID: "unsloth/Kimi-K3-GGUF",
-            isVision: true,
-            localPath: nil,
-            estimatedMemoryGB: 466,
-            supportsTools: true,
-            toolCallFormat: .xmlFunction,
-            recTemperature: 0.7, recTopP: 0.8, recRepetitionPenalty: 1.05,
-            recContextLength: 1_048_576,
-            activeParamsB: 50,
-            downloadURL: "https://huggingface.co/unsloth/Kimi-K3-GGUF"
         ),
 
         // ── Utility: Vision Proxy & Embeddings (hidden from picker) ────────

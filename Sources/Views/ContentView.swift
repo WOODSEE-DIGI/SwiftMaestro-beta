@@ -61,7 +61,7 @@ struct ContentView: View {
     var body: some View {
         @Bindable var catalog = catalog
 
-        TilingWorkspaceView()
+        CanvasWorkspaceView(canvasID: CanvasTile.mainCanvasID)
         .toolbar {
             ToolbarItem(placement: .automatic) {
                 HStack(spacing: 4) {
@@ -84,6 +84,14 @@ struct ContentView: View {
                     Image(systemName: "plus")
                 }
                 .help("New project agent")
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    workspaceLayout.resetToDefaultLayout()
+                } label: {
+                    Image(systemName: "rectangle.grid.2x2")
+                }
+                .help("Reset to default layout — Agents/Apps left, chats center, everything else right")
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -370,7 +378,7 @@ struct ContentView: View {
         chatCache.drop(agent.id)
         workspaceLayout.close(kind)
         // Never leave the workspace fully empty — land back on Maestro.
-        if workspaceLayout.root == nil && workspaceLayout.floatingPanels.isEmpty {
+        if workspaceLayout.canvasTiles.isEmpty && workspaceLayout.floatingPanels.isEmpty {
             let navigatorKind = WorkspacePanelKind.agentChat(workspace.navigator.id)
             openPanel(navigatorKind)
         }

@@ -783,6 +783,21 @@ class ChatViewModel: ObservableObject {
         saveHistory()
     }
 
+    /// Revert the conversation to just BEFORE the given user message: its
+    /// text goes back into the input for editing/resending, and that message
+    /// plus everything after it is removed from history (persisted
+    /// immediately). The caller confirms with the user first.
+    func revertTo(messageID: UUID) {
+        guard let idx = messages.firstIndex(where: { $0.id == messageID }),
+              messages[idx].role == .user else { return }
+        generateTask?.cancel()
+        isStreaming = false
+        currentActivity = nil
+        inputText = messages[idx].content
+        messages.removeSubrange(idx...)
+        saveHistory()
+    }
+
     func cancel(engine: MLXInferenceEngine) {
         generateTask?.cancel()
         engine.cancel()

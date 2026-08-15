@@ -32,3 +32,6 @@ SwiftMaestro-0.1.0-beta.dmg
 **/.swiftpm/
 Vendor/**/*.xcodeproj
 Vendor/**/*.xcworkspace
+
+# Firecrawl research cache
+.firecrawl/

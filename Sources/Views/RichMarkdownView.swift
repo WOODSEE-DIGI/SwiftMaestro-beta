@@ -75,14 +75,32 @@ enum MarkdownParser {
         for line in text.components(separatedBy: .newlines) {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
 
+            // One-line fenced block (fence run + lang + code + closing fence
+            // run on ONE line). Invalid CommonMark but chat models emit it
+            // constantly; without this the markers render as nothing and the
+            // NEXT bare fence swallows all following prose into a bogus block.
+            if !inCodeBlock, let oneLiner = parseOneLineFence(trimmed) {
+                if !currentText.isEmpty {
+                    segments.append(.text(currentText))
+                    currentText = ""
+                }
+                segments.append(.code(language: oneLiner.language, code: oneLiner.code,
+                                      id: "code-\(codeBlockID)"))
+                codeBlockID += 1
+                continue
+            }
+
             // Check for opening/closing fence (``` or ~~~)
             if isFenceOpen(trimmed) || isFenceClose(trimmed) {
                 let currentFenceChar = trimmed.first!
 
                 if inCodeBlock {
-                    // Closing fence: same char, 3+ in a row, nothing else after
-                    if currentFenceChar == fenceChar && trimmed.filter({ $0 == fenceChar }).count >= 3
-                        && trimmed.drop(while: { $0 == fenceChar }).trimmingCharacters(in: .whitespaces).isEmpty {
+                    // Closing fence: same char, 3+ in a row at line start. Prose
+                    // the model glued after the fence run (e.g. a fence run
+                    // followed by "3. Next step:") is kept as a text segment
+                    // instead of invalidating the close and swallowing prose.
+                    if currentFenceChar == fenceChar
+                        && trimmed.prefix(while: { $0 == fenceChar }).count >= 3 {
                         // End of code block
                         segments.append(.code(
                             language: codeLanguage,
@@ -93,6 +111,12 @@ enum MarkdownParser {
                         inCodeBlock = false
                         codeLanguage = ""
                         codeContent = ""
+                        let tail = String(trimmed.drop(while: { $0 == fenceChar }))
+                            .trimmingCharacters(in: .whitespaces)
+                        if !tail.isEmpty {
+                            if !currentText.isEmpty { currentText += "\n" }
+                            currentText += tail
+                        }
                         continue
                     }
                 }
@@ -163,6 +187,31 @@ enum MarkdownParser {
             result.replaceSubrange(matchRange, with: "[\(url)](\(url))")
         }
         return result
+    }
+
+    /// Parses a single-line fenced block: a fence run, optional language tag,
+    /// code, and the closing fence run all on one trimmed line.
+    /// Returns nil when the shape doesn't match (normal multi-line blocks are
+    /// handled by the main loop).
+    private static func parseOneLineFence(_ trimmed: String) -> (language: String, code: String)? {
+        guard let first = trimmed.first, first == "`" || first == "~" else { return nil }
+        let fenceCount = trimmed.prefix(while: { $0 == first }).count
+        guard fenceCount >= 3 else { return nil }
+        let fence = String(repeating: first, count: fenceCount)
+        let afterOpen = trimmed.dropFirst(fenceCount)
+        // Needs a closing fence at the end and real content between them.
+        guard afterOpen.count > fenceCount, afterOpen.hasSuffix(fence) else { return nil }
+        let inner = afterOpen.dropLast(fenceCount).trimmingCharacters(in: .whitespaces)
+        guard !inner.isEmpty else { return nil }
+        // Split an optional leading language tag from the code.
+        if let space = inner.firstIndex(of: " ") {
+            let lang = String(inner[..<space])
+            let code = String(inner[space...]).trimmingCharacters(in: .whitespaces)
+            if !lang.isEmpty, !code.isEmpty {
+                return (lang, code)
+            }
+        }
+        return ("", inner)
     }
 
     /// Check if a trimmed line is an opening fence (3+ backticks or tildes, optionally with language).

@@ -2,8 +2,16 @@ import Foundation
 import CryptoKit
 
 /// Manages Restic backup operations. Wraps the Restic CLI for S3, SFTP, and local backups.
+///
+/// Use the `shared` singleton: views that create their own instance lose all
+/// live state when SwiftUI destroys and recreates the view (e.g. switching
+/// workspace panels mid-backup).
 @Observable
 final class BackupService: @unchecked Sendable {
+    /// The single app-wide instance. Long-running backups keep streaming state
+    /// here even if every backup view is closed and recreated.
+    static let shared = BackupService()
+
     // MARK: - State
 
     var destinations: [BackupDestination] = []
@@ -12,6 +20,7 @@ final class BackupService: @unchecked Sendable {
     var currentState: BackupState = .init()
 
     private var currentProcess: Process?
+    private var cancelRequested = false
     private static let dataURL = SwiftMaestroPaths.dataDir.appendingPathComponent("backup-config.json")
     private static let logsURL = SwiftMaestroPaths.dataDir.appendingPathComponent("backup-logs.json")
 
@@ -84,6 +93,16 @@ final class BackupService: @unchecked Sendable {
            let decoded = try? JSONDecoder().decode([BackupLogEntry].self, from: logData) {
             logs = decoded
         }
+        // Entries persisted as .running are always stale: the process that owned
+        // them died with the previous app session. Mark them interrupted.
+        var cleanedStale = false
+        for idx in logs.indices where logs[idx].status == .running {
+            logs[idx].status = .failed
+            logs[idx].finishedAt = logs[idx].finishedAt ?? Date()
+            logs[idx].errorMessage = "Interrupted — app was closed or restarted"
+            cleanedStale = true
+        }
+        if cleanedStale { save() }
         // Also load launchd logs from the shell backup script
         loadLaunchdLogs()
     }
@@ -136,39 +155,8 @@ final class BackupService: @unchecked Sendable {
 
     // MARK: - Operations
 
-    /// Trigger a backup via the launchd shell script (runs independently of the app).
-    func triggerLaunchdBackup() async throws {
-        let scriptPath = NSHomeDirectory() + "/Scripts/backups/woodsee-backup.sh"
-        guard FileManager.default.isExecutableFile(atPath: scriptPath) else {
-            throw BackupError.binaryNotFound
-        }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-c", scriptPath]
-
-        var env = ProcessInfo.processInfo.environment
-        env["PATH"] = NSHomeDirectory() + "/bin:/usr/local/bin:/opt/homebrew/bin:" + (env["PATH"] ?? "")
-        process.environment = env
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-
-        currentProcess = process
-
-        try process.run()
-    }
-
-    /// Kickstart the launchd job (re-runs it immediately).
-    func kickstartLaunchdJob() {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        process.arguments = ["kickstart", "-k", "gui/\(getuid())/com.woodsee.offsite-backup"]
-        try? process.run()
-        process.waitUntilExit()
-    }
-
     /// Load backup logs from the launchd shell script's log files.
+    /// (The daily 2 AM backup runs via launchd independently of the app.)
     private func loadLaunchdLogs() {
         let logDir = NSHomeDirectory() + "/Library/Logs/woodsee-backup"
         guard let files = try? FileManager.default.contentsOfDirectory(atPath: logDir) else { return }
@@ -260,6 +248,7 @@ final class BackupService: @unchecked Sendable {
     }
 
     func runBackup(job: BackupJob, destination: BackupDestination, password: String) async throws {
+        cancelRequested = false
         let logEntry = BackupLogEntry(jobID: job.id)
         currentState = BackupState(jobID: job.id, phase: .running)
         currentProcess = nil
@@ -269,7 +258,9 @@ final class BackupService: @unchecked Sendable {
         let repoURL = Self.repositoryURL(for: destination)
         let env = Self.environment(for: destination, password: password)
 
-        var args = ["-r", repoURL, "backup", "--verbose", "--json"]
+        // --verbose=2 is required for restic to emit the "scan_finished" verbose_status
+        // event. Per-file verbose lines are cheaply pre-filtered in parseProgressLine.
+        var args = ["-r", repoURL, "backup", "--verbose=2", "--json"]
         for path in job.sourcePaths {
             args.append(path)
         }
@@ -279,33 +270,75 @@ final class BackupService: @unchecked Sendable {
         args.append("--tag=swiftmaestro")
         args.append("--host=\(Host.current().localizedName ?? "mac")")
 
+        let streamLines: @Sendable (String) -> Void = { [weak self] line in
+            self?.parseProgressLine(line)
+        }
+
         do {
-            _ = try await runResticStreaming(args: args, environment: env) { [weak self] line in
-                self?.parseProgressLine(line)
+            do {
+                _ = try await runResticStreaming(args: args, environment: env, lineHandler: streamLines)
+            } catch let error as BackupError {
+                // An interrupted run (app quit, cancelled) can leave a stale lock in
+                // the repo, which fails every subsequent backup. `restic unlock` only
+                // removes locks whose owning process is dead, then retry once.
+                guard case .resticFailed(let output) = error, output.contains("already locked") else {
+                    throw error
+                }
+                _ = try? await runRestic(args: ["-r", repoURL, "unlock"], environment: env)
+                _ = try await runResticStreaming(args: args, environment: env, lineHandler: streamLines)
             }
 
-            currentState.phase = .finished
+            // Retention: prune old snapshots after a successful backup (non-fatal).
+            await MainActor.run { currentState.phase = .pruning }
+            var pruneError: String?
+            do {
+                _ = try await runRestic(args: [
+                    "-r", repoURL, "forget",
+                    "--keep-daily", "7", "--keep-weekly", "4", "--keep-monthly", "6",
+                    "--prune"
+                ], environment: env)
+            } catch {
+                pruneError = error.localizedDescription
+            }
 
-            if let idx = self.logs.firstIndex(where: { $0.id == logEntry.id }) {
-                self.logs[idx].status = .completed
-                self.logs[idx].finishedAt = Date()
-                self.logs[idx].filesScanned = self.currentState.filesScanned
-                self.logs[idx].totalSizeBytes = self.currentState.totalBytes
-                self.logs[idx].uploadedBytes = self.currentState.bytesUploaded
+            await MainActor.run {
+                currentState.pruneComplete = true
+                currentState.phase = .finished
+
+                if let idx = self.logs.firstIndex(where: { $0.id == logEntry.id }) {
+                    self.logs[idx].status = .completed
+                    self.logs[idx].finishedAt = Date()
+                    self.logs[idx].filesScanned = self.currentState.filesScanned
+                    self.logs[idx].totalSizeBytes = self.currentState.totalBytes
+                    self.logs[idx].uploadedBytes = self.currentState.bytesUploaded
+                    self.logs[idx].snapshotID = self.currentState.snapshotID
+                    if let pruneError {
+                        self.logs[idx].errorMessage = "Prune failed: \(pruneError)"
+                    } else if self.currentState.errorCount > 0 {
+                        self.logs[idx].errorMessage = "\(self.currentState.errorCount) files could not be read"
+                    }
+                }
+                if let jobIdx = self.jobs.firstIndex(where: { $0.id == job.id }) {
+                    self.jobs[jobIdx].lastRunDate = Date()
+                }
+                self.save()
             }
-            if let jobIdx = self.jobs.firstIndex(where: { $0.id == job.id }) {
-                self.jobs[jobIdx].lastRunDate = Date()
-            }
-            self.save()
         } catch {
-            currentState.phase = .idle
-
-            if let idx = self.logs.firstIndex(where: { $0.id == logEntry.id }) {
-                self.logs[idx].status = .failed
-                self.logs[idx].finishedAt = Date()
-                self.logs[idx].errorMessage = error.localizedDescription
+            if cancelRequested {
+                // Cancel already updated the log + reset state; nothing further to do.
+                return
             }
-            self.save()
+            await MainActor.run {
+                currentState.phase = .failed
+                currentState.lastError = error.localizedDescription
+
+                if let idx = self.logs.firstIndex(where: { $0.id == logEntry.id }) {
+                    self.logs[idx].status = .failed
+                    self.logs[idx].finishedAt = Date()
+                    self.logs[idx].errorMessage = error.localizedDescription
+                }
+                self.save()
+            }
             throw error
         }
     }
@@ -335,9 +368,24 @@ final class BackupService: @unchecked Sendable {
     }
 
     func cancelBackup() {
+        cancelRequested = true
         currentProcess?.terminate()
         currentProcess = nil
-        currentState.phase = .idle
+        let cancelledJobID = currentState.jobID
+        currentState = BackupState()
+
+        if let jobID = cancelledJobID,
+           let idx = logs.firstIndex(where: { $0.jobID == jobID && $0.status == .running }) {
+            logs[idx].status = .cancelled
+            logs[idx].finishedAt = Date()
+            save()
+        }
+    }
+
+    /// Dismiss the finished/failed status banner, returning the panel to idle.
+    func dismissStatus() {
+        guard currentState.phase == .finished || currentState.phase == .failed else { return }
+        currentState = BackupState()
     }
 
     // MARK: - Checksum Verification
@@ -391,74 +439,112 @@ final class BackupService: @unchecked Sendable {
 
     // MARK: - Progress Parsing
 
+    /// Parses one line of restic's `backup --json` output.
+    ///
+    /// Called from the pipe readability handler (background queue). All state
+    /// mutations are hopped to the main queue so SwiftUI `@Observable` tracking
+    /// fires reliably.
+    ///
+    /// Restic's actual schema (backup.go / ui/json.go):
+    /// - `status`:        percent_done, total_files, files_done, total_bytes,
+    ///                    bytes_done, seconds_elapsed, seconds_remaining, current_files
+    /// - `verbose_status` with `action: "scan_finished"` (only at --verbose=2)
+    /// - `error`:         per-file errors
+    /// - `summary`:       files_new/changed/unmodified, total_files_processed,
+    ///                    total_bytes_processed, data_added, snapshot_id, total_duration
     private func parseProgressLine(_ line: String) {
-        guard let data = line.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        // Cheap pre-filter — with --verbose=2, restic emits one verbose_status line
+        // per file (millions of lines on a big repo). Only parse lines that can
+        // actually change UI state.
+        guard line.contains("\"message_type\"") else { return }
+        let isStatus = line.contains("\"status\"")
+        let isSummary = !isStatus && line.contains("\"summary\"")
+        let isScanFinished = !isStatus && !isSummary && line.contains("scan_finished")
+        let isError = !isStatus && !isSummary && !isScanFinished && line.contains("\"error\"")
+        guard isStatus || isSummary || isScanFinished || isError else { return }
 
-        if let messageType = json["message_type"] as? String {
-            switch messageType {
-            case "status":
-                if let filesNew = json["files_new"] as? Int {
-                    currentState.filesScanned = filesNew
+        guard let data = line.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let messageType = json["message_type"] as? String else { return }
+
+        switch messageType {
+        case "status":
+            let totalFiles = (json["total_files"] as? NSNumber)?.intValue
+            let filesDone = (json["files_done"] as? NSNumber)?.intValue
+            let totalBytes = (json["total_bytes"] as? NSNumber)?.int64Value
+            let bytesDone = (json["bytes_done"] as? NSNumber)?.int64Value
+            let elapsed = (json["seconds_elapsed"] as? NSNumber)?.doubleValue
+            let remaining = (json["seconds_remaining"] as? NSNumber)?.doubleValue
+            let errors = (json["error_count"] as? NSNumber)?.intValue
+            let currentFiles = json["current_files"] as? [String]
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if let totalFiles { currentState.totalFiles = totalFiles }
+                if let filesDone { currentState.filesScanned = filesDone }
+                if let totalBytes { currentState.totalBytes = totalBytes }
+                if let bytesDone { currentState.bytesUploaded = bytesDone }
+                if let elapsed { currentState.secondsElapsed = elapsed }
+                if let remaining, remaining > 0 { currentState.secondsRemaining = remaining }
+                if let errors { currentState.errorCount = errors }
+                if let file = currentFiles?.first { currentState.currentFile = file }
+                if let elapsed, elapsed > 0, let bytesDone {
+                    currentState.speed = Double(bytesDone) / elapsed
                 }
-                if let bytesAdded = json["bytes_added"] as? Int64 {
-                    currentState.bytesUploaded = bytesAdded
-                }
-                if let totalBytes = json["total_bytes"] as? Int64 {
-                    currentState.totalBytes = totalBytes
-                }
-            case "summary":
-                if let totalFiles = json["files_new"] as? Int {
-                    currentState.filesScanned = totalFiles
-                    currentState.totalFiles = totalFiles
-                    currentState.scanComplete = true
-                }
-                if let totalBytes = json["total_bytes"] as? Int64 {
-                    currentState.totalBytes = totalBytes
-                    currentState.bytesUploaded = totalBytes
-                    currentState.uploadComplete = true
-                }
-            default:
-                break
             }
+
+        case "verbose_status":
+            // Only emitted at --verbose >= 2. Marks the end of the scan phase.
+            // Note: this event carries `data_size` (bytes scanned), not `total_bytes`.
+            guard isScanFinished, (json["action"] as? String) == "scan_finished" else { return }
+            let totalFiles = (json["total_files"] as? NSNumber)?.intValue
+            let dataSize = (json["data_size"] as? NSNumber)?.int64Value
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if let totalFiles { currentState.totalFiles = totalFiles }
+                if let dataSize, currentState.totalBytes <= 0 { currentState.totalBytes = dataSize }
+                currentState.scanComplete = true
+            }
+
+        case "error":
+            let item = json["item"] as? String
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                currentState.errorCount += 1
+                if let item { currentState.currentFile = item }
+            }
+
+        case "summary":
+            let totalFilesProcessed = (json["total_files_processed"] as? NSNumber)?.intValue
+            let totalBytesProcessed = (json["total_bytes_processed"] as? NSNumber)?.int64Value
+            let dataAdded = (json["data_added"] as? NSNumber)?.int64Value
+            let snapshotID = json["snapshot_id"] as? String
+            let duration = (json["total_duration"] as? NSNumber)?.doubleValue
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if let totalFilesProcessed {
+                    currentState.filesScanned = totalFilesProcessed
+                    currentState.totalFiles = totalFilesProcessed
+                }
+                if let totalBytesProcessed { currentState.totalBytes = totalBytesProcessed }
+                // data_added = bytes actually written to the repo (deduplicated);
+                // fall back to total processed for the first full backup.
+                currentState.bytesUploaded = dataAdded ?? totalBytesProcessed ?? currentState.bytesUploaded
+                currentState.snapshotID = snapshotID
+                if let duration { currentState.secondsElapsed = duration }
+                currentState.scanComplete = true
+                currentState.uploadComplete = true
+            }
+
+        default:
+            break
         }
     }
 
     // MARK: - Process Execution
 
     func runRestic(args: [String], environment: [String: String]) async throws -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: Self.resticPath)
-        process.arguments = args
-
-        var env = ProcessInfo.processInfo.environment
-        for (key, value) in environment {
-            env[key] = value
-        }
-        process.environment = env
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-
-        currentProcess = process
-
-        return try await withCheckedThrowingContinuation { continuation in
-            process.terminationHandler = { _ in
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                let output = String(data: data, encoding: .utf8) ?? ""
-                if process.terminationStatus == 0 {
-                    continuation.resume(returning: output)
-                } else {
-                    continuation.resume(throwing: BackupError.resticFailed(output))
-                }
-            }
-            do {
-                try process.run()
-            } catch {
-                continuation.resume(throwing: BackupError.binaryNotFound)
-            }
-        }
+        try await runResticStreaming(args: args, environment: environment) { _ in }
     }
 
     private func runResticStreaming(args: [String], environment: [String: String], lineHandler: @escaping @Sendable (String) -> Void) async throws -> String {
@@ -478,24 +564,63 @@ final class BackupService: @unchecked Sendable {
 
         currentProcess = process
 
-        return try await withCheckedThrowingContinuation { continuation in
-            nonisolated(unsafe) var outputBuffer = ""
+        // Accumulator protected by a lock: readabilityHandler and terminationHandler
+        // fire on arbitrary queues.
+        final class Buffer: @unchecked Sendable {
+            private let lock = NSLock()
+            private var output = ""
+            private var pendingLine = ""
+            /// Cap retained output so multi-hour verbose runs don't grow memory.
+            private let maxRetained = 512 * 1024
 
-            pipe.fileHandleForReading.readabilityHandler = { handle in
-                let data = handle.availableData
-                guard !data.isEmpty else { return }
-                if let str = String(data: data, encoding: .utf8) {
-                    outputBuffer += str
-                    let lines = str.components(separatedBy: "\n")
-                    for line in lines where !line.isEmpty {
-                        lineHandler(line)
-                    }
+            func append(_ str: String, lineHandler: (String) -> Void) {
+                lock.lock()
+                output += str
+                if output.count > maxRetained {
+                    output = String(output.suffix(maxRetained))
+                }
+                pendingLine += str
+                var lines: [String] = []
+                while let newline = pendingLine.firstIndex(of: "\n") {
+                    lines.append(String(pendingLine[pendingLine.startIndex..<newline]))
+                    pendingLine = String(pendingLine[pendingLine.index(after: newline)...])
+                }
+                lock.unlock()
+                for line in lines where !line.isEmpty {
+                    lineHandler(line)
                 }
             }
 
-            process.terminationHandler = { _ in
+            /// Flush a final line that had no trailing newline, and return full output.
+            func finish(lineHandler: (String) -> Void) -> String {
+                lock.lock()
+                let remainder = pendingLine
+                pendingLine = ""
+                let full = output
+                lock.unlock()
+                if !remainder.isEmpty {
+                    lineHandler(remainder)
+                }
+                return full
+            }
+        }
+        let buffer = Buffer()
+
+        return try await withCheckedThrowingContinuation { continuation in
+            pipe.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                guard !data.isEmpty, let str = String(data: data, encoding: .utf8) else { return }
+                buffer.append(str, lineHandler: lineHandler)
+            }
+
+            process.terminationHandler = { proc in
                 pipe.fileHandleForReading.readabilityHandler = nil
-                continuation.resume(returning: outputBuffer)
+                let output = buffer.finish(lineHandler: lineHandler)
+                if proc.terminationReason == .exit, proc.terminationStatus == 0 {
+                    continuation.resume(returning: output)
+                } else {
+                    continuation.resume(throwing: BackupError.resticFailed(output))
+                }
             }
 
             do {

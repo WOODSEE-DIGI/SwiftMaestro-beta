@@ -168,13 +168,15 @@ struct OverlayConfig: Codable, Equatable, Sendable {
 // MARK: - Overlay Builder Store
 
 /// Persists overlay configurations and manages the builder state.
+///
+/// Persistence model: EVERY overlay type remembers its own settings, always.
+/// Each edit is saved into `typeDrafts[type]` immediately — no presets, no
+/// save button, no linking. Switching types and relaunching the app always
+/// restores exactly what you last saw.
 @Observable
 @MainActor
 final class OverlayBuilderStore {
     static let shared = OverlayBuilderStore()
-
-    /// All saved overlay presets, keyed by name.
-    var presets: [String: OverlayConfig] = [:]
 
     /// Currently selected overlay type.
     var selectedType: OverlayType = .lowerThird
@@ -207,33 +209,28 @@ final class OverlayBuilderStore {
             ? CanvasSizePresets.all[canvasSizeIndex].h : customHeight
     }
 
-    private let presetsKey = "overlayBuilder.presets"
     private let globalsKey = "overlayBuilder.globals"
-    private let currentFieldsKey = "overlayBuilder.currentFields"
     private let currentTypeKey = "overlayBuilder.currentType"
+    private let typeDraftsKey = "overlayBuilder.typeDrafts"
+
+    /// The saved settings for every overlay type (OverlayType.rawValue →
+    /// fields). This IS the save — every edit lands here immediately.
+    private var typeDrafts: [String: [String: String]] = [:]
 
     private init() {
-        loadPresets()
         loadGlobals()
-        loadCurrentState()
-        if currentFields.isEmpty {
-            currentFields = OverlayConfig.defaults(for: selectedType).fields
+        loadTypeDraftsMigratingLegacyPresets()
+        if let typeRaw = UserDefaults.standard.string(forKey: currentTypeKey),
+           let type = OverlayType(rawValue: typeRaw) {
+            selectedType = type
         }
+        currentFields = typeDrafts[selectedType.rawValue]
+            ?? Self.legacyCurrentFields(for: selectedType)
+            ?? OverlayConfig.defaults(for: selectedType).fields
+        typeDrafts[selectedType.rawValue] = currentFields
     }
 
     // MARK: - Persistence
-
-    private func loadPresets() {
-        guard let data = UserDefaults.standard.data(forKey: presetsKey),
-              let decoded = try? JSONDecoder().decode([String: OverlayConfig].self, from: data)
-        else { return }
-        presets = decoded
-    }
-
-    func savePresets() {
-        guard let data = try? JSONEncoder().encode(presets) else { return }
-        UserDefaults.standard.set(data, forKey: presetsKey)
-    }
 
     private func loadGlobals() {
         guard let data = UserDefaults.standard.data(forKey: globalsKey),
@@ -258,25 +255,57 @@ final class OverlayBuilderStore {
         UserDefaults.standard.set(data, forKey: globalsKey)
     }
 
-    // MARK: - Autosave
-
-    private func loadCurrentState() {
-        if let data = UserDefaults.standard.data(forKey: currentFieldsKey),
-           let decoded = try? JSONDecoder().decode([String: String].self, from: data) {
-            currentFields = decoded
-        }
-        if let typeRaw = UserDefaults.standard.string(forKey: currentTypeKey),
-           let type = OverlayType(rawValue: typeRaw) {
-            selectedType = type
-        }
-    }
-
-    private func autosaveCurrentState() {
-        if let data = try? JSONEncoder().encode(currentFields) {
-            UserDefaults.standard.set(data, forKey: currentFieldsKey)
+    /// Persist everything: all type drafts + the selected type + globals.
+    private func autosave() {
+        if let data = try? JSONEncoder().encode(typeDrafts) {
+            UserDefaults.standard.set(data, forKey: typeDraftsKey)
         }
         UserDefaults.standard.set(selectedType.rawValue, forKey: currentTypeKey)
         saveGlobals()
+    }
+
+    // MARK: - Legacy Migration (presets → per-type saved settings)
+
+    /// Seeds typeDrafts from the removed preset system, then archives the old
+    /// keys (nothing user-created is deleted). Each type's alphabetically-first
+    /// preset becomes that type's saved settings; the linked/draft state from
+    /// the preset era is folded in via `legacyCurrentFields`.
+    private func loadTypeDraftsMigratingLegacyPresets() {
+        let defaults = UserDefaults.standard
+        if let data = defaults.data(forKey: typeDraftsKey),
+           let decoded = try? JSONDecoder().decode([String: [String: String]].self, from: data) {
+            typeDrafts = decoded
+        }
+
+        let legacyPresetsKey = "overlayBuilder.presets"
+        guard let data = defaults.data(forKey: legacyPresetsKey),
+              let presets = try? JSONDecoder().decode([String: OverlayConfig].self, from: data),
+              !presets.isEmpty else { return }
+
+        // Alphabetically-first preset per type wins that type's saved settings.
+        for config in presets.sorted(by: { $0.key < $1.key }).map(\.value) {
+            let key = config.type.rawValue
+            if typeDrafts[key] == nil {
+                typeDrafts[key] = config.fields
+            }
+        }
+
+        // Archive, never delete (backup-before-destructive rule).
+        defaults.set(data, forKey: legacyPresetsKey + ".archived")
+        defaults.removeObject(forKey: legacyPresetsKey)
+        defaults.removeObject(forKey: "overlayBuilder.activePreset")
+    }
+
+    /// The preset-era "current draft" key — only meaningful if its type matches.
+    private static func legacyCurrentFields(for type: OverlayType) -> [String: String]? {
+        let defaults = UserDefaults.standard
+        guard let typeRaw = defaults.string(forKey: "overlayBuilder.currentType"),
+              typeRaw == type.rawValue,
+              let data = defaults.data(forKey: "overlayBuilder.currentFields"),
+              let fields = try? JSONDecoder().decode([String: String].self, from: data)
+        else { return nil }
+        defaults.removeObject(forKey: "overlayBuilder.currentFields")
+        return fields
     }
 
     struct Globals: Codable {
@@ -291,37 +320,22 @@ final class OverlayBuilderStore {
         var safeAreaColorHex: String?
     }
 
-    // MARK: - Preset Management
-
-    func saveCurrentAsPreset(name: String) {
-        let config = OverlayConfig(type: selectedType, fields: currentFields)
-        presets[name] = config
-        savePresets()
-    }
-
-    func loadPreset(name: String) {
-        guard let config = presets[name] else { return }
-        selectedType = config.type
-        currentFields = config.fields
-        autosaveCurrentState()
-    }
-
-    func deletePreset(name: String) {
-        presets.removeValue(forKey: name)
-        savePresets()
-    }
+    // MARK: - Type Selection
 
     func selectType(_ type: OverlayType) {
+        guard type != selectedType else { return }
+        // currentFields is already saved per edit, but flush once more so a
+        // mid-drag (setFieldLive) position is never lost on type switch.
+        typeDrafts[selectedType.rawValue] = currentFields
         selectedType = type
-        if currentFields.isEmpty {
-            currentFields = OverlayConfig.defaults(for: type).fields
-        }
-        autosaveCurrentState()
+        currentFields = typeDrafts[type.rawValue] ?? OverlayConfig.defaults(for: type).fields
+        autosave()
     }
 
     func resetToDefaults() {
         currentFields = OverlayConfig.defaults(for: selectedType).fields
-        autosaveCurrentState()
+        typeDrafts[selectedType.rawValue] = currentFields
+        autosave()
     }
 
     // MARK: - Field Access
@@ -332,11 +346,43 @@ final class OverlayBuilderStore {
 
     func setField(_ key: String, value: String) {
         currentFields[key] = value
-        autosaveCurrentState()
+        typeDrafts[selectedType.rawValue] = currentFields
+        autosave()
+    }
+
+    /// Update a field WITHOUT persisting — pair with `flushDraft()` when the
+    /// interaction ends. Keeps mouse-rate events (drag-to-move) from
+    /// JSON-encoding and writing UserDefaults per frame.
+    func setFieldLive(_ key: String, value: String) {
+        currentFields[key] = value
+        typeDrafts[selectedType.rawValue] = currentFields
+    }
+
+    /// Persist after a batch of live updates.
+    func flushDraft() {
+        autosave()
     }
 
     func colorField(_ key: String) -> Color {
         Color(hex6: currentFields[key] ?? "#7c3aed")
+    }
+
+    // MARK: - Image Cache
+
+    /// Path-keyed image cache. The Canvas draw closure and inspector thumbnail
+    /// used to `NSImage(contentsOfFile:)` on every redraw — re-reading and
+    /// re-decoding the file per keystroke. Untracked on purpose: populating
+    /// the cache during rendering must not trigger view invalidation.
+    @ObservationIgnored
+    private var imageCache: [String: NSImage] = [:]
+
+    func image(atPath path: String) -> NSImage? {
+        guard !path.isEmpty else { return nil }
+        if let cached = imageCache[path] { return cached }
+        guard let image = NSImage(contentsOfFile: path) else { return nil }
+        if imageCache.count > 20 { imageCache.removeAll() }
+        imageCache[path] = image
+        return image
     }
 
     func numField(_ key: String) -> Double {

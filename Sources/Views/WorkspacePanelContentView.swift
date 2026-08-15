@@ -110,6 +110,8 @@ struct WorkspacePanelContentView: View {
             OverlayBuilderView()
         case .backup:
             BackupStatusPanel()
+        case .voiceNotes:
+            VoiceNotesPanel()
         }
         }
     }

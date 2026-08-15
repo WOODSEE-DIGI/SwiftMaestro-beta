@@ -150,9 +150,18 @@ struct ChatView: View {
 
     /// Project names selectable as plan scopes in the Plans sheet: Maestro
     /// can browse every project's shared plans; a project agent sees its own.
+    /// Also includes every project scope persisted on disk — a model can
+    /// invent a scope that matches no workspace project, and hiding it would
+    /// make those plans unreachable (the "where did my plan go?" bug).
     private var planScopeProjects: [String] {
-        if vm.agent.kind == .navigator { return workspace.visibleProjects.map(\.name) }
-        return vm.projectName.map { [$0] } ?? []
+        var names = vm.agent.kind == .navigator
+            ? workspace.visibleProjects.map(\.name)
+            : (vm.projectName.map { [$0] } ?? [])
+        for extra in planStore.knownProjectNames()
+        where !names.contains(where: { $0.caseInsensitiveCompare(extra) == .orderedSame }) {
+            names.append(extra)
+        }
+        return names
     }
 
     /// Plans visible to this agent (personal + its project scopes), paired with
@@ -727,7 +736,7 @@ struct ChatView: View {
                             message: message,
                             isActive: vm.isStreaming && message.id == vm.messages.last?.id,
                             onRevert: message.role == .user
-                                ? { vm.inputText = message.content }
+                                ? { revertTarget = message }
                                 : nil
                         )
                         .id(message.id)
@@ -760,8 +769,29 @@ struct ChatView: View {
                     }
                 }
             }
+            .alert(
+                "Revert to this message?",
+                isPresented: Binding(
+                    get: { revertTarget != nil },
+                    set: { if !$0 { revertTarget = nil } }
+                ),
+                presenting: revertTarget
+            ) { target in
+                Button("Revert", role: .destructive) {
+                    vm.revertTo(messageID: target.id)
+                    revertTarget = nil
+                }
+                Button("Cancel", role: .cancel) { revertTarget = nil }
+            } message: { target in
+                let idx = vm.messages.firstIndex(where: { $0.id == target.id }) ?? vm.messages.count
+                let removed = vm.messages.count - idx
+                Text("The message text moves back into the input, and \(removed) message(s) from that point on are deleted. This cannot be undone.")
+            }
         }
     }
+
+    /// The user message pending a revert confirmation (see Revert alert).
+    @State private var revertTarget: Message?
 
     /// Shows a spinner + engine state while a model is loading or the first
     /// token is pending (the assistant bubble is still empty). A large model's

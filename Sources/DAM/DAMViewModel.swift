@@ -227,11 +227,20 @@ final class DAMViewModel {
             let fileType = filterFileType
             let tagged = filterTagged
             let flag = filterFlag
+            let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
             async let page = fetchPage(offset: 0)
             async let count = Task.detached(priority: .userInitiated) { [database] in
-                try database.assetCount(folder: folder, minRating: rating,
-                                        tagColor: tagColor, fileType: fileType,
-                                        tagged: tagged, flag: flag)
+                // Count must match the results path: plain browse counts with
+                // filters; search counts with filters AND the query.
+                if query.isEmpty {
+                    return try database.assetCount(folder: folder, minRating: rating,
+                                                   tagColor: tagColor, fileType: fileType,
+                                                   tagged: tagged, flag: flag)
+                }
+                return try database.searchAssetCount(matching: query, folder: folder,
+                                                     minRating: rating,
+                                                     tagColor: tagColor, fileType: fileType,
+                                                     tagged: tagged, flag: flag)
             }.value
             assets = try await page
             totalAssetCount = (try? await count) ?? assets.count
@@ -374,14 +383,14 @@ final class DAMViewModel {
                     tagColor: tagColor, fileType: fileType,
                     tagged: tagged, flag: flag)
             }
-            let ids = try database.searchAssetIDs(matching: query, folder: folder, limit: limit)
-            guard !ids.isEmpty else { return [DAMAsset]() }
-            let found = try await database.dbQueue.read { db in
-                try DAMAsset.fetchAll(db, keys: ids)
-            }
-            // Preserve FTS rank order (fetchAll(keys:) is unordered).
-            let byID = Dictionary(found.map { ($0.id ?? -1, $0) }, uniquingKeysWith: { first, _ in first })
-            return ids.compactMap { byID[$0] }
+            // Search WITH the toolbar filters applied and real pagination —
+            // the old path ignored both, so the count disagreed and "load
+            // more" re-fetched page 1 forever.
+            return try database.searchAssets(
+                matching: query, folder: folder, minRating: rating,
+                tagColor: tagColor, fileType: fileType,
+                tagged: tagged, flag: flag,
+                limit: limit, offset: offset)
         }.value
     }
 

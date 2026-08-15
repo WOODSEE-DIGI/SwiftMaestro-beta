@@ -425,7 +425,7 @@ actor DAMImportService {
             try String.fetchAll(db, sql: """
                 SELECT path FROM asset
                 WHERE xattrKeywords IS NULL
-                   OR (tagColors IS NULL AND xattrKeywords IS NOT NULL)
+                   OR (tagColors IS NULL AND xattrKeywords IS NOT NULL AND xattrKeywords != '')
                 ORDER BY
                   CASE WHEN path LIKE '/Users/%' THEN 0
                        WHEN path LIKE '/Volumes/%' THEN 1
@@ -653,7 +653,13 @@ actor DAMImportService {
     ) -> (names: String?, colors: String?) {
         let attribute = "com.apple.metadata:_kMDItemUserTags"
         let length = getxattr(url.path, attribute, nil, 0, 0, XATTR_NOFOLLOW)
-        guard length > 0 else { return (nil, nil) }
+        if length <= 0 {
+            // ENODATA (aka ENOATTR on Darwin) = attribute definitively absent
+            // → the file has NO Finder tags. Report "" (empty = "read, none")
+            // so enrichment never retries this file. Any other error (EPERM,
+            // EIO, …) = couldn't read → nil, retried on a later pass.
+            return errno == ENODATA ? ("", nil) : (nil, nil)
+        }
 
         var data = Data(count: length)
         let read = data.withUnsafeMutableBytes { buffer -> Int in
@@ -692,7 +698,9 @@ actor DAMImportService {
             }
         }
 
-        let namesStr = names.isEmpty ? nil : names.joined(separator: ", ")
+        // "" (not nil) = "read, no tags" — lets enrichment permanently skip
+        // untagged files, and clears the catalog when a tag is removed in Finder.
+        let namesStr = names.isEmpty ? "" : names.joined(separator: ", ")
         let colorsStr: String? = colorMap.isEmpty ? nil : (
             try? JSONSerialization.data(withJSONObject: colorMap)
         ).flatMap { String(data: $0, encoding: .utf8) }
