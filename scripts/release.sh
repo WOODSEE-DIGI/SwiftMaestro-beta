@@ -1,10 +1,9 @@
 #!/bin/bash
 # Full release pipeline for SwiftMaestro.
 #
-# Builds a Developer ID-signed Release app, produces two .dmgs:
+# Builds a Developer ID-signed Release app and produces the full .dmg:
 #   - SwiftMaestro-<VERSION>-full.dmg  (app + Gemma 4 + WhisperKit)
-#   - SwiftMaestro-<VERSION>-beta.dmg   (app + WhisperKit only)
-# signs them, notarizes them (unless SKIP_NOTARIZE=1), generates the Sparkle
+# signs it, notarizes it (unless SKIP_NOTARIZE=1), generates the Sparkle
 # appcast, and stages everything in dist/ for upload.
 #
 # Env overrides:
@@ -51,11 +50,10 @@ echo "--- Building full installer ---"
 ./scripts/package-full.sh
 mv "${APP_NAME}-${VERSION}-full.dmg" "$DIST_DIR/"
 
-# Build the light installer.
-echo ""
-echo "--- Building light installer ---"
-./scripts/package-light.sh
-mv "${APP_NAME}-${VERSION}-beta.dmg" "$DIST_DIR/"
+# Note: the lightweight beta DMG (app + WhisperKit only) was retired
+# 2026-08-15 — the full installer is distributed via Onidel storage on
+# swiftmaestro.com, so the 3GB lite variant no longer ships.
+# scripts/package-light.sh remains in the repo for reference but is unused.
 
 # Generate the Sparkle appcast.
 echo ""
@@ -127,9 +125,8 @@ if [ "${UPLOAD:-0}" = "1" ]; then
     fi
 
     echo ""
-    echo "--- Uploading DMGs to Onidel Object Storage (Sydney) ---"
+    echo "--- Uploading DMG to Onidel Object Storage (Sydney) ---"
     "$ONIDEL_UPLOAD" "$DIST_DIR/${APP_NAME}-${VERSION}-full.dmg"
-    "$ONIDEL_UPLOAD" "$DIST_DIR/${APP_NAME}-${VERSION}-beta.dmg"
 
     echo ""
     echo "--- Uploading appcast.xml to Onidel ---"
