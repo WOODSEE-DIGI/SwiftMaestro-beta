@@ -87,9 +87,20 @@ struct ChatPanelHeaderToolbar: View {
     }
 
     private func clearChat() {
-        guard let agent = workspace.agent(id: agentID),
-              let cache = ChatViewModelCache.shared else { return }
-        let vm = cache.viewModel(for: agent, projectName: workspace.projectName(for: agent))
-        vm.clearChat()
+        // Clear by ID unconditionally: previously this guarded on the agent
+        // record existing, so a panel whose agent lookup failed (stale layout
+        // tile, unpersisted agent, or an agent restored differently after
+        // relaunch) silently did NOTHING — the dialog dismissed and the chat
+        // stayed. Clear by ID instead: drop the cached view-model (the panel
+        // re-creates a fresh one on next render) and remove any persisted
+        // history file for the same id.
+        ChatHistoryStore.clear(agentId: agentID)
+        if let agent = workspace.agent(id: agentID), let cache = ChatViewModelCache.shared {
+            let vm = cache.viewModel(for: agent, projectName: workspace.projectName(for: agent))
+            vm.clearChat()
+        } else {
+            NSLog("[CLEARCHAT] agent \(agentID) not found in workspace — cleared history file and dropped cached VM only")
+            ChatViewModelCache.shared?.drop(agentID)
+        }
     }
 }
