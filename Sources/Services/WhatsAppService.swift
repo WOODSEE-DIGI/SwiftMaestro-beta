@@ -97,6 +97,18 @@ final class WhatsAppService {
                 }
             }
         }
+        // Fresh-install fallback: the bundled whatsapp server extracts to
+        // app-support/mcp-servers/whatsapp/, with the bridge (and its compiled
+        // whatsapp-client binary) in a sibling folder. Resolve from there even
+        // when no whatsapp MCP entry is saved or enabled — e.g. a brand-new
+        // account where the bundled entry was never customised.
+        let bundled = SwiftMaestroPaths.appSupportDir
+            .appendingPathComponent("mcp-servers/whatsapp/whatsapp-bridge", isDirectory: true)
+        if FileManager.default.fileExists(
+            atPath: bundled.appendingPathComponent("whatsapp-client").path
+        ) {
+            return bundled
+        }
         return nil
     }
 

@@ -74,7 +74,7 @@ struct CanvasTile: Identifiable, Codable, Hashable, Sendable {
     /// Smallest sane span (a kind with a wide minimum column gets more cells).
     var minColSpan: Int {
         let minWidth = kinds.map(\.minColumnWidth).max() ?? 280
-        return minWidth > 560 ? 5 : minWidth > 420 ? 4 : 3
+        return minWidth > 560 ? 5 : minWidth > 420 ? 4 : minWidth > 200 ? 3 : 2
     }
     var minRowSpan: Int { 2 }
 
@@ -373,6 +373,11 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         // 560 was a hard floor that stopped users resizing the chat smaller
         // on the canvas grid. 380 keeps it readable; go narrower by choice.
         case .agentChat: return 380
+        // Agents and Apps are simple icon+label lists — they stay usable as
+        // narrow rails, so they get a lower floor (2 grid cells ≈ 300 px on a
+        // 1440p canvas) than content-heavy panels. Requested so the two
+        // sidebars can share the space of one normal panel.
+        case .agents, .appLauncher: return 160
         default: return 320
         }
     }

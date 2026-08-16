@@ -37,6 +37,13 @@ struct WorkspacePanelContainer<Content: View>: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+                // The header must always win the layout negotiation: when a
+                // panel's content has a large minimum height (e.g. MaestroDocs'
+                // welcome state) and the tile is short, the overflowing VStack
+                // used to get clipped at BOTH edges — cutting the header off
+                // the top entirely. fixedSize pins the header to its ideal
+                // height; the content below absorbs the crunch instead.
+                .fixedSize(horizontal: false, vertical: true)
             content()
         }
     }
