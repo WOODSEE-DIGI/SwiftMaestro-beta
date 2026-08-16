@@ -20,7 +20,7 @@ struct ContentView: View {
     @State private var workspaceLayout = WorkspaceLayoutState.shared
     /// Per-agent chat view-models, kept alive so switching agents preserves the
     /// in-flight view state (history itself is persisted by ChatHistoryStore).
-    @State private var chatCache = ChatViewModelCache()
+    @State private var chatCache = ChatViewModelCache.shared
     @State private var newProjectName = ""
     @State private var newAgentName = ""
     @State private var newAgentCategory: AgentCategory = .general
@@ -197,9 +197,9 @@ struct ContentView: View {
                     openWindow(id: "workspace-panel-window", value: WorkspacePanelWindowID(kind: kind))
                 }
             }
-            // ChatViewModelCache.shared is set by its own init() now (see that
-            // type's doc comment) — it must be valid before this view's very
-            // first body evaluation, which is earlier than .onAppear ever runs.
+            // ChatViewModelCache.shared is a non-optional singleton (see that
+            // type's doc comment) — always valid, even before this view's very
+            // first body evaluation.
             chatCache.setVisionProxyService(visionProxyService)
             // When a delegation starts, open/front a floating chat window for the
             // sub-agent so the user can watch Maestro and Scribe side-by-side.
@@ -462,35 +462,33 @@ final class ChatViewModelCache {
     private var byID: [UUID: ChatViewModel] = [:]
     private var visionProxyService: VisionProxyService?
 
-    /// Shared instance accessible from static methods for delegate streaming.
-    nonisolated(unsafe) static var shared: ChatViewModelCache?
+    /// The single shared cache for the whole process.
+    ///
+    /// This MUST be a non-optional lazily-initialized singleton. The previous
+    /// design (`static var shared: ChatViewModelCache?` assigned from `init`)
+    /// had two failure modes:
+    ///  1. `shared == nil` during the first body evaluation (the original race
+    ///     this type's init-self-registration was added to fix), and
+    ///  2. worse: EVERY `ChatViewModelCache()` construction silently replaced
+    ///     `shared`. ContentView's `@State` constructs one per main window, so
+    ///     with multiple windows (or window-state restoration) `shared` flipped
+    ///     to the newest window's EMPTY cache. Chat views kept their existing
+    ///     VMs alive via `@StateObject`, but anything reaching for
+    ///     `shared.viewModel(for:)` afterwards (Clear Chat, delegate streaming,
+    ///     reloadMessages) minted a FRESH empty VM and mutated that phantom —
+    ///     the on-screen conversation never changed. That is exactly the
+    ///     "Clear Chat button does nothing" bug.
+    /// A `static let` can never be nil, can never be replaced, and initializes
+    /// synchronously on first access — all three problems gone.
+    nonisolated static let shared = ChatViewModelCache()
     /// Called on the main actor when a delegation to `agentID` begins, so the UI
     /// can open or front a floating chat window for that sub-agent.
     var onOpenAgentWindow: ((UUID) -> Void)?
 
-    /// Self-registers on construction rather than relying on a caller to set
-    /// `shared` later (previously done in ContentView's `.onAppear`). That was
-    /// a real race: any `.agentChat` panel already persisted/docked from a
-    /// prior session renders as part of ContentView's very FIRST body
-    /// evaluation, which unavoidably happens before `.onAppear` fires —
-    /// `WorkspacePanelContentView` would see `shared == nil` on that first
-    /// paint and permanently show "Agent Not Found" for the rest of the
-    /// session, since mutating a plain static var later never triggers
-    /// SwiftUI to re-render the already-mounted view (it isn't
-    /// `@Observable`-tracked). Floating panel windows opened via a fresh
-    /// `openWindow(...)` call happened to dodge this because constructing a
-    /// new window scene takes measurably longer than the few CPU cycles
-    /// between `@State private var chatCache = ChatViewModelCache()`'s
-    /// construction and `.onAppear` firing — enough of a head start that
-    /// `shared` was usually already set by the time THAT content rendered,
-    /// which is why the bug was intermittent (docked panels: broken;
-    /// floating windows: usually fine) rather than 100% reproducible.
-    /// Self-registering in `init` removes the timing dependency entirely:
-    /// `shared` is valid the instant the object exists, before ANY view
-    /// (docked or floating) gets a chance to render.
-    init() {
-        Self.shared = self
-    }
+    /// Non-isolated so `static let shared` can initialize without hopping to the
+    /// main actor. All stored properties have defaults; nothing actor-isolated
+    /// is touched here.
+    nonisolated init() {}
 
     func setVisionProxyService(_ service: VisionProxyService) {
         self.visionProxyService = service

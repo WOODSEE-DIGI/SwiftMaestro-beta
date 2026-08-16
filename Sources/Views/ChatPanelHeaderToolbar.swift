@@ -95,12 +95,14 @@ struct ChatPanelHeaderToolbar: View {
         // re-creates a fresh one on next render) and remove any persisted
         // history file for the same id.
         ChatHistoryStore.clear(agentId: agentID)
-        if let agent = workspace.agent(id: agentID), let cache = ChatViewModelCache.shared {
-            let vm = cache.viewModel(for: agent, projectName: workspace.projectName(for: agent))
+        if let agent = workspace.agent(id: agentID) {
+            let vm = ChatViewModelCache.shared.viewModel(
+                for: agent, projectName: workspace.projectName(for: agent))
+            NSLog("[CLEARCHAT] clearing \(agent.name) (\(agentID)) — \(vm.messages.count) messages before clear")
             vm.clearChat()
         } else {
             NSLog("[CLEARCHAT] agent \(agentID) not found in workspace — cleared history file and dropped cached VM only")
-            ChatViewModelCache.shared?.drop(agentID)
+            ChatViewModelCache.shared.drop(agentID)
         }
     }
 }

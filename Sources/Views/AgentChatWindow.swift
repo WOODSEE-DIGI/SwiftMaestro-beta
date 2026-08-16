@@ -95,21 +95,10 @@ struct AgentChatWindowView: View {
             vm = nil
             return
         }
-        if let cached = ChatViewModelCache.shared?.viewModel(
+        vm = ChatViewModelCache.shared.viewModel(
             for: agent,
             projectName: workspace.projectName(for: agent)
-        ) {
-            vm = cached
-        } else {
-            vm = makeViewModel(for: agent)
-        }
-    }
-
-    private func makeViewModel(for agent: AgentRecord) -> ChatViewModel {
-        ChatViewModel(
-            agent: agent,
-            projectName: workspace.projectName(for: agent),
-            visionProxyService: visionProxyService)
+        )
     }
 
     private var missingAgentView: some View {

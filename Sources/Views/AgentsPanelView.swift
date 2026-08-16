@@ -107,7 +107,7 @@ struct AgentsPanelView: View {
         }
         .contextMenu {
             Button("Clear Chat") {
-                ChatViewModelCache.shared?.viewModel(
+                ChatViewModelCache.shared.viewModel(
                     for: agent, projectName: workspace.projectName(for: agent)
                 ).clearChat()
             }

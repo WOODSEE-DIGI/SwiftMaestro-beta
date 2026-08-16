@@ -80,8 +80,8 @@ struct WorkspacePanelContentView: View {
         case .scenes:
             StudioSceneView()
         case .agentChat(let id):
-            if let agent = workspace.agent(id: id), let cache = ChatViewModelCache.shared {
-                ChatView(vm: cache.viewModel(
+            if let agent = workspace.agent(id: id) {
+                ChatView(vm: ChatViewModelCache.shared.viewModel(
                     for: agent,
                     projectName: workspace.projectName(for: agent)))
                     .id(agent.id)

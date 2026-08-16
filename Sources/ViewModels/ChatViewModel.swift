@@ -812,6 +812,9 @@ class ChatViewModel: ObservableObject {
         generateTask?.cancel()
         currentActivity = nil
         ChatHistoryStore.clear(agentId: agent.id)
+        // Empty first so the UI clears immediately even if rebuilding the
+        // system prompt below ever stalls (rule-file reads, network mounts).
+        messages = []
         currentModelHuggingFaceID = Self.effectiveModelHuggingFaceID(for: agent)
         messages = [Self.systemMessage(
             for: agent, projectName: projectName, workingDirectory: workingDirectory,
@@ -819,6 +822,7 @@ class ChatViewModel: ObservableObject {
         isStreaming = false
         lastCompactionMessageCount = 0
         lastCompactionTime = nil
+        NSLog("[CLEARCHAT] \(agent.name) (\(agent.id)) chat cleared")
     }
 
     // MARK: - Delegate streaming
@@ -838,22 +842,21 @@ class ChatViewModel: ObservableObject {
     @MainActor
     static func streamToDelegate(agentID: String, token: String) async {
         let cache = ChatViewModelCache.shared
-        NSLog("[STREAM] streamToDelegate agentID=\(agentID) token=\(token.prefix(30)) cache=\(cache != nil ? "exists" : "NIL")")
         if token == "[START]" {
             let modelName = Self.effectiveDelegateModelNames[agentID]
-            cache?.beginDelegation(
+            cache.beginDelegation(
                 forAgentID: UUID(uuidString: agentID) ?? UUID(),
                 modelName: modelName)
             return
         }
         if token == "[FINISH]" {
-            cache?.finishDelegation(forAgentID: UUID(uuidString: agentID) ?? UUID())
+            cache.finishDelegation(forAgentID: UUID(uuidString: agentID) ?? UUID())
             activeDelegateHandlers.removeValue(forKey: agentID)
             effectiveDelegateModelNames.removeValue(forKey: agentID)
             return
         }
 
-        cache?.appendToken(token, toAgentID: UUID(uuidString: agentID) ?? UUID())
+        cache.appendToken(token, toAgentID: UUID(uuidString: agentID) ?? UUID())
     }
 
     // MARK: - System prompt

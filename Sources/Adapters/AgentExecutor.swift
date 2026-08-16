@@ -2074,12 +2074,9 @@ final class AgentExecutor: Sendable {
                 timestamp: completedAt, modelName: subModelDisplayName))
             ChatHistoryStore.save(msgs, agentId: target.id)
             NSLog("[DELEGATE] saving \(msgs.count) messages for \(target.name) (id=\(target.id))")
-            if let cache = ChatViewModelCache.shared {
-                NSLog("[DELEGATE] cache has VM for \(target.name): \(cache.hasViewModel(for: target.id))")
-                cache.reloadMessages(forAgentID: target.id, messages: msgs)
-            } else {
-                NSLog("[DELEGATE] ChatViewModelCache.shared is NIL — UI won't update")
-            }
+            let cache = ChatViewModelCache.shared
+            NSLog("[DELEGATE] cache has VM for \(target.name): \(cache.hasViewModel(for: target.id))")
+            cache.reloadMessages(forAgentID: target.id, messages: msgs)
         }
         return DelegateResult(project: proj, agent: target.name, answer: answer, error: nil)
     }
