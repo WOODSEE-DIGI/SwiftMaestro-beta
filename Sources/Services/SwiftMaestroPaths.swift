@@ -7,18 +7,28 @@ import Foundation
 /// can be overridden via Settings → Models, but everything else lives under the app root.
 enum SwiftMaestroPaths {
 
+    /// Create a directory, logging (but not throwing) any failure. Persistence
+    /// failures must never be silent — every error gets a `[PERSIST]` log line.
+    private static func createDir(_ dir: URL) {
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        } catch {
+            NSLog("[PERSIST] directory create failed at \(dir.path): \(error.localizedDescription)")
+        }
+    }
+
     /// Base macOS Application Support directory for SwiftMaestro.
     static var appSupportDir: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let dir = base.appendingPathComponent("SwiftMaestro", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        createDir(dir)
         return dir
     }
 
     /// `~/Library/Application Support/SwiftMaestro/data/` — chats, plans, todos, workspace, etc.
     static var dataDir: URL {
         let dir = appSupportDir.appendingPathComponent("data", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        createDir(dir)
         return dir
     }
 
@@ -28,7 +38,7 @@ enum SwiftMaestroPaths {
     static var modelsDir: URL {
         let dir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Ai-models/models", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        createDir(dir)
         return dir
     }
 
@@ -37,21 +47,21 @@ enum SwiftMaestroPaths {
     /// directory-access prompts at launch.
     static var whisperKitDir: URL {
         let dir = appSupportDir.appendingPathComponent("WhisperKit", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        createDir(dir)
         return dir
     }
 
     /// `~/Library/Application Support/SwiftMaestro/logs/` — background process output, downloads.
     static var logsDir: URL {
         let dir = appSupportDir.appendingPathComponent("logs", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        createDir(dir)
         return dir
     }
 
     /// `~/Library/Application Support/SwiftMaestro/backups/` — settings and data backups.
     static var backupsDir: URL {
         let dir = appSupportDir.appendingPathComponent("backups", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        createDir(dir)
         return dir
     }
 
@@ -67,7 +77,7 @@ enum SwiftMaestroPaths {
     /// `PluginService` for how both sources are merged.
     static var pluginsDir: URL {
         let dir = appSupportDir.appendingPathComponent("plugins", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        createDir(dir)
         return dir
     }
 
@@ -75,7 +85,7 @@ enum SwiftMaestroPaths {
     /// skin JSON files. Built-in skins live in `SkinStore` and are not written here.
     static var skinsDir: URL {
         let dir = appSupportDir.appendingPathComponent("skins", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        createDir(dir)
         return dir
     }
 
@@ -126,6 +136,26 @@ enum SwiftMaestroPaths {
             } catch {
                 NSLog("[PATHS] backup migration failed: \(error)")
             }
+        }
+    }
+
+    /// One-shot launch diagnostic: prove the data directory is actually writable
+    /// and readable. The stores above previously failed silently for weeks
+    /// (`try?` swallowed every error); this canary makes the persistence layer's
+    /// health visible in Console with a single `[PERSIST]` line per launch.
+    static func performPersistenceCanary() {
+        let url = dataDir.appendingPathComponent(".persist-canary")
+        do {
+            try "ok".write(to: url, atomically: true, encoding: .utf8)
+            let readBack = try String(contentsOf: url, encoding: .utf8)
+            try FileManager.default.removeItem(at: url)
+            if readBack == "ok" {
+                NSLog("[PERSIST] canary OK — data dir writable at \(dataDir.path)")
+            } else {
+                NSLog("[PERSIST] canary MISMATCH — wrote 'ok' but read back '\(readBack)' at \(url.path)")
+            }
+        } catch {
+            NSLog("[PERSIST] canary FAILED — data dir not writable at \(dataDir.path): \(error.localizedDescription)")
         }
     }
 }

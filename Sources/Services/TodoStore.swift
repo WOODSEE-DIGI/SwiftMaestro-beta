@@ -83,8 +83,17 @@ final class TodoStore {
     }
 
     nonisolated static func save(_ items: [TodoItem], _ agentId: UUID) {
-        if let data = try? JSONEncoder().encode(items) {
-            try? data.write(to: fileURL(agentId))
+        let data: Data
+        do {
+            data = try JSONEncoder().encode(items)
+        } catch {
+            NSLog("[PERSIST] todos ENCODE failed for \(agentId.uuidString) (\(items.count) items): \(error.localizedDescription)")
+            return
+        }
+        do {
+            try data.write(to: fileURL(agentId), options: .atomic)
+        } catch {
+            NSLog("[PERSIST] todos WRITE failed for \(agentId.uuidString): \(error.localizedDescription)")
         }
     }
 }

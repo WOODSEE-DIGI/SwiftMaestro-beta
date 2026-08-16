@@ -193,6 +193,10 @@ struct SwiftMaestroApp: App {
                     // Migrate any pre-centralized app data into the single
                     // SwiftMaestro app root (data/, models/, logs/, backups/).
                     SwiftMaestroPaths.migrateFromFlatLayout()
+                    // Prove the data dir is writable — the persistence layer
+                    // used to fail silently via `try?`; one [PERSIST] line per
+                    // launch makes its health visible in Console.
+                    SwiftMaestroPaths.performPersistenceCanary()
                     // Create the shared ~/.ai-context scaffold up front so a fresh,
                     // self-contained install has its data directory before first use.
                     SimpleMemoryStore.ensureScaffold()

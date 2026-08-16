@@ -468,10 +468,20 @@ final class WorkspaceStore {
 
     func save() {
         let ws = WorkspaceData(projects: projects, agents: agents)
-        guard let data = try? JSONEncoder().encode(ws) else { return }
-        try? FileManager.default.createDirectory(
-            at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? data.write(to: fileURL)
+        let data: Data
+        do {
+            data = try JSONEncoder().encode(ws)
+        } catch {
+            NSLog("[PERSIST] workspace ENCODE failed (\(ws.projects.count) projects, \(ws.agents.count) agents): \(error.localizedDescription)")
+            return
+        }
+        do {
+            try FileManager.default.createDirectory(
+                at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: fileURL, options: .atomic)
+        } catch {
+            NSLog("[PERSIST] workspace WRITE failed to \(fileURL.path): \(error.localizedDescription)")
+        }
     }
 
     nonisolated static func appSupportDir() -> URL { SwiftMaestroPaths.appSupportDir }

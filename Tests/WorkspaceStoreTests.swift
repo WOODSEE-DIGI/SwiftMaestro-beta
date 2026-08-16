@@ -201,6 +201,25 @@ final class WorkspaceStoreTests: XCTestCase {
         XCTAssertEqual(store.agent(id: agent.id)?.name, "NewAgent")
     }
 
+    // MARK: - Persistence
+
+    /// The store's save path once failed silently for weeks via `try?`. This
+    /// proves save() actually lands on disk: encode + write + re-read, then
+    /// compare against the in-memory state.
+    func testSavePersistsToDisk() throws {
+        store.save()
+
+        let url = WorkspaceStore.dataDir().appendingPathComponent("workspace.json")
+        let data = try Data(contentsOf: url)
+        let decoded = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+
+        let projects = decoded?["projects"] as? [[String: Any]]
+        let agents = decoded?["agents"] as? [[String: Any]]
+        XCTAssertEqual(projects?.count, store.projects.count)
+        XCTAssertEqual(agents?.count, store.agents.count)
+        XCTAssertTrue(agents?.contains { ($0["kind"] as? String) == "navigator" } ?? false)
+    }
+
     // MARK: - Set Model
 
     func testSetModel() {
