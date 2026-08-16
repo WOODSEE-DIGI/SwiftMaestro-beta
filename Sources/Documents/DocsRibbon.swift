@@ -16,48 +16,48 @@ struct DocsRibbon: View {
     @State private var linkURLText = ""
 
     /// Grouped ribbon: Clipboard + Undo for all editable documents; Font,
-    /// Styles, Paragraph, Color, Insert groups for rich editable ones.
+    /// Styles, Paragraph, Color, Insert, View groups for rich editable ones.
     /// Horizontally scrollable so narrow docked panels never lose groups.
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(alignment: .top, spacing: 2) {
+            HStack(alignment: .top, spacing: 0) {
                 ribbonGroup("Clipboard") {
-                    HStack(spacing: 2) {
-                        ribbonIcon("Paste", icon: "doc.on.clipboard") { viewModel.pasteFromClipboard() }
-                        ribbonIcon("Copy", icon: "doc.on.doc") { viewModel.copySelection() }
-                        ribbonIcon("Cut", icon: "scissors") { viewModel.cutSelection() }
+                    HStack(spacing: 4) {
+                        ribbonButton("Paste", icon: "doc.on.clipboard") { viewModel.pasteFromClipboard() }
+                        ribbonButton("Copy", icon: "doc.on.doc") { viewModel.copySelection() }
+                        ribbonButton("Cut", icon: "scissors") { viewModel.cutSelection() }
                     }
                 }
                 ribbonSeparator
                 ribbonGroup("Undo") {
-                    HStack(spacing: 2) {
-                        ribbonIcon("Undo", icon: "arrow.uturn.backward") { viewModel.undo() }
-                        ribbonIcon("Redo", icon: "arrow.uturn.forward") { viewModel.redo() }
+                    HStack(spacing: 4) {
+                        ribbonButton("Undo", icon: "arrow.uturn.backward") { viewModel.undo() }
+                        ribbonButton("Redo", icon: "arrow.uturn.forward") { viewModel.redo() }
                     }
                 }
 
                 if viewModel.formattingAvailable {
                     ribbonSeparator
                     ribbonGroup("Font") {
-                        HStack(spacing: 2) {
-                            ribbonIcon("Bold (⌘B)", icon: "bold") { viewModel.toggleBold() }
+                        HStack(spacing: 4) {
+                            ribbonButton("Bold", icon: "bold") { viewModel.toggleBold() }
                                 .keyboardShortcut("b", modifiers: .command)
-                            ribbonIcon("Italic (⌘I)", icon: "italic") { viewModel.toggleItalic() }
+                            ribbonButton("Italic", icon: "italic") { viewModel.toggleItalic() }
                                 .keyboardShortcut("i", modifiers: .command)
-                            ribbonIcon("Underline (⌘U)", icon: "underline") { viewModel.toggleUnderline() }
+                            ribbonButton("Underline", icon: "underline") { viewModel.toggleUnderline() }
                                 .keyboardShortcut("u", modifiers: .command)
-                            ribbonIcon("Strikethrough", icon: "strikethrough") {
+                            ribbonButton("Strikethrough", icon: "strikethrough") {
                                 viewModel.toggleStrikethrough()
                             }
                         }
-                        HStack(spacing: 2) {
-                            ribbonIcon("Bigger", icon: "textformat.size.bigger") {
-                                viewModel.changeFontSize(delta: 1)
+                        HStack(spacing: 4) {
+                            ribbonButton("Larger", icon: "textformat.size") {
+                                viewModel.changeFontSize(delta: 2)
                             }
-                            ribbonIcon("Smaller", icon: "textformat.size.smaller") {
-                                viewModel.changeFontSize(delta: -1)
+                            ribbonButton("Smaller", icon: "textformat.size") {
+                                viewModel.changeFontSize(delta: -2)
                             }
-                            ribbonIcon("Clear formatting", icon: "eraser") {
+                            ribbonButton("Clear", icon: "eraser") {
                                 viewModel.clearFormatting()
                             }
                         }
@@ -71,82 +71,109 @@ struct DocsRibbon: View {
                             Divider()
                             Button("Body") { viewModel.applyHeading(size: 12, weight: .regular) }
                         } label: {
-                            Image(systemName: "textformat.size.larger")
-                                .frame(width: 24, height: 24)
-                                .contentShape(Rectangle())
+                            Label("Styles", systemImage: "textformat.size")
+                                .font(.system(size: 11))
+                                .frame(height: 28)
                         }
                         .menuStyle(.borderlessButton)
+                        .frame(width: 70)
                         .help("Paragraph style")
                     }
                     ribbonSeparator
                     ribbonGroup("Paragraph") {
-                        HStack(spacing: 2) {
-                            ribbonIcon("Align left", icon: "text.alignleft") {
+                        HStack(spacing: 4) {
+                            ribbonButton("Left", icon: "text.alignleft") {
                                 viewModel.applyAlignment(.left)
                             }
-                            ribbonIcon("Center", icon: "text.aligncenter") {
+                            ribbonButton("Center", icon: "text.aligncenter") {
                                 viewModel.applyAlignment(.center)
                             }
-                            ribbonIcon("Align right", icon: "text.alignright") {
+                            ribbonButton("Right", icon: "text.alignright") {
                                 viewModel.applyAlignment(.right)
                             }
-                            ribbonIcon("Justify", icon: "text.justify") {
+                            ribbonButton("Justify", icon: "text.justify") {
                                 viewModel.applyAlignment(.justified)
                             }
                         }
-                        HStack(spacing: 2) {
-                            ribbonIcon("Bulleted list", icon: "list.bullet") {
+                        HStack(spacing: 4) {
+                            ribbonButton("Bullets", icon: "list.bullet") {
                                 viewModel.applyList(.disc)
                             }
-                            ribbonIcon("Numbered list", icon: "list.number") {
+                            ribbonButton("Numbers", icon: "list.number") {
                                 viewModel.applyList(.decimal)
                             }
-                            ribbonIcon("Outdent", icon: "decrease.indent") {
+                            ribbonButton("Outdent", icon: "decrease.indent") {
                                 viewModel.changeIndent(delta: -20)
                             }
-                            ribbonIcon("Indent", icon: "increase.indent") {
+                            ribbonButton("Indent", icon: "increase.indent") {
                                 viewModel.changeIndent(delta: 20)
                             }
                         }
                     }
                     ribbonSeparator
                     ribbonGroup("Color") {
-                        HStack(spacing: 4) {
+                        HStack(spacing: 8) {
                             ColorPicker("Text", selection: $pickedColor)
                                 .labelsHidden()
                                 .onChange(of: pickedColor) { _, newValue in
                                     viewModel.applyTextColor(NSColor(newValue))
                                 }
-                                .frame(width: 36)
                                 .help("Text color")
                             ColorPicker("Highlight", selection: $pickedHighlight)
                                 .labelsHidden()
                                 .onChange(of: pickedHighlight) { _, newValue in
                                     viewModel.applyHighlight(NSColor(newValue))
                                 }
-                                .frame(width: 36)
                                 .help("Highlight color")
-                            ribbonIcon("Clear highlight", icon: "xmark.square") {
+                            ribbonButton("Clear", icon: "xmark.square") {
                                 viewModel.applyHighlight(nil)
                             }
                         }
                     }
                     ribbonSeparator
                     ribbonGroup("Insert") {
-                        HStack(spacing: 2) {
-                            ribbonIcon("Insert link", icon: "link") {
+                        HStack(spacing: 4) {
+                            ribbonButton("Link", icon: "link") {
                                 linkURLText = ""
                                 showLinkSheet = true
                             }
-                            ribbonIcon("Page break", icon: "text.append") {
+                            ribbonButton("Page Break", icon: "doc.append") {
                                 viewModel.insertPageBreak()
                             }
                         }
                     }
+                    ribbonSeparator
+                    ribbonGroup("View") {
+                        HStack(spacing: 4) {
+                            ribbonButton("Zoom−", icon: "minus.magnifyingglass") {
+                                viewModel.zoomLevel = max(25, viewModel.zoomLevel - 10)
+                            }
+                            Text("\(Int(viewModel.zoomLevel))%")
+                                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 36)
+                            ribbonButton("Zoom+", icon: "plus.magnifyingglass") {
+                                viewModel.zoomLevel = min(400, viewModel.zoomLevel + 10)
+                            }
+                            ribbonButton("Fit", icon: "arrow.up.left.and.arrow.down.right") {
+                                viewModel.zoomLevel = 100
+                            }
+                        }
+                        HStack(spacing: 4) {
+                            ribbonButton("1-Up", icon: "rectangle") {
+                                viewModel.pageViewMode = .single
+                            }
+                            .opacity(viewModel.pageViewMode == .single ? 1 : 0.5)
+                            ribbonButton("2-Up", icon: "rectangle.split.2x1") {
+                                viewModel.pageViewMode = .twoUp
+                            }
+                            .opacity(viewModel.pageViewMode == .twoUp ? 1 : 0.5)
+                        }
+                    }
                 }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .sheet(isPresented: $showLinkSheet) { linkSheet }
@@ -154,31 +181,40 @@ struct DocsRibbon: View {
 
     private var ribbonSeparator: some View {
         Divider()
-            .frame(height: 44)
+            .frame(width: 1, height: 40)
+            .padding(.horizontal, 6)
     }
 
-    /// Office-style group: controls on top, caption beneath, fixed control
-    /// height so all captions align across single- and double-row groups.
+    /// Office-style group: controls on top, caption beneath.
     private func ribbonGroup<Content: View>(
         _ caption: String, @ViewBuilder content: () -> Content
     ) -> some View {
-        VStack(spacing: 3) {
+        VStack(spacing: 4) {
             content()
-                .frame(height: 51, alignment: .top)
+                .frame(minHeight: 32, alignment: .center)
             Text(caption)
-                .font(.caption2)
+                .font(.system(size: 9, weight: .medium))
                 .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 5)
+        .padding(.horizontal, 8)
     }
 
-    private func ribbonIcon(
+    /// Ribbon button: icon + optional label, hover highlight.
+    private func ribbonButton(
         _ label: String, icon: String, action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            Image(systemName: icon)
-                .frame(width: 24, height: 24)
-                .contentShape(Rectangle())
+            VStack(spacing: 2) {
+                Image(systemName: icon)
+                    .font(.system(size: 14))
+                    .frame(width: 28, height: 22)
+                Text(label)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .frame(width: 44, height: 38)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
         .help(label)

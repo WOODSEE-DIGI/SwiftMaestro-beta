@@ -614,12 +614,17 @@ enum DocEngine {
         guard url.pathExtension.lowercased() == "docx" else { return body }
 
         let extras = docxHeaderFooter(url)
-        guard !extras.headerImages.isEmpty
+
+        // Also check for images in the body XML (TextKit often drops them)
+        let bodyImages = docxBodyImages(url)
+        let allHeaderImages = extras.headerImages + bodyImages
+
+        guard !allHeaderImages.isEmpty
                 || !extras.headerText.isEmpty
                 || !extras.footerText.isEmpty else { return body }
 
         let composed = NSMutableAttributedString()
-        for image in extras.headerImages {
+        for image in allHeaderImages {
             let attachment = NSTextAttachment()
             attachment.image = image
             // Cap inline logos to the reading column width.
@@ -706,6 +711,34 @@ enum DocEngine {
             }
         }
         return (delegate.text.trimmingCharacters(in: .whitespacesAndNewlines), images)
+    }
+
+    /// Extracts inline images from the DOCX body (word/document.xml).
+    /// TextKit's NSAttributedString importer often drops these.
+    private static func docxBodyImages(_ url: URL) -> [NSImage] {
+        guard let data = try? unzipData(url, entry: "word/document.xml") else { return [] }
+        let delegate = DocxHeaderDelegate()
+        let parser = XMLParser(data: data)
+        parser.delegate = delegate
+        parser.parse()
+
+        var images: [NSImage] = []
+        guard let relsData = try? unzipData(url, entry: "word/_rels/document.xml.rels") else { return [] }
+        let relsDelegate = DocxRelsDelegate()
+        let relsParser = XMLParser(data: relsData)
+        relsParser.delegate = relsDelegate
+        relsParser.parse()
+
+        for embedID in delegate.embedIDs {
+            guard var target = relsDelegate.targets[embedID] else { continue }
+            if target.hasPrefix("/") { target.removeFirst() }
+            if !target.hasPrefix("word/") { target = "word/" + target }
+            if let imageData = try? unzipData(url, entry: target),
+               let image = NSImage(data: imageData) {
+                images.append(image)
+            }
+        }
+        return images
     }
 
     // MARK: - ZIP plumbing (unzip/zip CLIs — offline, Apple-shipped)

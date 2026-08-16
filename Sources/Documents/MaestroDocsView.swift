@@ -34,6 +34,11 @@ final class MaestroDocsViewModel {
     var errorMessage: String?
     var statusMessage: String?
 
+    /// Zoom and page view mode.
+    var zoomLevel: Double = 100  // 25–400%
+    enum PageViewMode { case single, twoUp }
+    var pageViewMode: PageViewMode = .single
+
     var pdfDocument: PDFDocument?
     var richContent: NSAttributedString?
     var plainText = ""
@@ -755,6 +760,22 @@ struct MaestroDocsView: View {
                     Divider()
                 }
                 contentArea
+                    .gesture(
+                        MagnificationGesture()
+                            .onChanged { scale in
+                                let delta = (scale - 1.0) * 50
+                                viewModel.zoomLevel = max(25, min(400, viewModel.zoomLevel + delta))
+                            }
+                    )
+                    .onReceive(NotificationCenter.default.publisher(for: .zoomIn)) { _ in
+                        viewModel.zoomLevel = min(400, viewModel.zoomLevel + 10)
+                    }
+                    .onReceive(NotificationCenter.default.publisher(for: .zoomOut)) { _ in
+                        viewModel.zoomLevel = max(25, viewModel.zoomLevel - 10)
+                    }
+                    .onReceive(NotificationCenter.default.publisher(for: .zoomFit)) { _ in
+                        viewModel.zoomLevel = 100
+                    }
             }
         }
         // Fill the panel window edge-to-edge — without this the VStack wraps
@@ -1020,7 +1041,7 @@ struct MaestroDocsView: View {
                 PDFDocumentView(document: viewModel.pdfDocument)
 
             case .richText:
-                pageColumn {
+                pageColumnWithRulers {
                     TextDocumentEditor(
                         richContent: viewModel.richContent,
                         isPlain: false,
@@ -1070,13 +1091,141 @@ struct MaestroDocsView: View {
         HStack(spacing: 0) {
             Spacer(minLength: 0)
             content()
-                .frame(maxWidth: 780, maxHeight: .infinity)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                .shadow(color: .black.opacity(0.3), radius: 10, y: 3)
-                .padding(.vertical, 12)
+                .frame(maxWidth: 900, maxHeight: .infinity)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .shadow(color: .black.opacity(0.25), radius: 8, y: 2)
+                .padding(.vertical, 8)
             Spacer(minLength: 0)
         }
         .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    private func pageColumnWithRulers(
+        @ViewBuilder _ content: () -> some View
+    ) -> some View {
+        let a4Width: CGFloat = 595
+        let scale = viewModel.zoomLevel / 100.0
+        let scaledWidth = a4Width * scale
+
+        return VStack(spacing: 0) {
+            horizontalRuler
+            HStack(spacing: 0) {
+                verticalRuler
+                Spacer(minLength: 0)
+                if viewModel.pageViewMode == .twoUp {
+                    // Two pages side by side
+                    HStack(spacing: 24) {
+                        content()
+                            .frame(width: a4Width)
+                            .scaleEffect(scale, anchor: .topLeading)
+                            .frame(width: scaledWidth, height: 842 * scale)
+                        content()
+                            .frame(width: a4Width)
+                            .scaleEffect(scale, anchor: .topLeading)
+                            .frame(width: scaledWidth, height: 842 * scale)
+                    }
+                } else {
+                    // Single page with zoom
+                    content()
+                        .frame(width: a4Width)
+                        .scaleEffect(scale, anchor: .topLeading)
+                        .frame(width: scaledWidth)
+                }
+                Spacer(minLength: 0)
+            }
+        }
+        .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    private var horizontalRuler: some View {
+        GeometryReader { geo in
+            let width = geo.size.width
+            let tickEvery: CGFloat = 72 // 1 inch
+            ZStack(alignment: .leading) {
+                Color(nsColor: .windowBackgroundColor)
+                // Tick marks and labels
+                Canvas { context, size in
+                    let tickColor = Color.white.opacity(0.3)
+                    let labelColor = Color.white.opacity(0.5)
+                    var x: CGFloat = 0
+                    var inch = 0
+                    while x < width {
+                        let isMajor = inch % 2 == 0
+                        let tickH: CGFloat = isMajor ? 12 : 6
+                        context.fill(
+                            Path(CGRect(x: x, y: size.height - tickH, width: 1, height: tickH)),
+                            with: .color(tickColor)
+                        )
+                        if isMajor {
+                            context.draw(
+                                Text("\(inch / 2)").font(.system(size: 9, design: .monospaced)),
+                                at: CGPoint(x: x + 3, y: 2), anchor: .topLeading
+                            )
+                        }
+                        // Minor ticks (every 18pt = 0.25 inch)
+                        if inch % 2 == 0 {
+                            for minor in stride(from: 18, through: tickEvery - 1, by: 18) {
+                                let mx = x + CGFloat(minor)
+                                if mx < width {
+                                    context.fill(
+                                        Path(CGRect(x: mx, y: size.height - 4, width: 0.5, height: 4)),
+                                        with: .color(tickColor.opacity(0.5))
+                                    )
+                                }
+                            }
+                        }
+                        x += tickEvery
+                        inch += 1
+                    }
+                }
+            }
+        }
+        .frame(height: 22)
+    }
+
+    private var verticalRuler: some View {
+        GeometryReader { geo in
+            let height = geo.size.height
+            let tickEvery: CGFloat = 72
+            ZStack(alignment: .top) {
+                Color(nsColor: .windowBackgroundColor)
+                Canvas { context, size in
+                    let tickColor = Color.white.opacity(0.3)
+                    let labelColor = Color.white.opacity(0.5)
+                    var y: CGFloat = 0
+                    var inch = 0
+                    while y < height {
+                        let isMajor = inch % 2 == 0
+                        let tickW: CGFloat = isMajor ? 12 : 6
+                        context.fill(
+                            Path(CGRect(x: size.width - tickW, y: y, width: tickW, height: 1)),
+                            with: .color(tickColor)
+                        )
+                        if isMajor {
+                            context.draw(
+                                Text("\(inch / 2)").font(.system(size: 9, design: .monospaced)),
+                                at: CGPoint(x: 2, y: y + 3), anchor: .topLeading
+                            )
+                        }
+                        // Minor ticks
+                        if inch % 2 == 0 {
+                            for minor in stride(from: 18, through: tickEvery - 1, by: 18) {
+                                let my = y + CGFloat(minor)
+                                if my < height {
+                                    context.fill(
+                                        Path(CGRect(x: size.width - 4, y: my, width: 4, height: 0.5)),
+                                        with: .color(tickColor.opacity(0.5))
+                                    )
+                                }
+                            }
+                        }
+                        y += tickEvery
+                        inch += 1
+                    }
+                }
+            }
+        }
+        .frame(width: 24)
     }
 
     // MARK: Welcome (empty state)
@@ -1317,10 +1466,27 @@ struct TextDocumentEditor: NSViewRepresentable {
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
+
+        // A4 page: 595pt wide × 842pt tall. With 72pt margins = 451pt text area.
+        // Use a slightly wider margin to match Word's default A4 look.
+        let pageWidth: CGFloat = 595   // A4 width in points
+        let margin: CGFloat = 72       // 1 inch margins
+        let textWidth = pageWidth - margin * 2  // 451pt content width
+
+        textView.textContainerInset = NSSize(width: margin, height: margin)
+        textView.textContainer?.lineFragmentPadding = 0
+        textView.textContainer?.size = NSSize(width: textWidth, height: CGFloat.greatestFiniteMagnitude)
+        textView.maxSize = NSSize(width: textWidth, height: CGFloat.greatestFiniteMagnitude)
+        textView.isHorizontallyResizable = false
+
         let scrollView = NSScrollView()
         scrollView.documentView = textView
         scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
         scrollView.drawsBackground = false
+
+        // Rulers handled by custom SwiftUI views in pageColumnWithRulers
+        scrollView.rulersVisible = false
 
         textView.isRichText = !isPlain
         textView.isEditable = isEditable
@@ -1331,7 +1497,11 @@ struct TextDocumentEditor: NSViewRepresentable {
         if isPlain {
             // Adaptive colors: the user's own text follows system dark mode.
             textView.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
-            textView.string = text?.wrappedValue ?? ""
+            scrollView.rulersVisible = false
+            textView.textStorage?.setAttributedString(NSAttributedString(
+                string: text?.wrappedValue ?? "",
+                attributes: [.font: textView.font!]
+            ))
         } else {
             // PAPER mode: document-authored colors (e.g. DOCX's explicit
             // black) assume a white page. Rendering them on NSTextView's
@@ -1358,4 +1528,12 @@ struct TextDocumentEditor: NSViewRepresentable {
             textView.string = bound
         }
     }
+}
+
+// MARK: - Zoom notifications
+
+extension Notification.Name {
+    static let zoomIn = Notification.Name("maestroDocs.zoomIn")
+    static let zoomOut = Notification.Name("maestroDocs.zoomOut")
+    static let zoomFit = Notification.Name("maestroDocs.zoomFit")
 }
