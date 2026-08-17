@@ -357,10 +357,19 @@ final class MLXInferenceEngine {
             // Poll on-disk file sizes directly instead of relying on the
             // Python stdout pipe (which is unreliable due to byte-by-byte
             // FileHandle reading and MainActor hopping delays).
+            // includeHidden: the helper stages partial files in a hidden
+            // .cache subfolder, so without them a long single-shard download
+            // looks frozen between file completions.
             let fm = FileManager.default
             var lastReported: Double = 0
+            var lastBytes: Int64 = 0
+            var lastGrowth = Date()
             while !Task.isCancelled {
-                let bytesOnDisk = Self.directorySize(destinationURL, fm: fm)
+                let bytesOnDisk = Self.directorySize(destinationURL, fm: fm, includeHidden: true)
+                if bytesOnDisk > lastBytes {
+                    lastBytes = bytesOnDisk
+                    lastGrowth = Date()
+                }
                 if totalExpectedBytes > 0 {
                     let fraction = min(Double(bytesOnDisk) / Double(totalExpectedBytes), 1.0)
                     if fraction != lastReported {
@@ -374,6 +383,19 @@ final class MLXInferenceEngine {
                     if lastReported == 0 {
                         modelDownloadProgress[model.id] = nil  // triggers "Downloading..." text
                     }
+                }
+                // Stall watchdog: hf_transfer/xet chunk stalls can hang a
+                // download indefinitely without erroring, and because downloads
+                // are SERIALIZED through downloadChain, one hung helper froze
+                // every later model at "Queued…" forever. No byte growth for
+                // two minutes = cancel so the chain advances and the user can
+                // retry instead of staring at a dead spinner.
+                if Date().timeIntervalSince(lastGrowth) > 120,
+                   totalExpectedBytes == 0 || bytesOnDisk < totalExpectedBytes {
+                    NSLog("[DOWNLOAD] stall detected for %@ (no byte growth for 120s) — cancelling so queued downloads can proceed", model.huggingFaceID)
+                    HuggingFaceDownloadService.shared.cancelDownload(
+                        toDestination: destinationURL.path, reason: "no progress for 120s")
+                    return
                 }
                 try? await Task.sleep(nanoseconds: 500_000_000)
             }
@@ -412,18 +434,22 @@ final class MLXInferenceEngine {
     /// Sum of file sizes in a directory (non-recursive). Used by the download
     /// observation loop to derive progress from on-disk bytes instead of
     /// relying on the Python stdout pipe.
-    private nonisolated static func directorySize(_ url: URL, fm: FileManager) -> Int64 {
+    /// `includeHidden`: the download helper stages partial files in a hidden
+    /// `.cache` subfolder — progress/stall detection must see those, or a
+    /// long single-shard download looks frozen between file completions.
+    private nonisolated static func directorySize(_ url: URL, fm: FileManager, includeHidden: Bool = false) -> Int64 {
         guard let attrs = try? fm.attributesOfItem(atPath: url.path),
               let fileType = attrs[.type] as? FileAttributeType else { return 0 }
         if fileType == .typeRegular {
             return (attrs[.size] as? Int64) ?? 0
         }
-        guard let items = try? fm.contentsOfDirectory(at: url, includingPropertiesForKeys: [.fileSizeKey], options: .skipsHiddenFiles) else { return 0 }
+        let options: FileManager.DirectoryEnumerationOptions = includeHidden ? [] : .skipsHiddenFiles
+        guard let items = try? fm.contentsOfDirectory(at: url, includingPropertiesForKeys: [.fileSizeKey], options: options) else { return 0 }
         var total: Int64 = 0
         for item in items {
             if let resourceValues = try? item.resourceValues(forKeys: [.fileSizeKey, .isDirectoryKey]) {
                 if resourceValues.isDirectory == true {
-                    total += directorySize(item, fm: fm)
+                    total += directorySize(item, fm: fm, includeHidden: includeHidden)
                 } else {
                     total += Int64(resourceValues.fileSize ?? 0)
                 }
@@ -436,6 +462,29 @@ final class MLXInferenceEngine {
     /// The `metadata.total_size` field gives the combined size of all
     /// safetensors weight files — exactly what we need for progress.
     private nonisolated static func fetchTotalWeightBytes(repoID: String) async -> Int64 {
+        // Prefer the repo's actual file listing: some repos ship a stale
+        // model.safetensors.index.json carried over from a different variant
+        // (production: Qwen3-VL-8B-Instruct-4bit's index names four 4-bit
+        // shards that no longer exist; the real weights are two differently
+        // named shards totalling ~5.8 GB). The API's per-file sizes are
+        // authoritative.
+        if let apiURL = URL(string: "https://huggingface.co/api/models/\(repoID)?blobs=true") {
+            do {
+                let (data, _) = try await URLSession.shared.data(from: apiURL)
+                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let siblings = json["siblings"] as? [[String: Any]] {
+                    let total = siblings.reduce(Int64(0)) { sum, file in
+                        guard let name = file["rfilename"] as? String,
+                              name.hasSuffix(".safetensors") else { return sum }
+                        let size = (file["size"] as? NSNumber)?.int64Value ?? 0
+                        return sum + size
+                    }
+                    if total > 0 { return total }
+                }
+            } catch {
+                // Fall through to the index-based estimate.
+            }
+        }
         let urlString = "https://huggingface.co/\(repoID)/resolve/main/model.safetensors.index.json"
         guard let url = URL(string: urlString) else { return 0 }
         do {

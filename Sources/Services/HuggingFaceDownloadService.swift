@@ -32,6 +32,16 @@ final class HuggingFaceDownloadService: ObservableObject {
         activeDownloads[path]
     }
 
+    /// Terminate a stalled download to `path`. The process's termination
+    /// handler resumes the awaiting continuation with an error, so the
+    /// engine's serial download chain advances to whatever is queued next
+    /// instead of hanging forever behind a dead transfer.
+    func cancelDownload(toDestination path: String, reason: String) {
+        guard let proc = processes[path], proc.isRunning else { return }
+        NSLog("[HF DOWNLOAD] cancelling stalled download at %@: %@", path, reason)
+        proc.terminate()
+    }
+
     /// Total expected bytes for a download, or 0 if unknown. Populated from
     /// the Python helper's first progress event.
     func totalBytes(forDestination path: String) -> Int64 {

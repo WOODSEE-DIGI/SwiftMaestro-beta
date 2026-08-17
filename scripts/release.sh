@@ -22,6 +22,12 @@ DOWNLOAD_URL_PREFIX="${DOWNLOAD_URL_PREFIX:-https://s3.ap-southeast-2.onidel.clo
 APP_PATH="build/Release/${APP_NAME}.app"
 DIST_DIR="dist"
 
+# Pre-flight: a release whose model download links are broken is not worth
+# shipping — fresh installs would fail to fetch models on first run. Validates
+# every catalog repo (config/tokenizer files + every safetensors shard) and
+# fails fast BEFORE the 30-minute build and 28 GB packaging begin.
+./scripts/validate-model-links.sh || exit 1
+
 # Always build the Release app from scratch so the latest code, Info.plist, and
 # bundled resources are included in the DMGs.
 echo "=== Building SwiftMaestro Release ==="
