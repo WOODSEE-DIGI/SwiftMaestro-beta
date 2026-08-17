@@ -62,7 +62,7 @@ struct OverlayBuilderView: View {
                         .monospacedDigit()
 
                     Toggle(isOn: $showSafeAreas) {
-                        Label("Safe Areas", systemImage: "rectangle.dotted.badge.checkmark")
+                        Label("Safe Areas", systemImage: "rectangle.badge.checkmark")
                             .font(.caption)
                     }
                     .toggleStyle(.switch)

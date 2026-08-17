@@ -1,11 +1,12 @@
 import SwiftUI
+import AppKit
 
 struct AppleNotesView: View {
     @Environment(AppleNotesService.self) private var service
     @Environment(ThemeStore.self) private var theme
 
     @State private var selectedFolderID: String?
-    @State private var noteBody = ""
+    @State private var noteBody: AttributedString = AttributedString()
     @State private var isLoadingBody = false
     @State private var showCreateSheet = false
     @State private var newNoteTitle = ""
@@ -169,6 +170,7 @@ struct AppleNotesView: View {
     private func noteDetailView(for note: AppleNotesNote) -> some View {
         ScrollView {
             Text(noteBody)
+                .textSelection(.enabled)
                 .padding()
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -211,10 +213,52 @@ struct AppleNotesView: View {
         isLoadingBody = true
         defer { isLoadingBody = false }
         do {
-            noteBody = try await service.loadBody(for: note.id)
+            noteBody = Self.renderHTML(try await service.loadBody(for: note.id))
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    /// Apple Notes bodies are HTML — render them as formatted content instead of
+    /// dumping raw tags into a Text view. The HTML importer returns web-default
+    /// serif fonts and black text, so normalize to the system font (preserving
+    /// bold/italic traits and relative sizes) and the label color to read as
+    /// native app content on any theme. Falls back to the raw string if parsing
+    /// fails — never worse than showing nothing.
+    private static func renderHTML(_ html: String) -> AttributedString {
+        guard let data = html.data(using: .utf8),
+              let parsed = try? NSAttributedString(
+                  data: data,
+                  options: [
+                      .documentType: NSAttributedString.DocumentType.html,
+                      .characterEncoding: String.Encoding.utf8.rawValue,
+                  ],
+                  documentAttributes: nil)
+        else {
+            return AttributedString(html)
+        }
+
+        let rendered = NSMutableAttributedString(attributedString: parsed)
+        let fullRange = NSRange(location: 0, length: rendered.length)
+
+        rendered.enumerateAttribute(.font, in: fullRange) { value, range, _ in
+            let nsFont = value as? NSFont ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
+            var descriptor = NSFont.systemFont(ofSize: nsFont.pointSize).fontDescriptor
+            let traits = nsFont.fontDescriptor.symbolicTraits
+            if traits.contains(.bold) {
+                descriptor = descriptor.withSymbolicTraits(.bold)
+            }
+            if traits.contains(.italic) {
+                descriptor = descriptor.withSymbolicTraits(.italic)
+            }
+            rendered.addAttribute(
+                .font,
+                value: NSFont(descriptor: descriptor, size: nsFont.pointSize) ?? nsFont,
+                range: range)
+        }
+        rendered.addAttribute(.foregroundColor, value: NSColor.labelColor, range: fullRange)
+
+        return AttributedString(rendered)
     }
 
     private func createNote() async {
@@ -223,7 +267,7 @@ struct AppleNotesView: View {
         do {
             try await service.createNote(
                 title: title,
-                body: newNoteBody,
+                body: Self.escapePlainTextForNotes(newNoteBody),
                 in: selectedFolderID
             )
             showCreateSheet = false
@@ -231,6 +275,16 @@ struct AppleNotesView: View {
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    /// Notes stores bodies as HTML — escape user-entered plain text so literal
+    /// `<`/`&` don't break the markup, and keep line breaks visible.
+    private static func escapePlainTextForNotes(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\n", with: "<br>")
     }
 
     private func resetCreateForm() {
