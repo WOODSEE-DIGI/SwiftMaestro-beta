@@ -253,31 +253,24 @@ class ChatViewModel: ObservableObject {
         // additionally gets the workspace/delegation tools. Per-agent enabled
         // tool categories override the old automatic lite-mode reduction.
         var toolSpecs: [ToolSpec] = []
+        var specsProvider: (@Sendable () async -> [ToolSpec])?
         if model.advertisesTools {
-            let enabledCategories = MaestroTools.workspace?.effectiveToolCategories(for: agent.id)
-            let compactMode = MaestroTools.workspace?.compactToolMode(for: agent.id) ?? false
-            // Set immediately before use (mirrors MaestroTools.inheritedRoots)
-            // so search_tools/call_tool can see this agent's actual scope.
-            MaestroTools.currentEnabledCategories = enabledCategories
-            MaestroTools.currentIsNavigator = isNavigator
-            toolSpecs = await MaestroTools.schemas(
-                navigator: isNavigator, liteMode: model.isLiteModel,
-                enabledCategories: enabledCategories, compactMode: compactMode)
-            if let mcp = engine.mcpService {
-                // Maestro gets NO MCP tools — it delegates everything.
-                // Only project agents get MCP tools (read_note, list_dir, etc.).
-                if !isNavigator {
-                    if let enabledCategories {
-                        let mcpCategory = ToolCategory.mcp
-                        if enabledCategories.contains(mcpCategory) {
-                            let mcpSchemas = await mcp.currentSchemas(forCategories: enabledCategories)
-                            toolSpecs += mcpSchemas
-                        }
-                    } else {
-                        let mcpSchemas = await mcp.currentSchemas()
-                        toolSpecs += mcpSchemas
-                    }
-                }
+            nonisolated(unsafe) let mcpService = engine.mcpService
+            let agentID = agent.id
+            let isLite = model.isLiteModel
+            toolSpecs = await Self.buildToolSpecs(
+                agentID: agentID, isNavigator: isNavigator, isLiteModel: isLite,
+                mcp: mcpService)
+            // Re-derive the tool surface EVERY ROUND from the live panel set:
+            // panel-linked categories (Auto tool mode) activate when open_panel
+            // opens their panel and withdraw when it closes. A frozen run-start
+            // snapshot went stale the moment open_panel fired — the model then
+            // called app tools it had never seen schemas for, mis-called them,
+            // and fabricated success (the fake MaestroDB import).
+            specsProvider = { [isNavigator] in
+                await Self.buildToolSpecs(
+                    agentID: agentID, isNavigator: isNavigator, isLiteModel: isLite,
+                    mcp: mcpService)
             }
         }
             // Low temperature when tools are active keeps function-calling faithful.
@@ -365,7 +358,8 @@ class ChatViewModel: ObservableObject {
                     maxRounds: Self.maxRounds(for: agent),
                     maxToolCallsPerTool: Self.maxToolCallsPerTool(for: agent),
                     maxTokens: maxTokens,
-                    steerInbox: inbox)
+                    steerInbox: inbox,
+                    specsProvider: specsProvider)
                 for try await output in stream {
                     guard !Task.isCancelled else { break }
                     switch output {
@@ -1420,6 +1414,17 @@ class ChatViewModel: ObservableObject {
                 }
                 workspaceList = lines.joined(separator: "\n")
             }
+            // Live open-panel state: Maestro used to call open_panel for panels
+            // that were already open — a wasted tool round-trip it couldn't
+            // avoid because it had no visibility into the current layout.
+            let openPanelNames = WorkspaceLayoutState.shared.allOpenPanels.map { kind -> String in
+                if case .agentChat(let id) = kind,
+                   let openAgent = MaestroTools.workspace?.agent(id: id) {
+                    return "\(openAgent.name) (chat)"
+                }
+                return kind.staticDisplayName ?? "panel"
+            }
+            let openPanelList = openPanelNames.isEmpty ? "none" : openPanelNames.joined(separator: ", ")
             base = """
                 You are Maestro, the conductor for SwiftMaestro. You handle general \
                 chat and coordinate project work. You delegate to project agents and \
@@ -1427,6 +1432,9 @@ class ChatViewModel: ObservableObject {
 
                 ═══ EXISTING PROJECT AGENTS (USE THESE — DO NOT CREATE DUPLICATES) ═══
                 \(workspaceList)
+
+                ═══ CURRENTLY OPEN PANELS (already visible — do NOT call open_panel for these) ═══
+                \(openPanelList)
 
                 DELEGATION RULES — FOLLOW IN ORDER:
                 1. If an existing agent can handle the task, call ask_project_agent \
@@ -1727,6 +1735,41 @@ class ChatViewModel: ObservableObject {
         return "═══ PROJECT CONTEXT FROM AGENTS.md ═══\n\n"
             + sections.joined(separator: "\n\n")
             + "\n\nThese instructions apply in addition to the rules above."
+    }
+
+    /// Build the agent's tool schema list from the CURRENT workspace state.
+    /// Extracted so the executor can re-derive the list every round —
+    /// panel-linked categories (Auto tool mode) follow the live panel set.
+    static func buildToolSpecs(
+        agentID: UUID, isNavigator: Bool, isLiteModel: Bool, mcp: MCPClientService?
+    ) async -> [ToolSpec] {
+        let (enabledCategories, compactMode) = await MainActor.run {
+            (MaestroTools.workspace?.effectiveToolCategories(for: agentID),
+             MaestroTools.workspace?.compactToolMode(for: agentID) ?? false)
+        }
+        // Set immediately before use (mirrors MaestroTools.inheritedRoots)
+        // so search_tools/call_tool can see this agent's actual scope.
+        await MainActor.run {
+            MaestroTools.currentEnabledCategories = enabledCategories
+            MaestroTools.currentIsNavigator = isNavigator
+        }
+        var specs = await MaestroTools.schemas(
+            navigator: isNavigator, liteMode: isLiteModel,
+            enabledCategories: enabledCategories, compactMode: compactMode)
+        if let mcp {
+            // Maestro gets NO MCP tools — it delegates everything.
+            // Only project agents get MCP tools (read_note, list_dir, etc.).
+            if !isNavigator {
+                if let enabledCategories {
+                    if enabledCategories.contains(ToolCategory.mcp) {
+                        specs += await mcp.currentSchemas(forCategories: enabledCategories)
+                    }
+                } else {
+                    specs += await mcp.currentSchemas()
+                }
+            }
+        }
+        return specs
     }
 
     private func messagesForInference(

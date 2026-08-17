@@ -610,8 +610,10 @@ enum MaestroTools {
             functionSpec(
                 name: "open_panel",
                 description:
-                    "OPEN (or focus) any app panel inside SwiftMaestro — even one the "
-                    + "user has never opened. The panel docks into the workspace grid. "
+                    "OPEN (or focus) an app panel inside SwiftMaestro. Your system prompt "
+                    + "lists the CURRENTLY OPEN PANELS — do NOT call this for those; "
+                    + "re-opening an open panel just focuses it and wastes a tool round. "
+                    + "The panel docks into the workspace grid. "
                     + "Opening an app's panel also ACTIVATES that app's tools "
                     + "(Auto tool mode): e.g. open 'database' before using db_* tools, "
                     + "'books' before invoice_*, 'kanban' before kanban tools. After "

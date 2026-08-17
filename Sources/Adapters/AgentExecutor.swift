@@ -129,7 +129,8 @@ final class AgentExecutor: Sendable {
         maxRounds: Int? = nil,
         maxToolCallsPerTool: [String: Int]? = nil,
         maxTokens: Int = 32768,
-        steerInbox: SteerInbox? = nil
+        steerInbox: SteerInbox? = nil,
+        specsProvider: (@Sendable () async -> [ToolSpec])? = nil
     ) -> AsyncThrowingStream<AgentOutput, Error> {
         AsyncThrowingStream { continuation in
             // Keep catalog reachable during this run so delegated sub-agents can
@@ -163,9 +164,20 @@ final class AgentExecutor: Sendable {
                     var fileOpCount = 0          // file ops since last auto-save
                     let autoSaveThreshold = 5    // trigger auto-save after N file ops
                     // Per-tool call budgets to stop small-model loops (e.g. web_search).
-                    // Default cap: 5 calls per tool per turn. Prevents unlimited
-                    // repetition when the model ignores nudges (177-tool prompt).
+                    // Two tiers:
+                    // - Content-mutation tools (plan/todo edits, file writes, note/
+                    //   contact/calendar creation) get a generous cap: their
+                    //   LEGITIMATE use is high-volume with varied args (checking off
+                    //   a 20-step plan needs 20 edit_plan calls in one turn). True
+                    //   loops are still caught by the identical-args guard and the
+                    //   consecutive-failure breaker — a low count cap here only ever
+                    //   punished real work.
+                    // - Everything else keeps the small default, where repeated
+                    //   calls with varied args are a known small-model loop pattern.
                     var effectivePerToolBudget = maxToolCallsPerTool ?? [:]
+                    for name in Self.highVolumeMutationTools where effectivePerToolBudget[name] == nil {
+                        effectivePerToolBudget[name] = Self.highVolumeMutationToolCap
+                    }
                     let defaultPerToolCap = 5
                     for spec in toolSpecs {
                         if let name = MaestroTools.toolName(from: spec),
@@ -262,7 +274,16 @@ final class AgentExecutor: Sendable {
                         // forever (which would hang the parent's delegation call).
                         // Also enforces a hard cap on the main agent to prevent
                         // infinite gather loops on small models.
+                        // Panel-linked categories (Auto tool mode) follow the LIVE
+                        // panel set — a frozen run-start snapshot went stale the
+                        // moment open_panel fired, leaving the model calling app
+                        // tools it had never seen schemas for (the fabricated
+                        // MaestroDB import). Re-derive each round; this is an
+                        // in-memory rebuild, cheap at round cadence.
                         var specsThisRound = toolSpecs
+                        if let specsProvider {
+                            specsThisRound = await specsProvider()
+                        }
                         // Enforce per-tool call budgets: once a tool's budget is exceeded,
                         // remove it from the schemas so the model cannot call it again.
                         if !toolBudgetExceededNames.isEmpty {
@@ -1644,6 +1665,24 @@ final class AgentExecutor: Sendable {
     }
 
     // MARK: - Tool execution (shared across backends)
+
+    /// Content-mutation tools whose legitimate use is high-volume with varied
+    /// arguments — e.g. checking off a 20-step plan is 20 `edit_plan` calls in
+    /// one turn, and the blanket cap of 5 was cutting that off mid-plan. These
+    /// get `highVolumeMutationToolCap`; pathological loops are still caught by
+    /// the identical-args guard and the consecutive-failure breaker.
+    private static let highVolumeMutationToolCap = 50
+    private static let highVolumeMutationTools: Set<String> = [
+        "create_plan", "edit_plan",
+        "create_todo_list", "add_todos", "update_todo_status",
+        "write_file", "edit_file",
+        "write_note", "create_note",
+        "memory_write",
+        "create_kanban_card", "update_kanban_card",
+        "write_numbers_cell",
+        "create_contact", "update_contact",
+        "create_calendar_event", "create_reminder",
+    ]
 
     /// Tools whose first argument should be the calling agent's project, injected
     /// automatically when the model didn't already supply one. These are the
