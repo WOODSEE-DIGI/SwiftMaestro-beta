@@ -120,6 +120,10 @@ struct CanvasWorkspaceView: View {
         .onChange(of: layout.isLocked) { _, locked in
             if locked { dragState.endDrag() }
         }
+        // Track open/closed so the Window menu can reopen a closed canvas
+        // (its tiles stay assigned to it and reappear on reopen).
+        .onAppear { layout.markCanvasWindowOpen(canvasID) }
+        .onDisappear { layout.markCanvasWindowClosed(canvasID) }
     }
 
     // MARK: - Grid background + move ghost

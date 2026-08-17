@@ -304,7 +304,9 @@ struct SwiftMaestroApp: App {
                 plugins: pluginService.plugins.filter {
                     AppEnablementStore.shared.showsPlugin($0.id)
                 },
-                openPanels: Set(workspaceLayout.allOpenPanels)
+                openPanels: Set(workspaceLayout.allOpenPanels),
+                canvasWindows: workspaceLayout.canvasWindows,
+                openCanvasWindowIDs: workspaceLayout.openCanvasWindowIDs
             )
         }
 
@@ -471,6 +473,10 @@ private struct PanelCommands: Commands {
     let plugins: [PluginManifest]
     /// Open panel kinds at body-evaluation time — drives the checkmarks.
     let openPanels: Set<WorkspacePanelKind>
+    /// Secondary canvas windows (persisted) and which of them are actually on
+    /// screen right now — drives the Canvas Windows reopen section.
+    let canvasWindows: [CanvasWindowInfo]
+    let openCanvasWindowIDs: Set<UUID>
 
     @Environment(\.openWindow) private var openWindow
 
@@ -486,6 +492,32 @@ private struct PanelCommands: Commands {
 
             agentChatsMenu
             panelsMenu
+
+            // Canvas windows: closing one used to strand its tiles invisibly
+            // until the next app restart. Reopen (or focus) from here instead.
+            if !canvasWindows.isEmpty {
+                Divider()
+                Section("Canvas Windows") {
+                    ForEach(canvasWindows) { window in
+                        Button {
+                            openWindow(id: "canvas-window", value: window.id)
+                        } label: {
+                            Label(
+                                window.name,
+                                systemImage: openCanvasWindowIDs.contains(window.id)
+                                    ? "checkmark" : "rectangle.on.rectangle"
+                            )
+                        }
+                    }
+                }
+            }
+
+            Divider()
+
+            Button("New Canvas Window") {
+                let info = layout.createCanvasWindow()
+                openWindow(id: "canvas-window", value: info.id)
+            }
 
             Divider()
 

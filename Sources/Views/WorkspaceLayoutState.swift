@@ -721,6 +721,11 @@ final class WorkspaceLayoutState {
     /// Secondary canvas windows (the main window's canvas is implicit and not
     /// listed). Persisted so canvas windows reopen on launch.
     private(set) var canvasWindows: [CanvasWindowInfo] = []
+    /// Runtime-only set of canvas windows currently open on screen (secondary
+    /// canvases only; never persisted). Drives the Window menu's reopen list —
+    /// closing a canvas window used to strand its tiles invisibly until the
+    /// next app restart because nothing tracked that it was gone.
+    private(set) var openCanvasWindowIDs: Set<UUID> = []
 
     /// Per-canvas measured size (runtime only — not persisted).
     private var canvasSizes: [UUID: CGSize] = [:]
@@ -963,10 +968,25 @@ final class WorkspaceLayoutState {
     func removeCanvasWindow(id: UUID) {
         guard id != CanvasTile.mainCanvasID else { return }
         canvasWindows.removeAll { $0.id == id }
+        openCanvasWindowIDs.remove(id)
         for idx in canvasTiles.indices where canvasTiles[idx].canvasID == id {
             canvasTiles[idx].canvasID = CanvasTile.mainCanvasID
         }
         save()
+    }
+
+    /// Track which secondary canvas windows are actually on screen. Tiles on a
+    /// CLOSED canvas stay assigned to it (they reappear when it reopens), so
+    /// this set is how the Window menu can offer to reopen a closed canvas
+    /// instead of leaving its tiles stranded until the next launch.
+    func markCanvasWindowOpen(_ id: UUID) {
+        guard id != CanvasTile.mainCanvasID else { return }
+        openCanvasWindowIDs.insert(id)
+    }
+
+    func markCanvasWindowClosed(_ id: UUID) {
+        guard id != CanvasTile.mainCanvasID else { return }
+        openCanvasWindowIDs.remove(id)
     }
 
     /// Move a tile to another canvas window, placed in that canvas's best
