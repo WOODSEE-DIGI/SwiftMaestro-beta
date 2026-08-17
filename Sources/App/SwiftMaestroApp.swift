@@ -64,6 +64,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var mcpService: MCPClientService?
     var whatsAppService: WhatsAppService?
 
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // macOS 26 (Tahoe) crashes on launch when NSToolbar restores archived
+        // toolbar state that contains an NSCalendarDate — a relic of the old
+        // toolbar item serialization. The crash happens DURING toolbar
+        // initialization (before any SwiftUI lifecycle hooks run), so we must
+        // purge the stale toolbar configuration from UserDefaults here.
+        let defaults = UserDefaults.standard
+        let keysToRemove = defaults.dictionaryRepresentation().keys.filter {
+            $0.contains("Toolbar") || $0.contains("toolbar")
+        }
+        for key in keysToRemove {
+            defaults.removeObject(forKey: key)
+        }
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // After a crash, macOS may restore stale windows from its own state
+        // restoration that don't correspond to any live SwiftUI WindowGroup.
+        // These phantom windows produce "Invalid window" constraint errors
+        // (CDXPackagesSetWindowConstraints) and may overlap the main window
+        // without ever reaching a usable layout.
+        //
+        // Our own code (ContentView.onAppear + SwiftMaestroApp.task) reopens
+        // the correct windows from WorkspaceLayoutState. Close any windows
+        // macOS already restored in this launch that aren't the main window.
+        Task { @MainActor in
+            // Wait briefly so the main window has time to establish itself
+            // as NSApp.mainWindow.
+            try? await Task.sleep(for: .milliseconds(300))
+            guard let main = NSApp.mainWindow else { return }
+            for window in NSApp.windows where window != main {
+                // Keep Settings, About, and system-level windows alive.
+                guard window.level == .normal else { continue }
+                let isSettings = window.title == "Settings"
+                let isAbout = window.title == "About"
+                if !isSettings && !isAbout {
+                    window.close()
+                }
+            }
+        }
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         // Finalize any in-progress voice note (header flush + duration). The
         // audio data is already on disk; this just makes the WAV well-formed.

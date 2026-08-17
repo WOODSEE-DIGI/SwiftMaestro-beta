@@ -34,6 +34,22 @@ struct WelcomeView: View {
             }
             .animation(.easeInOut(duration: 0.25), value: page)
 
+            // Model load status — shown while the default model loads in the
+            // background so the user knows why the UI may feel sluggish.
+            if case .loading(let name) = engine.state {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Loading \(name)…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("This may take a minute on first launch.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.vertical, 8)
+            }
+
             // Navigation
             HStack {
                 if page > 0 {
@@ -52,7 +68,7 @@ struct WelcomeView: View {
             }
             .padding(24)
         }
-        .frame(width: 520, height: 420)
+        .frame(width: 520, height: 440)
         .interactiveDismissDisabled()
         .onAppear {
             isICloudAvailable = NotesiCloudSupport.iCloudVaultURL != nil

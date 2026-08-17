@@ -231,14 +231,16 @@ struct ContentView: View {
                 if whisper.modelState == .loaded || whisper.isModelDownloaded {
                     // Already ready — mark seen so we never show the dialog again
                     whisperKitSeen = true
-                } else if whisper.modelState == .unloaded {
-                    // Not yet started — kick off the download, then present the sheet
-                    whisper.ensureModelLoaded()
-                    try? await Task.sleep(for: .milliseconds(500))
-                    if activeSheet == nil { activeSheet = .whisperSetup }
                 } else {
-                    // Download/load already in progress (started by SwiftMaestroApp) —
-                    // just show the sheet so the user can see progress.
+                    // Not yet started or already in progress — kick off the
+                    // download if needed, then show the sheet so the user can
+                    // see progress and know what's happening.
+                    if whisper.modelState == .unloaded {
+                        whisper.ensureModelLoaded()
+                    }
+                    // Brief yield so the model state transitions from .unloaded
+                    // to .downloading/.loading before we present the sheet.
+                    try? await Task.sleep(for: .milliseconds(200))
                     if activeSheet == nil { activeSheet = .whisperSetup }
                 }
             }

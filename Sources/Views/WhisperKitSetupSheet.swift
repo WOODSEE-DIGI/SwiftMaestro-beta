@@ -43,7 +43,8 @@ struct WhisperKitSetupSheet: View {
             Text("Speech Recognition").font(.largeTitle.bold())
             Text("SwiftMaestro can transcribe your voice into text using Whisper — "
                 + "a speech recognition model that runs entirely on your Mac. "
-                + "This requires a one-time download (~3 GB).")
+                + "This requires a one-time download (~3 GB) and takes about a "
+                + "minute to load into memory on first launch.")
                 .foregroundStyle(.secondary)
         }
     }
@@ -89,7 +90,8 @@ struct WhisperKitSetupSheet: View {
                     ProgressView {
                         Text("Loading model into memory…")
                     }
-                    Text("This only takes a moment after the download finishes.")
+                    Text("This usually takes about a minute on first launch. "
+                        + "You can continue using the app while it loads.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 .padding(6)
