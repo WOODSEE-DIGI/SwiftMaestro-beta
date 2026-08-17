@@ -66,6 +66,72 @@ final class ToolRegistryTests: XCTestCase {
         XCTAssertEqual(all.count, 1)
     }
 
+    // MARK: - Parameter alias repair (Gemma 4 drifts: filepath vs path)
+
+    private func makeSpec(parameters: [String]) -> ToolSpec {
+        var props: [String: any Sendable] = [:]
+        for p in parameters { props[p] = ["type": "string"] as [String: any Sendable] }
+        return [
+            "type": "function",
+            "function": [
+                "name": "x",
+                "parameters": [
+                    "type": "object",
+                    "properties": props,
+                    "required": parameters,
+                ] as [String: any Sendable],
+            ] as [String: any Sendable],
+        ]
+    }
+
+    func testParameterAliasRemapThroughExecute() async {
+        let registry = ToolRegistry()
+        await registry.register(
+            ToolDefinition(
+                name: "read_thing", spec: makeSpec(parameters: ["path"]), category: "test",
+                handler: { call in
+                    if case .string(let p)? = call.function.arguments["path"] { return "path=\(p)" }
+                    return "missing"
+                })
+        )
+        let result = await registry.execute(ToolCall(function: .init(
+            name: "read_thing", arguments: ["filepath": .string("/tmp/x")])))
+        XCTAssertEqual(result, "path=/tmp/x")
+    }
+
+    func testParameterAliasNeverOverwritesCanonical() async {
+        let registry = ToolRegistry()
+        await registry.register(
+            ToolDefinition(
+                name: "read_thing", spec: makeSpec(parameters: ["path"]), category: "test",
+                handler: { call in
+                    if case .string(let p)? = call.function.arguments["path"] { return "path=\(p)" }
+                    return "missing"
+                })
+        )
+        let result = await registry.execute(ToolCall(function: .init(
+            name: "read_thing",
+            arguments: ["path": .string("/real"), "filepath": .string("/decoy")])))
+        XCTAssertEqual(result, "path=/real")
+    }
+
+    func testParameterAliasSkippedWhenAliasIsDeclared() async {
+        // The tool declares BOTH path and file — `file` is a real parameter
+        // here, so it must NOT be folded into path even though path is missing.
+        let registry = ToolRegistry()
+        await registry.register(
+            ToolDefinition(
+                name: "read_thing", spec: makeSpec(parameters: ["path", "file"]), category: "test",
+                handler: { call in
+                    if case .string(let f)? = call.function.arguments["file"] { return "file=\(f)" }
+                    return "missing"
+                })
+        )
+        let result = await registry.execute(ToolCall(function: .init(
+            name: "read_thing", arguments: ["file": .string("/keep-separate")])))
+        XCTAssertEqual(result, "file=/keep-separate")
+    }
+
     // MARK: - Real end-to-end proof: execute_sqlite via the shared registry
 
     func testExecuteSQLiteDispatchesThroughSharedRegistry() async throws {

@@ -73,11 +73,61 @@ public actor ToolRegistry {
         guard let definition = definitions[call.function.name] else {
             return #"{"error": "unknown tool: \#(call.function.name)"}"#
         }
+        // Small local models drift on parameter names (Gemma 4 was observed
+        // calling read_file with `filepath`, three rounds in a row). Remap
+        // known aliases to the tool's declared parameters BEFORE permission
+        // checks and the handler, so everyone sees the same repaired call.
+        let call = Self.remappingParameterAliases(call, definition: definition)
         if let checker = permissionChecker,
            let denial = await checker.checkPermission(for: call.function.name, call: call) {
             return denial
         }
         return await definition.handler(call)
+    }
+
+    // MARK: - Parameter alias repair
+
+    /// Known parameter-name synonyms, keyed by the canonical (declared) name.
+    /// Kept deliberately small — each alias exists because a small local model
+    /// was observed emitting it in production.
+    private static let parameterAliases: [String: [String]] = [
+        "path": ["filepath", "file_path", "file", "filename", "file_name", "folder", "directory", "dir"],
+        "query": ["q", "search", "search_query", "searchquery", "term"],
+        "content": ["text", "body", "contents"],
+        "old_string": ["oldstring", "old_str", "oldtext", "old"],
+        "new_string": ["newstring", "new_str", "newtext", "new"],
+    ]
+
+    /// Remap alias parameter names to the tool's declared names. Conservative:
+    /// only applies when the canonical key is missing from the arguments AND
+    /// the alias key is not itself a declared parameter of this tool — real
+    /// input is never overwritten.
+    static func remappingParameterAliases(_ call: ToolCall, definition: ToolDefinition) -> ToolCall {
+        let args = call.function.arguments
+        guard !args.isEmpty else { return call }
+
+        guard let function = definition.spec["function"] as? [String: any Sendable],
+              let parameters = function["parameters"] as? [String: any Sendable],
+              let properties = parameters["properties"] as? [String: any Sendable]
+        else { return call }
+        let declared = Set(properties.keys)
+
+        var remapped = args
+        var didRemap = false
+        for (canonical, aliases) in parameterAliases {
+            guard declared.contains(canonical), remapped[canonical] == nil else { continue }
+            for alias in aliases {
+                if let value = remapped[alias], !declared.contains(alias) {
+                    remapped[canonical] = value
+                    remapped.removeValue(forKey: alias)
+                    didRemap = true
+                    NSLog("[TOOLARGS] %@: remapped parameter '%@' → '%@'", definition.name, alias, canonical)
+                    break
+                }
+            }
+        }
+        guard didRemap else { return call }
+        return ToolCall(function: .init(name: call.function.name, arguments: remapped))
     }
 
     /// - Parameter enabledCategories: if provided, only definitions whose
