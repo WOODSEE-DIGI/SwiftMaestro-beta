@@ -15,6 +15,9 @@ class ChatViewModel: ObservableObject {
     /// Images staged for the next message (from the attach button, drag-drop, or
     /// paste). Sent as data URIs to the vision-capable model, then cleared.
     @Published var pendingImages: [Data] = []
+    /// Number of drop/paste image decodes currently in flight. Submits wait for
+    /// this to drain so a fast drop→send can't orphan the image to the next turn.
+    @Published var pendingImageLoads = 0
     @Published var pendingImagePaths: [String] = []
     /// A plan the user attached to this session from the Plans panel ("Attach
     /// to Session"). Injected into the regenerated system prompt every turn
@@ -22,8 +25,14 @@ class ChatViewModel: ObservableObject {
     /// the composer's plan chip or the panel's context menu.
     @Published var attachedPlan: (scope: PlanScope, plan: Plan)?
 
-    func attach(plan: Plan, scope: PlanScope) { attachedPlan = (scope, plan) }
-    func detachAttachedPlan() { attachedPlan = nil }
+    func attach(plan: Plan, scope: PlanScope) {
+        attachedPlan = (scope, plan)
+        NSLog("[PLANATTACH] attached '\(plan.title)' (scope=\(scope)) to agent \(agent.name) (\(agent.id))")
+    }
+    func detachAttachedPlan() {
+        if let attachedPlan { NSLog("[PLANATTACH] detached '\(attachedPlan.plan.title)'") }
+        attachedPlan = nil
+    }
     /// Live, compact "what the agent is doing right now" line shown while
     /// streaming (e.g. "Running read_notes…"). Cleared when the turn ends.
     @Published var currentActivity: String?
@@ -411,12 +420,41 @@ class ChatViewModel: ObservableObject {
     /// Mid-generation steering: while a run is streaming, show `text` as a normal
     /// user message AND queue it for the executor to fold into the NEXT round,
     /// instead of cancelling. No-ops when not streaming (use `send` then).
+    /// Staged images ride along — a screenshot dropped mid-run reaches the model
+    /// on the next round instead of being orphaned in the composer.
     func steer(text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard isStreaming, !trimmed.isEmpty, let inbox = steerInbox else { return }
+        let images = pendingImages
+        let paths = pendingImagePaths
+        guard isStreaming, (!trimmed.isEmpty || !images.isEmpty), let inbox = steerInbox else { return }
         inputText = ""
-        messages.append(Message(role: .user, content: trimmed, timestamp: Date()))
-        Task { await inbox.append(trimmed) }
+        pendingImages = []
+        pendingImagePaths = []
+        messages.append(Message(
+            role: .user, content: trimmed.isEmpty ? " " : trimmed,
+            imageData: images.isEmpty ? nil : images,
+            imagePaths: paths.isEmpty ? nil : paths,
+            timestamp: Date()))
+        Task {
+            var payload = trimmed
+            if !paths.isEmpty {
+                payload += (payload.isEmpty ? "" : "\n")
+                    + "(attached image path(s): \(paths.joined(separator: ", ")))"
+            }
+            await inbox.append(payload, images: images)
+        }
+    }
+
+    /// Wait until in-flight image decodes finish (or `timeout` elapses) so a
+    /// drop immediately followed by send/steer still includes the image.
+    func waitForPendingImageLoads(timeout: TimeInterval = 3) async {
+        let deadline = ContinuousClock.now + .seconds(timeout)
+        while pendingImageLoads > 0 && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        if pendingImageLoads > 0 {
+            NSLog("[CHAT] waitForPendingImageLoads timed out with \(pendingImageLoads) load(s) still in flight")
+        }
     }
 
     /// The executor injected a steer at a round boundary (`.turnBreak`): finalize
@@ -1710,13 +1748,15 @@ class ChatViewModel: ObservableObject {
             // reflected; fall back to the attach-time copy if the plan (or
             // its scope) was deleted while attached.
             let fresh = PlanStore.load(attachedPlan.scope).first { $0.id == attachedPlan.plan.id }
+            let planForPrompt = fresh ?? attachedPlan.plan
             // PREPEND so the model sees the attached plan first — small local
             // models (Gemma 4 26B-A4B etc.) attend strongly to prompt head;
             // content appended after thousands of tokens of tool definitions
             // is effectively invisible.
             inferenceSystemMessage.content = Self.attachedPlanSection(
-                fresh ?? attachedPlan.plan, scope: attachedPlan.scope)
+                planForPrompt, scope: attachedPlan.scope)
                 + inferenceSystemMessage.content
+            NSLog("[PLANATTACH] injecting '\(planForPrompt.title)' (\(planForPrompt.content.count) chars) at system-prompt head")
         }
         // Keep the visible/serialized system prompt in sync with the regenerated
         // inference prompt so the user sees the correct model-capacity guidance.
@@ -1745,6 +1785,16 @@ class ChatViewModel: ObservableObject {
         }
         if let last = output.last, last.role == .assistant, last.content.isEmpty {
             output.removeLast()
+        }
+        // Recency reinforcement for an attached plan: small models can blow past
+        // a directive at the head of a 15K-token system prompt, so also tag the
+        // outgoing user turn with a one-line pointer back to the plan. This
+        // edits only the inference copy — the displayed message is untouched.
+        if let attachedPlan,
+           let lastUserIdx = output.lastIndex(where: { $0.role == .user }) {
+            output[lastUserIdx].content =
+                "[Active plan attached: \"\(attachedPlan.plan.title)\" — full content is in the system prompt; continue with it]\n\n"
+                + output[lastUserIdx].content
         }
         // When the last user message has images and the model does NOT have
         // vision, inject a hint to use ocr_image. Vision models (like Gemma 4)

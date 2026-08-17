@@ -946,11 +946,12 @@ struct ChatView: View {
 
             if vm.isStreaming {
                 // Steer the running agent without cancelling it.
-                Button { vm.steer(text: vm.inputText) } label: {
+                Button { submitInput() } label: {
                     Image(systemName: "arrow.up.circle")
-                        .foregroundColor(vm.inputText.isEmpty ? theme.chatSecondaryText : .blue)
+                        .foregroundColor(
+                            vm.inputText.isEmpty && vm.pendingImages.isEmpty ? theme.chatSecondaryText : .blue)
                 }
-                .disabled(vm.inputText.isEmpty)
+                .disabled(vm.inputText.isEmpty && vm.pendingImages.isEmpty)
                 .help("Steer the running agent (sends without stopping)")
                 Button { vm.cancel(engine: engine) } label: {
                     Image(systemName: "stop.circle.fill")
@@ -999,8 +1000,17 @@ struct ChatView: View {
     }
 
     /// Route the field's submit/send action: steer while streaming (don't cancel),
-    /// otherwise start a normal send.
+    /// otherwise start a normal send. If a drop/paste is still decoding its
+    /// image, hold the submit until it lands so the image rides THIS message
+    /// instead of being orphaned to the next one.
     private func submitInput() {
+        guard vm.pendingImageLoads == 0 else {
+            Task { @MainActor in
+                await vm.waitForPendingImageLoads()
+                submitInput()
+            }
+            return
+        }
         if vm.isStreaming {
             vm.steer(text: vm.inputText)
         } else {
@@ -1023,27 +1033,36 @@ struct ChatView: View {
     }
 
     /// Load images from dropped/pasted item providers (NSImage or file URL).
+    /// Each in-flight decode is counted in `vm.pendingImageLoads` so a fast
+    /// drop→submit can wait for it instead of losing the image.
     @discardableResult
     private func handleProviders(_ providers: [NSItemProvider]) -> Bool {
         var handled = false
         for provider in providers {
             if provider.canLoadObject(ofClass: NSImage.self) {
                 handled = true
+                vm.pendingImageLoads += 1
                 _ = provider.loadObject(ofClass: NSImage.self) { object, _ in
+                    defer { Task { @MainActor in vm.pendingImageLoads -= 1 } }
                     guard let image = object as? NSImage,
                           let data = Self.pngData(from: image) else { return }
                     Task { @MainActor in vm.pendingImages.append(data) }
                 }
             } else if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
                 handled = true
+                vm.pendingImageLoads += 1
                 provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
+                    defer { Task { @MainActor in vm.pendingImageLoads -= 1 } }
                     var url: URL?
                     if let u = item as? URL { url = u }
                     else if let d = item as? Data {
                         url = URL(dataRepresentation: d, relativeTo: nil)
                     }
                     guard let url, let data = Self.pngData(fromFileURL: url) else { return }
-                    Task { @MainActor in vm.pendingImages.append(data) }
+                    Task { @MainActor in
+                        vm.pendingImages.append(data)
+                        vm.pendingImagePaths.append(url.path)
+                    }
                 }
             }
         }

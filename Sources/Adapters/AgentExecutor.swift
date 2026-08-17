@@ -10,18 +10,26 @@ import SwiftMaestroKit
 // cancelling the run. An actor keeps producer (UI) and consumer (executor task)
 // race-free.
 
-actor SteerInbox {
-    private var pending: [String] = []
+/// One queued steer: the user's text plus any images they staged before
+/// hitting send. Images ride along so a screenshot dropped mid-run reaches
+/// the model on the very next round instead of being orphaned in the UI.
+struct SteerPayload: Sendable {
+    let text: String
+    let images: [Data]
+}
 
-    /// Queue a steer (no-ops on blank input).
-    func append(_ text: String) {
+actor SteerInbox {
+    private var pending: [SteerPayload] = []
+
+    /// Queue a steer (no-ops when both text and images are empty).
+    func append(_ text: String, images: [Data] = []) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        pending.append(trimmed)
+        guard !trimmed.isEmpty || !images.isEmpty else { return }
+        pending.append(SteerPayload(text: trimmed, images: images))
     }
 
     /// Atomically return and clear all queued steers.
-    func drainAll() -> [String] {
+    func drainAll() -> [SteerPayload] {
         let out = pending
         pending.removeAll()
         return out
@@ -225,7 +233,23 @@ final class AgentExecutor: Sendable {
                             let steers = await steerInbox.drainAll()
                             if !steers.isEmpty {
                                 for steer in steers {
-                                    convo.append(["role": "user", "content": steer])
+                                    if steer.images.isEmpty {
+                                        convo.append(["role": "user", "content": steer.text])
+                                    } else {
+                                        // Multimodal steer: same content-array shape
+                                        // wireMessage produces, so backend prep
+                                        // (Gemma 4 last-user-image keep, generic
+                                        // extraction) treats it like any image turn.
+                                        var parts: [[String: Any]] = []
+                                        if !steer.text.isEmpty {
+                                            parts.append(["type": "text", "text": steer.text])
+                                        }
+                                        for data in steer.images {
+                                            let uri = "data:image/png;base64,\(data.base64EncodedString())"
+                                            parts.append(["type": "image_url", "image_url": ["url": uri]])
+                                        }
+                                        convo.append(["role": "user", "content": parts])
+                                    }
                                 }
                                 // Open a fresh assistant bubble for the steered
                                 // continuation and re-arm the UI's reasoning split.
