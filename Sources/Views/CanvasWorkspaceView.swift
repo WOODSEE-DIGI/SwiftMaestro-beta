@@ -56,6 +56,7 @@ struct CanvasWorkspaceView: View {
     @State private var layout = WorkspaceLayoutState.shared
     @State private var dragState = TilingDragState.shared
     @State private var canvasDrag = CanvasDragState.shared
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         GeometryReader { geometry in
@@ -133,7 +134,7 @@ struct CanvasWorkspaceView: View {
     private func gridBackground(in size: CGSize) -> some View {
         Canvas { context, _ in
             let cell = CanvasGrid.cellSize(in: size)
-            let dotColor = Color.white.opacity(0.05)
+            let dotColor = colorScheme == .dark ? Color.white.opacity(0.05) : Color.black.opacity(0.08)
             var x = CanvasGrid.gap
             while x < size.width {
                 var y = CanvasGrid.gap
@@ -317,7 +318,7 @@ struct CanvasTileView: View {
                          dy: tile.frame(in: canvasSize).height * 0.25)
             if center.contains(canvasDrag.pointer) { return .cyan }
         }
-        return Color.white.opacity(0.12)
+        return theme.isDarkAppearanceActive ? Color.white.opacity(0.12) : Color.black.opacity(0.12)
     }
 }
 
@@ -464,7 +465,7 @@ extension CanvasTileView {
                     var path = Path()
                     path.move(to: CGPoint(x: size.width - inset, y: size.height))
                     path.addLine(to: CGPoint(x: size.width, y: size.height - inset))
-                    context.stroke(path, with: .color(.white.opacity(0.45)), lineWidth: 1.5)
+                    context.stroke(path, with: .color(theme.isDarkAppearanceActive ? .white.opacity(0.45) : .black.opacity(0.35)), lineWidth: 1.5)
                 }
             }
             .frame(width: 26, height: 26)

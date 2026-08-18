@@ -4,6 +4,16 @@ import GRDB
 import ImageIO
 import UniformTypeIdentifiers
 
+// MARK: - Notification for agent-driven filter updates
+
+extension Notification.Name {
+    /// Posted by the `dam_filter_view` tool to push filter state into the
+    /// DAM browser panel.  `userInfo` keys match the tool parameters:
+    /// search, tag_color, file_type, flag, min_rating, sort, folder, clear.
+    static let damApplyFilters = Notification.Name(
+        "com.woodseedigi.swiftmaestro.damApplyFilters")
+}
+
 // MARK: - MaestroDAM Browser View Model
 //
 // Drives the DAM browser panel: paged grid loading, FTS5 search, minimum
@@ -163,6 +173,28 @@ final class DAMViewModel {
 
     init(database: DAMDatabase = .shared) {
         self.database = database
+
+        // Observe agent-driven filter updates from dam_filter_view tool.
+        NotificationCenter.default.addObserver(
+            forName: .damApplyFilters, object: nil, queue: .main
+        ) { [weak self] note in
+            // Extract values immediately on the nonisolated callback to avoid
+            // Sendable issues with the raw userInfo dictionary.
+            let search = note.userInfo?["search"] as? String
+            let tagColor = note.userInfo?["tag_color"] as? Int
+            let fileType = note.userInfo?["file_type"] as? String
+            let flag = note.userInfo?["flag"] as? String
+            let minRating = note.userInfo?["min_rating"] as? Int
+            let sort = note.userInfo?["sort"] as? String
+            let folder = note.userInfo?["folder"] as? String
+            let clear = note.userInfo?["clear"] as? Bool == true
+            Task { @MainActor [weak self] in
+                self?.applyFilterState(
+                    search: search, tagColor: tagColor, fileType: fileType,
+                    flag: flag, minRating: minRating, sort: sort,
+                    folder: folder, clear: clear)
+            }
+        }
     }
 
     // MARK: - On-demand metadata enrichment
@@ -217,6 +249,55 @@ final class DAMViewModel {
     }
 
     // MARK: - Loading
+
+    /// Applies filter state from a `damApplyFilters` notification (posted by
+    /// the `dam_filter_view` tool).  Only non-nil parameters are touched —
+    /// everything else keeps its current value.
+    private func applyFilterState(
+        search: String?, tagColor: Int?, fileType: String?,
+        flag: String?, minRating: Int?, sort: String?,
+        folder: String?, clear: Bool
+    ) {
+
+        if clear {
+            searchText = ""
+            minimumRating = 0
+            sortOrder = .captureDateDesc
+            filterTagColor = nil
+            filterFileType = nil
+            filterTagged = nil
+            filterFlag = nil
+            selectedFolder = nil
+            return  // reload() fires from the last didSet
+        }
+
+        if let search { searchText = search }  // triggers scheduleSearch()
+        if let tagColor { filterTagColor = tagColor }
+        if let fileType { filterFileType = fileType }
+        if let flag { filterFlag = DAMFlag(rawValue: flag) }
+        if let minRating { minimumRating = minRating }
+        if let sort {
+            sortOrder = DAMDatabase.DAMSortOrder(rawValue: sort)
+                ?? Self.parseSortOrder(sort)
+        }
+        if let folder { selectedFolder = folder }
+        // If only non-reload-triggering filters were set, fire an explicit reload.
+        if search == nil {
+            Task { await reload() }
+        }
+    }
+
+    /// Maps user-friendly sort names to the enum when raw value init fails.
+    private static func parseSortOrder(_ str: String) -> DAMDatabase.DAMSortOrder {
+        switch str.lowercased() {
+        case "capture_date", "date": return .captureDateDesc
+        case "date_asc", "oldest": return .captureDateAsc
+        case "filename", "name": return .filenameAsc
+        case "size", "largest": return .sizeDesc
+        case "rating", "stars": return .ratingDesc
+        default: return .captureDateDesc
+        }
+    }
 
     /// Initial load / full refresh honoring current filters.
     func reload() async {

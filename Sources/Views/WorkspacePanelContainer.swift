@@ -45,6 +45,7 @@ struct WorkspacePanelContainer<Content: View>: View {
                 // height; the content below absorbs the crunch instead.
                 .fixedSize(horizontal: false, vertical: true)
             content()
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
     }
 

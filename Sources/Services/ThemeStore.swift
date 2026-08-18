@@ -454,17 +454,27 @@ final class ThemeStore {
 // MARK: - Color <-> hex (sRGB, 8-digit RRGGBBAA)
 
 extension Color {
-    /// Parse an 8-digit `RRGGBBAA` hex string (leading `#` optional).
+    /// Parse a 6-digit `RRGGBB` or 8-digit `RRGGBBAA` hex string (leading `#` optional).
     init?(hex: String) {
         var string = hex.trimmingCharacters(in: .whitespacesAndNewlines)
         if string.hasPrefix("#") { string.removeFirst() }
-        guard string.count == 8, let value = UInt64(string, radix: 16) else { return nil }
-        self = Color(
-            .sRGB,
-            red: Double((value >> 24) & 0xFF) / 255,
-            green: Double((value >> 16) & 0xFF) / 255,
-            blue: Double((value >> 8) & 0xFF) / 255,
-            opacity: Double(value & 0xFF) / 255)
+        if string.count == 8, let value = UInt64(string, radix: 16) {
+            self = Color(
+                .sRGB,
+                red: Double((value >> 24) & 0xFF) / 255,
+                green: Double((value >> 16) & 0xFF) / 255,
+                blue: Double((value >> 8) & 0xFF) / 255,
+                opacity: Double(value & 0xFF) / 255)
+        } else if string.count == 6, let value = UInt64(string, radix: 16) {
+            self = Color(
+                .sRGB,
+                red: Double((value >> 16) & 0xFF) / 255,
+                green: Double((value >> 8) & 0xFF) / 255,
+                blue: Double(value & 0xFF) / 255,
+                opacity: 1.0)
+        } else {
+            return nil
+        }
     }
 
     /// Serialize to an 8-digit `RRGGBBAA` hex string in sRGB. Returns `nil` if

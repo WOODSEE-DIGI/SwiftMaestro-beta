@@ -225,9 +225,9 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
     /// MaestroDB — dynamic-schema database (Airtable/Notion alternative) with
     /// grid + shared-kanban board views on GRDB.
     case maestroDB
-    /// Overlay Builder — live video production overlay designer with
-    /// transparent PNG export (lower thirds, title cards, tickers, etc.).
-    case overlayBuilder
+    /// HTML Builder — live HTML/CSS editor with transparent PNG export
+    /// and WYSIWYG preview (overlays, title cards, lower thirds, etc.).
+    case htmlBuilder
     /// Backup management panel — Restic-backed offsite/local backups.
     case backup
     /// Voice Notes — record-first voice memos: audio streams to disk
@@ -268,7 +268,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .maestroDocs: return "doc.richtext"
         case .maestroBooks: return "dollarsign.circle"
         case .maestroDB: return "tablecells"
-        case .overlayBuilder: return "rectangle.dashed"
+        case .htmlBuilder: return "rectangle.dashed"
         case .backup: return "arrow.triangle.2.circlepath"
         case .voiceNotes: return "mic.circle"
         }
@@ -313,7 +313,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .maestroDocs: return "maestroDocs"
         case .maestroBooks: return "maestroBooks"
         case .maestroDB: return "maestroDB"
-        case .overlayBuilder: return "overlayBuilder"
+        case .htmlBuilder: return "overlayBuilder"
         case .backup: return "backup"
         case .voiceNotes: return "voiceNotes"
         }
@@ -330,7 +330,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .calendar: return "Calendar"
         case .reminders: return "Reminders"
         case .contacts: return "Contacts"
-        case .canvas: return "Canvas"
+        case .canvas: return "Whiteboard"
         case .kanban: return "Kanban"
         case .numbers: return "Numbers"
         case .maps: return "Maps"
@@ -356,7 +356,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .maestroDocs: return "MaestroDocs"
         case .maestroBooks: return "MaestroBooks"
         case .maestroDB: return "MaestroDB"
-        case .overlayBuilder: return "Overlay Builder"
+        case .htmlBuilder: return "HTML Builder"
         case .backup: return "Backup"
         case .voiceNotes: return "Voice Notes"
         }
@@ -419,7 +419,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .maestroDocs: return "maestroDocs"
         case .maestroBooks: return "maestroBooks"
         case .maestroDB: return "maestroDB"
-        case .overlayBuilder: return "overlayBuilder"
+        case .htmlBuilder: return "overlayBuilder"
         case .backup: return "backup"
         case .voiceNotes: return "voiceNotes"
         }
@@ -1020,7 +1020,7 @@ final class WorkspaceLayoutState {
         case .agents, .appLauncher: return (3, 4)
         case .terminal: return (4, 4)
         case .webBrowser, .damBrowser, .maestroDocs, .maestroDB: return (5, 6)
-        case .overlayBuilder: return (6, 8)
+        case .htmlBuilder: return (6, 8)
         case .backup, .voiceNotes: return (4, 6)
         default: return (4, 4)
         }

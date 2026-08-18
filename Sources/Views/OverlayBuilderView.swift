@@ -45,33 +45,36 @@ struct OverlayBuilderView: View {
 
                     Spacer()
 
-                    Picker("Canvas", selection: Binding(
-                        get: { store.canvasSizeIndex },
-                        set: { store.canvasSizeIndex = $0; store.saveGlobals() }
-                    )) {
-                        Text("Custom").tag(CanvasSizePresets.customIndex)
-                        ForEach(Array(CanvasSizePresets.all.enumerated()), id: \.offset) { i, size in
-                            Text(size.label).tag(i)
+                    // Hide canvas picker for HTML editor (it manages its own)
+                    if store.selectedType != .htmlEditor {
+                        Picker("Canvas", selection: Binding(
+                            get: { store.canvasSizeIndex },
+                            set: { store.canvasSizeIndex = $0; store.saveGlobals() }
+                        )) {
+                            Text("Custom").tag(CanvasSizePresets.customIndex)
+                            ForEach(Array(CanvasSizePresets.all.enumerated()), id: \.offset) { i, size in
+                                Text(size.label).tag(i)
+                            }
                         }
-                    }
-                    .pickerStyle(.menu)
+                        .pickerStyle(.menu)
 
-                    Text("\(store.canvasWidth)×\(store.canvasHeight)")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .monospacedDigit()
-
-                    Toggle(isOn: $showSafeAreas) {
-                        Label("Safe Areas", systemImage: "rectangle.badge.checkmark")
+                        Text("\(store.canvasWidth)×\(store.canvasHeight)")
                             .font(.caption)
-                    }
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    .help("Show platform safe area guides on canvas")
+                            .foregroundStyle(.tertiary)
+                            .monospacedDigit()
 
-                    Button("Export PNG") { exportPNG() }
-                    Button("Export All") { showExportAll = true }
-                        .buttonStyle(.borderedProminent)
+                        Toggle(isOn: $showSafeAreas) {
+                            Label("Safe Areas", systemImage: "rectangle.badge.checkmark")
+                                .font(.caption)
+                        }
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        .help("Show platform safe area guides on canvas")
+
+                        Button("Export PNG") { exportPNG() }
+                        Button("Export All") { showExportAll = true }
+                            .buttonStyle(.borderedProminent)
+                    }
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
@@ -79,9 +82,15 @@ struct OverlayBuilderView: View {
 
                 Divider()
 
-                // Preview (fills all remaining space)
-                previewArea
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Content: HTML editor or normal preview
+                if store.selectedType == .htmlEditor {
+                    OverlayHTMLEditorView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    // Preview (fills all remaining space)
+                    previewArea
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -417,6 +426,8 @@ struct OverlayBuilderView: View {
                     ("bgColor", "Background", .color),
                     ("posX", "X", .range(0...cw)),
                     ("posY", "Y", .range(0...ch))]
+        case .htmlEditor:
+            return []  // Editor is handled by OverlayHTMLEditorView — no form fields
         }
     }
 
@@ -785,6 +796,8 @@ struct OverlayCanvasView: View {
             drawBRB(context: context, W: W, H: H)
         case .ending:
             drawEnding(context: context, W: W, H: H)
+        case .htmlEditor:
+            break  // HTML editor renders via WKWebView, not SwiftUI Canvas
         }
     }
 

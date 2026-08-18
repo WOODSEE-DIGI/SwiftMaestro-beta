@@ -47,6 +47,7 @@ enum OverlayType: String, CaseIterable, Codable, Sendable, Identifiable {
     case countdown
     case brb
     case ending
+    case htmlEditor
 
     var id: String { rawValue }
 
@@ -66,6 +67,7 @@ enum OverlayType: String, CaseIterable, Codable, Sendable, Identifiable {
         case .countdown:        return "Countdown"
         case .brb:              return "Be Right Back"
         case .ending:           return "Stream Ending"
+        case .htmlEditor:       return "HTML / CSS Editor"
         }
     }
 
@@ -85,6 +87,7 @@ enum OverlayType: String, CaseIterable, Codable, Sendable, Identifiable {
         case .countdown:        return "clock"
         case .brb:              return "pause.circle"
         case .ending:           return "stop.circle"
+        case .htmlEditor:       return "chevron.left.forwardslash.chevron.right"
         }
     }
 
@@ -95,6 +98,7 @@ enum OverlayType: String, CaseIterable, Codable, Sendable, Identifiable {
         case .ticker, .alert, .webcamFrame, .cornerBug: return "Streaming"
         case .infoPill, .stepCounter, .webLink:          return "Info"
         case .countdown, .brb, .ending:    return "Scenes"
+        case .htmlEditor:                   return "Advanced"
         }
     }
 }
@@ -159,6 +163,10 @@ struct OverlayConfig: Codable, Equatable, Sendable {
         case .ending:
             fields = ["title": "Thanks for Watching", "subtitle": "See you next time",
                       "socials": "@username", "accent": "#ec4899", "bgColor": "#0c0c12",
+                      "posX": "0", "posY": "0"]
+        case .htmlEditor:
+            fields = ["html": OverlayHTMLEditorView.defaultHTML,
+                      "css": OverlayHTMLEditorView.defaultCSS,
                       "posX": "0", "posY": "0"]
         }
         return OverlayConfig(type: type, fields: fields)

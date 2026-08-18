@@ -124,12 +124,13 @@ struct ResizableDivider: View {
     @State private var dragStartLeading: CGFloat?
     @State private var dragStartTrailing: CGFloat?
     @State private var isHovering = false
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         ZStack {
             Color.clear
             Rectangle()
-                .fill(isHovering ? Color.accentColor.opacity(0.55) : Color.white.opacity(0.08))
+                .fill(isHovering ? Color.accentColor.opacity(0.55) : (colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.12)))
                 .frame(width: axis == .horizontal ? 1 : nil, height: axis == .vertical ? 1 : nil)
         }
         .frame(width: axis == .horizontal ? 9 : nil, height: axis == .vertical ? 9 : nil)

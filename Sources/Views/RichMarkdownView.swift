@@ -274,11 +274,13 @@ enum MarkdownBlock: Identifiable {
     case bullet(id: Int, text: String, indent: Int, checked: Bool?)
     case numbered(id: Int, index: Int, text: String, indent: Int)
     case rule(id: Int)
+    case table(id: Int, header: [String], rows: [[String]])
 
     var id: Int {
         switch self {
         case .heading(let id, _, _), .paragraph(let id, _), .blockquote(let id, _),
-             .bullet(let id, _, _, _), .numbered(let id, _, _, _), .rule(let id):
+             .bullet(let id, _, _, _), .numbered(let id, _, _, _), .rule(let id),
+             .table(let id, _, _):
             return id
         }
     }
@@ -308,12 +310,15 @@ enum MarkdownBlockParser {
             quote.removeAll()
         }
 
-        for rawLine in text.components(separatedBy: .newlines) {
+        let lines = text.components(separatedBy: .newlines)
+        var i = 0
+        while i < lines.count {
+            let rawLine = lines[i]
             let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
 
             if trimmed.isEmpty {
                 flushParagraph(); flushQuote()
-                continue
+                i += 1; continue
             }
             // Thematic break (---, ***, ___)
             if trimmed.allSatisfy({ $0 == "-" || $0 == "*" || $0 == "_" }),
@@ -321,41 +326,49 @@ enum MarkdownBlockParser {
                trimmed.allSatisfy({ $0 == ch }) {
                 flushParagraph(); flushQuote()
                 blocks.append(.rule(id: nextID)); nextID += 1
-                continue
+                i += 1; continue
             }
             // Heading: 1-6 '#' followed by a space
             if let (level, headingText) = parseHeading(trimmed) {
                 flushParagraph(); flushQuote()
                 blocks.append(.heading(id: nextID, level: level, text: headingText)); nextID += 1
-                continue
+                i += 1; continue
             }
             // Blockquote: consecutive '>' lines group into one quote
             if trimmed.hasPrefix(">") {
                 flushParagraph()
                 quote.append(String(trimmed.dropFirst()).trimmingCharacters(in: .whitespaces))
-                continue
+                i += 1; continue
             } else {
                 flushQuote()
             }
+            // Tables: | col | col | with a |---|---| separator on the NEXT line.
+            if trimmed.hasPrefix("|"), trimmed.hasSuffix("|"),
+               !trimmed.allSatisfy({ $0 == "|" || $0 == " " || $0 == "-" }) {
+                if let table = parseTable(lines: lines, startIndex: i) {
+                    flushParagraph()
+                    blocks.append(.table(id: nextID, header: table.header, rows: table.rows))
+                    nextID += 1
+                    i += table.linesConsumed
+                    continue
+                }
+            }
             // Bullets (-, *, +) with optional task checkbox.
-            // Parse the payload FIRST, flush the pending paragraph, THEN
-            // assign the id — assigning before the flush gave the bullet and
-            // the flushed paragraph the same id (duplicate-ID ForEach
-            // warnings + undefined rendering).
             if let (text, indent, checked) = parseBullet(rawLine) {
                 flushParagraph()
                 blocks.append(.bullet(id: nextID, text: text, indent: indent, checked: checked))
                 nextID += 1
-                continue
+                i += 1; continue
             }
             // Numbered lists (1. / 2) )
             if let (index, text, indent) = parseNumbered(rawLine) {
                 flushParagraph()
                 blocks.append(.numbered(id: nextID, index: index, text: text, indent: indent))
                 nextID += 1
-                continue
+                i += 1; continue
             }
             paragraph.append(trimmed)
+            i += 1
         }
         flushParagraph(); flushQuote()
         return blocks
@@ -414,6 +427,50 @@ enum MarkdownBlockParser {
         guard afterMarker.first == " " else { return nil }
         return (index, afterMarker.trimmingCharacters(in: .whitespaces), indent)
     }
+
+    /// Parse a markdown table starting at `startIndex`. Returns the header row,
+    /// data rows, and number of lines consumed — or nil if the table is invalid.
+    /// Requires: header line (| ... |), separator line (| --- | ...), then data rows.
+    private static func parseTable(lines: [String], startIndex: Int) -> (header: [String], rows: [[String]], linesConsumed: Int)? {
+        guard startIndex + 1 < lines.count else { return nil }
+
+        let headerLine = lines[startIndex].trimmingCharacters(in: .whitespaces)
+        let separatorLine = lines[startIndex + 1].trimmingCharacters(in: .whitespaces)
+
+        // Separator must be |---|---|... (dashes, pipes, colons for alignment, spaces)
+        let isSeparator: Bool = {
+            let s = separatorLine.dropFirst().dropLast()  // strip outer pipes
+            return s.split(separator: "|").allSatisfy { cell in
+                let trimmed = cell.trimmingCharacters(in: .whitespaces)
+                return trimmed.allSatisfy { $0 == "-" || $0 == ":" } && trimmed.count >= 1
+            }
+        }()
+        guard isSeparator else { return nil }
+
+        func splitCells(_ line: String) -> [String] {
+            let inner = line.trimmingCharacters(in: .whitespaces)
+            let dropped = inner.hasPrefix("|") ? String(inner.dropFirst()) : inner
+            let final = dropped.hasSuffix("|") ? String(dropped.dropLast()) : dropped
+            return final.split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }
+        }
+
+        let header = splitCells(headerLine)
+        var rows: [[String]] = []
+        var consumed = 2  // header + separator
+
+        var j = startIndex + 2
+        while j < lines.count {
+            let rowLine = lines[j].trimmingCharacters(in: .whitespaces)
+            guard rowLine.hasPrefix("|"), rowLine.hasSuffix("|") else { break }
+            // Don't consume a separator-only line (shouldn't happen, but safety)
+            if rowLine.allSatisfy({ $0 == "|" || $0 == " " || $0 == "-" || $0 == ":" }) { break }
+            rows.append(splitCells(rowLine))
+            consumed += 1
+            j += 1
+        }
+
+        return (header, rows, consumed)
+    }
 }
 
 // MARK: - Markdown Block View
@@ -461,6 +518,8 @@ struct MarkdownBlockView: View {
             .padding(.leading, CGFloat(indent) * 14 + 8)
         case .rule:
             Divider().padding(.vertical, 4)
+        case .table(_, let header, let rows):
+            tableview(header: header, rows: rows)
         }
     }
 
@@ -479,6 +538,50 @@ struct MarkdownBlockView: View {
     /// Falls back to literal text on any parse failure.
     private func inlineText(_ text: String) -> Text {
         Text(MarkdownInlineRenderer.render(text)).foregroundStyle(textColor)
+    }
+
+    /// Renders a markdown table with alternating row backgrounds and header styling.
+    private func tableview(header: [String], rows: [[String]]) -> some View {
+        let columnCount = header.count
+        return ScrollView(.horizontal, showsIndicators: false) {
+            VStack(spacing: 0) {
+                // Header row
+                HStack(spacing: 0) {
+                    ForEach(0..<columnCount, id: \.self) { col in
+                        Text(col < header.count ? header[col] : "")
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(theme.chatText)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .frame(minWidth: 60, alignment: .leading)
+                            .background(theme.chatSecondaryText.opacity(0.12))
+                    }
+                }
+                Divider()
+                // Data rows
+                ForEach(Array(rows.enumerated()), id: \.offset) { rowIdx, row in
+                    HStack(spacing: 0) {
+                        ForEach(0..<columnCount, id: \.self) { col in
+                            Text(col < row.count ? row[col] : "")
+                                .font(.subheadline)
+                                .foregroundStyle(theme.chatText)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .frame(minWidth: 60, alignment: .leading)
+                                .background(rowIdx % 2 == 0 ? Color.clear : theme.chatSecondaryText.opacity(0.06))
+                        }
+                    }
+                    Divider()
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(theme.chatSecondaryText.opacity(0.15), lineWidth: 1)
+            )
+        }
+        .padding(.vertical, 4)
     }
 }
 

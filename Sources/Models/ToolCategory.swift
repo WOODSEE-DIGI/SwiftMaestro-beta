@@ -91,7 +91,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .time: return "Time"
         case .notes: return "Notes"
         case .kanban: return "Kanban"
-        case .canvas: return "Canvas"
+        case .canvas: return "Whiteboard"
         case .numbers: return "Numbers"
         case .maps: return "Maps"
         case .photos: return "Photos"

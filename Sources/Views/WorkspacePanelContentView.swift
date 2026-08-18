@@ -30,11 +30,7 @@ struct WorkspacePanelContentView: View {
         case .contacts:
             ContactsView()
         case .canvas:
-            if #available(macOS 26.0, *) {
-                CanvasView()
-            } else {
-                CanvasFallbackView()
-            }
+            CanvasView()
         case .kanban:
             KanbanView()
         case .numbers:
@@ -106,7 +102,7 @@ struct WorkspacePanelContentView: View {
             MaestroBooksView()
         case .maestroDB:
             MaestroDBView()
-        case .overlayBuilder:
+        case .htmlBuilder:
             OverlayBuilderView()
         case .backup:
             BackupStatusPanel()

@@ -41,6 +41,10 @@ extension MaestroTools {
                 name: "dam_set_keywords", spec: damToolSpecs[6],
                 category: ToolCategory.dam.rawValue,
                 handler: { call in await damSetKeywords(call) }),
+            ToolDefinition(
+                name: "dam_filter_view", spec: damToolSpecs[7],
+                category: ToolCategory.dam.rawValue,
+                handler: { call in await damFilterView(call) }),
         ])
     }
 
@@ -107,6 +111,22 @@ extension MaestroTools {
                     "mode": ["type": "string", "description": "'add' (default) appends to existing; 'replace' overwrites."],
                 ],
                 required: ["keywords", "paths"]),
+            rawSpec("dam_filter_view",
+                "Set search and filter state on the DAM browser panel. Updates "
+                + "the visible grid in real time so the user sees the filtered "
+                + "results immediately. All parameters are optional — only supplied "
+                + "filters are applied. Pass 'clear: true' to reset all filters.",
+                properties: [
+                    "search": ["type": "string", "description": "Full-text search query (FTS5 match against filename, caption, keywords, OCR)."],
+                    "tag_color": ["type": "integer", "description": "Filter by Finder tag color: 2=green, 3=purple, 4=blue, 5=yellow, 6=red, 7=orange. Omit for all."],
+                    "file_type": ["type": "string", "description": "Filter by file type category: 'image', 'raw', 'video', 'audio', 'pdf'. Omit for all."],
+                    "flag": ["type": "string", "description": "Filter by flag: 'picked' or 'rejected'. Omit for all."],
+                    "min_rating": ["type": "integer", "description": "Minimum star rating 0-5."],
+                    "sort": ["type": "string", "description": "Sort order: 'capture_date', 'filename', 'size', 'rating'."],
+                    "folder": ["type": "string", "description": "Restrict to this folder path (nil clears folder scope)."],
+                    "clear": ["type": "boolean", "description": "If true, reset all filters and show full catalog."],
+                ],
+                required: []),
         ]
     }
 
@@ -123,6 +143,16 @@ extension MaestroTools {
     private struct AssetInfoArgs: Codable { let path: String? }
     private struct SetRatingArgs: Codable { let rating: Int?; let paths: String? }
     private struct SetKeywordsArgs: Codable { let keywords, paths, mode: String? }
+    private struct FilterViewArgs: Codable {
+        let search: String?
+        let tag_color: Int?
+        let file_type: String?
+        let flag: String?
+        let min_rating: Int?
+        let sort: String?
+        let folder: String?
+        let clear: Bool?
+    }
 
     // MARK: - Helpers
 
@@ -382,5 +412,64 @@ extension MaestroTools {
             updated += 1
         }
         return "\(isReplace ? "Replaced" : "Added") keywords on \(updated) asset(s): \(keywords)"
+    }
+
+    // MARK: - dam_filter_view
+
+    private static func damFilterView(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: FilterViewArgs.self) else {
+            return "Error: invalid arguments."
+        }
+
+        // Build a userInfo dict of only the filters the agent supplied.
+        var info: [String: Any] = [:]
+        if args.clear == true {
+            info["clear"] = true
+        } else {
+            if let search = args.search { info["search"] = search }
+            if let tagColor = args.tag_color { info["tag_color"] = tagColor }
+            if let fileType = args.file_type { info["file_type"] = fileType }
+        if let flagStr = args.flag {
+            // Map user-friendly names to enum raw values.
+            switch flagStr.lowercased() {
+            case "picked", "pick": info["flag"] = "pick"
+            case "rejected", "reject": info["flag"] = "reject"
+            default: info["flag"] = flagStr  // pass through, DAMViewModel will handle nil if invalid
+            }
+        }
+        if let minRating = args.min_rating { info["min_rating"] = minRating }
+        if let sort = args.sort {
+            // Map user-friendly names to enum raw values.
+            switch sort.lowercased() {
+            case "capture_date", "date": info["sort"] = "captureDateDesc"
+            case "date_asc", "oldest": info["sort"] = "captureDateAsc"
+            case "filename", "name": info["sort"] = "filenameAsc"
+            case "size", "largest": info["sort"] = "sizeDesc"
+            case "rating", "stars": info["sort"] = "ratingDesc"
+            default: info["sort"] = sort
+            }
+        }
+            if let folder = args.folder { info["folder"] = folder }
+        }
+
+        guard !info.isEmpty else {
+            return "Error: provide at least one filter parameter, or set clear=true to reset."
+        }
+
+        await MainActor.run {
+            NotificationCenter.default.post(
+                name: .damApplyFilters, object: nil, userInfo: info)
+        }
+
+        var applied: [String] = []
+        if args.clear == true { applied.append("cleared all filters") }
+        if let s = args.search { applied.append("search=\"\(s)\"") }
+        if let t = args.tag_color { applied.append("tag_color=\(t)") }
+        if let ft = args.file_type { applied.append("file_type=\(ft)") }
+        if let f = args.flag { applied.append("flag=\(f)") }
+        if let r = args.min_rating { applied.append("min_rating=\(r)") }
+        if let s = args.sort { applied.append("sort=\(s)") }
+        if let fo = args.folder { applied.append("folder=\(fo)") }
+        return "DAM panel filters updated: \(applied.joined(separator: ", "))"
     }
 }

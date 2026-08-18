@@ -41,7 +41,7 @@ enum AppCategory: String, CaseIterable, Codable, Sendable {
         case .studio:
             return []                      // Hidden — no apps exposed
         case .swiftApps:
-            return [.busMonitor, .audioControl, .notesMD, .voiceNotes, .canvas, .kanban, .terminal, .webBrowser, .damBrowser, .maestroDocs, .maestroBooks, .maestroDB, .overlayBuilder, .backup]
+            return [.busMonitor, .audioControl, .notesMD, .voiceNotes, .canvas, .kanban, .terminal, .webBrowser, .damBrowser, .maestroDocs, .maestroBooks, .maestroDB, .htmlBuilder, .backup]
         }
     }
 
@@ -64,7 +64,7 @@ extension WorkspacePanelKind {
             return .appleApps
         case .tethering, .streamIngest, .broadcast, .streamMixer, .ndiBrowser, .colorAdjustments, .scenes:
             return .studio
-        case .busMonitor, .audioControl, .notesMD, .voiceNotes, .canvas, .kanban, .terminal, .webBrowser, .damBrowser, .maestroDocs, .maestroBooks, .maestroDB, .overlayBuilder, .backup:
+        case .busMonitor, .audioControl, .notesMD, .voiceNotes, .canvas, .kanban, .terminal, .webBrowser, .damBrowser, .maestroDocs, .maestroBooks, .maestroDB, .htmlBuilder, .backup:
             return .swiftApps
         default:
             return nil

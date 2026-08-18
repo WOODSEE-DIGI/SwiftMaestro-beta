@@ -345,7 +345,7 @@ struct AppearanceSettingsTab: View {
     static let customizablePanels: [WorkspacePanelKind] = [
         .busMonitor, .notesMD, .appleNotes, .calendar, .reminders, .contacts,
         .canvas, .kanban, .numbers, .whatsapp, .terminal,
-        .webBrowser, .damBrowser, .maestroDocs, .maestroBooks, .maestroDB, .overlayBuilder, .backup, .voiceNotes,
+        .webBrowser, .damBrowser, .maestroDocs, .maestroBooks, .maestroDB, .htmlBuilder, .backup, .voiceNotes,
     ]
 
     // Collapsible section state. "Appearance" and "App Panels" open by
