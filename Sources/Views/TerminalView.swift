@@ -31,7 +31,7 @@ struct TerminalView: View {
             }
         }
         .frame(minWidth: 360, idealWidth: 480)
-        .background(Color(nsColor: NSColor(red: 0.11, green: 0.11, blue: 0.12, alpha: 1.0)))
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 
     private var header: some View {
@@ -48,6 +48,7 @@ struct TerminalView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        .background(.ultraThinMaterial)
     }
 }
 

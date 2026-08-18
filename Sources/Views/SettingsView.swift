@@ -1094,7 +1094,6 @@ struct ModelsSettingsTab: View {
     @Environment(MLXInferenceEngine.self) private var engine
     @AppStorage("models.localRoot") private var modelsRoot: String = ""
     @State private var hubModelID: String = ""
-    @State private var downloadingModelIDs: Set<String> = []
     @State private var loadingModelID: String? = nil
     private let sampler = ModelActivitySampler.shared
 
@@ -1215,7 +1214,7 @@ struct ModelsSettingsTab: View {
     private func modelStatus(model: MaestroModel) -> some View {
         let isResident = engine.residentModelsReadout.contains { $0.id == model.id }
 
-        if downloadingModelIDs.contains(model.id) {
+        if engine.modelDownloadProgress[model.id] != nil {
             let progress = engine.modelDownloadProgress[model.id]
             HStack(spacing: 6) {
                 if let progress {
@@ -1278,10 +1277,8 @@ struct ModelsSettingsTab: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Button {
-                    downloadingModelIDs.insert(model.id)
                     Task {
                         try? await engine.downloadModel(model, repair: true)
-                        downloadingModelIDs.remove(model.id)
                         catalog.refreshLocalPaths()
                     }
                 } label: {
@@ -1320,10 +1317,8 @@ struct ModelsSettingsTab: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Button {
-                        downloadingModelIDs.insert(model.id)
                         Task {
                             try? await engine.downloadModel(model, repair: false)
-                            downloadingModelIDs.remove(model.id)
                             catalog.refreshLocalPaths()
                         }
                     } label: {
@@ -1338,10 +1333,8 @@ struct ModelsSettingsTab: View {
         } else {
             let isRepair = model.localPath != nil
             Button {
-                downloadingModelIDs.insert(model.id)
                 Task {
                     try? await engine.downloadModel(model, repair: isRepair)
-                    downloadingModelIDs.remove(model.id)
                     catalog.refreshLocalPaths()
                 }
             } label: {
