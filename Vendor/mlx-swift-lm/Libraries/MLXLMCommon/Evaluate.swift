@@ -377,14 +377,23 @@ public struct RepetitionContext: LogitProcessor {
 
     public func process(logits: MLXArray) -> MLXArray {
         guard let indices = ring.validTokens?.asType(.uint32) else { return logits }
-        var selectedLogits = logits[0..., indices]
-
-        selectedLogits = MLX.where(
-            selectedLogits .< 0, selectedLogits * repetitionPenalty,
-            selectedLogits / repetitionPenalty)
-
-        logits[0..., indices] = selectedLogits
-        return logits
+        // Normalize to the current token's 1-D [vocab] vector regardless of how
+        // the model path shaped its output. convertToToken's three-component
+        // slice assumes [batch, seq, vocab]; model families whose LMOutput is
+        // [seq, vocab] or already-squeezed [vocab] (Gemma 4's VLM path — issue
+        // #258) made `logits[0..., indices]` gather a (ring-size,)-shaped result
+        // against a (seq-len,)-shaped target and crash in a broadcast. The
+        // penalty only affects the token being sampled, so reducing to the last
+        // position is semantically exact.
+        var current = logits
+        if current.ndim >= 3 { current = current[0..., -1, 0...] }   // [batch, seq, vocab] → [batch, vocab]
+        if current.ndim == 2 { current = current[-1, 0...] }          // [batch|seq, vocab] → [vocab]
+        var selected = current[indices]
+        selected = MLX.where(
+            selected .< 0, selected * repetitionPenalty,
+            selected / repetitionPenalty)
+        current[indices] = selected
+        return current
     }
 
     mutating public func didSample(token: MLXArray) {

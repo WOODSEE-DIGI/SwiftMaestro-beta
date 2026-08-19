@@ -167,6 +167,8 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
     case numbers
     case maps
     case photos
+    /// Stocks — watchlist with live quotes + sparklines (stooq CSV, no API key).
+    case stocks
     /// Apple Mail bridge: launch Mail, compose drafts, and read messages.
     case mail
     case whatsapp
@@ -247,6 +249,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .numbers: return "tablecells"
         case .maps: return "map"
         case .photos: return "photo.stack"
+        case .stocks: return "chart.line.uptrend.xyaxis"
         case .mail: return "envelope"
         case .whatsapp: return "message"
         case .discord: return "bubble.left.and.text.bubble.right.fill"
@@ -292,6 +295,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .numbers: return "numbers"
         case .maps: return "maps"
         case .photos: return "photos"
+        case .stocks: return "stocks"
         case .mail: return "mail"
         case .whatsapp: return "whatsapp"
         case .discord: return "discord"
@@ -335,6 +339,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .numbers: return "Numbers"
         case .maps: return "Maps"
         case .photos: return "Photos"
+        case .stocks: return "Stocks"
         case .mail: return "Mail"
         case .whatsapp: return "WhatsApp"
         case .discord: return "Discord"
@@ -398,6 +403,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .numbers: return "numbers"
         case .maps: return "maps"
         case .photos: return "photos"
+        case .stocks: return "stocks"
         case .mail: return "mail"
         case .whatsapp: return "whatsapp"
         case .discord: return "discord"

@@ -349,6 +349,24 @@ extension MaestroTools {
         guard let tab = store.openURLInNewTab(urlString, background: background, reuseExisting: true) else {
             return errorJSON("Invalid URL: \(urlString)")
         }
+        // The tool is named browser_OPEN and the prompt tells the model the
+        // user watches pages open live — but the tab used to be created only
+        // in the store (invisible headless), so the user saw "browser_open"
+        // in the tool log with no browser panel anywhere. Surface the
+        // SwiftBrowser panel unless the caller explicitly asked for
+        // background work.
+        if !background {
+            let layout = WorkspaceLayoutState.shared
+            if !layout.allOpenPanels.contains(.webBrowser) {
+                let openResult = layout.open(.webBrowser, zone: .right)
+                if openResult == .floated {
+                    // Same force-dock contract as open_panel: the agent can't
+                    // call openWindow itself, and a floated-but-unpresented
+                    // window is as invisible as no panel at all.
+                    layout.dock(.webBrowser)
+                }
+            }
+        }
         let reusedExisting = tabIDsBefore.contains(tab.id)
         // Wait for the navigation so we can report whether the page actually exists.
         await tab.waitUntilLoaded(timeout: 15)

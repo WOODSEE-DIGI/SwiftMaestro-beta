@@ -127,6 +127,44 @@ The ONLY sanctioned upload method for the ~28 GB full DMG is the MinIO client
   `SM_SFTP_USER`/`SM_SFTP_HOST` are unset — do not work around it with another
   transfer method.
 
+### Fast-upload runbook (follow exactly)
+
+```bash
+# 1. Build + package (30-45 min). Notarization is SKIPPED by default
+#    (daily-beta cadence); NOTARIZE=1 opts in for正式 releases.
+./scripts/release.sh            # build + sign + package + appcast
+UPLOAD=1 ./scripts/release.sh   # same + upload
+
+# 2. If a DMG already exists and only the upload is needed:
+~/GitHub/FUSV/Websites/swiftmaestro-site/upload-to-onidel.sh dist/SwiftMaestro-X.Y.Z-full.dmg
+~/GitHub/FUSV/Websites/swiftmaestro-site/upload-to-onidel.sh --appcast dist/appcast.xml
+```
+
+**Order matters: DMG first, appcast SECOND.** A live appcast pointing at a
+missing DMG = 404 for every updater.
+
+**Verify an upload is actually moving before declaring it stalled:**
+- Run `mc --debug cp ...` and count `partNumber=... 200 OK` lines, OR
+- `netstat -ibn` — watch **column 10 (Obytes, outgoing)**, NOT column 7
+  (Ibytes, incoming). An upload measured on Ibytes reads 0 MB/s forever and
+  has tricked an agent into killing a healthy upload before.
+- Server-side: `mc ls --incomplete onidel/swiftmaestro-releases/` shows the
+  in-flight multipart session.
+- Expected rate on the user's fibre: ~5 MB/s (28 GB ≈ 90–100 min).
+
+**Known landmines:**
+- `generate_appcast` mounts the DMG with hdiutil — it CANNOT run while an
+  upload of the same file is in flight ("hdiutil: attach failed - Resource
+  busy"). Sign with `sign_update -f` + hand-built appcast XML instead, or
+  simply generate the appcast after the upload finishes.
+- Never run two `mc cp` processes for the same object — they split the uplink
+  and orphan multipart sessions.
+- Kill stale `diskimages-helper`/`hdiutil` processes before retrying
+  appcast generation.
+- Verify the Sparkle EdDSA key before shipping an appcast:
+  `generate_keys -p` output must equal `SUPublicEDKey` in
+  `Sources/Resources/Info.plist`.
+
 ---
 
 ## Code Conventions

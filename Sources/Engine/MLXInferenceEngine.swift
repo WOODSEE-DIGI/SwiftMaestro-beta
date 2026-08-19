@@ -1004,15 +1004,16 @@ final class MLXInferenceEngine {
         }
         let container = try await loadModel(model)
         ModelActivitySampler.shared.register(model, state: .idle)
-        // Gemma 4's text path crashes when repetitionPenalty is non-nil
-        // (mlx-swift-lm issue #258). Disable it for Gemma 4 family models.
-        let repPen: Float? = model.huggingFaceID.lowercased().contains("gemma-4")
-            ? nil
-            : Float(model.tunedRepetitionPenalty)
+        // mlx-swift-lm #258 (Gemma 4 broadcast crash with repPen) is fixed in the
+        // vendored RepetitionContext (rank-normalized gather), so the penalty
+        // applies uniformly across model families.
+        let repPen: Float? = Float(model.tunedRepetitionPenalty)
         let parameters = GenerateParameters(
             maxTokens: maxTokens,
             temperature: Float(temperature), topP: Float(topP), repetitionPenalty: repPen,
-            prefillStepSize: 1024)
+            // 256-token window: the library default of 20 barely covers a phrase,
+            // so section-level repetition slipped past the penalty entirely.
+            repetitionContextSize: 256, prefillStepSize: 1024)
 
         let input = UserInput(
             chat: chat, tools: toolSchemas,
@@ -1184,15 +1185,16 @@ final class MLXInferenceEngine {
         ModelActivitySampler.shared.register(model, state: .loading)
         let container = try await loadModel(model)
         ModelActivitySampler.shared.register(model, state: .idle)
-        // Gemma 4's text path crashes when repetitionPenalty is non-nil
-        // (mlx-swift-lm issue #258). Disable it for Gemma 4 family models.
-        let repPen: Float? = model.huggingFaceID.lowercased().contains("gemma-4")
-            ? nil
-            : Float(model.tunedRepetitionPenalty)
+        // mlx-swift-lm #258 (Gemma 4 broadcast crash with repPen) is fixed in the
+        // vendored RepetitionContext (rank-normalized gather), so the penalty
+        // applies uniformly across model families.
+        let repPen: Float? = Float(model.tunedRepetitionPenalty)
         let parameters = GenerateParameters(
             maxTokens: maxTokens,
             temperature: Float(temperature), topP: Float(topP), repetitionPenalty: repPen,
-            prefillStepSize: 1024)
+            // 256-token window: the library default of 20 barely covers a phrase,
+            // so section-level repetition slipped past the penalty entirely.
+            repetitionContextSize: 256, prefillStepSize: 1024)
 
         // .messages() path: raw dictionaries pass through DefaultMessageGenerator
         // untouched, preserving tool_calls and tool_call_id for the Jinja template.
@@ -1363,8 +1365,66 @@ final class MLXInferenceEngine {
         guard content.count > 512 else { return nil }
         let tailCount = min(4096, content.count)
         let tail = content.suffix(tailCount)
-        guard let runStart = degenerationRunStart(in: tail) else { return nil }
-        return String(content.prefix(content.count - tailCount)) + tail[..<runStart]
+        if let runStart = degenerationRunStart(in: tail) {
+            return String(content.prefix(content.count - tailCount)) + tail[..<runStart]
+        }
+        return sectionRepeatTrimmed(content)
+    }
+
+    /// Section-level repetition guard: catches the model regenerating a large
+    /// earlier block (a heading + table + paragraphs) verbatim — distinct from
+    /// `degenerationRunStart`, which only sees back-to-back short chunk loops.
+    /// This matters most for the Gemma 4 family, which runs with
+    /// `repetitionPenalty = nil` (mlx-swift-lm #258 crash) and therefore has no
+    /// sampling-level protection at all. Returns the content truncated at the
+    /// point the repeated block began; nil when clean.
+    ///
+    /// A repeat is only declared when a ≥120-char anchor from the live tail
+    /// matches an earlier passage AND the match runs ≥500 chars AND continues
+    /// right up to the live end (i.e. the model is looping NOW — a completed,
+    /// intentional quotation of earlier content does not fire the guard).
+    static func sectionRepeatTrimmed(_ content: String) -> String? {
+        guard content.count > 2000 else { return nil }
+        let tailCount = min(1200, content.count / 2)
+        let anchorLength = 120
+        let minMatch = 500
+
+        let tailStart = content.index(content.endIndex, offsetBy: -tailCount)
+        let tail = content[tailStart...]
+        let anchor = tail.prefix(anchorLength)
+        guard anchor.count == anchorLength else { return nil }
+
+        let earlier = content[..<tailStart]
+        var searchStart = earlier.startIndex
+        while let hit = earlier.range(of: anchor, range: searchStart..<earlier.endIndex) {
+            // Forward-match the earlier passage against the live tail.
+            var i = hit.lowerBound
+            var j = tailStart
+            var matched = 0
+            while i < tailStart, j < content.endIndex, content[i] == content[j] {
+                i = content.index(after: i)
+                j = content.index(after: j)
+                matched += 1
+            }
+            if matched >= minMatch, j == content.endIndex {
+                // Walk backward to the true start of the repeated block so the
+                // original stays intact and only the duplicate is dropped. The
+                // walk stops where the two passages diverge (the repeat's
+                // start) or where the earlier passage's own start is reached.
+                var backEarlier = hit.lowerBound
+                var backLive = tailStart
+                while backEarlier > content.startIndex, backLive > hit.lowerBound {
+                    let prevEarlier = content.index(before: backEarlier)
+                    let prevLive = content.index(before: backLive)
+                    guard content[prevEarlier] == content[prevLive] else { break }
+                    backEarlier = prevEarlier
+                    backLive = prevLive
+                }
+                return String(content[..<backLive])
+            }
+            searchStart = earlier.index(after: hit.lowerBound)
+        }
+        return nil
     }
 
     // MARK: - Vision Proxy

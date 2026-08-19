@@ -39,6 +39,8 @@ struct WorkspacePanelContentView: View {
             MapsView()
         case .photos:
             PhotosView()
+        case .stocks:
+            StocksPanel()
         case .mail:
             MailView()
         case .whatsapp:

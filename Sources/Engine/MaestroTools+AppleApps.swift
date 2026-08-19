@@ -60,6 +60,16 @@ extension MaestroTools {
                 handler: { call in await composeMailTool(call) }),
             ToolDefinition(name: "apple_mail_selected_message", spec: appleAppsToolSpecs[14], category: ToolCategory.mail.rawValue,
                 handler: { _ in await mailSelectedMessageTool() }),
+
+            // MARK: Stocks panel tools
+            ToolDefinition(name: "list_stocks", spec: appleAppsToolSpecs[15], category: ToolCategory.stocks.rawValue,
+                handler: { _ in await listStocksTool() }),
+            ToolDefinition(name: "add_stock", spec: appleAppsToolSpecs[16], category: ToolCategory.stocks.rawValue,
+                handler: { call in await addStockTool(call) }),
+            ToolDefinition(name: "remove_stock", spec: appleAppsToolSpecs[17], category: ToolCategory.stocks.rawValue,
+                handler: { call in await removeStockTool(call) }),
+            ToolDefinition(name: "stock_quote", spec: appleAppsToolSpecs[18], category: ToolCategory.stocks.rawValue,
+                handler: { call in await stockQuoteTool(call) }),
         ])
     }
 
@@ -151,6 +161,26 @@ extension MaestroTools {
             rawSpec("apple_mail_selected_message",
                 "Read the message currently selected in Mail.app's front viewer: subject, sender, Message-ID, recipients. Requires Automation permission for Mail.",
                 properties: [:], required: []),
+
+            // MARK: Stocks panel tools (watchlist + quotes via stooq — no API key)
+            rawSpec("list_stocks",
+                "List the Stocks panel watchlist with the latest cached quote for each symbol (price, intraday change, day range).",
+                properties: [:], required: []),
+            rawSpec("add_stock",
+                "Add a symbol to the Stocks panel watchlist and fetch its quote. Symbols: US tickers plain ('AAPL'), other markets with suffix ('bhp.au'), indices with caret ('^spx').",
+                properties: [
+                    "symbol": ["type": "string", "description": "Ticker symbol, e.g. 'AAPL'."],
+                ], required: ["symbol"]),
+            rawSpec("remove_stock",
+                "Remove a symbol from the Stocks panel watchlist.",
+                properties: [
+                    "symbol": ["type": "string", "description": "Ticker symbol to remove."],
+                ], required: ["symbol"]),
+            rawSpec("stock_quote",
+                "Fetch a fresh quote for any symbol (does not add it to the watchlist). Returns price, day open/high/low, volume, and intraday change.",
+                properties: [
+                    "symbol": ["type": "string", "description": "Ticker symbol, e.g. 'AAPL' or '^spx'."],
+                ], required: ["symbol"]),
         ]
     }
 
@@ -398,6 +428,63 @@ extension MaestroTools {
         return ok
             ? jsonString(["status": "opened", "symbol": args?.symbol ?? "none"])
             : errorJSON("could not open Stocks")
+    }
+
+    // MARK: - Stocks panel implementations (watchlist + quotes via stooq)
+
+    @MainActor
+    static func listStocksTool() async -> String {
+        let store = StocksStore.shared
+        if store.quotes.isEmpty { await store.refreshQuotes() }
+        let items: [[String: Any]] = store.watchlist.map { item in
+            let quote = store.quotes[item.symbol]
+            return [
+                "symbol": item.displaySymbol,
+                "price": quote?.close as Any,
+                "change_percent": quote?.changePercent as Any,
+                "day_low": quote?.low as Any,
+                "day_high": quote?.high as Any,
+                "as_of": quote.map { "\($0.date) \($0.time)" } ?? "never",
+            ]
+        }
+        return jsonString(["watchlist": items, "count": items.count])
+    }
+
+    @MainActor
+    static func addStockTool(_ call: ToolCall) async -> String {
+        let args = decodeArgs(call, as: OpenStocksArgs.self)
+        guard let symbol = args?.symbol, !symbol.isEmpty else { return errorJSON("'symbol' is required") }
+        guard let item = StocksStore.shared.add(symbol: symbol) else {
+            return errorJSON("invalid symbol '\(symbol)'")
+        }
+        return jsonString(["status": "added", "symbol": item.displaySymbol, "watchlist_count": StocksStore.shared.watchlist.count])
+    }
+
+    @MainActor
+    static func removeStockTool(_ call: ToolCall) async -> String {
+        let args = decodeArgs(call, as: OpenStocksArgs.self)
+        guard let symbol = args?.symbol, !symbol.isEmpty else { return errorJSON("'symbol' is required") }
+        StocksStore.shared.remove(symbol: symbol)
+        return jsonString(["status": "removed", "symbol": symbol.uppercased()])
+    }
+
+    @MainActor
+    static func stockQuoteTool(_ call: ToolCall) async -> String {
+        let args = decodeArgs(call, as: OpenStocksArgs.self)
+        guard let symbol = args?.symbol, !symbol.isEmpty else { return errorJSON("'symbol' is required") }
+        guard let quote = await StocksStore.shared.quote(for: symbol), quote.close != nil else {
+            return errorJSON("no quote for '\(symbol)' — check the ticker (US: 'AAPL', other markets: 'bhp.au', indices: '^spx')")
+        }
+        return jsonString([
+            "symbol": quote.symbol,
+            "price": quote.close as Any,
+            "open": quote.open as Any,
+            "day_high": quote.high as Any,
+            "day_low": quote.low as Any,
+            "volume": quote.volume as Any,
+            "change_percent": quote.changePercent as Any,
+            "as_of": "\(quote.date) \(quote.time)",
+        ])
     }
 
     // MARK: - News argument types

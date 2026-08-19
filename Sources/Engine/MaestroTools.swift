@@ -1559,6 +1559,7 @@ enum MaestroTools {
         case "numbers", "spreadsheet": return .numbers
         case "maps", "map": return .maps
         case "photos", "photo", "pictures": return .photos
+        case "stocks", "stock", "shares", "market", "markets": return .stocks
         case "mail", "email", "apple mail": return .mail
         case "whatsapp", "wa": return .whatsapp
         case "discord", "dc": return .discord
@@ -1648,7 +1649,7 @@ enum MaestroTools {
         "database (MaestroDB), books (MaestroBooks), docs (MaestroDocs), "
         + "dam (MaestroDAM — photo/asset browser), canvas (Whiteboard), "
         + "browser (SwiftBrowser), voiceNotes (Voice Notes), htmlBuilder, backup, "
-        + "kanban, numbers, maps, photos, mail, whatsapp, discord, notesMD, "
+        + "kanban, numbers, maps, photos, stocks, mail, whatsapp, discord, notesMD, "
         + "appleNotes, terminal, calendar, reminders, contacts, bus, audio, "
         + "agents, apps, cameras, scenes, mixer, broadcast, ndi — or an agent name."
 

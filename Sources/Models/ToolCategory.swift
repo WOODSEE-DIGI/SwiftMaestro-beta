@@ -238,7 +238,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             ]
         case .stocks:
             return [
-                "open_stocks",
+                "open_stocks", "list_stocks", "add_stock", "remove_stock", "stock_quote",
             ]
         case .news:
             return [
@@ -327,6 +327,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .numbers: return [.numbers]
         case .maps: return [.maps]
         case .photos: return [.photos]
+        case .stocks: return [.stocks]
         case .mail: return [.mail]
         case .whatsapp: return [.whatsapp]
         case .discord: return [.discord]
