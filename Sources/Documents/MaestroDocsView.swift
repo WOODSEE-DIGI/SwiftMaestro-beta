@@ -780,8 +780,10 @@ struct MaestroDocsView: View {
         }
         // Fill the panel window edge-to-edge — without this the VStack wraps
         // its smallest content (the welcome/error states) and the panel
-        // chrome floats mid-window in a black void.
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // chrome floats mid-window in a black void. Pinned to the TOP so an
+        // oversized welcome state overflows at the bottom edge (clipped by the
+        // panel container) instead of pushing the toolbar up out of view.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             guard let provider = providers.first else { return false }
             _ = provider.loadObject(ofClass: URL.self) { url, _ in

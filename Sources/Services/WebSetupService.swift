@@ -15,11 +15,19 @@ enum WebSetupService {
     /// UserDefaults key tracking whether auto-setup has run.
     private static let setupCompleteKey = "webSetup.autoConfigComplete.v1"
 
+    /// True when first-launch web-tool auto-configuration has not run yet.
+    /// Cheap UserDefaults read — used by `SetupProgressService.plan()`.
+    static var needsConfiguration: Bool {
+        !UserDefaults.standard.bool(forKey: setupCompleteKey)
+    }
+
     /// Run auto-configuration once on first launch. Safe to call multiple times.
     /// Performed on a background queue so filesystem / `which` checks do not block
     /// the main actor during startup.
-    static func configureIfNeeded() async {
+    static func configureIfNeeded(progress: SetupReporter? = nil) async {
         guard !UserDefaults.standard.bool(forKey: setupCompleteKey) else { return }
+
+        await progress?.begin(SetupStepID.webTools, detail: "Detecting web search tools…")
 
         let found = await Task.detached(priority: .utility) {
             (
@@ -46,6 +54,8 @@ enum WebSetupService {
             SwiftMaestroSettingsStore.saveMCPServers(servers)
             NSLog("[WebSetup] Auto-enabled web MCP servers based on detected tools")
         }
+
+        await progress?.finish(SetupStepID.webTools, .done)
     }
 
     /// Force-enable a server by name (idempotent).

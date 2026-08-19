@@ -204,7 +204,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             return [
                 "create_project_agent", "list_workspace", "archive_project_agent",
                 "ask_project_agent", "ask_project_agents", "set_agent_model",
-                "list_models", "open_panel", "task",
+                "list_models", "open_panel", "close_panel", "task",
             ]
         case .rules:
             return ["list_rules", "set_rule", "read_project_rules"]

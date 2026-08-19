@@ -92,8 +92,13 @@ struct MCPServerBundle: Identifiable, Codable, Sendable {
 /// This is the foundation for a one-click install experience: every default MCP
 /// server is either embedded directly in the app bundle or downloaded during
 /// the build process, then extracted and prepared on first launch.
-@MainActor
-final class MCPServerBundleService {
+///
+/// Deliberately NON-isolated (no @MainActor): first-run installation copies
+/// bundles, runs npm install, and ad-hoc signs binaries — heavy synchronous
+/// work that used to run on the main thread (via the app launch `.task`) and
+/// beachball the app exactly while the welcome sheet was up. All state is
+/// immutable after init or lives in UserDefaults, so the class is Sendable.
+final class MCPServerBundleService: @unchecked Sendable {
 
     static let shared = MCPServerBundleService()
 
@@ -127,11 +132,23 @@ final class MCPServerBundleService {
         return fm.fileExists(atPath: bundleServersURL.path, isDirectory: &isDir) && isDir.boolValue
     }
 
+    /// True when this launch will actually install servers (bundle present and
+    /// version changed). Cheap: reads the manifest JSON and one UserDefaults
+    /// key. Used by `SetupProgressService.plan()` to decide whether the
+    /// first-run setup sheet is needed at all.
+    var needsInstall: Bool {
+        guard hasBundledServers, let manifest = try? loadManifest() else { return false }
+        return installedVersion != manifest.version
+    }
+
     /// Extract and install all bundled MCP servers. Safe to call multiple times;
     /// re-runs only when the app bundle's server bundle version changes.
     ///
+    /// - Parameter progress: optional reporter for the first-run setup sheet;
+    ///   every extract / dependency-install / codesign item is named live so
+    ///   the user can see exactly what is happening.
     /// - Returns: An array of installed server bundle descriptors.
-    func installIfNeeded() async throws -> [MCPServerBundle] {
+    func installIfNeeded(progress: SetupReporter? = nil) async throws -> [MCPServerBundle] {
         guard hasBundledServers else {
             NSLog("[MCPServerBundle] No bundled servers found in app bundle")
             return []
@@ -146,6 +163,7 @@ final class MCPServerBundleService {
         }
 
         NSLog("[MCPServerBundle] Installing bundled servers version %@", currentVersion)
+        await progress?.begin(SetupStepID.mcpServers, detail: "Preparing components…")
 
         try fm.createDirectory(at: supportServersURL, withIntermediateDirectories: true)
 
@@ -154,26 +172,33 @@ final class MCPServerBundleService {
         var failedServers: [String] = []
         for server in manifest.servers {
             do {
-                try await install(server: server, relativeRuntimeDir: relativeRuntimeDir, runtimeDir: runtimeDir)
+                try await install(server: server, relativeRuntimeDir: relativeRuntimeDir, runtimeDir: runtimeDir, progress: progress)
             } catch {
                 failedServers.append(server.id)
                 NSLog("[MCPServerBundle] Server '%@' installation failed: %@", server.id, error.localizedDescription)
+                await progress?.update(SetupStepID.mcpServers,
+                                       detail: "\(server.name) failed — continuing with the rest")
             }
         }
 
         installedVersion = currentVersion
         if failedServers.isEmpty {
             NSLog("[MCPServerBundle] Installation complete")
+            await progress?.finish(SetupStepID.mcpServers, .done,
+                                   detail: "\(manifest.servers.count) tools installed")
         } else {
             NSLog("[MCPServerBundle] Installation complete with failures: %@", failedServers.joined(separator: ", "))
+            await progress?.finish(SetupStepID.mcpServers,
+                                   .failed("\(failedServers.count) of \(manifest.servers.count) failed"),
+                                   detail: "Failed: \(failedServers.joined(separator: ", "))")
         }
         return manifest.servers
     }
 
     /// Force re-installation of all bundled servers, regardless of version.
-    func reinstall() async throws -> [MCPServerBundle] {
+    func reinstall(progress: SetupReporter? = nil) async throws -> [MCPServerBundle] {
         installedVersion = nil
-        return try await installIfNeeded()
+        return try await installIfNeeded(progress: progress)
     }
 
     /// Returns the MCP server entries described by the bundled manifest, whether or
@@ -291,7 +316,7 @@ final class MCPServerBundleService {
         return try JSONDecoder().decode(MCPServerBundleManifest.self, from: data)
     }
 
-    private func install(server: MCPServerBundle, relativeRuntimeDir: String?, runtimeDir: String?) async throws {
+    private func install(server: MCPServerBundle, relativeRuntimeDir: String?, runtimeDir: String?, progress: SetupReporter?) async throws {
         guard let bundleServersURL else {
             throw BundleError.noBundledServers
         }
@@ -305,6 +330,7 @@ final class MCPServerBundleService {
         try fm.createDirectory(at: destinationURL.deletingLastPathComponent(), withIntermediateDirectories: true)
 
         NSLog("[MCPServerBundle] Extracting %@ from %@", server.id, sourceURL.path)
+        await progress?.update(SetupStepID.mcpServers, detail: "Extracting \(server.name)…")
         try fm.copyItem(at: sourceURL, to: destinationURL)
 
         // Make sure the executable is, in fact, executable.
@@ -328,14 +354,16 @@ final class MCPServerBundleService {
 
         // Run the install command if one is specified.
         if let installCommand = server.installCommand, !installCommand.isEmpty {
+            await progress?.update(SetupStepID.mcpServers,
+                                   detail: "Installing \(server.name) dependencies (this can take a few minutes)…")
             try await runInstallCommand(installCommand, in: serverDir, timeout: server.installTimeout ?? 300)
         }
 
         // Attempt to sign embedded binaries so they pass Hardened Runtime checks.
         // This is best-effort; if no signing identity is available it is skipped.
-        try? await signEmbeddedBinaries(in: serverDir)
+        try? await signEmbeddedBinaries(in: serverDir, label: server.name, progress: progress)
         if let runtimeDir {
-            try? await signEmbeddedBinaries(in: runtimeDir)
+            try? await signEmbeddedBinaries(in: runtimeDir, label: "shared runtime", progress: progress)
         }
     }
 
@@ -379,24 +407,58 @@ final class MCPServerBundleService {
         }
     }
 
-    private func signEmbeddedBinaries(in serverDir: String) async throws {
-        // Find all executable files in the server directory and sign them with
-        // the ad-hoc "-" identity. This is sufficient for Hardened Runtime to
-        // allow execution of bundled binaries without a paid Developer ID cert.
-        // A proper Developer ID signed release would re-sign these during the
-        // packaging step instead.
+    /// Ad-hoc sign every Mach-O binary in the server directory so it passes
+    /// Hardened Runtime checks. This is sufficient without a paid Developer ID
+    /// cert; a proper Developer ID release re-signs these during packaging.
+    ///
+    /// Two performance notes vs. the original implementation:
+    ///  1. Only actual Mach-O binaries are signed. The old loop spawned
+    ///     `codesign` for EVERY executable-permission file — hundreds of shell
+    ///     scripts in a node tree — one blocking process spawn each, on the
+    ///     main thread. The magic-bytes check cuts that to the handful of
+    ///     real binaries.
+    ///  2. The whole loop now runs off the main thread (the class is no
+    ///     longer @MainActor), with each file named live in the setup sheet.
+    private func signEmbeddedBinaries(in serverDir: String, label: String, progress: SetupReporter?) async throws {
         let items = (try? fm.subpathsOfDirectory(atPath: serverDir)) ?? []
+        var binaries: [String] = []
         for item in items {
             let path = "\(serverDir)/\(item)"
             var isDir: ObjCBool = false
             guard fm.fileExists(atPath: path, isDirectory: &isDir), !isDir.boolValue else { continue }
-            if fm.isExecutableFile(atPath: path) {
-                let sign = Process()
-                sign.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
-                sign.arguments = ["--force", "--sign", "-", "--timestamp=none", path]
-                try? sign.run()
-                sign.waitUntilExit()
-            }
+            guard fm.isExecutableFile(atPath: path), isMachOBinary(at: path) else { continue }
+            binaries.append(path)
+        }
+        guard !binaries.isEmpty else { return }
+
+        for (index, path) in binaries.enumerated() {
+            let name = URL(fileURLWithPath: path).lastPathComponent
+            await progress?.update(SetupStepID.mcpServers,
+                                   detail: "Signing \(label): \(name) (\(index + 1) of \(binaries.count))",
+                                   progress: Double(index + 1) / Double(binaries.count))
+            let sign = Process()
+            sign.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+            sign.arguments = ["--force", "--sign", "-", "--timestamp=none", path]
+            try? sign.run()
+            sign.waitUntilExit()
+        }
+    }
+
+    /// Reads the first four bytes of a file and matches them against the
+    /// Mach-O magic numbers (32/64-bit, both endians, plus universal/fat).
+    private func isMachOBinary(at path: String) -> Bool {
+        guard let handle = FileHandle(forReadingAtPath: path) else { return false }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: 4), data.count == 4 else { return false }
+        let magic = data.withUnsafeBytes { $0.load(as: UInt32.self) }
+        switch magic {
+        case 0xFEEDFACE, 0xCEFAEDFE,   // MH_MAGIC / MH_CIGAM (32-bit)
+             0xFEEDFACF, 0xCFFAEDFE,   // MH_MAGIC_64 / MH_CIGAM_64
+             0xCAFEBABE, 0xBEBAFECA,   // FAT_MAGIC / FAT_CIGAM
+             0xCAFEBABF, 0xBFBAFECA:   // FAT_MAGIC_64 / FAT_CIGAM_64
+            return true
+        default:
+            return false
         }
     }
 

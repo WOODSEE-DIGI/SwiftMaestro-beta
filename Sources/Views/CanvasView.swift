@@ -198,6 +198,9 @@ struct FreeformCanvasView: View {
     @State private var showShapePicker = false
     @State private var zoomScale: CGFloat = 1.0
     @State private var panOffset: CGSize = .zero
+    @State private var canvasSize: CGSize = .zero
+    @State private var isPanning = false
+    @State private var panStart: CGSize = .zero
     @State private var showGrid = true
     @State private var showExportSheet = false
 
@@ -220,7 +223,7 @@ struct FreeformCanvasView: View {
 
             // Object tools
             Button { currentTool = .select } label: {
-                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                Image(systemName: "cursorarrow")
                     .foregroundStyle(currentTool == .select ? .blue : .secondary)
             }
             .help("Select & Move")
@@ -310,20 +313,21 @@ struct FreeformCanvasView: View {
             }
             .help("Toggle Grid")
 
-            // Zoom
+            // Zoom (anchored to the viewport centre, not the canvas origin)
             HStack(spacing: 4) {
-                Button { zoomScale = max(0.25, zoomScale - 0.25) } label: {
+                Button { setZoom(max(0.25, zoomScale - 0.25)) } label: {
                     Image(systemName: "minus.magnifyingglass")
                 }
                 Text("\(Int(zoomScale * 100))%")
                     .font(.caption)
                     .frame(width: 40)
-                Button { zoomScale = min(4.0, zoomScale + 0.25) } label: {
+                Button { setZoom(min(4.0, zoomScale + 0.25)) } label: {
                     Image(systemName: "plus.magnifyingglass")
                 }
                 Button { zoomScale = 1.0; panOffset = .zero } label: {
                     Image(systemName: "arrow.up.left.and.arrow.down.right.circle")
                 }
+                .help("Reset zoom and pan")
             }
 
             Divider().frame(height: 16)
@@ -429,14 +433,33 @@ struct FreeformCanvasView: View {
             let gridDotColor = isDark ? Color.white.opacity(0.15) : Color.black.opacity(0.15)
 
             ZStack {
-                // Background
+                // Background — drag on empty canvas pans the view (in pen/eraser
+                // mode the drawing layer on top takes the events instead), tap
+                // deselects.
                 bgColor
                     .ignoresSafeArea()
+                    .onTapGesture { selectedObjectID = nil }
+                    .gesture(
+                        DragGesture()
+                            .onChanged { value in
+                                if !isPanning {
+                                    isPanning = true
+                                    panStart = panOffset
+                                }
+                                panOffset = CGSize(
+                                    width: panStart.width + value.translation.width,
+                                    height: panStart.height + value.translation.height
+                                )
+                            }
+                            .onEnded { _ in isPanning = false }
+                    )
 
-                // Grid background
+                // Grid background (follows zoom + pan)
                 if showGrid {
                     CanvasGridBackground(dotColor: gridDotColor)
-                        .scaleEffect(zoomScale)
+                        .scaleEffect(zoomScale, anchor: .topLeading)
+                        .offset(panOffset)
+                        .allowsHitTesting(false)
                 }
 
                 // Objects layer
@@ -455,11 +478,15 @@ struct FreeformCanvasView: View {
                             deleteObject(obj.id)
                         }
                     )
-                    .position(x: obj.position.x * zoomScale, y: obj.position.y * zoomScale)
+                    .position(
+                        x: obj.position.x * zoomScale + panOffset.width,
+                        y: obj.position.y * zoomScale + panOffset.height
+                    )
                     .scaleEffect(zoomScale)
                 }
 
-                // Drawing layer
+                // Drawing layer (pen/eraser). Hit-transparent in select mode so
+                // objects beneath it can be grabbed — see DrawingNSView.hitTest.
                 DrawingCanvasView(
                     strokes: Binding(
                         get: { boardData.strokes },
@@ -468,11 +495,55 @@ struct FreeformCanvasView: View {
                     tool: currentTool,
                     color: currentColor,
                     lineWidth: currentLineWidth,
-                    zoomScale: zoomScale
+                    zoomScale: zoomScale,
+                    panOffset: panOffset
                 )
             }
             .clipShape(Rectangle())
+            .onAppear { canvasSize = geo.size }
+            .onChange(of: geo.size) { _, newSize in canvasSize = newSize }
         }
+    }
+
+    /// Change zoom while keeping the canvas point under the viewport centre
+    /// fixed — the old buttons zoomed toward the canvas origin (top-left),
+    /// which flung content off screen.
+    private func setZoom(_ newZoom: CGFloat) {
+        guard canvasSize.width > 0, canvasSize.height > 0 else {
+            zoomScale = newZoom
+            return
+        }
+        let viewportCentre = CGPoint(x: canvasSize.width / 2, y: canvasSize.height / 2)
+        // Canvas point currently under the viewport centre…
+        let anchor = CGPoint(
+            x: (viewportCentre.x - panOffset.width) / zoomScale,
+            y: (viewportCentre.y - panOffset.height) / zoomScale
+        )
+        zoomScale = newZoom
+        // …kept under the viewport centre at the new zoom.
+        panOffset = CGSize(
+            width: viewportCentre.x - anchor.x * newZoom,
+            height: viewportCentre.y - anchor.y * newZoom
+        )
+    }
+
+    /// Canvas-coordinate centre of the currently visible viewport — new objects
+    /// insert here so they're always on screen, whatever the zoom/pan.
+    private var visibleCentre: CGPoint {
+        guard canvasSize.width > 0, canvasSize.height > 0 else {
+            return CGPoint(x: 300, y: 300)
+        }
+        return CGPoint(
+            x: (canvasSize.width / 2 - panOffset.width) / zoomScale,
+            y: (canvasSize.height / 2 - panOffset.height) / zoomScale
+        )
+    }
+
+    /// Slight cascade so stacked inserts don't perfectly overlap.
+    private func cascadedInsertPoint() -> CGPoint {
+        let centre = visibleCentre
+        let step = CGFloat(boardData.objects.count % 8) * 24
+        return CGPoint(x: centre.x + step, y: centre.y + step)
     }
 
     // MARK: - Insert actions
@@ -483,36 +554,36 @@ struct FreeformCanvasView: View {
         let obj = CanvasObject(
             type: .stickyNote(color: color),
             text: "Note",
-            position: CGPoint(x: 200 + CGFloat(boardData.objects.count * 30),
-                              y: 200 + CGFloat(boardData.objects.count * 30)),
+            position: cascadedInsertPoint(),
             size: CGSize(width: 200, height: 200)
         )
         boardData.objects.append(obj)
         selectedObjectID = obj.id
+        currentTool = .select
     }
 
     private func insertTextBox() {
         let obj = CanvasObject(
             type: .textBox,
             text: "Text",
-            position: CGPoint(x: 200 + CGFloat(boardData.objects.count * 30),
-                              y: 200 + CGFloat(boardData.objects.count * 30)),
+            position: cascadedInsertPoint(),
             size: CGSize(width: 250, height: 60)
         )
         boardData.objects.append(obj)
         selectedObjectID = obj.id
+        currentTool = .select
     }
 
     private func insertShape(_ shape: CanvasObject.ShapeKind) {
         let obj = CanvasObject(
             type: .shape(shape),
             text: "",
-            position: CGPoint(x: 200 + CGFloat(boardData.objects.count * 30),
-                              y: 200 + CGFloat(boardData.objects.count * 30)),
+            position: cascadedInsertPoint(),
             size: CGSize(width: 150, height: 150)
         )
         boardData.objects.append(obj)
         selectedObjectID = obj.id
+        currentTool = .select
     }
 
     private func insertImage() {
@@ -526,12 +597,12 @@ struct FreeformCanvasView: View {
         let obj = CanvasObject(
             type: .image(data),
             text: "",
-            position: CGPoint(x: 200 + CGFloat(boardData.objects.count * 30),
-                              y: 200 + CGFloat(boardData.objects.count * 30)),
+            position: cascadedInsertPoint(),
             size: CGSize(width: 300, height: 300)
         )
         boardData.objects.append(obj)
         selectedObjectID = obj.id
+        currentTool = .select
     }
 
     private func updateObject(_ updated: CanvasObject) {
@@ -594,11 +665,14 @@ struct FreeformCanvasView: View {
     }
 
     private func calculateContentSize() -> CGSize {
+        // NOTE: CanvasObject.position is the object's CENTRE (the display layer
+        // uses SwiftUI .position). Export used to treat it as top-left, which
+        // shifted every object down-right by half its size in exported files.
         var maxX: CGFloat = 800
         var maxY: CGFloat = 600
         for obj in boardData.objects {
-            maxX = max(maxX, obj.position.x + obj.size.width + 40)
-            maxY = max(maxY, obj.position.y + obj.size.height + 40)
+            maxX = max(maxX, obj.position.x + obj.size.width / 2 + 40)
+            maxY = max(maxY, obj.position.y + obj.size.height / 2 + 40)
         }
         for stroke in boardData.strokes {
             for pt in stroke.points {
@@ -655,7 +729,10 @@ struct FreeformCanvasView: View {
     }
 
     private func drawObjectForExport(_ obj: CanvasObject, in ctx: CGContext, size: CGSize) {
-        let rect = CGRect(x: obj.position.x, y: obj.position.y, width: obj.size.width, height: obj.size.height)
+        // position is the CENTRE (display uses SwiftUI .position)
+        let rect = CGRect(x: obj.position.x - obj.size.width / 2,
+                          y: obj.position.y - obj.size.height / 2,
+                          width: obj.size.width, height: obj.size.height)
 
         switch obj.type {
         case .stickyNote(let color):
@@ -807,9 +884,10 @@ struct FreeformCanvasView: View {
             svg += "<path d=\"\(pathStr)\" stroke=\"\(stroke.color)\" stroke-width=\"\(stroke.width)\" fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n"
         }
 
-        // Objects
+        // Objects (position is the CENTRE — match the display layer)
         for obj in boardData.objects {
-            let x = Int(obj.position.x), y = Int(obj.position.y)
+            let x = Int(obj.position.x - obj.size.width / 2)
+            let y = Int(obj.position.y - obj.size.height / 2)
             let w = Int(obj.size.width), h = Int(obj.size.height)
             switch obj.type {
             case .stickyNote(let color):
@@ -893,10 +971,10 @@ struct CanvasObjectView: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            // Object content
+            // Object content (clamped so a fast drag can't invert the frame)
             objectContent
-                .frame(width: object.size.width + resizeOffset.width,
-                       height: object.size.height + resizeOffset.height)
+                .frame(width: max(40, object.size.width + resizeOffset.width),
+                       height: max(40, object.size.height + resizeOffset.height))
                 .overlay(
                     RoundedRectangle(cornerRadius: object.cornerRadius)
                         .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 2)
@@ -962,7 +1040,10 @@ struct CanvasObjectView: View {
 
     private var resizeHandles: some View {
         GeometryReader { geo in
-            // Bottom-right resize handle
+            // Bottom-right resize handle. The gesture translation arrives in
+            // SCREEN points but this view's frame is rendered through the
+            // parent's scaleEffect — so the live preview divides by zoomScale
+            // or the corner runs ahead of/behind the pointer at any zoom ≠ 1.
             Circle()
                 .fill(Color.accentColor)
                 .frame(width: 10, height: 10)
@@ -970,12 +1051,17 @@ struct CanvasObjectView: View {
                 .gesture(
                     DragGesture(minimumDistance: 1)
                         .onChanged { value in
-                            resizeOffset = value.translation
+                            resizeOffset = CGSize(
+                                width: value.translation.width / zoomScale,
+                                height: value.translation.height / zoomScale
+                            )
                         }
                         .onEnded { value in
                             var updated = object
-                            updated.size.width += value.translation.width / zoomScale
-                            updated.size.height += value.translation.height / zoomScale
+                            // Clamp: never smaller than a usable touch target,
+                            // never inverted by a drag past the top-left edge.
+                            updated.size.width = max(40, object.size.width + value.translation.width / zoomScale)
+                            updated.size.height = max(40, object.size.height + value.translation.height / zoomScale)
                             resizeOffset = .zero
                             onUpdate(updated)
                         }
@@ -1175,6 +1261,7 @@ struct DrawingCanvasView: NSViewRepresentable {
     let color: Color
     let lineWidth: CGFloat
     let zoomScale: CGFloat
+    let panOffset: CGSize
 
     func makeNSView(context: Context) -> DrawingNSView {
         let nsView = DrawingNSView()
@@ -1183,6 +1270,7 @@ struct DrawingCanvasView: NSViewRepresentable {
         nsView.currentNSColor = NSColor(color)
         nsView.currentLineWidth = lineWidth
         nsView.zoomScale = zoomScale
+        nsView.panOffset = panOffset
         return nsView
     }
 
@@ -1190,11 +1278,17 @@ struct DrawingCanvasView: NSViewRepresentable {
         nsView.currentTool = tool
         nsView.currentNSColor = NSColor(color)
         nsView.currentLineWidth = lineWidth
-        nsView.zoomScale = zoomScale
+        var needsDisplay = false
+        if nsView.zoomScale != zoomScale || nsView.panOffset != panOffset {
+            nsView.zoomScale = zoomScale
+            nsView.panOffset = panOffset
+            needsDisplay = true
+        }
         if nsView.strokes != strokes {
             nsView.strokes = strokes
-            nsView.needsDisplay = true
+            needsDisplay = true
         }
+        if needsDisplay { nsView.needsDisplay = true }
     }
 }
 
@@ -1205,6 +1299,7 @@ final class DrawingNSView: NSView {
     var currentNSColor: NSColor = .white
     var currentLineWidth: CGFloat = 3
     var zoomScale: CGFloat = 1.0
+    var panOffset: CGSize = .zero
 
     private var currentPoints: [CGPoint] = []
     private var isDrawing = false
@@ -1220,12 +1315,30 @@ final class DrawingNSView: NSView {
 
     required init?(coder: NSCoder) { fatalError() }
 
+    /// In select mode this layer must be transparent to the mouse: it sits ON
+    /// TOP of the SwiftUI object layer, and the default NSView hit-test used
+    /// to swallow every click — making objects impossible to grab, move, or
+    /// resize no matter which tool was active. Only pen and eraser need events.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard currentTool == .pen || currentTool == .eraser else { return nil }
+        return super.hitTest(point)
+    }
+
+    /// Strokes are stored in CANVAS coordinates (zoom/pan independent). Convert
+    /// a view-space event point into canvas space before storing/hit-testing.
+    private func canvasPoint(for event: NSEvent) -> CGPoint {
+        let viewPoint = convert(event.locationInWindow, from: nil)
+        return CGPoint(
+            x: (viewPoint.x - panOffset.width) / zoomScale,
+            y: (viewPoint.y - panOffset.height) / zoomScale
+        )
+    }
+
     override func mouseDown(with event: NSEvent) {
         guard currentTool == .pen || currentTool == .eraser else { return }
 
         if currentTool == .eraser {
-            let point = convert(event.locationInWindow, from: nil)
-            if let idx = nearestStrokeIndex(to: point) {
+            if let idx = nearestStrokeIndex(to: canvasPoint(for: event)) {
                 strokes.remove(at: idx)
                 onStrokesChanged?(strokes)
                 needsDisplay = true
@@ -1234,12 +1347,12 @@ final class DrawingNSView: NSView {
         }
 
         isDrawing = true
-        currentPoints = [convert(event.locationInWindow, from: nil)]
+        currentPoints = [canvasPoint(for: event)]
     }
 
     override func mouseDragged(with event: NSEvent) {
         guard isDrawing else { return }
-        currentPoints.append(convert(event.locationInWindow, from: nil))
+        currentPoints.append(canvasPoint(for: event))
         needsDisplay = true
     }
 
@@ -1263,11 +1376,19 @@ final class DrawingNSView: NSView {
         super.draw(dirtyRect)
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
 
+        // Render canvas-space strokes through the same zoom + pan transform
+        // the object layer uses, so drawing and objects never drift apart.
+        ctx.saveGState()
+        ctx.translateBy(x: panOffset.width, y: panOffset.height)
+        ctx.scaleBy(x: zoomScale, y: zoomScale)
+
         for stroke in strokes { drawStroke(stroke, in: ctx) }
 
         if isDrawing && currentPoints.count > 1 {
             drawStroke(Stroke(points: currentPoints, color: currentNSColor.hexString, width: currentLineWidth), in: ctx)
         }
+
+        ctx.restoreGState()
     }
 
     private func drawStroke(_ stroke: Stroke, in ctx: CGContext) {
@@ -1287,12 +1408,15 @@ final class DrawingNSView: NSView {
         ctx.strokePath()
     }
 
+    /// Hit-test in canvas space; tolerance scales with zoom so the eraser
+    /// covers a consistent ~20 screen points at any zoom level.
     private func nearestStrokeIndex(to point: CGPoint) -> Int? {
+        let tolerance = 20 / max(zoomScale, 0.01)
         var best: (Int, CGFloat)?
         for (i, s) in strokes.enumerated() {
             for p in s.points {
                 let d = hypot(p.x - point.x, p.y - point.y)
-                if d < 20, best.map({ d < $0.1 }) ?? true { best = (i, d) }
+                if d < tolerance, best.map({ d < $0.1 }) ?? true { best = (i, d) }
             }
         }
         return best?.0

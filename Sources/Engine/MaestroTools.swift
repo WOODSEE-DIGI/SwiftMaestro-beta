@@ -509,6 +509,10 @@ enum MaestroTools {
                 handler: { _ in
                     errorJSON("task must be intercepted by AgentExecutor, not dispatched directly.")
                 }),
+            ToolDefinition(
+                name: "close_panel", spec: navigatorToolSpecs[9],
+                category: ToolCategory.workspace.rawValue,
+                handler: { call in await closePanelTool(call) }),
         ])
     }
 
@@ -619,13 +623,19 @@ enum MaestroTools {
                     + "'books' before invoice_*, 'kanban' before kanban tools. After "
                     + "opening a panel, call the app's tools in your NEXT tool call — "
                     + "do NOT deliberate about whether they're available; once the "
-                    + "panel is open, its tools work. Panels: database, books, docs, "
-                    + "kanban, canvas, numbers, maps, photos, mail, whatsapp, discord, "
-                    + "browser, notesMD, appleNotes, terminal, calendar, reminders, "
-                    + "contacts, dam, bus, audio, agents, apps, cameras, scenes, mixer, "
-                    + "broadcast, ndi — or an agent name to open its chat panel.",
+                    + "panel is open, its tools work. "
+                    + "Panels (alias — display name the user sees): database — MaestroDB, "
+                    + "books — MaestroBooks, docs — MaestroDocs, dam — MaestroDAM (photo/asset "
+                    + "browser), canvas — Whiteboard, browser — SwiftBrowser, voiceNotes — "
+                    + "Voice Notes, htmlBuilder — HTML Builder, backup — Backup, plus kanban, "
+                    + "numbers, maps, photos, mail, whatsapp, discord, notesMD, appleNotes, "
+                    + "terminal, calendar, reminders, contacts, bus, audio, agents, apps, "
+                    + "cameras, scenes, mixer, broadcast, ndi — or an agent name to open its "
+                    + "chat panel. Use close_panel to close a panel. "
+                    + "IMPORTANT: 'MaestroDAM' is the photo/asset manager (alias 'dam'); "
+                    + "'MaestroDB' is the database (alias 'database') — do not confuse them.",
                 properties: [
-                    "panel": ["type": "string", "description": "Panel name or alias (e.g. 'database', 'db', 'books', 'mail', 'browser') or an agent name."],
+                    "panel": ["type": "string", "description": "Panel name, alias, or display name (e.g. 'database', 'dam', 'MaestroDAM', 'SwiftBrowser') or an agent name."],
                     "zone": ["type": "string", "description": "Where to dock: 'right' (default, side-by-side), 'bottom' (below existing panels), or 'float'. Omit for default."],
                 ],
                 required: ["panel"]
@@ -645,6 +655,20 @@ enum MaestroTools {
                     "model": ["type": "string", "description": "Optional model identifier or shorthand ('coding', 'default'). Uses the global default model when omitted."],
                 ],
                 required: ["agent", "task"]
+            ),
+            functionSpec(
+                name: "close_panel",
+                description:
+                    "CLOSE an app panel that is currently open in SwiftMaestro (docked or "
+                    + "floating). Use when the user asks to close/hide/dismiss a panel or app, "
+                    + "or to tidy up the workspace. Panel names are the same as open_panel — "
+                    + "including display names like 'MaestroDAM', 'MaestroDB', 'SwiftBrowser', "
+                    + "'Whiteboard', 'Voice Notes' — or an agent name to close its chat panel. "
+                    + "Closing is always safe: the user can re-open any panel from the sidebar.",
+                properties: [
+                    "panel": ["type": "string", "description": "Name of the open panel to close (e.g. 'database', 'dam', 'MaestroDAM', 'browser') or an agent name."],
+                ],
+                required: ["panel"]
             ),
         ]
     }
@@ -1506,6 +1530,16 @@ enum MaestroTools {
         }
     }
 
+    private struct ClosePanelArgs: Codable {
+        let panel: String
+
+        enum CodingKeys: String, CodingKey { case panel }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            panel = try c.decode(String.self, forKey: .panel)
+        }
+    }
+
     /// Maps a free-form panel name (from the model) to a `WorkspacePanelKind`.
     /// Every static panel is reachable — app-tool panels matter most (opening
     /// one activates its tool category under Auto mode), but monitors,
@@ -1521,14 +1555,14 @@ enum MaestroTools {
         case "books", "maestrobooks", "invoices", "invoicing": return .maestroBooks
         case "docs", "maestrodocs", "documents": return .maestroDocs
         case "kanban", "board": return .kanban
-        case "canvas", "draw": return .canvas
+        case "canvas", "draw", "whiteboard", "white board": return .canvas
         case "numbers", "spreadsheet": return .numbers
         case "maps", "map": return .maps
         case "photos", "photo", "pictures": return .photos
         case "mail", "email", "apple mail": return .mail
         case "whatsapp", "wa": return .whatsapp
         case "discord", "dc": return .discord
-        case "browser", "web browser", "webbrowser": return .webBrowser
+        case "browser", "web browser", "webbrowser", "swiftbrowser": return .webBrowser
         case "notes.md", "notesmd", "md notes": return .notesMD
         case "apple notes", "applenotes", "notes": return .appleNotes
         // General panels.
@@ -1548,7 +1582,31 @@ enum MaestroTools {
         case "ndi", "ndi browser": return .ndiBrowser
         case "color", "color adjustments", "lut": return .colorAdjustments
         case "scenes", "scene composer": return .scenes
+        case "voice notes", "voicenotes", "voice memos": return .voiceNotes
+        case "html builder", "htmlbuilder", "html": return .htmlBuilder
+        case "backup", "backups": return .backup
         default:
+            // Display-name pass: match the app names users actually SEE (and
+            // therefore the names they say to the agent — "MaestroDAM",
+            // "Voice Notes", "SwiftBrowser"…), normalized to lowercase
+            // alphanumerics so case/spacing can't matter. This catches the
+            // Maestro* family confusions (e.g. "MaestroDAM" → MaestroDB)
+            // even when the model invents its own spelling.
+            let normalized = lower.filter { $0.isLetter || $0.isNumber }
+            if !normalized.isEmpty {
+                if let exact = panelDisplayNames.first(where: { $0.1 == normalized }) {
+                    return exact.0
+                }
+                let prefixed = panelDisplayNames.filter {
+                    $0.1.hasPrefix(normalized) || normalized.hasPrefix($0.1)
+                }
+                if prefixed.count == 1 { return prefixed[0].0 }
+                let contained = panelDisplayNames.filter {
+                    $0.1.contains(normalized) || normalized.contains($0.1)
+                }
+                if contained.count == 1 { return contained[0].0 }
+            }
+
             // Try fuzzy-matching against agent names
             guard let ws = workspace else { return nil }
             if let match = ws.agents.first(where: {
@@ -1562,35 +1620,60 @@ enum MaestroTools {
         }
     }
 
+    /// Panel kinds ↔ normalized UI display names (lowercase, alphanumerics
+    /// only) for the display-name resolution pass in `resolvePanelKind`.
+    /// Only names that ADD coverage beyond the alias switch are listed.
+    private static let panelDisplayNames: [(WorkspacePanelKind, String)] = [
+        (.maestroDB, "maestrodb"),
+        (.maestroBooks, "maestrobooks"),
+        (.maestroDocs, "maestrodocs"),
+        (.damBrowser, "maestrodam"),
+        (.webBrowser, "swiftbrowser"),
+        (.canvas, "whiteboard"),
+        (.voiceNotes, "voicenotes"),
+        (.htmlBuilder, "htmlbuilder"),
+        (.backup, "backup"),
+        (.busMonitor, "busmonitor"),
+        (.audioControl, "audiocontrol"),
+        (.streamIngest, "streamingest"),
+        (.streamMixer, "streammixer"),
+        (.ndiBrowser, "ndibrowser"),
+        (.colorAdjustments, "coloradjustments"),
+        (.notesMD, "notesmd"),
+    ]
+
+    /// Panel list used in open_panel/close_panel error messages — includes the
+    /// display names users actually say, so the model can self-correct.
+    private static let panelListForErrors =
+        "database (MaestroDB), books (MaestroBooks), docs (MaestroDocs), "
+        + "dam (MaestroDAM — photo/asset browser), canvas (Whiteboard), "
+        + "browser (SwiftBrowser), voiceNotes (Voice Notes), htmlBuilder, backup, "
+        + "kanban, numbers, maps, photos, mail, whatsapp, discord, notesMD, "
+        + "appleNotes, terminal, calendar, reminders, contacts, bus, audio, "
+        + "agents, apps, cameras, scenes, mixer, broadcast, ndi — or an agent name."
+
     private static func openPanelTool(_ call: ToolCall) async -> String {
         guard let args = decodeArgs(call, as: OpenPanelArgs.self),
               !args.panel.trimmingCharacters(in: .whitespaces).isEmpty
         else { return errorJSON("open_panel requires 'panel'") }
 
-        let zone: TilingDropZone? = {
-            // Database panels default to bottom so the user can see data entry
-            // below the chat and browser panels.
-            let panelLower = args.panel.trimmingCharacters(in: .whitespaces).lowercased()
-            let isDatabase = panelLower == "database" || panelLower == "db"
-            if isDatabase && args.zone == nil { return .bottom }
-
-            switch args.zone?.lowercased() {
-            case "bottom": return .bottom
-            case "float":  return nil
-            default:       return .right
-            }
-        }()
-
         return await MainActor.run {
             guard let layout = workspaceLayout else { return errorJSON("workspace layout unavailable") }
             guard let kind = resolvePanelKind(args.panel) else {
-                return errorJSON(
-                    "unknown panel '\(args.panel)'. Available: database, books, docs, "
-                    + "kanban, canvas, numbers, maps, photos, mail, whatsapp, discord, "
-                    + "browser, notesMD, appleNotes, terminal, calendar, reminders, "
-                    + "contacts, dam, bus, audio, agents, apps, cameras, scenes, mixer, "
-                    + "broadcast, ndi — or an agent name.")
+                return errorJSON("unknown panel '\(args.panel)'. Available: \(panelListForErrors)")
             }
+            let zone: TilingDropZone? = {
+                // Database panels default to bottom so the user can see data entry
+                // below the chat and browser panels. Resolved from the KIND so
+                // display-name inputs ("MaestroDB") get the same treatment.
+                if kind == .maestroDB && args.zone == nil { return .bottom }
+
+                switch args.zone?.lowercased() {
+                case "bottom": return .bottom
+                case "float":  return nil
+                default:       return .right
+                }
+            }()
             let result = layout.open(kind, zone: zone)
             switch result {
             case .dockedDirectly:
@@ -1619,6 +1702,36 @@ enum MaestroTools {
                     "note": "Panel was already open; brought to front.",
                 ])
             }
+        }
+    }
+
+    private static func closePanelTool(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: ClosePanelArgs.self),
+              !args.panel.trimmingCharacters(in: .whitespaces).isEmpty
+        else { return errorJSON("close_panel requires 'panel'") }
+
+        return await MainActor.run {
+            guard let layout = workspaceLayout else { return errorJSON("workspace layout unavailable") }
+            guard let kind = resolvePanelKind(args.panel) else {
+                return errorJSON("unknown panel '\(args.panel)'. Available: \(panelListForErrors)")
+            }
+            // Closing a panel the user can re-open is safe; only report honestly
+            // when it wasn't open in the first place.
+            guard layout.allOpenPanels.contains(kind) else {
+                return jsonString([
+                    "status": "not_open",
+                    "panel": args.panel,
+                    "note": "That panel is not currently open.",
+                ])
+            }
+            // Floating windows observe the floating-set and dismiss themselves;
+            // docked panels are removed from the canvas grid.
+            layout.close(kind)
+            return jsonString([
+                "status": "closed",
+                "panel": args.panel,
+                "note": "Panel closed.",
+            ])
         }
     }
 

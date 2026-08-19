@@ -41,10 +41,9 @@ struct WhisperKitSetupSheet: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Speech Recognition").font(.largeTitle.bold())
-            Text("SwiftMaestro can transcribe your voice into text using Whisper — "
-                + "a speech recognition model that runs entirely on your Mac. "
-                + "This requires a one-time download (~3 GB) and takes about a "
-                + "minute to load into memory on first launch.")
+            Text("SwiftMaestro is installing Whisper — a speech recognition model "
+                + "that runs entirely on your Mac. Please wait a few moments; "
+                + "this window will close automatically when it's ready.")
                 .foregroundStyle(.secondary)
         }
     }
@@ -81,17 +80,18 @@ struct WhisperKitSetupSheet: View {
         }
     }
 
-    // MARK: - Loading (post-download, loading into memory)
+    // MARK: - Loading (on disk, loading into memory)
 
     private var loadingSection: some View {
         VStack(alignment: .leading, spacing: 14) {
             GroupBox {
                 VStack(alignment: .leading, spacing: 10) {
                     ProgressView {
-                        Text("Loading model into memory…")
+                        Text("Installing speech recognition…")
                     }
-                    Text("This usually takes about a minute on first launch. "
-                        + "You can continue using the app while it loads.")
+                    Text("Loading the Whisper model into memory. First launch takes "
+                        + "a few moments — hang tight, this closes automatically "
+                        + "when it's ready.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 .padding(6)
@@ -162,7 +162,15 @@ struct WhisperKitSetupSheet: View {
         case .loading, .prewarming:
             phase = .loading
         case .loaded:
+            guard phase != .ready else { return }
             phase = .ready
+            // Auto-dismiss shortly after ready — the user asked to see a green
+            // check, not to click another button. "Start chatting" remains as
+            // the instant path during the delay.
+            Task {
+                try? await Task.sleep(for: .seconds(1.5))
+                if phase == .ready { onDone() }
+            }
         default:
             // If we're in a failed state and have an error message, keep it
             if case .failed = phase { return }

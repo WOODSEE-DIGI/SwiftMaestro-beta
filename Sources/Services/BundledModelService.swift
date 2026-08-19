@@ -26,8 +26,13 @@ struct BundledModelDescriptor: Sendable {
 /// This makes both the "full" .dmg (with Gemma 4) and the "light" .dmg (with
 /// Whisper only) self-contained: each model ships inside the app, then is made
 /// available exactly where the rest of the app expects to find it.
-@MainActor
-final class BundledModelService {
+///
+/// Deliberately NON-isolated (no @MainActor): first-run installation
+/// enumerates and hardlinks (or copies) multi-GB model trees — synchronous
+/// file work that used to run on the main thread during the launch `.task`
+/// and beachball the app while the welcome sheet was visible. All state is
+/// immutable or in UserDefaults, so the class is Sendable.
+final class BundledModelService: @unchecked Sendable {
 
     static let shared = BundledModelService()
 
@@ -110,24 +115,58 @@ final class BundledModelService {
         return model.isInstalled(model.installedURL)
     }
 
+    /// True when this launch will actually install a model (a bundled model is
+    /// present that is missing or stale). Cheap: directory-exists checks plus
+    /// an enumerator that stops at the first weight file. Used by
+    /// `SetupProgressService.plan()` before any window appears.
+    var needsInstall: Bool {
+        models.contains { model in
+            hasBundledModel(model)
+                && !(isInstalled(model)
+                     && UserDefaults.standard.string(forKey: model.versionKey) == model.currentVersion)
+        }
+    }
+
     /// Install all bundled models that are not already present. Returns true for
-    /// each model that is immediately available (hardlinked or already present).
-    /// Models that require a background copy return false, but a copy is started.
-    func installAllIfNeeded() async -> [String: Bool] {
+    /// each model that is immediately available (hardlinked, copied, or already
+    /// present).
+    ///
+    /// The copy fallback (app on a different volume than the model root, e.g.
+    /// running straight from the DMG) is AWAITED, not fire-and-forget: the work
+    /// runs off the main thread now, so there is no beachball to avoid, and
+    /// awaiting it keeps the launch sequence's eager model-load honest.
+    func installAllIfNeeded(progress: SetupReporter? = nil) async -> [String: Bool] {
         var results: [String: Bool] = [:]
+        var stepBegan = false
         for model in models {
-            results[model.name] = await installIfNeeded(model: model)
+            if !stepBegan, hasBundledModel(model),
+               !(isInstalled(model)
+                 && UserDefaults.standard.string(forKey: model.versionKey) == model.currentVersion) {
+                await progress?.begin(SetupStepID.bundledModels, detail: "Preparing models…")
+                stepBegan = true
+            }
+            results[model.name] = await installIfNeeded(model: model, progress: progress)
+        }
+        if stepBegan {
+            let failed = results.filter { !$0.value }.map(\.key)
+            if failed.isEmpty {
+                await progress?.finish(SetupStepID.bundledModels, .done, detail: "Models ready")
+            } else {
+                await progress?.finish(SetupStepID.bundledModels,
+                                       .failed(failed.joined(separator: ", ")),
+                                       detail: "Failed: \(failed.joined(separator: ", "))")
+            }
         }
         return results
     }
 
-    /// Legacy convenience method used by the app launch sequence.
-    func installIfNeeded() async -> Bool {
-        let results = await installAllIfNeeded()
+    /// Convenience method used by the app launch sequence.
+    func installIfNeeded(progress: SetupReporter? = nil) async -> Bool {
+        let results = await installAllIfNeeded(progress: progress)
         return results.values.contains(true)
     }
 
-    private func installIfNeeded(model: BundledModelDescriptor) async -> Bool {
+    private func installIfNeeded(model: BundledModelDescriptor, progress: SetupReporter?) async -> Bool {
         guard hasBundledModel(model) else {
             NSLog("[BundledModel] No bundled %@ found in app bundle", model.name)
             return false
@@ -141,6 +180,8 @@ final class BundledModelService {
 
         guard let source = bundledURL(for: model) else { return false }
         let destination = model.installedURL
+
+        await progress?.update(SetupStepID.bundledModels, detail: "Preparing \(model.name)…")
 
         do {
             try fm.createDirectory(at: destination.deletingLastPathComponent(),
@@ -164,77 +205,96 @@ final class BundledModelService {
 
         NSLog("[BundledModel] Installing %@ -> %@", source.path, destination.path)
 
+        // Flatten the source tree once so progress can name the exact file
+        // being linked/copied with an "x of y" count.
+        let files = allFiles(under: source)
+
         // Try the fast path: hardlink every file. This shares inodes when the app
         // bundle and destination are on the same APFS volume.
-        let hardlinked = await hardlinkContents(from: source, to: destination)
+        let hardlinked = await linkContents(files, from: source, to: destination,
+                                            modelName: model.name, progress: progress)
         if hardlinked {
             UserDefaults.standard.set(model.currentVersion, forKey: model.versionKey)
             NSLog("[BundledModel] %@ installed via hardlinks", model.name)
             return true
         }
 
-        // Fallback: copy in the background. This is slow for large models but works
-        // across filesystems or when the app bundle is read-only.
-        Task.detached(priority: .background) { [weak self] in
-            guard let self else { return }
-            do {
-                try await self.copyContents(from: source, to: destination)
-                await MainActor.run {
-                    UserDefaults.standard.set(model.currentVersion, forKey: model.versionKey)
-                }
-                NSLog("[BundledModel] %@ installed via copy", model.name)
-                NotificationCenter.default.post(name: .bundledModelInstalled, object: nil)
-            } catch {
-                NSLog("[BundledModel] %@ copy failed: %@", model.name, error.localizedDescription)
-            }
-        }
-
-        return false
-    }
-
-    /// Recursively hardlink all files from `source` to `destination`. Returns true
-    /// only if every file was successfully hardlinked.
-    private func hardlinkContents(from source: URL, to destination: URL) async -> Bool {
+        // Fallback: copy. Slow for large models (multi-GB when running from the
+        // DMG, i.e. a different filesystem) but works everywhere. Awaited — see
+        // installAllIfNeeded's doc comment.
         do {
-            try fm.createDirectory(at: destination, withIntermediateDirectories: true)
-
-            let contents = try fm.contentsOfDirectory(at: source, includingPropertiesForKeys: nil)
-            for item in contents {
-                let name = item.lastPathComponent
-                let dstItem = destination.appendingPathComponent(name)
-                var isDir: ObjCBool = false
-                if fm.fileExists(atPath: item.path, isDirectory: &isDir), isDir.boolValue {
-                    let childOK = await hardlinkContents(from: item, to: dstItem)
-                    if !childOK { return false }
-                } else {
-                    do {
-                        try fm.linkItem(at: item, to: dstItem)
-                    } catch {
-                        NSLog("[BundledModel] Hardlink failed for %@: %@", name, error.localizedDescription)
-                        return false
-                    }
-                }
-            }
+            await progress?.update(SetupStepID.bundledModels,
+                                   detail: "Copying \(model.name) — this can take several minutes…")
+            try await copyContents(files, from: source, to: destination,
+                                   modelName: model.name, progress: progress)
+            UserDefaults.standard.set(model.currentVersion, forKey: model.versionKey)
+            NSLog("[BundledModel] %@ installed via copy", model.name)
+            NotificationCenter.default.post(name: .bundledModelInstalled, object: nil)
             return true
         } catch {
-            NSLog("[BundledModel] Hardlink tree failed: %@", error.localizedDescription)
+            NSLog("[BundledModel] %@ copy failed: %@", model.name, error.localizedDescription)
             return false
         }
     }
 
-    /// Recursively copy all files from `source` to `destination`. Large files are
-    /// copied as a single operation; this is only used as a fallback.
-    private func copyContents(from source: URL, to destination: URL) async throws {
-        try fm.createDirectory(at: destination, withIntermediateDirectories: true)
-        let contents = try fm.contentsOfDirectory(at: source, includingPropertiesForKeys: nil)
-        for item in contents {
-            let dstItem = destination.appendingPathComponent(item.lastPathComponent)
-            var isDir: ObjCBool = false
-            if fm.fileExists(atPath: item.path, isDirectory: &isDir), isDir.boolValue {
-                try await copyContents(from: item, to: dstItem)
-            } else {
-                try fm.copyItem(at: item, to: dstItem)
+    /// All regular files under `root` (directories are recreated implicitly by
+    /// the link/copy loops via per-file parent creation).
+    private func allFiles(under root: URL) -> [URL] {
+        guard let enumerator = fm.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        var files: [URL] = []
+        for case let url as URL in enumerator {
+            guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey]),
+                  values.isRegularFile == true else { continue }
+            files.append(url)
+        }
+        return files
+    }
+
+    /// Hardlink every file, preserving the relative directory structure.
+    /// Returns true only if every file was successfully hardlinked.
+    private func linkContents(_ files: [URL], from source: URL, to destination: URL,
+                              modelName: String, progress: SetupReporter?) async -> Bool {
+        let total = files.count
+        for (index, file) in files.enumerated() {
+            let relative = file.path.replacingOccurrences(of: source.path + "/", with: "")
+            let dstItem = destination.appendingPathComponent(relative)
+            do {
+                try fm.createDirectory(at: dstItem.deletingLastPathComponent(),
+                                       withIntermediateDirectories: true)
+                try fm.linkItem(at: file, to: dstItem)
+            } catch {
+                NSLog("[BundledModel] Hardlink failed for %@: %@", relative, error.localizedDescription)
+                return false
             }
+            // Throttle MainActor hops — every file for small trees, every 25
+            // for large ones.
+            if index % 25 == 0 || index == total - 1 {
+                await progress?.update(SetupStepID.bundledModels,
+                                       detail: "Linking \(modelName): \(file.lastPathComponent) (\(index + 1) of \(total))",
+                                       progress: total > 0 ? Double(index + 1) / Double(total) : nil)
+            }
+        }
+        return true
+    }
+
+    /// Copy every file, preserving the relative directory structure. Only used
+    /// as a fallback when hardlinking is impossible (different filesystems).
+    private func copyContents(_ files: [URL], from source: URL, to destination: URL,
+                              modelName: String, progress: SetupReporter?) async throws {
+        let total = files.count
+        for (index, file) in files.enumerated() {
+            let relative = file.path.replacingOccurrences(of: source.path + "/", with: "")
+            let dstItem = destination.appendingPathComponent(relative)
+            try fm.createDirectory(at: dstItem.deletingLastPathComponent(),
+                                   withIntermediateDirectories: true)
+            try fm.copyItem(at: file, to: dstItem)
+            await progress?.update(SetupStepID.bundledModels,
+                                   detail: "Copying \(modelName): \(file.lastPathComponent) (\(index + 1) of \(total))",
+                                   progress: total > 0 ? Double(index + 1) / Double(total) : nil)
         }
     }
 }

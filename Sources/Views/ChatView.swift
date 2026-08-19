@@ -248,6 +248,10 @@ struct ChatView: View {
             ForEach(toolbarCategories) { category in
                 let active = enabledCategories.contains(category)
                 let autoManaged = autoTools && category.isPanelLinked
+                // Saved-on but not active = switched on, waiting for its panel
+                // (Auto mode). Shown as a faint outline so the toggle has
+                // visible feedback even while the panel is closed.
+                let pending = !active && autoManaged && savedCategories.contains(category)
                 Button {
                     categoryTapped(category)
                 } label: {
@@ -268,15 +272,22 @@ struct ChatView: View {
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
                             .fill(active ? theme.accent.opacity(0.12) : Color.clear)
                     )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .strokeBorder(theme.accent.opacity(0.5), style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
+                            .opacity(pending ? 1 : 0)
+                    )
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help(
                     autoManaged
                         ? (active
-                            ? "\(category.displayName): auto-enabled while its panel is open. Tap to focus the panel."
-                            : "\(category.displayName): auto-off (panel closed). Tap to open the \(category.displayName) panel and enable these tools.")
-                        : "\(category.displayName): \(active ? "enabled" : "disabled")")
+                            ? "\(category.displayName): on — active while its panel is open (Auto). Tap to switch off."
+                            : savedCategories.contains(category)
+                                ? "\(category.displayName): on — will activate when its panel opens (Auto). Tap to switch off."
+                                : "\(category.displayName): off. Tap to switch on — activates when its panel opens (Auto).")
+                        : "\(category.displayName): \(active ? "on" : "off"). Tap to \(active ? "switch off" : "switch on").")
             }
 
             if !addableCategories.isEmpty {
@@ -421,18 +432,12 @@ struct ChatView: View {
         workspace.enabledToolCategories(for: vm.agent.id)
     }
 
-    /// Tap behaviour: under Auto, a panel-linked category isn't a toggle —
-    /// tapping opens/focuses its app panel (which is what activates the tools).
-    /// Everything else toggles the saved set as before.
+    /// Tap behaviour: the switcher is a pure access toggle — tapping always
+    /// flips the category in the saved set and NEVER opens a panel. (It used
+    /// to open/focus the app panel under Auto mode, which conflated "manage
+    /// access" with "navigate" — opening a panel is the user's job via the
+    /// Apps sidebar or the agent's via open_panel.)
     private func categoryTapped(_ category: ToolCategory) {
-        if autoTools && category.isPanelLinked {
-            if let openKind = category.linkedPanelKinds.first(where: { WorkspaceLayoutState.shared.isOpen($0) }) {
-                NotificationCenter.default.post(name: .bringWorkspacePanelToFront, object: openKind)
-            } else if let kind = category.linkedPanelKinds.first {
-                NotificationCenter.default.post(name: .openWorkspacePanel, object: kind)
-            }
-            return
-        }
         toggleCategory(category)
     }
 

@@ -10,8 +10,11 @@ import SwiftUI
 struct DocsRibbon: View {
     var viewModel: MaestroDocsViewModel
 
-    @State private var pickedColor: Color = .primary
-    @State private var pickedHighlight: Color = .yellow
+    // NSColor state (not SwiftUI Color): the ribbon uses NSColorWell, which
+    // drives the shared NSColorPanel — correctly anchored, always dismisses.
+    // Defaults match the document surface (black text on white paper).
+    @State private var pickedColor: NSColor = .black
+    @State private var pickedHighlight: NSColor = .systemYellow
     @State private var showLinkSheet = false
     @State private var linkURLText = ""
 
@@ -112,22 +115,25 @@ struct DocsRibbon: View {
                     }
                     ribbonSeparator
                     ribbonGroup("Color") {
-                        HStack(spacing: 8) {
-                            ColorPicker("Text", selection: $pickedColor)
-                                .labelsHidden()
-                                .onChange(of: pickedColor) { _, newValue in
-                                    viewModel.applyTextColor(NSColor(newValue))
-                                }
-                                .help("Text color")
-                            ColorPicker("Highlight", selection: $pickedHighlight)
-                                .labelsHidden()
-                                .onChange(of: pickedHighlight) { _, newValue in
-                                    viewModel.applyHighlight(NSColor(newValue))
-                                }
-                                .help("Highlight color")
+                        HStack(alignment: .top, spacing: 8) {
+                            // NSColorWell (shared NSColorPanel) instead of
+                            // SwiftUI ColorPicker: the picker's popover
+                            // mis-anchors and can stick open over the document
+                            // when hosted in this horizontal ScrollView, and
+                            // the two unlabeled swatches were indistinguishable
+                            // (a "text color" swatch rendered white in dark
+                            // mode read as the highlight control — the source
+                            // of the "solid color box over the title" bug).
+                            labeledColorWell(title: "Text", icon: "textformat", color: $pickedColor) { color in
+                                viewModel.applyTextColor(color)
+                            }
+                            labeledColorWell(title: "Highlight", icon: "highlighter", color: $pickedHighlight) { color in
+                                viewModel.applyHighlight(color)
+                            }
                             ribbonButton("Clear", icon: "xmark.square") {
                                 viewModel.applyHighlight(nil)
                             }
+                            .help("Clear highlight from the selection")
                         }
                     }
                     ribbonSeparator
@@ -183,6 +189,24 @@ struct DocsRibbon: View {
         Divider()
             .frame(width: 1, height: 40)
             .padding(.horizontal, 6)
+    }
+
+    /// Color well + tiny caption so the two color controls are never
+    /// confusable (text paint vs highlight).
+    private func labeledColorWell(
+        title: String, icon: String,
+        color: Binding<NSColor>,
+        onChange: @escaping (NSColor) -> Void
+    ) -> some View {
+        VStack(spacing: 2) {
+            ColorWell(color: color, onChange: onChange)
+                .frame(width: 30, height: 22)
+            Text(title)
+                .font(.system(size: 9))
+                .foregroundStyle(.secondary)
+        }
+        .frame(width: 44, height: 38)
+        .help("\(title): click to open the color panel")
     }
 
     /// Office-style group: controls on top, caption beneath.
@@ -246,5 +270,44 @@ struct DocsRibbon: View {
             }
         }
         .padding(20)
+    }
+}
+
+// MARK: - Native color well bridge
+
+/// NSColorWell in SwiftUI: renders a color swatch and opens the shared
+/// NSColorPanel when clicked. Used instead of SwiftUI's ColorPicker inside
+/// the ribbon's horizontal ScrollView, where the picker's popover can anchor
+/// over the document and fail to dismiss. Live-updates while the panel's
+/// color changes (NSColorWell is continuous by default), matching the old
+/// picker's apply-as-you-drag behaviour.
+private struct ColorWell: NSViewRepresentable {
+    @Binding var color: NSColor
+    let onChange: (NSColor) -> Void
+
+    func makeNSView(context: Context) -> NSColorWell {
+        let well = NSColorWell()
+        well.color = color
+        well.target = context.coordinator
+        well.action = #selector(Coordinator.colorChanged(_:))
+        return well
+    }
+
+    func updateNSView(_ nsView: NSColorWell, context: Context) {
+        if nsView.color != color { nsView.color = color }
+        nsView.target = context.coordinator
+        nsView.action = #selector(Coordinator.colorChanged(_:))
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    final class Coordinator: NSObject {
+        private let parent: ColorWell
+        init(_ parent: ColorWell) { self.parent = parent }
+
+        @objc func colorChanged(_ sender: NSColorWell) {
+            parent.color = sender.color
+            parent.onChange(sender.color)
+        }
     }
 }

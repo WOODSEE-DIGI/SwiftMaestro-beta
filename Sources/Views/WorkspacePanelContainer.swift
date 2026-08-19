@@ -46,6 +46,13 @@ struct WorkspacePanelContainer<Content: View>: View {
                 .fixedSize(horizontal: false, vertical: true)
             content()
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                // A content view whose minimum height exceeds its slot (e.g.
+                // MaestroDocs' welcome state in a short tile) overflows the
+                // slot CENTERED — painting over the header above it and making
+                // the panel impossible to move or close. Clip at the slot
+                // boundary: the header always survives, content loses its
+                // bottom edge instead.
+                .clipped()
         }
     }
 

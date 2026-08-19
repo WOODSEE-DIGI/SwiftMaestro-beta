@@ -152,8 +152,23 @@ final class WhisperKitService: @unchecked Sendable {
     var autoStopSilenceSeconds: Double {
         get { UserDefaults.standard.object(forKey: "\(Self.defaultsPrefix).autoStopSilenceSeconds") != nil
             ? UserDefaults.standard.double(forKey: "\(Self.defaultsPrefix).autoStopSilenceSeconds")
-            : 2.0 }
+            : 3.0 }
         set { UserDefaults.standard.set(newValue, forKey: "\(Self.defaultsPrefix).autoStopSilenceSeconds") }
+    }
+
+    /// One-time migration: the old 2.0 s auto-stop default cut users off
+    /// mid-sentence during natural speech pauses. Anyone still parked on 2.0
+    /// (the old default — or a deliberate choice they can re-make) moves to
+    /// the new 3.0 s default once.
+    private static let silenceTimeoutMigrationKey = "settings.whisperkit.migration.silenceTimeout30.v1"
+    private func migrateSilenceTimeoutIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: Self.silenceTimeoutMigrationKey) else { return }
+        defaults.set(true, forKey: Self.silenceTimeoutMigrationKey)
+        let key = "\(Self.defaultsPrefix).autoStopSilenceSeconds"
+        if defaults.object(forKey: key) == nil || defaults.double(forKey: key) == 2.0 {
+            autoStopSilenceSeconds = 3.0
+        }
     }
 
     var autoSendTranscription: Bool {
@@ -447,14 +462,37 @@ final class WhisperKitService: @unchecked Sendable {
             await streamer?.stopStreamTranscription()
             self.isRecording = false
 
-            // Prefer the longest text source — liveTranscription often contains
-            // the full text (superset of confirmed+unconfirmed), so joining all
-            // three causes duplication.
-            let candidates = [confirmedText, unconfirmedText, liveTranscription]
+            // Streaming hypotheses are kept only as a FALLBACK. The realtime
+            // loop drops the onset before first voice detection, clips the tail
+            // at stop, and confirms segments greedily from small windows —
+            // which is why chat dictation used to lose first/last words and
+            // run ~15% less accurately than Voice Notes.
+            let streamText = [confirmedText, unconfirmedText, liveTranscription]
                 .filter { !$0.isEmpty && $0 != "Waiting for speech..." }
-            let finalText = candidates
                 .max(by: { $0.count < $1.count })?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+            // The authoritative transcript is a FULL-BUFFER decode of the
+            // complete recording — the identical code path Voice Notes uses
+            // (`transcribeAudioFile`), so chat dictation gets the same
+            // accuracy. The mic writer captures every sample unconditionally
+            // (the streamer's VAD never filters what reaches the writer), so
+            // onset and tail words survive.
+            var finalText = streamText
+            var recordedURL: URL?
+            if let writer = self.recordingWriter {
+                let url = writer.fileURL
+                try? await writer.close()
+                self.recordingWriter = nil
+                recordedURL = url
+
+                if let decoded = try? await self.transcribeAudioFile(at: url),
+                   !decoded.isEmpty {
+                    finalText = decoded
+                } else if streamText.isEmpty {
+                    NSLog("[WhisperKit] Full-buffer decode returned no speech; recording had no usable transcription")
+                }
+            }
 
             if !finalText.isEmpty {
                 self.pendingTranscription = finalText
@@ -463,19 +501,22 @@ final class WhisperKitService: @unchecked Sendable {
                 }
             }
 
-            if let writer = self.recordingWriter {
-                let recordedURL = writer.fileURL
-                try? await writer.close()
-                self.recordingWriter = nil
-                if !self.effectChain.isEmpty {
-                    let processedURL = recordedURL.deletingPathExtension().appendingPathExtension("processed.wav")
-                    do {
-                        try await AudioEffectManager.process(inputURL: recordedURL, outputURL: processedURL, chain: self.effectChain)
-                        try? FileManager.default.removeItem(at: recordedURL)
-                        try? FileManager.default.moveItem(at: processedURL, to: recordedURL)
-                    } catch {
-                        self.errorMessage = "Audio effect processing failed: \(error.localizedDescription)"
+            if let recordedURL {
+                if self.saveAudioRecordings {
+                    if !self.effectChain.isEmpty {
+                        let processedURL = recordedURL.deletingPathExtension().appendingPathExtension("processed.wav")
+                        do {
+                            try await AudioEffectManager.process(inputURL: recordedURL, outputURL: processedURL, chain: self.effectChain)
+                            try? FileManager.default.removeItem(at: recordedURL)
+                            try? FileManager.default.moveItem(at: processedURL, to: recordedURL)
+                        } catch {
+                            self.errorMessage = "Audio effect processing failed: \(error.localizedDescription)"
+                        }
                     }
+                } else {
+                    // Temp capture exists only to feed the full-buffer decode —
+                    // discard it unless the user asked to keep recordings.
+                    try? FileManager.default.removeItem(at: recordedURL)
                 }
             }
 
@@ -490,6 +531,7 @@ final class WhisperKitService: @unchecked Sendable {
     // MARK: - Silence monitor
 
     private func startSilenceMonitor() {
+        migrateSilenceTimeoutIfNeeded()
         guard autoStopAfterSilence, autoStopSilenceSeconds > 0 else { return }
         silenceMonitorTask?.cancel()
         silenceMonitorTask = Task { [weak self] in
@@ -518,16 +560,27 @@ final class WhisperKitService: @unchecked Sendable {
         SwiftMaestroPaths.appSupportDir.appendingPathComponent("Recordings", isDirectory: true)
     }
 
+    /// Every mic recording is captured to a WAV — not only when the user saves
+    /// recordings — because `stopRecording()` runs the authoritative
+    /// full-buffer decode over it. When `saveAudioRecordings` is off the file
+    /// goes to a temp directory and is deleted right after transcription.
     private func startRecordingWriter() {
-        guard saveAudioRecordings else { return }
-        let baseURL = recordingsSaveURL ?? defaultRecordingsURL
-        let folder = baseURL.appendingPathComponent(recordingsFolderName, isDirectory: true)
-        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: nil)
-
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         let fileName = "Recording \(formatter.string(from: Date()))".replacingOccurrences(of: ":", with: "-") + ".wav"
-        let fileURL = folder.appendingPathComponent(fileName)
+
+        let fileURL: URL
+        if saveAudioRecordings {
+            let baseURL = recordingsSaveURL ?? defaultRecordingsURL
+            let folder = baseURL.appendingPathComponent(recordingsFolderName, isDirectory: true)
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: nil)
+            fileURL = folder.appendingPathComponent(fileName)
+        } else {
+            let folder = FileManager.default.temporaryDirectory
+                .appendingPathComponent("SwiftMaestroMic", isDirectory: true)
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            fileURL = folder.appendingPathComponent(fileName)
+        }
 
         recordingWriter = AudioRecordingWriter(fileURL: fileURL, sampleRate: Double(WhisperKit.sampleRate))
         Task { try? await recordingWriter?.open() }

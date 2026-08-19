@@ -37,11 +37,18 @@ struct ContentView: View {
     /// one, which previously suppressed the first-run model picker. Driving a
     /// single `.sheet(item:)` from this enum guarantees both can present.
     @State private var activeSheet: ActiveSheet?
+    /// First-run dependency install progress (planned pre-UI by the
+    /// AppDelegate). Drives the setup sheet that replaces the beachball.
+    @State private var setupProgress = SetupProgressService.shared
+    /// True once the setup sheet has been presented this launch — the user can
+    /// background it without the chain re-presenting it.
+    @State private var setupSheetHandled = false
 
     private enum ActiveSheet: Identifiable {
         case newAgent
         case onboarding
         case welcome
+        case setup
         case whisperSetup
         case notesOnboarding
         case agentCategory(AgentRecord)
@@ -51,6 +58,7 @@ struct ContentView: View {
             case .newAgent: return 1
             case .onboarding: return 2
             case .welcome: return 0
+            case .setup: return 6
             case .whisperSetup: return 3
             case .notesOnboarding: return 4
             case .agentCategory(let agent): return 5 + agent.id.hashValue
@@ -124,13 +132,24 @@ struct ContentView: View {
             case .newAgent:
                 newAgentSheet
             case .onboarding:
-                OnboardingView(onDone: { onboardingSeen = true; activeSheet = nil })
+                OnboardingView(onDone: { onboardingSeen = true; activeSheet = nil; advanceFirstRunSheets() })
                     .environment(catalog)
                     .environment(engine)
             case .welcome:
-                WelcomeView(onDone: { welcomeSeen = true; activeSheet = nil })
+                WelcomeView(onDone: { welcomeSeen = true; activeSheet = nil; advanceFirstRunSheets() })
                     .environment(catalog)
                     .environment(engine)
+            case .setup:
+                SetupProgressView(
+                    onContinueInBackground: {
+                        activeSheet = nil
+                        advanceFirstRunSheets()
+                    },
+                    onFinished: {
+                        activeSheet = nil
+                        advanceFirstRunSheets()
+                    }
+                )
             case .whisperSetup:
                 WhisperKitSetupSheet(onDone: { whisperKitSeen = true; activeSheet = nil })
                     .environment(whisper)
@@ -212,38 +231,26 @@ struct ContentView: View {
                 }
                 openWindow(id: "workspace-panel-window", value: WorkspacePanelWindowID(kind: kind))
             }
-            // Welcome screen: shown once before model selection.
-            if !welcomeSeen && activeSheet == nil {
-                activeSheet = .welcome
+            // First-run sheet chain: setup → welcome → onboarding → whisper.
+            // `hasPendingWork` was planned pre-UI by the AppDelegate, so this
+            // is deterministic — no sheet flicker.
+            if activeSheet == nil {
+                advanceFirstRunSheets()
             }
-            // Welcome a fresh install (no model files on disk yet), once.
-            if welcomeSeen && !onboardingSeen && !catalog.models.contains(where: { $0.localPath != nil }) {
-                activeSheet = .onboarding
+        }
+        // If the speech model starts preparing while no first-run sheet is up
+        // (e.g. the setup sheet just finished and the bundled Whisper copy is
+        // now loading into memory), surface the explainer — first run only.
+        .onChange(of: whisper.modelState) { _, newState in
+            guard !whisperKitSeen, activeSheet == nil else { return }
+            if newState == .downloading || newState == .loading || newState == .prewarming {
+                activeSheet = .whisperSetup
             }
         }
         .task {
             // Prime every agent's inbox from disk so sidebar unread badges are
             // accurate at launch (not just for the open agent).
             for agent in workspace.agents { _ = messageStore.inbox(for: agent.id) }
-            // Show WhisperKit setup dialog once when the model needs downloading.
-            // Deferred until after onboarding so the sheets don't stack.
-            if !whisperKitSeen && activeSheet == nil {
-                if whisper.modelState == .loaded || whisper.isModelDownloaded {
-                    // Already ready — mark seen so we never show the dialog again
-                    whisperKitSeen = true
-                } else {
-                    // Not yet started or already in progress — kick off the
-                    // download if needed, then show the sheet so the user can
-                    // see progress and know what's happening.
-                    if whisper.modelState == .unloaded {
-                        whisper.ensureModelLoaded()
-                    }
-                    // Brief yield so the model state transitions from .unloaded
-                    // to .downloading/.loading before we present the sheet.
-                    try? await Task.sleep(for: .milliseconds(200))
-                    if activeSheet == nil { activeSheet = .whisperSetup }
-                }
-            }
             // Notes iCloud onboarding: already handled in WelcomeView.
             // Mark as seen so the old sheet never re-appears.
             if !notesOnboardingSeen && welcomeSeen {
@@ -324,6 +331,46 @@ struct ContentView: View {
         }
         .padding()
         .frame(width: 420)
+    }
+
+    /// Advances the first-run sheet sequence: setup → welcome → onboarding →
+    /// whisper. Each sheet's completion handler calls this to present the next
+    /// one due; `.onAppear` kicks off the chain.
+    ///
+    /// The whisper step exists because first launch loads the speech model
+    /// into memory (a slow first CoreML compile) with otherwise NO visible
+    /// indication — the user just saw a "Loading model…" line buried in
+    /// Settings. The sheet explains the wait and dismisses itself when ready.
+    private func advanceFirstRunSheets() {
+        // 1. Dependency setup (only when this launch actually installs things).
+        if !setupSheetHandled && (setupProgress.hasPendingWork || setupProgress.isRunning) {
+            setupSheetHandled = true
+            activeSheet = .setup
+            return
+        }
+        // 2. Welcome screen: shown once before model selection.
+        if !welcomeSeen {
+            activeSheet = .welcome
+            return
+        }
+        // 3. Model picker for fresh installs (no model files on disk yet).
+        if !onboardingSeen && !catalog.models.contains(where: { $0.localPath != nil }) {
+            activeSheet = .onboarding
+            return
+        }
+        // 4. Whisper speech model: until it has finished loading ONCE. Gate on
+        //    the live model state, not just file presence — a bundled model is
+        //    on disk immediately but still needs its long first load.
+        if !whisperKitSeen {
+            if whisper.modelState == .loaded {
+                whisperKitSeen = true
+            } else {
+                if whisper.modelState == .unloaded {
+                    whisper.ensureModelLoaded()
+                }
+                activeSheet = .whisperSetup
+            }
+        }
     }
 
     /// Opens a panel via `workspaceLayout`, and — if it opened as a floating

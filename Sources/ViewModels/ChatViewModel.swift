@@ -1334,6 +1334,13 @@ class ChatViewModel: ObservableObject {
         - When the user asks you to open/launch/show an app inside SwiftMaestro \
         ("open MaestroDB", "show me the kanban board"), call open_panel — do NOT \
         just describe where to click.
+        - Panel names the user says map to these aliases: MaestroDB → 'database', \
+        MaestroBooks → 'books', MaestroDocs → 'docs', MaestroDAM (photo/asset \
+        browser) → 'dam', Whiteboard → 'canvas', SwiftBrowser → 'browser', \
+        Voice Notes → 'voiceNotes'. NEVER confuse MaestroDAM with MaestroDB.
+        - You can CLOSE any open panel with close_panel (e.g. "close MaestroDAM", \
+        "hide the browser"). Closing is always safe — the user can re-open panels \
+        from the sidebar.
         - Opening an app's panel also ACTIVATES that app's tools from your NEXT \
         reply onward (Auto tool mode). If you need an app's tools and its panel \
         is closed (your current tool list lacks them), open the panel first, tell \
