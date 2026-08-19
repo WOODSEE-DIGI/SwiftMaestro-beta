@@ -153,18 +153,20 @@ if [ "${UPLOAD:-0}" = "1" ]; then
             echo "WARNING: SFTP password not in env or Keychain — skipping 1984 appcast upload"
         else
             # cmd:fail-exit makes lftp exit non-zero if put fails (default: silently
-            # returns 0); the size check proves the file actually landed.
+            # returns 0). No mkdir: 'mkdir -p' aborts under cmd:fail-exit when the
+            # dir already exists. No 'put -c': resume silently no-ops when the
+            # remote file exists — rm then plain put. The byte-count check proves
+            # the new file actually landed.
             LFTP_PASSWORD="$SFTP_PASS" lftp --env-password -u "$SFTP_USER" -p "$SFTP_PORT" "sftp://${SFTP_HOST}" <<LPFTP
 set cmd:fail-exit yes
 set sftp:auto-confirm yes
 set ssl:verify-certificate no
 set net:timeout 30
-mkdir -p htdocs/download
-put -c '$DIST_DIR/appcast.xml' -o htdocs/download/appcast.xml
-cls --size htdocs/download/appcast.xml
+rm -f htdocs/download/appcast.xml
+put '$DIST_DIR/appcast.xml' -o htdocs/download/appcast.xml
 bye
 LPFTP
-            REMOTE_SIZE="$(LFTP_PASSWORD="$SFTP_PASS" lftp --env-password -u "$SFTP_USER" -p "$SFTP_PORT" "sftp://${SFTP_HOST}" -e "set sftp:auto-confirm yes; set ssl:verify-certificate no; cls --size htdocs/download/appcast.xml; bye" 2>/dev/null | awk '{print $1}' | tail -1)"
+            REMOTE_SIZE="$(LFTP_PASSWORD="$SFTP_PASS" lftp --env-password -u "$SFTP_USER" -p "$SFTP_PORT" "sftp://${SFTP_HOST}" -e "set sftp:auto-confirm yes; set ssl:verify-certificate no; cat htdocs/download/appcast.xml; bye" 2>/dev/null | wc -c | tr -d ' ')"
             LOCAL_SIZE="$(stat -f%z "$DIST_DIR/appcast.xml")"
             if [ "$REMOTE_SIZE" = "$LOCAL_SIZE" ]; then
                 echo "appcast.xml uploaded to 1984 hosting ($LOCAL_SIZE bytes, verified)"
