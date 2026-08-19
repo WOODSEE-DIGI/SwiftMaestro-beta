@@ -107,8 +107,25 @@ open SwiftMaestro.xcodeproj
 # login Keychain treat every rebuild as a different app and re-prompt for
 # the keychain password on every launch)
 xcodebuild -project SwiftMaestro.xcodeproj -scheme SwiftMaestro -configuration Debug \
-  -destination "platform=macOS" build
+  -  destination "platform=macOS" build
 ```
+
+## Release (DMG + upload) — MANDATORY
+
+The ONLY sanctioned release path is `./scripts/release.sh` (optionally `UPLOAD=1`).
+The ONLY sanctioned upload method for the ~28 GB full DMG is the MinIO client
+(`mc`) multipart upload via `upload-to-onidel.sh` (wired into release.sh).
+
+- **NEVER** upload the DMG via curl/single-PUT, presigned URLs, SFTP/lftp,
+  rclone, the Onidel web UI, or any hand-rolled method — they time out or
+  break on 28 GB and have wasted hours repeatedly. `mc cp` uses S3 multipart
+  under the hood and has shipped every full DMG since 0.2.2 without failing.
+- If an `mc` upload genuinely fails, RETRY `mc` — do not switch methods.
+- Do not "invent" a light/beta DMG variant to dodge the upload size; the full
+  28 GB DMG is the only release artifact (package-light.sh is retired).
+- The 1984-hosting appcast SFTP step in release.sh skips itself cleanly when
+  `SM_SFTP_USER`/`SM_SFTP_HOST` are unset — do not work around it with another
+  transfer method.
 
 ---
 
