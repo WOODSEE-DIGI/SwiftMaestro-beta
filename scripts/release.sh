@@ -180,6 +180,16 @@ LPFTP
     echo ""
     echo "--- Deploying website to 1984 hosting ---"
     if [ -x "$DEPLOY_SCRIPT" ]; then
+        # deploy.sh mirrors the site repo to 1984, including its own
+        # download/appcast.xml copy. If that copy is stale, the mirror REVERTS
+        # the appcast we just uploaded (0.3.6 shipped, then the site showed
+        # 0.3.4 until re-pushed). Sync the fresh appcast into the site repo
+        # first so the mirror can only ever move it forward.
+        SITE_APPCAST="$(dirname "$DEPLOY_SCRIPT")/download/appcast.xml"
+        if [ -d "$(dirname "$SITE_APPCAST")" ]; then
+            cp "$DIST_DIR/appcast.xml" "$SITE_APPCAST"
+            echo "Synced appcast.xml into site repo before deploy"
+        fi
         "$DEPLOY_SCRIPT"
     else
         echo "Deploy script not found at $DEPLOY_SCRIPT — skipping website deploy"
