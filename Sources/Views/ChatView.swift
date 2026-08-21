@@ -125,7 +125,10 @@ struct ChatView: View {
             }
         }
         .onDrop(of: [.image, .fileURL], isTargeted: nil) { providers in
-            handleProviders(providers)
+            NSLog("[DROP] onDrop fired: %d provider(s)", providers.count)
+            let didHandle = handleProviders(providers)
+            NSLog("[DROP] handleProviders returned %@", didHandle ? "true" : "FALSE — no provider matched image/fileURL")
+            return didHandle
         }
         .onPasteCommand(of: [.image, .fileURL]) { providers in
             handleProviders(providers)
@@ -203,9 +206,24 @@ struct ChatView: View {
             Image(systemName: "cpu").foregroundStyle(theme.chatSecondaryText)
             Text("This agent").foregroundStyle(theme.chatSecondaryText)
             Picker("", selection: agentModelBinding) {
-                Text(defaultAgentModelLabel).tag("")
+                Label {
+                    Text(defaultAgentModelLabel)
+                } icon: {
+                    // The Default entry carries the badge of the model it
+                    // currently resolves to, so provenance is visible even
+                    // when this agent follows the global default.
+                    if let defaultModel = catalog.selectedModel {
+                        Image(nsImage: Self.badgeDotImage(defaultModel.providerBadge.colorName))
+                    }
+                }
+                .tag("")
                 ForEach(catalog.models) { m in
-                    Text(m.displayName).tag(m.id)
+                    Label {
+                        Text(m.displayName)
+                    } icon: {
+                        Image(nsImage: Self.badgeDotImage(m.providerBadge.colorName))
+                    }
+                    .tag(m.id)
                 }
             }
             .labelsHidden()
@@ -233,6 +251,41 @@ struct ChatView: View {
     private var workingDirLabel: String {
         guard let wd = vm.workingDirectory else { return "Set working directory…" }
         return (wd as NSString).lastPathComponent
+    }
+
+    /// Map the model's badge color name to a Color (badge colors are plain
+    /// names so MaestroModel stays platform-agnostic).
+    static func badgeColor(_ name: String) -> Color {
+        switch name {
+        case "green": return .green
+        case "blue": return .blue
+        case "purple": return .purple
+        case "orange": return .orange
+        default: return .secondary
+        }
+    }
+
+    /// Pre-rendered colored dot for Picker menus. SF Symbols in macOS menus
+    /// render as theme-tinted monochrome templates, so the badge color needs
+    /// a real bitmap; NSImage draws are shown in true color.
+    private static var badgeDotCache: [String: NSImage] = [:]
+    static func badgeDotImage(_ colorName: String, size: CGFloat = 10) -> NSImage {
+        if let cached = badgeDotCache[colorName] { return cached }
+        let nsColor: NSColor
+        switch colorName {
+        case "green": nsColor = .systemGreen
+        case "blue": nsColor = .systemBlue
+        case "purple": nsColor = .systemPurple
+        case "orange": nsColor = .systemOrange
+        default: nsColor = .secondaryLabelColor
+        }
+        let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
+            nsColor.setFill()
+            NSBezierPath(ovalIn: rect.insetBy(dx: 0.5, dy: 0.5)).fill()
+            return true
+        }
+        badgeDotCache[colorName] = image
+        return image
     }
 
     /// Per-agent tool category toggles. Each toggle shows an icon and a small
@@ -1044,30 +1097,45 @@ struct ChatView: View {
     private func handleProviders(_ providers: [NSItemProvider]) -> Bool {
         var handled = false
         for provider in providers {
-            if provider.canLoadObject(ofClass: NSImage.self) {
+            let canImage = provider.canLoadObject(ofClass: NSImage.self)
+            let hasFileURL = provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+            NSLog("[DROP] provider types=%@ canNSImage=%@ hasFileURL=%@",
+                  provider.registeredTypeIdentifiers.joined(separator: ","),
+                  canImage ? "YES" : "no", hasFileURL ? "YES" : "no")
+            if canImage {
                 handled = true
                 vm.pendingImageLoads += 1
-                _ = provider.loadObject(ofClass: NSImage.self) { object, _ in
+                _ = provider.loadObject(ofClass: NSImage.self) { object, error in
                     defer { Task { @MainActor in vm.pendingImageLoads -= 1 } }
+                    if let error { NSLog("[DROP] NSImage load error: %@", error.localizedDescription) }
                     guard let image = object as? NSImage,
-                          let data = Self.pngData(from: image) else { return }
+                          let data = Self.pngData(from: image) else {
+                        NSLog("[DROP] NSImage cast/pngData failed (object=%@)", String(describing: type(of: object)))
+                        return
+                    }
                     Task { @MainActor in vm.pendingImages.append(data) }
+                    NSLog("[DROP] image appended via NSImage path (%d bytes)", data.count)
                 }
-            } else if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+            } else if hasFileURL {
                 handled = true
                 vm.pendingImageLoads += 1
-                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
+                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, error in
                     defer { Task { @MainActor in vm.pendingImageLoads -= 1 } }
+                    if let error { NSLog("[DROP] fileURL load error: %@", error.localizedDescription) }
                     var url: URL?
                     if let u = item as? URL { url = u }
                     else if let d = item as? Data {
                         url = URL(dataRepresentation: d, relativeTo: nil)
                     }
-                    guard let url, let data = Self.pngData(fromFileURL: url) else { return }
+                    guard let url, let data = Self.pngData(fromFileURL: url) else {
+                        NSLog("[DROP] fileURL decode failed (item=%@)", String(describing: type(of: item)))
+                        return
+                    }
                     Task { @MainActor in
                         vm.pendingImages.append(data)
                         vm.pendingImagePaths.append(url.path)
                     }
+                    NSLog("[DROP] image appended via fileURL path (%d bytes, %@)", data.count, url.lastPathComponent)
                 }
             }
         }

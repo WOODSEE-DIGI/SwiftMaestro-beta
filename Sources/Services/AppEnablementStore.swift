@@ -44,7 +44,7 @@ enum AppCategory: String, CaseIterable, Codable, Sendable {
             // Bus Monitor is deliberately NOT listed: it's agent-infrastructure
             // debugging, not a user app. The panel kind still works — agents can
             // open it with open_panel("bus") when diagnosing bus traffic.
-            return [.audioControl, .notesMD, .voiceNotes, .canvas, .kanban, .terminal, .webBrowser, .stocks, .damBrowser, .maestroDocs, .maestroBooks, .maestroDB, .htmlBuilder, .backup]
+            return [.audioControl, .notesMD, .voiceNotes, .canvas, .kanban, .terminal, .webBrowser, .damBrowser, .maestroDocs, .maestroBooks, .maestroDB, .htmlBuilder, .backup, .stocks, .blocky]
         }
     }
 
@@ -67,10 +67,26 @@ extension WorkspacePanelKind {
             return .appleApps
         case .tethering, .streamIngest, .broadcast, .streamMixer, .ndiBrowser, .colorAdjustments, .scenes:
             return .studio
-        case .audioControl, .notesMD, .voiceNotes, .canvas, .kanban, .terminal, .webBrowser, .stocks, .damBrowser, .maestroDocs, .maestroBooks, .maestroDB, .htmlBuilder, .backup:
+        case .audioControl, .notesMD, .voiceNotes, .canvas, .kanban, .terminal, .webBrowser, .damBrowser, .maestroDocs, .maestroBooks, .maestroDB, .htmlBuilder, .backup, .stocks, .blocky:
             return .swiftApps
         default:
             return nil
+        }
+    }
+
+    /// The `ToolCategory` associated with an Apple app panel, used to gate
+    /// agent tool access when the app is disabled in Settings → Apps.
+    var appleToolCategory: ToolCategory? {
+        switch self {
+        case .appleNotes: return .notes
+        case .calendar: return .calendar
+        case .reminders: return .reminders
+        case .contacts: return .contacts
+        case .numbers: return .numbers
+        case .maps: return .maps
+        case .photos: return .photos
+        case .mail: return .mail
+        default: return nil
         }
     }
 }
@@ -82,9 +98,11 @@ extension WorkspacePanelKind {
 // category or app simply hides its row in the Apps launcher. Persisted to
 // UserDefaults so the choice survives relaunches.
 //
-// Scope note: this gates launcher VISIBILITY only. It does not close an
-// already-open panel, and it does not disable the agent's tools for that app —
-// tool availability is governed separately (Rules / MCP settings).
+// Scope note: this gates launcher VISIBILITY and agent TOOL ACCESS for Apple
+// apps. Disabling an Apple app hides its launcher row AND removes its tools
+// from the agent's tool surface. Tool availability for non-Apple apps is
+// governed separately (Rules / MCP settings). Stocks is a Swift app
+// (Yahoo Finance), not an Apple app — it lives in Swift Apps.
 @Observable
 @MainActor
 final class AppEnablementStore {
@@ -165,6 +183,29 @@ final class AppEnablementStore {
     /// `themeStorageKey` so Settings can show a friendly per-app toggle.
     func showsBuiltInPlugin(_ kind: WorkspacePanelKind) -> Bool {
         pluginsSectionEnabled && isPluginEnabled(kind.themeStorageKey)
+    }
+
+    /// Tool categories blocked by disabled Apple apps. When an Apple app is
+    /// toggled OFF in Settings → Apps, its associated agent tools are removed
+    /// from the tool surface — not just hidden from the launcher.
+    func blockedToolCategories() -> Set<ToolCategory> {
+        var blocked = Set<ToolCategory>()
+        // Entire Apple Apps section disabled → block all Apple tool categories.
+        if !isCategoryEnabled(.appleApps) {
+            for kind in AppCategory.appleApps.kinds {
+                if let tc = kind.appleToolCategory {
+                    blocked.insert(tc)
+                }
+            }
+            return blocked
+        }
+        // Individual disabled Apple apps → block their tool categories.
+        for kind in AppCategory.appleApps.kinds {
+            if !isAppEnabled(kind), let tc = kind.appleToolCategory {
+                blocked.insert(tc)
+            }
+        }
+        return blocked
     }
 
     // MARK: - Mutations

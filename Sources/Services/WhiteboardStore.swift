@@ -1,14 +1,22 @@
 import Foundation
 
+extension Notification.Name {
+    /// Posted (userInfo: ["boardID": uuidString]) when an agent tool mutates a
+    /// board's object data on disk, so an open Whiteboard panel reloads the
+    /// board instead of later overwriting the agent's edits with its stale
+    /// in-memory copy.
+    static let whiteboardBoardExternallyModified = Notification.Name("whiteboardBoardExternallyModified")
+}
+
 // MARK: - Canvas store
 
 /// Loads and saves canvas board metadata. The PaperKit markup payload is stored
 /// as binary data inside each board record.
 @Observable
 @MainActor
-final class CanvasStore {
+final class WhiteboardStore {
 
-    private(set) var boards: [CanvasBoard] = []
+    private(set) var boards: [WhiteboardBoard] = []
     private(set) var error: String?
 
     private let directory: URL
@@ -30,9 +38,9 @@ final class CanvasStore {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let urls = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
                 .filter { $0.pathExtension == "canvas" }
-            boards = try urls.compactMap { url -> CanvasBoard? in
+            boards = try urls.compactMap { url -> WhiteboardBoard? in
                 let data = try Data(contentsOf: url)
-                return try decoder.decode(CanvasBoard.self, from: data)
+                return try decoder.decode(WhiteboardBoard.self, from: data)
             }
             .sorted { $0.modified > $1.modified }
             error = nil
@@ -41,9 +49,9 @@ final class CanvasStore {
         }
     }
 
-    func createBoard(name: String) -> CanvasBoard {
+    func createBoard(name: String) -> WhiteboardBoard {
         let now = Date()
-        let board = CanvasBoard(
+        let board = WhiteboardBoard(
             id: UUID(),
             name: name,
             markupData: nil,
@@ -55,7 +63,7 @@ final class CanvasStore {
         return board
     }
 
-    func save(_ board: CanvasBoard) throws {
+    func save(_ board: WhiteboardBoard) throws {
         var updated = board
         updated.modified = Date()
         let data = try encoder.encode(updated)
@@ -78,7 +86,7 @@ final class CanvasStore {
         }
     }
 
-    func duplicate(_ board: CanvasBoard) -> CanvasBoard {
+    func duplicate(_ board: WhiteboardBoard) -> WhiteboardBoard {
         let now = Date()
         var copy = board
         copy.id = UUID()

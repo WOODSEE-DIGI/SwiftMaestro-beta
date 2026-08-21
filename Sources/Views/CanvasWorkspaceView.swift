@@ -57,6 +57,7 @@ struct CanvasWorkspaceView: View {
     @State private var dragState = TilingDragState.shared
     @State private var canvasDrag = CanvasDragState.shared
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         GeometryReader { geometry in
@@ -125,6 +126,29 @@ struct CanvasWorkspaceView: View {
         // (its tiles stay assigned to it and reappear on reopen).
         .onAppear { layout.markCanvasWindowOpen(canvasID) }
         .onDisappear { layout.markCanvasWindowClosed(canvasID) }
+        // Menu > Window → Close Canvas Window removes the canvas from state;
+        // this view notices and closes its own window (the observer below
+        // then no-ops — removal is idempotent).
+        .onChange(of: layout.canvasWindows.map(\.id)) { _, ids in
+            if canvasID != CanvasTile.mainCanvasID && !ids.contains(canvasID) {
+                dismiss()
+            }
+        }
+        #if os(macOS)
+        .background(
+            WindowCloseObserver {
+                // Closing a secondary canvas window REMOVES it — tiles migrate
+                // back to the main canvas. Without this, the closed canvas
+                // stayed in the persisted layout forever and reopened on every
+                // launch with no way to get rid of it.
+                // (App quit does not send willClose, so open canvases still
+                // restore correctly across restarts.)
+                if canvasID != CanvasTile.mainCanvasID {
+                    layout.removeCanvasWindow(id: canvasID)
+                }
+            }
+        )
+        #endif
     }
 
     // MARK: - Grid background + move ghost

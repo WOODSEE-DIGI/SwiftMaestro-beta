@@ -26,12 +26,24 @@ enum EngineError: LocalizedError {
     /// mlx-swift-lm's internal `Module.update(modules:)` `try!`.
     case incompleteWeights(model: String, missingShards: [String])
 
+    /// The system does not have enough free memory to load the model right
+    /// now — measured against SYSTEM-WIDE availability (which includes other
+    /// logged-in user sessions' wired GPU heaps under fast user switching),
+    /// not just this app's own residency budget.
+    case insufficientMemory(model: String, neededGB: Int, availableGB: Int)
+
     var errorDescription: String? {
         switch self {
         case .incompleteWeights(let model, let missingShards):
             return "\(model)'s download is incomplete — missing \(missingShards.count) "
                 + "weight file(s): \(missingShards.prefix(3).joined(separator: ", "))"
                 + (missingShards.count > 3 ? ", …" : "") + ". Re-download it in Settings → Models."
+        case .insufficientMemory(let model, let neededGB, let availableGB):
+            return "Not enough memory to load \(model) — it needs about \(neededGB) GB free, "
+                + "but only about \(availableGB) GB is available right now. Unload other "
+                + "models, quit heavy apps, and check no other logged-in user account is "
+                + "holding a model (fast user switching keeps that memory reserved), then "
+                + "try again."
         }
     }
 }
@@ -531,10 +543,37 @@ final class MLXInferenceEngine {
 
         // Budget-aware residency: evict the least-recently-used model(s) only if
         // loading this one would push the resident set past the memory budget
-        // (90% of system RAM). Models that fit stay resident together, so
+        // (80% of system RAM by default). Models that fit stay resident together, so
         // switching between them is instant and they can serve agents concurrently.
         let newBytes = Self.bytes(gb: model.estimatedMemoryGB)
-        evictResidentToFit(additionalBytes: newBytes, excluding: model.id)
+        let evictedBytes = evictResidentToFit(additionalBytes: newBytes, excluding: model.id)
+
+        // System-wide available-memory guard. The residency budget above is a
+        // static fraction of physical RAM — it cannot see memory held by OTHER
+        // logged-in user sessions under fast user switching (their wired GPU
+        // heaps are invisible to per-app accounting), which is exactly how the
+        // 0.3.6 demo run loaded Gemma 4 + Qwen3-Coder-Next on top of the main
+        // session's models and took the machine down (2026-08-20). Fail fast
+        // with an actionable message instead of sliding into swap-death.
+        let systemAvailable = Self.systemAvailableMemoryBytes()
+        if systemAvailable >= 0 {
+            // Weights + ~25% for KV cache, activations, and Metal working
+            // buffers. Evicted models' pages count as reclaimable even though
+            // the kernel may not report them as free yet.
+            let required = newBytes + newBytes / 4
+            let effectiveAvailable = systemAvailable + evictedBytes
+            let reserve = max(
+                Self.bytes(gb: 6),
+                Int(Double(ProcessInfo.processInfo.physicalMemory) * 0.06))
+            if required > effectiveAvailable - reserve {
+                let needGB = required / 1_073_741_824
+                let haveGB = max(0, effectiveAvailable - reserve) / 1_073_741_824
+                NSLog("[ENGINE] refusing to load \(model.displayName): need ~\(needGB)GB, available ~\(haveGB)GB (system-wide; evicted \(evictedBytes / 1_073_741_824)GB this call)")
+                state = .error("\(model.displayName): not enough memory")
+                throw EngineError.insufficientMemory(
+                    model: model.displayName, neededGB: needGB, availableGB: haveGB)
+            }
+        }
 
         state = .loading(model.displayName)
 
@@ -620,6 +659,23 @@ final class MLXInferenceEngine {
     /// Bytes for a GB value.
     private static func bytes(gb: Int) -> Int { gb * 1_073_741_824 }
 
+    /// System-wide available memory in bytes (free + inactive + purgeable +
+    /// speculative pages), via the shared `SystemMemory` snapshot.
+    ///
+    /// Unlike `ProcessInfo.physicalMemory` — which the residency budget uses
+    /// and which assumes the whole machine belongs to this app — this sees
+    /// memory other processes are actually holding, INCLUDING another
+    /// logged-in user session's wired GPU heaps under fast user switching.
+    /// That blind spot is what let 0.3.6 load Gemma 4 + Qwen3-Coder-Next on
+    /// top of the main session's resident models on the demo machine and take
+    /// the system down (2026-08-20).
+    ///
+    /// Returns -1 if the kernel call fails (callers must fail-open — never
+    /// block a load because a statistic was unavailable).
+    nonisolated static func systemAvailableMemoryBytes() -> Int {
+        SystemMemory.availableMemoryBytes()
+    }
+
     /// Resident memory budget: total system RAM minus a safety reserve for the OS
     /// and other apps (default 20%, configurable via
     /// `models.systemMemoryReserveFraction`). Caps the sum of resident model
@@ -646,9 +702,14 @@ final class MLXInferenceEngine {
     /// Evict least-recently-used resident models until `additionalBytes` fits
     /// within `residentBudgetBytes` (never evicting `excluding`). Clears the MLX
     /// buffer cache once if anything was evicted.
-    private func evictResidentToFit(additionalBytes: Int, excluding: String) {
+    ///
+    /// Returns the estimated bytes evicted this call, so the system-memory
+    /// guard can count them as reclaimable even though the pages may not show
+    /// as free yet (GPU resources drain asynchronously).
+    @discardableResult
+    private func evictResidentToFit(additionalBytes: Int, excluding: String) -> Int {
         let budget = residentBudgetBytes
-        var evictedAny = false
+        var evictedBytes = 0
         while residentUsedBytes + additionalBytes > budget {
             let candidate = resident
                 .filter { $0.key != excluding }
@@ -657,10 +718,11 @@ final class MLXInferenceEngine {
             modelCache.removeValue(forKey: id)
             promptCaches = promptCaches.filter { !$0.key.hasSuffix("::" + id) }
             resident.removeValue(forKey: id)
-            evictedAny = true
+            evictedBytes += info.estimatedBytes
             NSLog("[ENGINE] evicted LRU model \(id) (~\(info.estimatedBytes / 1_073_741_824)GB) to fit \(excluding); budget \(budget / 1_073_741_824)GB")
         }
-        if evictedAny { clearMLXCaches() }
+        if evictedBytes > 0 { clearMLXCaches() }
+        return evictedBytes
     }
 
     /// Snapshot of resident models for the Settings readout, most-recently-used first.

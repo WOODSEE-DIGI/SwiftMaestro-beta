@@ -142,7 +142,10 @@ struct NoteEditorView: View {
             ScrollView {
                 RichMarkdownView(
                     text: viewModel.editorText,
-                    isUser: false
+                    isUser: false,
+                    // Clip notes reference assets/… beside the .md file —
+                    // the note's directory is the base for local images.
+                    baseURL: viewModel.selectedItem?.url.deletingLastPathComponent()
                 )
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding()

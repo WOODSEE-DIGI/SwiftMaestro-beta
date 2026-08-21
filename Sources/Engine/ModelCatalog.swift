@@ -49,9 +49,29 @@ struct MaestroModel: Identifiable, Hashable {
     /// the model runs on a remote LM Studio server instead of in-process MLX.
     var remoteBaseURL: String? = nil
     var isRemote: Bool { remoteBaseURL != nil }
+    /// Which remote provider serves this model (nil = local in-process MLX).
+    /// Drives the color-coded badge in model pickers.
+    var remoteProviderKind: RemoteProviderKind? = nil
+
+    /// Badge for pickers: (SF Symbol, color name) distinguishing local MLX
+    /// models from each remote provider kind at a glance.
+    var providerBadge: (icon: String, colorName: String) {
+        guard let kind = remoteProviderKind else {
+            return ("cpu", "green")            // local in-process MLX
+        }
+        switch kind {
+        case .lmStudio: return ("server.rack", "blue")
+        case .ollama: return ("shippingbox", "purple")
+        case .online: return ("globe", "orange")
+        }
+    }
     /// Idle timeout for remote streaming requests. Deltafin/K3 needs minutes
     /// of prefill tolerance; LM Studio's resident models are fine at 120s.
     var remoteRequestTimeout: TimeInterval? = nil
+    /// `secret://` reference for a remote provider's API key (online
+    /// providers). NEVER a raw key — resolved at the HTTP boundary via
+    /// SecretsStore, per the app's secrets policy.
+    var remoteAPIKeyRef: String? = nil
     /// HuggingFace download URL shown in Settings so users can grab the model.
     var downloadURL: String? = nil
     /// Whether this entry should appear in the main model picker.
@@ -60,8 +80,12 @@ struct MaestroModel: Identifiable, Hashable {
 
     /// Tools are advertised only when the model is verified AND its tool-call
     /// format is known or can be inferred. No known format ⇒ no tools.
+    /// Remote models are exempt from the wire-format check: the remote backend
+    /// speaks OpenAI function calling over HTTP, so `toolCallFormat` (an MLX
+    /// wire-format concept) simply doesn't apply to them.
     var advertisesTools: Bool {
-        supportsTools && (toolCallFormat != nil || mayInferToolFormat)
+        if isRemote { return supportsTools }
+        return supportsTools && (toolCallFormat != nil || mayInferToolFormat)
     }
 
     /// Whether the mlx-swift-lm loader can infer the tool call format from the
@@ -327,6 +351,16 @@ final class ModelCatalog {
 
     init() {
         models = Self.builtInModels
+        rebuildRemoteModels()
+        // Rebuild the remote section whenever providers change (Settings →
+        // Models → Remote Providers edits take effect immediately, no relaunch).
+        NotificationCenter.default.addObserver(
+            forName: RemoteProviderStore.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.rebuildRemoteModels() }
+        }
         // Restore the persisted selection if it still resolves to a known model;
         // otherwise fall back to the configured default (then first entry).
         let saved = UserDefaults.standard.string(forKey: Self.selectedModelKey)
@@ -337,6 +371,14 @@ final class ModelCatalog {
         } else {
             selectedModelID = models.first?.id
         }
+    }
+
+    /// Replace the remote section of the catalog with the current providers'
+    /// models. Remote entries carry the "remote-" id prefix and no local path,
+    /// so they never collide with built-in or Hub-added local models.
+    private func rebuildRemoteModels() {
+        models.removeAll { $0.id.hasPrefix("remote-") }
+        models.append(contentsOf: RemoteProviderStore.shared.catalogModels())
     }
 
     // MARK: - Local models

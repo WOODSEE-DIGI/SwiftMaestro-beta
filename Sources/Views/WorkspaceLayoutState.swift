@@ -167,7 +167,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
     case numbers
     case maps
     case photos
-    /// Stocks — watchlist with live quotes + sparklines (stooq CSV, no API key).
+    /// Stocks — watchlist with live quotes + sparklines (Yahoo Finance, no API key).
     case stocks
     /// Apple Mail bridge: launch Mail, compose drafts, and read messages.
     case mail
@@ -235,6 +235,8 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
     /// Voice Notes — record-first voice memos: audio streams to disk
     /// immediately, transcription follows as a background process.
     case voiceNotes
+    /// Blocky — blockchain wallet lookup and transaction tracing (BTC/ETH).
+    case blocky
 
     var icon: String {
         switch self {
@@ -274,6 +276,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .htmlBuilder: return "rectangle.dashed"
         case .backup: return "arrow.triangle.2.circlepath"
         case .voiceNotes: return "mic.circle"
+        case .blocky: return "link.circle"
         }
     }
 
@@ -320,6 +323,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .htmlBuilder: return "overlayBuilder"
         case .backup: return "backup"
         case .voiceNotes: return "voiceNotes"
+        case .blocky: return "blocky"
         }
     }
 
@@ -364,6 +368,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .htmlBuilder: return "HTML Builder"
         case .backup: return "Backup"
         case .voiceNotes: return "Voice Notes"
+        case .blocky: return "Blocky"
         }
     }
 
@@ -428,6 +433,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .htmlBuilder: return "overlayBuilder"
         case .backup: return "backup"
         case .voiceNotes: return "voiceNotes"
+        case .blocky: return "blocky"
         }
     }
 }

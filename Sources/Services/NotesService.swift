@@ -42,7 +42,7 @@ actor NotesService {
                 if isDirectory {
                     let children = try listDirectory(at: itemURL)
                     items.append(NoteItem(url: itemURL, isFolder: true, modifiedAt: modified, children: children))
-                } else if itemURL.pathExtension.lowercased() == "md" || itemURL.pathExtension.isEmpty {
+                } else if Self.isListableFile(itemURL) {
                     items.append(NoteItem(url: itemURL, isFolder: false, modifiedAt: modified))
                 }
             }
@@ -52,6 +52,16 @@ actor NotesService {
                 return $0.name.localizedCompare($1.name) == .orderedAscending
             }
         }
+    }
+
+    /// Notes (.md) plus clip-asset artifacts (reader.html, snapshot.html,
+    /// capture-metadata.json, images) — the Web Clipper writes a folder of
+    /// forensic files beside each note and they must be browsable in the panel.
+    private nonisolated static func isListableFile(_ url: URL) -> Bool {
+        let ext = url.pathExtension.lowercased()
+        if ext.isEmpty { return true }
+        return ["md", "html", "json", "txt",
+                "png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "heic"].contains(ext)
     }
 
     /// Read the contents of a note file.

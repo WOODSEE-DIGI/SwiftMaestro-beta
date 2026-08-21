@@ -75,13 +75,43 @@ struct ContentView: View {
                 HStack(spacing: 4) {
                     Image(systemName: "square.stack.3d.up").foregroundStyle(.secondary)
                     Text("Default").font(.caption).foregroundStyle(.secondary)
-                    Picker("Default model", selection: $catalog.selectedModelID) {
+                    // Menu with a custom label: toolbar pickers don't render
+                    // custom Label content in the closed state (the text
+                    // vanished), so the label is drawn explicitly here.
+                    Menu {
                         ForEach(catalog.models) { model in
-                            Text(model.displayName).tag(Optional(model.id))
+                            Button {
+                                catalog.selectedModelID = model.id
+                            } label: {
+                                Label {
+                                    Text(model.displayName)
+                                } icon: {
+                                    Image(nsImage: ChatView.badgeDotImage(model.providerBadge.colorName))
+                                }
+                            }
                         }
+                    } label: {
+                        HStack(spacing: 6) {
+                            if let selected = catalog.selectedModel {
+                                Image(nsImage: ChatView.badgeDotImage(selected.providerBadge.colorName))
+                                Text(selected.displayName)
+                                    .font(.caption)
+                                    .lineLimit(1)
+                            } else {
+                                Text("Select model")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.secondary.opacity(0.12), in: .capsule)
                     }
-                    .labelsHidden()
-                    .frame(width: 165)
+                    .menuStyle(.borderlessButton)
+                    .frame(maxWidth: 220)
                 }
                 .help("Global default model — used by any agent whose model is set to “Default (global)”.")
             }

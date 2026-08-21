@@ -9,13 +9,19 @@ import WebKit
 /// via WKWebView snapshot.
 struct OverlayHTMLEditorView: View {
     @State private var store = OverlayBuilderStore.shared
-    @State private var htmlSource: String = Self.defaultHTML
-    @State private var cssSource: String = Self.defaultCSS
     @State private var selectedTab: CodeTab = .html
     @State private var fontSize: Double = 13
-    @State private var showPreview = true
+    @State private var viewMode: ViewMode = .split
+    @State private var cursorLocation: Int = 0
     @State private var exportAlertMessage: String?
     @State private var pendingInsert: String?
+
+    /// Dreamweaver's signature Code / Split / Design modes.
+    enum ViewMode: String, CaseIterable {
+        case code = "Code"
+        case split = "Split"
+        case design = "Design"
+    }
 
     enum CodeTab: String, CaseIterable {
         case html = "HTML"
@@ -24,67 +30,8 @@ struct OverlayHTMLEditorView: View {
 
     // MARK: - Default Templates
 
-    static let defaultHTML = """
-    <div class="overlay">
-      <div class="accent-bar"></div>
-      <div class="content">
-        <div class="title">Your Title Here</div>
-        <div class="subtitle">Subtitle text goes here</div>
-      </div>
-    </div>
-    """
-
-    static let defaultCSS = """
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif;
-      background: transparent;
-      width: 1920px;
-      height: 1080px;
-      overflow: hidden;
-    }
-
-    .overlay {
-      position: absolute;
-      left: 60px;
-      bottom: 80px;
-      display: flex;
-      flex-direction: row;
-      align-items: stretch;
-      gap: 0;
-    }
-
-    .accent-bar {
-      width: 5px;
-      background: #7c3aed;
-      border-radius: 3px 0 0 3px;
-    }
-
-    .content {
-      background: rgba(12, 12, 18, 0.92);
-      border: 1px solid rgba(124, 58, 237, 0.3);
-      border-left: none;
-      border-radius: 0 10px 10px 0;
-      padding: 18px 28px;
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
-
-    .title {
-      color: #ffffff;
-      font-size: 34px;
-      font-weight: 600;
-      letter-spacing: -0.3px;
-    }
-
-    .subtitle {
-      color: rgba(255, 255, 255, 0.7);
-      font-size: 16px;
-      font-weight: 400;
-    }
-    """
+    static let defaultHTML = OverlayHTMLEditorDefaults.html
+    static let defaultCSS = OverlayHTMLEditorDefaults.css
 
     // MARK: - Template Gallery
 
@@ -270,12 +217,17 @@ struct OverlayHTMLEditorView: View {
         VStack(spacing: 0) {
             // ── Inline toolbar (replaces SwiftUI .toolbar which needs NavigationView) ──
             HStack(spacing: 8) {
-                Toggle(isOn: $showPreview) {
-                    Label("Preview", systemImage: "eye")
-                        .font(.caption)
+                // Dreamweaver's signature view-mode switch
+                Picker(selection: $viewMode) {
+                    ForEach(ViewMode.allCases, id: \.self) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                } label: {
+                    EmptyView()
                 }
-                .toggleStyle(.switch)
-                .controlSize(.small)
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 200)
 
                 Divider().frame(height: 16)
 
@@ -311,14 +263,25 @@ struct OverlayHTMLEditorView: View {
                 }
                 .menuStyle(.borderlessButton)
 
-                // Template Gallery
+                // Template Gallery — overlay starters + full website templates
                 Menu {
-                    ForEach(Self.templates, id: \.name) { tpl in
-                        Button {
-                            htmlSource = tpl.html
-                            cssSource = tpl.css
-                        } label: {
-                            Label(tpl.name, systemImage: tpl.icon)
+                    Section("Websites") {
+                        ForEach(WebsiteTemplates.all) { tpl in
+                            Button {
+                                store.applyWebsiteTemplate(tpl)
+                            } label: {
+                                Label(tpl.name, systemImage: tpl.icon)
+                            }
+                        }
+                    }
+                    Section("Overlays") {
+                        ForEach(Self.templates, id: \.name) { tpl in
+                            Button {
+                                store.htmlEditorSource = tpl.html
+                                store.cssEditorSource = tpl.css
+                            } label: {
+                                Label(tpl.name, systemImage: tpl.icon)
+                            }
                         }
                     }
                 } label: {
@@ -334,9 +297,9 @@ struct OverlayHTMLEditorView: View {
                     let combined = """
                     <!DOCTYPE html>
                     <html><head><style>
-                    \(cssSource)
+                    \(store.cssEditorSource)
                     </style></head><body>
-                    \(htmlSource)
+                    \(store.htmlEditorSource)
                     </body></html>
                     """
                     NSPasteboard.general.clearContents()
@@ -349,8 +312,8 @@ struct OverlayHTMLEditorView: View {
 
                 // Format
                 Button {
-                    htmlSource = Self.beautifyHTML(htmlSource)
-                    cssSource = Self.beautifyCSS(cssSource)
+                    store.htmlEditorSource = Self.beautifyHTML(store.htmlEditorSource)
+                    store.cssEditorSource = Self.beautifyCSS(store.cssEditorSource)
                 } label: {
                     Label("Format", systemImage: "text.justify.left")
                         .font(.caption)
@@ -368,18 +331,33 @@ struct OverlayHTMLEditorView: View {
             .padding(.vertical, 6)
             .background(.ultraThinMaterial)
 
-            // ── Content ──
-            HSplitView {
-                // ── Code editor pane ──
-                codeEditorPane
-                    .frame(minWidth: 280, idealWidth: 420, maxWidth: 600)
+            // ── Insert bar (Dreamweaver-style quick elements) ──
+            insertBar
 
-                // ── Live preview pane ──
-                if showPreview {
+            // ── Content: Code / Split / Design ──
+            switch viewMode {
+            case .code:
+                codeEditorPane
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .design:
+                previewPane
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .split:
+                HSplitView {
+                    codeEditorPane
+                        .frame(minWidth: 280, idealWidth: 420, maxWidth: 600)
                     previewPane
                         .frame(minWidth: 300)
                 }
             }
+
+            // ── CSS variables panel (Dreamweaver Properties inspector) ──
+            if !cssVariables.isEmpty {
+                cssVariablesPanel
+            }
+
+            // ── Status bar: tag breadcrumb + document stats ──
+            statusBar
         }
         .alert("Export", isPresented: Binding(
             get: { exportAlertMessage != nil },
@@ -447,10 +425,11 @@ struct OverlayHTMLEditorView: View {
 
             // Code editor
             CodeTextView(
-                text: selectedTab == .html ? $htmlSource : $cssSource,
+                text: selectedTab == .html ? $store.htmlEditorSource : $store.cssEditorSource,
                 fontSize: fontSize,
                 language: selectedTab == .html ? "html" : "css",
-                pendingInsert: $pendingInsert
+                pendingInsert: $pendingInsert,
+                cursorLocation: $cursorLocation
             )
         }
     }
@@ -485,8 +464,8 @@ struct OverlayHTMLEditorView: View {
 
                 // WKWebView preview
                 HTMLPreviewWebView(
-                    htmlSource: htmlSource,
-                    cssSource: cssSource,
+                    htmlSource: store.htmlEditorSource,
+                    cssSource: store.cssEditorSource,
                     canvasWidth: store.canvasWidth,
                     canvasHeight: store.canvasHeight
                 )
@@ -508,6 +487,213 @@ struct OverlayHTMLEditorView: View {
         }
     }
 
+    // MARK: - Insert Bar (Dreamweaver quick elements)
+
+    /// Common elements, one click inserts at cursor. Grouped like
+    /// Dreamweaver's Insert bar: structure, text, media, forms.
+    static let insertBarItems: [(name: String, icon: String, snippet: String)] = [
+        ("div", "square.dashed", "<div class=\"\">\n  \n</div>"),
+        ("p", "text.alignleft", "<p></p>"),
+        ("a", "link", "<a href=\"#\"></a>"),
+        ("img", "photo", "<img src=\"\" alt=\"\">"),
+        ("h1", "textformat.size.larger", "<h1></h1>"),
+        ("ul", "list.bullet", "<ul>\n  <li></li>\n</ul>"),
+        ("table", "tablecells", "<table>\n  <tr><th></th></tr>\n  <tr><td></td></tr>\n</table>"),
+        ("form", "rectangle.and.pencil.and.ellipsis", "<form>\n  <input type=\"text\" name=\"\">\n  <button type=\"submit\">Send</button>\n</form>"),
+        ("video", "play.rectangle", "<video controls width=\"100%\">\n  <source src=\"\" type=\"video/mp4\">\n</video>"),
+        ("br", "return", "<br>"),
+        ("hr", "minus", "<hr>"),
+        ("!--", "text.bubble", "<!--  -->"),
+    ]
+
+    private var insertBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                Text("INSERT")
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                ForEach(Self.insertBarItems, id: \.name) { item in
+                    Button {
+                        pendingInsert = item.snippet
+                        if selectedTab != .html { selectedTab = .html }
+                        if viewMode == .design { viewMode = .split }
+                    } label: {
+                        Label(item.name, systemImage: item.icon)
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 4)
+                            .background(Color.primary.opacity(0.06))
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Insert <\(item.name)> at cursor")
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+        }
+        .background(.bar)
+    }
+
+    // MARK: - Status Bar (tag breadcrumb + stats)
+
+    /// Dreamweaver's tag selector: walks the HTML up to the cursor and
+    /// reports the open-tag stack, e.g. body > div.container > p.
+    private var tagBreadcrumb: String {
+        guard selectedTab == .html else { return "css" }
+        let source = store.htmlEditorSource
+        let upto = min(cursorLocation, source.count)
+        let prefix = String(source.prefix(upto))
+        var stack: [String] = []
+        var i = prefix.startIndex
+        while i < prefix.endIndex {
+            if prefix[i] == "<", let close = prefix[i...].firstIndex(of: ">") {
+                let tag = prefix[prefix.index(after: i)..<close]
+                let t = tag.trimmingCharacters(in: .whitespaces)
+                if t.hasPrefix("/") {
+                    let name = String(t.dropFirst()).split(separator: " ").first.map(String.init) ?? ""
+                    if let idx = stack.lastIndex(where: { $0.hasPrefix(name) }) {
+                        stack.removeSubrange(idx...)
+                    }
+                } else if !t.hasPrefix("!") && !t.hasSuffix("/") {
+                    let name = t.split(separator: " ").first.map(String.init) ?? t
+                    let cls = t.range(of: "class=\"([^\"]*)\"", options: .regularExpression)
+                        .map { String(t[$0]).replacingOccurrences(of: "class=\"", with: "").replacingOccurrences(of: "\"", with: "").split(separator: " ").first.map(String.init) ?? "" } ?? ""
+                    if !["br", "hr", "img", "input", "meta", "link", "source"].contains(name) {
+                        stack.append(cls.isEmpty ? name : "\(name).\(cls)")
+                    }
+                }
+                i = prefix.index(after: close)
+            } else {
+                i = prefix.index(after: i)
+            }
+        }
+        return stack.isEmpty ? "body" : stack.joined(separator: " › ")
+    }
+
+    private var statusBar: some View {
+        HStack(spacing: 12) {
+            // Tag breadcrumb (Dreamweaver tag selector)
+            Text(tagBreadcrumb)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            Spacer()
+
+            // Doc stats
+            let src = selectedTab == .html ? store.htmlEditorSource : store.cssEditorSource
+            Text("\(src.split(separator: "\n", omittingEmptySubsequences: false).count) lines")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.tertiary)
+            Text("\(src.utf8.count) bytes")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.tertiary)
+            Text("\(store.canvasWidth)×\(store.canvasHeight)")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background(.bar)
+    }
+
+    // MARK: - CSS Variables Panel (Properties inspector)
+
+    /// A CSS custom property found in the current document.
+    private struct CSSVariable: Identifiable {
+        let name: String      // e.g. "--sprite"
+        let hex: String       // current #rrggbb value
+        var id: String { name }
+    }
+
+    /// Scans the CSS source for `--name: #hex` declarations, then for
+    /// `var(--name, #hex)` fallbacks in both CSS and HTML (the Meme Lab
+    /// templates declare colors only as fallbacks). First occurrence wins.
+    private var cssVariables: [CSSVariable] {
+        var found: [CSSVariable] = []
+        var seen = Set<String>()
+
+        // 1. Declarations: --name: #hex;
+        for match in store.cssEditorSource.matches(of: #/(--[a-zA-Z0-9-]+)\s*:\s*(#[0-9a-fA-F]{3,8})/#) {
+            let name = String(match.1)
+            if !seen.contains(name) {
+                seen.insert(name)
+                found.append(CSSVariable(name: name, hex: String(match.2)))
+            }
+        }
+        // 2. Fallbacks: var(--name, #hex) — covers templates that never
+        //    declare the variable, only consume it with a default.
+        for source in [store.cssEditorSource, store.htmlEditorSource] {
+            for match in source.matches(of: #/var\((--[a-zA-Z0-9-]+)\s*,\s*(#[0-9a-fA-F]{3,8})\)/#) {
+                let name = String(match.1)
+                if !seen.contains(name) {
+                    seen.insert(name)
+                    found.append(CSSVariable(name: name, hex: String(match.2)))
+                }
+            }
+        }
+        return found
+    }
+
+    private var cssVariablesPanel: some View {
+        VStack(spacing: 0) {
+            Divider()
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 14) {
+                    Text("COLORS")
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                    ForEach(cssVariables) { v in
+                        HStack(spacing: 6) {
+                            ColorPicker("", selection: Binding(
+                                get: { Color(hex: v.hex) ?? .white },
+                                set: { setCSSVariable(v.name, hex: $0.hexString) }
+                            ))
+                            .labelsHidden()
+                            .frame(width: 22, height: 22)
+                            Text(v.name.replacingOccurrences(of: "--", with: ""))
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+            }
+            .background(.bar)
+        }
+    }
+
+    /// Rewrites the variable's color in the source. Targets the declaration
+    /// `--name: #old` first; if absent, rewrites every `var(--name, #old)`
+    /// fallback in CSS and HTML so the preview always reflects the pick.
+    private func setCSSVariable(_ name: String, hex: String) {
+        let escaped = NSRegularExpression.escapedPattern(for: name)
+
+        // Declaration: --name: #oldhex -> --name: #newhex
+        let declPattern = NSRegularExpression.escapedPattern(for: name) + #"\s*:\s*#[0-9a-fA-F]{3,8}"#
+        if let matchRange = store.cssEditorSource.range(of: declPattern, options: .regularExpression),
+           let hexStart = store.cssEditorSource[matchRange].firstIndex(of: "#") {
+            store.cssEditorSource.replaceSubrange(hexStart..<matchRange.upperBound, with: hex)
+            return
+        }
+        // Fallback: var(--name, #old) -> var(--name, #new) — rewrite all.
+        let fbPattern = #"var\("# + escaped + #",\s*#[0-9a-fA-F]{3,8}"#
+        var css = store.cssEditorSource
+        while let matchRange = css.range(of: fbPattern, options: .regularExpression),
+              let hexStart = css[matchRange].firstIndex(of: "#") {
+            css.replaceSubrange(hexStart..<matchRange.upperBound, with: hex)
+        }
+        store.cssEditorSource = css
+        var html = store.htmlEditorSource
+        while let matchRange = html.range(of: fbPattern, options: .regularExpression),
+              let hexStart = html[matchRange].firstIndex(of: "#") {
+            html.replaceSubrange(hexStart..<matchRange.upperBound, with: hex)
+        }
+        store.htmlEditorSource = html
+    }
+
     // MARK: - Export
 
     private func exportPNG() {
@@ -519,7 +705,7 @@ struct OverlayHTMLEditorView: View {
             // Snapshot the WKWebView via JavaScript
             Task { @MainActor in
                 guard let data = await HTMLSnapshotService.snapshot(
-                    html: htmlSource, css: cssSource,
+                    html: store.htmlEditorSource, css: store.cssEditorSource,
                     width: store.canvasWidth, height: store.canvasHeight
                 ) else {
                     exportAlertMessage = "Could not render the HTML overlay as a PNG."
@@ -700,6 +886,7 @@ struct CodeTextView: NSViewRepresentable {
     let fontSize: Double
     let language: String
     @Binding var pendingInsert: String?
+    @Binding var cursorLocation: Int
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSTextView.scrollableTextView()
@@ -726,6 +913,7 @@ struct CodeTextView: NSViewRepresentable {
 
         // Set initial text
         textView.string = text
+        context.coordinator.lastSyncedText = text
 
         // Syntax highlighting
         highlightSyntax(textView, language: language)
@@ -735,19 +923,27 @@ struct CodeTextView: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         let textView = scrollView.documentView as! NSTextView
-        // Only update if text actually changed externally (not from user typing)
-        if textView.string != text && context.coordinator.isExternalUpdate {
+        // External change (template load, agent write, tab switch, Format):
+        // coordinator.lastSyncedText only advances on user typing, so any
+        // mismatch here means the binding changed outside the text view.
+        if text != context.coordinator.lastSyncedText {
+            let sel = textView.selectedRange
             textView.string = text
+            context.coordinator.lastSyncedText = text
             highlightSyntax(textView, language: language)
-            context.coordinator.isExternalUpdate = false
+            // Keep cursor where the user had it (clamped to new length)
+            let maxLoc = (text as NSString).length
+            textView.selectedRange = NSRange(
+                location: min(sel.location, maxLoc),
+                length: min(sel.length, maxLoc - min(sel.location, maxLoc)))
         }
-        // Update font size
         textView.font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
 
         // Handle pending snippet insertion at cursor
         if let snippet = pendingInsert {
             let cursor = textView.selectedRange
             textView.insertText(snippet, replacementRange: cursor)
+            context.coordinator.lastSyncedText = textView.string
             highlightSyntax(textView, language: language)
             pendingInsert = nil
         }
@@ -757,7 +953,10 @@ struct CodeTextView: NSViewRepresentable {
 
     class Coordinator: NSObject, NSTextViewDelegate {
         let parent: CodeTextView
-        var isExternalUpdate = false
+        /// Last text the text view is known to hold. Advances on user edits
+        /// and on external applications — used by updateNSView to distinguish
+        /// user typing (skip) from template/agent writes (apply).
+        var lastSyncedText = ""
 
         init(_ parent: CodeTextView) {
             self.parent = parent
@@ -765,8 +964,14 @@ struct CodeTextView: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
+            lastSyncedText = textView.string
             parent.text = textView.string
             parent.highlightSyntax(textView, language: parent.language)
+        }
+
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            parent.cursorLocation = textView.selectedRange.location
         }
     }
 

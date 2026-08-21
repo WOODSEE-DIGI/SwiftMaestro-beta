@@ -9,6 +9,11 @@ final class BrowserTab: Identifiable {
     let id: UUID
     let engineType: BrowserEngineType
 
+    /// Private tabs use a non-persistent data store: cookies, cache, and site
+    /// storage vanish when the tab closes. (Chromium tabs are always
+    /// session-scoped via a throwaway temp profile.)
+    let isPrivate: Bool
+
     let webKitEngine: WebKitBrowserEngine?
     let chromiumEngine: ChromiumBrowserEngine?
 
@@ -67,18 +72,21 @@ final class BrowserTab: Identifiable {
         }
     }
 
-    init(engineType: BrowserEngineType = .webKit) {
+    init(engineType: BrowserEngineType = .webKit, isPrivate: Bool = false) {
         self.id = UUID()
         self.engineType = engineType
+        self.isPrivate = isPrivate
         switch engineType {
         case .webKit:
-            let engine = WebKitBrowserEngine()
+            let engine = WebKitBrowserEngine(isPrivate: isPrivate)
             self.webKitEngine = engine
             self.chromiumEngine = nil
             engine.onChange = { [weak self] in
                 self?.syncWithEngine()
             }
         case .chromium:
+            // Chromium tabs are always session-scoped (throwaway temp profile),
+            // so isPrivate is informational only there.
             self.webKitEngine = nil
             self.chromiumEngine = ChromiumBrowserEngine()
         }

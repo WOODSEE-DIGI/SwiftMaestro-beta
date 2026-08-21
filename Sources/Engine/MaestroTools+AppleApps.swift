@@ -70,6 +70,24 @@ extension MaestroTools {
                 handler: { call in await removeStockTool(call) }),
             ToolDefinition(name: "stock_quote", spec: appleAppsToolSpecs[18], category: ToolCategory.stocks.rawValue,
                 handler: { call in await stockQuoteTool(call) }),
+            ToolDefinition(name: "stock_report", spec: appleAppsToolSpecs[19], category: ToolCategory.stocks.rawValue,
+                handler: { call in await stockReportTool(call) }),
+            ToolDefinition(name: "stock_alert", spec: appleAppsToolSpecs[20], category: ToolCategory.stocks.rawValue,
+                handler: { call in await stockAlertTool(call) }),
+
+            // MARK: Stocks investigation tools (SEC EDGAR + Yahoo)
+            ToolDefinition(name: "stock_holders", spec: appleAppsToolSpecs[21], category: ToolCategory.stocks.rawValue,
+                handler: { call in await stockHoldersTool(call) }),
+            ToolDefinition(name: "stock_insider_transactions", spec: appleAppsToolSpecs[22], category: ToolCategory.stocks.rawValue,
+                handler: { call in await stockInsiderTool(call) }),
+            ToolDefinition(name: "stock_proxy_filings", spec: appleAppsToolSpecs[23], category: ToolCategory.stocks.rawValue,
+                handler: { call in await stockProxyTool(call) }),
+            ToolDefinition(name: "stock_investigate", spec: appleAppsToolSpecs[24], category: ToolCategory.stocks.rawValue,
+                handler: { call in await stockInvestigateTool(call) }),
+            ToolDefinition(name: "stock_note", spec: appleAppsToolSpecs[25], category: ToolCategory.stocks.rawValue,
+                handler: { call in await stockNoteTool(call) }),
+            ToolDefinition(name: "stock_flag", spec: appleAppsToolSpecs[26], category: ToolCategory.stocks.rawValue,
+                handler: { call in await stockFlagTool(call) }),
         ])
     }
 
@@ -162,7 +180,7 @@ extension MaestroTools {
                 "Read the message currently selected in Mail.app's front viewer: subject, sender, Message-ID, recipients. Requires Automation permission for Mail.",
                 properties: [:], required: []),
 
-            // MARK: Stocks panel tools (watchlist + quotes via stooq — no API key)
+            // MARK: Stocks panel tools (watchlist + quotes via Yahoo Finance — no API key)
             rawSpec("list_stocks",
                 "List the Stocks panel watchlist with the latest cached quote for each symbol (price, intraday change, day range).",
                 properties: [:], required: []),
@@ -180,6 +198,59 @@ extension MaestroTools {
                 "Fetch a fresh quote for any symbol (does not add it to the watchlist). Returns price, day open/high/low, volume, and intraday change.",
                 properties: [
                     "symbol": ["type": "string", "description": "Ticker symbol, e.g. 'AAPL' or '^spx'."],
+                ], required: ["symbol"]),
+            // MARK: Stocks report + alerts
+            rawSpec("stock_report",
+                "Generate a stock report from the watchlist or custom symbols. Outputs as xlsx spreadsheet, csv, or markdown table. Saves to the specified path or ~/Desktop by default.",
+                properties: [
+                    "format": ["type": "string", "description": "Output format: 'xlsx' (default), 'csv', or 'md'."],
+                    "symbols": ["type": "string", "description": "Comma-separated symbols to include (defaults to full watchlist). E.g. 'AAPL,MSFT,BHP.AX'."],
+                    "path": ["type": "string", "description": "Absolute path to save the report. Defaults to ~/Desktop/stocks-report-YYYY-MM-DD.ext"],
+                ], required: []),
+            rawSpec("stock_alert",
+                "Set, list, or check price alerts for stock symbols. When checked, returns any breaches where the current price crossed your threshold.",
+                properties: [
+                    "action": ["type": "string", "description": "'add' to create an alert, 'list' to show active alerts, 'remove' to delete one, 'check' to evaluate all alerts against live prices."],
+                    "symbol": ["type": "string", "description": "Ticker symbol (required for add/remove)."],
+                    "condition": ["type": "string", "description": "Trigger condition: 'above' or 'below' (required for add)."],
+                    "threshold": ["type": "number", "description": "Price threshold (required for add)."],
+                    "message": ["type": "string", "description": "Optional note for the alert."],
+                ], required: ["action"]),
+
+            // MARK: Stocks investigation tools (SEC EDGAR + Yahoo Finance)
+            rawSpec("stock_holders",
+                "Fetch institutional holders for a stock: top shareholders, shares held, percent ownership, and quarter-over-quarter changes. Data from Yahoo Finance. Use when investigating who owns a company or tracking activist positions.",
+                properties: [
+                    "symbol": ["type": "string", "description": "Ticker symbol, e.g. 'AAPL'."],
+                ], required: ["symbol"]),
+            rawSpec("stock_insider_transactions",
+                "Fetch insider transactions (SEC Form 4) for a stock: buys, sells, option exercises by executives and directors. Data from SEC EDGAR. Use for insider trading analysis or monitoring executive behavior.",
+                properties: [
+                    "symbol": ["type": "string", "description": "Ticker symbol, e.g. 'AAPL'. US-listed companies only."],
+                    "limit": ["type": "number", "description": "Max transactions to return (default 30)."],
+                ], required: ["symbol"]),
+            rawSpec("stock_proxy_filings",
+                "Fetch proxy/voting filings (DEF 14A) for a stock: shareholder meeting proposals, board members, executive compensation, meeting dates. Data from SEC EDGAR. Use for governance analysis, ESG research, or understanding shareholder votes.",
+                properties: [
+                    "symbol": ["type": "string", "description": "Ticker symbol, e.g. 'AAPL'. US-listed companies only."],
+                ], required: ["symbol"]),
+            rawSpec("stock_investigate",
+                "Full investigation sweep on a stock: fetches quote, institutional holders, insider transactions, and proxy filings in one call. Adds the symbol to the watchlist if not already tracked. Returns a consolidated summary.",
+                properties: [
+                    "symbol": ["type": "string", "description": "Ticker symbol to investigate, e.g. 'AAPL'."],
+                ], required: ["symbol"]),
+            rawSpec("stock_note",
+                "Add an investigation note to a stock. Notes persist in the database and are shown in the Stocks panel Notes tab.",
+                properties: [
+                    "symbol": ["type": "string", "description": "Ticker symbol."],
+                    "note": ["type": "string", "description": "Note content — observations, thesis, findings."],
+                ], required: ["symbol", "note"]),
+            rawSpec("stock_flag",
+                "Flag or unflag a stock as suspicious. Flagged stocks show an orange flag in the Stocks panel. Use to mark stocks under suspicion for fraud, insider trading patterns, or other concerns.",
+                properties: [
+                    "symbol": ["type": "string", "description": "Ticker symbol."],
+                    "action": ["type": "string", "description": "'flag' or 'unflag' (default 'flag')."],
+                    "reason": ["type": "string", "description": "Reason for flagging (default 'Manual flag')."],
                 ], required: ["symbol"]),
         ]
     }
@@ -430,7 +501,7 @@ extension MaestroTools {
             : errorJSON("could not open Stocks")
     }
 
-    // MARK: - Stocks panel implementations (watchlist + quotes via stooq)
+    // MARK: - Stocks panel implementations (watchlist + quotes via Yahoo Finance)
 
     @MainActor
     static func listStocksTool() async -> String {
@@ -440,11 +511,11 @@ extension MaestroTools {
             let quote = store.quotes[item.symbol]
             return [
                 "symbol": item.displaySymbol,
-                "price": quote?.close as Any,
+                "price": quote?.price as Any,
                 "change_percent": quote?.changePercent as Any,
-                "day_low": quote?.low as Any,
-                "day_high": quote?.high as Any,
-                "as_of": quote.map { "\($0.date) \($0.time)" } ?? "never",
+                "day_low": quote?.dayLow as Any,
+                "day_high": quote?.dayHigh as Any,
+                "previous_close": quote?.previousClose as Any,
             ]
         }
         return jsonString(["watchlist": items, "count": items.count])
@@ -472,19 +543,449 @@ extension MaestroTools {
     static func stockQuoteTool(_ call: ToolCall) async -> String {
         let args = decodeArgs(call, as: OpenStocksArgs.self)
         guard let symbol = args?.symbol, !symbol.isEmpty else { return errorJSON("'symbol' is required") }
-        guard let quote = await StocksStore.shared.quote(for: symbol), quote.close != nil else {
-            return errorJSON("no quote for '\(symbol)' — check the ticker (US: 'AAPL', other markets: 'bhp.au', indices: '^spx')")
+        guard let quote = await StocksStore.shared.quote(for: symbol) else {
+            return errorJSON("no quote for '\(symbol)' — check the ticker (US: 'AAPL', other markets: 'BHP.AX', indices: '^GSPC')")
         }
         return jsonString([
             "symbol": quote.symbol,
-            "price": quote.close as Any,
-            "open": quote.open as Any,
-            "day_high": quote.high as Any,
-            "day_low": quote.low as Any,
+            "price": quote.price,
+            "previous_close": quote.previousClose as Any,
+            "day_high": quote.dayHigh as Any,
+            "day_low": quote.dayLow as Any,
             "volume": quote.volume as Any,
             "change_percent": quote.changePercent as Any,
-            "as_of": "\(quote.date) \(quote.time)",
         ])
+    }
+
+    // MARK: - Stock report
+
+    private struct StockReportArgs: Codable {
+        let format: String?
+        let symbols: String?
+        let path: String?
+    }
+
+    @MainActor
+    static func stockReportTool(_ call: ToolCall) async -> String {
+        let args = decodeArgs(call, as: StockReportArgs.self)
+        let fmt = (args?.format ?? "xlsx").lowercased()
+        guard ["xlsx", "csv", "md"].contains(fmt) else {
+            return errorJSON("format must be 'xlsx', 'csv', or 'md' (got '\(fmt)')")
+        }
+
+        // Resolve symbols: custom list or full watchlist.
+        let store = StocksStore.shared
+        let items: [StockWatchItem]
+        if let raw = args?.symbols, !raw.isEmpty {
+            let symbols = raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            items = symbols.compactMap { store.add(symbol: $0) }
+        } else {
+            items = store.watchlist
+            if items.isEmpty { return errorJSON("watchlist is empty — add symbols first or pass 'symbols'") }
+        }
+
+        // Fetch fresh quotes for all symbols.
+        for item in items {
+            if store.quotes[item.symbol] == nil {
+                _ = await store.quote(for: item.symbol)
+            }
+        }
+
+        // Build rows.
+        var rows: [[String]] = [["Symbol", "Price", "Change %", "Day Low", "Day High", "Prev Close", "Volume"]]
+        for item in items {
+            let q = store.quotes[item.symbol]
+            let price = q.map { String(format: "%.2f", $0.price) } ?? "—"
+            let change: String = {
+                guard let pct = q?.changePercent else { return "—" }
+                return String(format: "%+.2f%%", pct)
+            }()
+            let dayLow: String = {
+                guard let v = q?.dayLow else { return "—" }
+                return String(format: "%.2f", v)
+            }()
+            let dayHigh: String = {
+                guard let v = q?.dayHigh else { return "—" }
+                return String(format: "%.2f", v)
+            }()
+            let prevClose: String = {
+                guard let v = q?.previousClose else { return "—" }
+                return String(format: "%.2f", v)
+            }()
+            let volume: String = {
+                guard let v = q?.volume else { return "—" }
+                return formatVolume(v)
+            }()
+            rows.append([item.displaySymbol, price, change, dayLow, dayHigh, prevClose, volume])
+        }
+
+        // Resolve output path.
+        let fm = FileManager.default
+        let desktop = fm.urls(for: .desktopDirectory, in: .userDomainMask).first!
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd"
+        let dateStr = dateFormatter.string(from: Date())
+        let fileName = "stocks-report-\(dateStr).\(fmt)"
+        let outURL: URL
+        if let raw = args?.path, !raw.isEmpty, raw.hasPrefix("/") {
+            outURL = URL(fileURLWithPath: raw)
+        } else {
+            outURL = desktop.appendingPathComponent(fileName)
+        }
+
+        // Write file.
+        do {
+            try fm.createDirectory(at: outURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let bytes: Int
+            switch fmt {
+            case "csv":
+                let csv = rows.map { $0.joined(separator: ",") }.joined(separator: "\n")
+                try csv.write(to: outURL, atomically: true, encoding: .utf8)
+                bytes = csv.utf8.count
+            case "md":
+                var md = "# Stock Report — \(dateStr)\n\n"
+                // Markdown table
+                for (i, row) in rows.enumerated() {
+                    md += "| " + row.joined(separator: " | ") + " |\n"
+                    if i == 0 {
+                        md += "| " + row.map { _ in "---" }.joined(separator: " | ") + " |\n"
+                    }
+                }
+                try md.write(to: outURL, atomically: true, encoding: .utf8)
+                bytes = md.utf8.count
+            default: // xlsx
+                bytes = try DocEngine.createXLSX(outURL, rows: rows, sheetName: "Stock Report")
+            }
+            return jsonString([
+                "status": "created", "format": fmt,
+                "path": outURL.path, "bytes": "\(bytes)",
+                "symbols": items.map(\.displaySymbol),
+                "count": items.count,
+            ])
+        } catch {
+            return errorJSON("failed to create report: \(error.localizedDescription)")
+        }
+    }
+
+    private static func formatVolume(_ v: Double) -> String {
+        if v >= 1_000_000_000 { return String(format: "%.1fB", v / 1_000_000_000) }
+        if v >= 1_000_000 { return String(format: "%.1fM", v / 1_000_000) }
+        if v >= 1_000 { return String(format: "%.1fK", v / 1_000) }
+        return "\(Int(v))"
+    }
+
+    // MARK: - Stock alerts
+
+    private struct StockAlertArgs: Codable {
+        let action: String?
+        let symbol: String?
+        let condition: String?
+        let threshold: Double?
+        let message: String?
+    }
+
+    private struct PriceAlert: Codable, Identifiable, Sendable {
+        var id: String { "\(symbol)-\(condition)-\(threshold)" }
+        let symbol: String
+        let condition: String   // "above" or "below"
+        let threshold: Double
+        let message: String
+        let createdAt: Date
+    }
+
+    private static var alertsURL: URL {
+        SwiftMaestroPaths.appSupportDir.appendingPathComponent("stock-alerts.json")
+    }
+
+    private static func loadAlerts() -> [PriceAlert] {
+        guard let data = try? Data(contentsOf: alertsURL),
+              let alerts = try? JSONDecoder().decode([PriceAlert].self, from: data) else { return [] }
+        return alerts
+    }
+
+    private static func saveAlerts(_ alerts: [PriceAlert]) {
+        guard let data = try? JSONEncoder().encode(alerts) else { return }
+        try? data.write(to: alertsURL, options: .atomic)
+    }
+
+    @MainActor
+    static func stockAlertTool(_ call: ToolCall) async -> String {
+        let args = decodeArgs(call, as: StockAlertArgs.self)
+        guard let action = args?.action?.lowercased() else {
+            return errorJSON("'action' is required: add, list, remove, check")
+        }
+
+        switch action {
+        case "add":
+            guard let symbol = args?.symbol?.uppercased(), !symbol.isEmpty else {
+                return errorJSON("'symbol' is required for add")
+            }
+            guard let condition = args?.condition?.lowercased(),
+                  ["above", "below"].contains(condition) else {
+                return errorJSON("'condition' must be 'above' or 'below'")
+            }
+            guard let threshold = args?.threshold else {
+                return errorJSON("'threshold' price is required for add")
+            }
+            let alert = PriceAlert(
+                symbol: symbol, condition: condition, threshold: threshold,
+                message: args?.message ?? "",
+                createdAt: Date())
+            var alerts = loadAlerts()
+            alerts.append(alert)
+            saveAlerts(alerts)
+            return jsonString([
+                "status": "alert_created",
+                "symbol": symbol, "condition": condition,
+                "threshold": threshold, "message": alert.message,
+            ])
+
+        case "list":
+            let alerts = loadAlerts()
+            let items: [[String: Any]] = alerts.map { a in
+                ["symbol": a.symbol, "condition": a.condition,
+                 "threshold": a.threshold, "message": a.message]
+            }
+            return jsonString(["alerts": items, "count": items.count])
+
+        case "remove":
+            guard let symbol = args?.symbol?.uppercased(), !symbol.isEmpty else {
+                return errorJSON("'symbol' is required for remove")
+            }
+            var alerts = loadAlerts()
+            let before = alerts.count
+            alerts.removeAll { $0.symbol == symbol }
+            guard alerts.count < before else {
+                return errorJSON("no alert found for '\(symbol)'")
+            }
+            saveAlerts(alerts)
+            return jsonString(["status": "removed", "symbol": symbol, "remaining": alerts.count])
+
+        case "check":
+            let alerts = loadAlerts()
+            guard !alerts.isEmpty else {
+                return jsonString(["status": "no_alerts", "breaches": []])
+            }
+            // Fetch live quotes for all alerted symbols.
+            let uniqueSymbols = Set(alerts.map(\.symbol))
+            var quotes: [String: StockQuote] = [:]
+            for sym in uniqueSymbols {
+                if let q = await StocksStore.shared.quote(for: sym) {
+                    quotes[sym] = q
+                }
+            }
+            // Evaluate breaches.
+            var breaches: [[String: Any]] = []
+            for alert in alerts {
+                guard let q = quotes[alert.symbol] else { continue }
+                let breached: Bool
+                switch alert.condition {
+                case "above": breached = q.price >= alert.threshold
+                case "below": breached = q.price <= alert.threshold
+                default: breached = false
+                }
+                if breached {
+                    breaches.append([
+                        "symbol": alert.symbol,
+                        "condition": alert.condition,
+                        "threshold": alert.threshold,
+                        "current_price": q.price,
+                        "message": alert.message,
+                        "change_percent": q.changePercent as Any,
+                    ])
+                }
+            }
+            // Log breaches to file.
+            if !breaches.isEmpty {
+                let logURL = SwiftMaestroPaths.appSupportDir.appendingPathComponent("stock-alert-log.txt")
+                let ts = ISO8601DateFormatter().string(from: Date())
+                var log = ""
+                for b in breaches {
+                    log += "[\(ts)] \(b["symbol"] ?? "?") \(b["condition"] ?? "?") \(b["threshold"] ?? 0) → current \(b["current_price"] ?? 0) (\(b["message"] ?? ""))\n"
+                }
+                if let data = log.data(using: .utf8),
+                   let fh = FileHandle(forWritingAtPath: logURL.path) {
+                    fh.seekToEndOfFile()
+                    fh.write(data)
+                    fh.closeFile()
+                } else {
+                    try? log.write(to: logURL, atomically: true, encoding: .utf8)
+                }
+            }
+            return jsonString([
+                "status": "checked",
+                "total_alerts": alerts.count,
+                "breaches": breaches,
+                "breach_count": breaches.count,
+            ])
+
+        default:
+            return errorJSON("unknown action '\(action)' — use add, list, remove, or check")
+        }
+    }
+
+    // MARK: - Stocks Investigation Tools
+
+    private struct StockSymbolArgs: Codable { let symbol: String? }
+    private struct StockInsiderArgs: Codable { let symbol: String?; let limit: Double? }
+    private struct StockNoteArgs: Codable { let symbol: String?; let note: String? }
+    private struct StockFlagArgs: Codable { let symbol: String?; let action: String?; let reason: String? }
+
+    @MainActor
+    static func stockHoldersTool(_ call: ToolCall) async -> String {
+        guard let symbol = decodeArgs(call, as: StockSymbolArgs.self)?.symbol,
+              let normalized = StocksStore.normalizeSymbol(symbol) else {
+            return errorJSON("invalid or missing 'symbol'")
+        }
+        await StocksStore.shared.fetchHolders(symbol: normalized)
+        let holders = StocksStore.shared.holdersCache[normalized] ?? []
+        if holders.isEmpty {
+            return jsonString(["status": "no_data", "symbol": normalized,
+                               "message": "No institutional holder data found. May not be a US-listed stock or data unavailable."])
+        }
+        return jsonString([
+            "status": "ok", "symbol": normalized, "holder_count": holders.count,
+            "holders": holders.map { h in
+                var dict: [String: Any] = ["name": h.holderName]
+                if let pct = h.percentHeld { dict["percent_held"] = pct * 100 }
+                if let shares = h.sharesHeld { dict["shares_held"] = shares }
+                if let chg = h.changeShares { dict["change_shares"] = chg }
+                if let date = h.dateReported { dict["date_reported"] = date }
+                return dict
+            },
+        ])
+    }
+
+    @MainActor
+    static func stockInsiderTool(_ call: ToolCall) async -> String {
+        guard let symbol = decodeArgs(call, as: StockInsiderArgs.self)?.symbol,
+              let normalized = StocksStore.normalizeSymbol(symbol) else {
+            return errorJSON("invalid or missing 'symbol'")
+        }
+        await StocksStore.shared.fetchInsiderTransactions(symbol: normalized)
+        let txs = StocksStore.shared.insiderCache[normalized] ?? []
+        if txs.isEmpty {
+            return jsonString(["status": "no_data", "symbol": normalized,
+                               "message": "No insider transactions found. SEC EDGAR covers US-listed companies only."])
+        }
+        return jsonString([
+            "status": "ok", "symbol": normalized, "transaction_count": txs.count,
+            "transactions": txs.prefix(30).map { tx in
+                var dict: [String: Any] = [
+                    "insider": tx.insiderName, "type": tx.transactionType,
+                ]
+                if let t = tx.title { dict["title"] = t }
+                if let s = tx.shares { dict["shares"] = s }
+                if let p = tx.pricePerShare { dict["price_per_share"] = p }
+                if let tv = tx.totalValue { dict["total_value"] = tv }
+                if let d = tx.transactionDate { dict["date"] = d }
+                return dict
+            },
+        ])
+    }
+
+    @MainActor
+    static func stockProxyTool(_ call: ToolCall) async -> String {
+        guard let symbol = decodeArgs(call, as: StockSymbolArgs.self)?.symbol,
+              let normalized = StocksStore.normalizeSymbol(symbol) else {
+            return errorJSON("invalid or missing 'symbol'")
+        }
+        await StocksStore.shared.fetchProxyFilings(symbol: normalized)
+        let filings = StocksStore.shared.proxyCache[normalized] ?? []
+        if filings.isEmpty {
+            return jsonString(["status": "no_data", "symbol": normalized,
+                               "message": "No proxy filings found. SEC EDGAR covers US-listed companies only."])
+        }
+        return jsonString([
+            "status": "ok", "symbol": normalized, "filing_count": filings.count,
+            "filings": filings.prefix(5).map { f in
+                var dict: [String: Any] = [
+                    "filing_date": f.filingDate,
+                ]
+                if let name = f.companyName { dict["company"] = name }
+                if let meeting = f.meetingDate { dict["meeting_date"] = meeting }
+                if let url = f.url { dict["url"] = url }
+                if let proposals = f.proposals { dict["proposals"] = proposals }
+                if let board = f.boardMembers { dict["board_members"] = board }
+                return dict
+            },
+        ])
+    }
+
+    @MainActor
+    static func stockInvestigateTool(_ call: ToolCall) async -> String {
+        guard let symbol = decodeArgs(call, as: StockSymbolArgs.self)?.symbol,
+              let normalized = StocksStore.normalizeSymbol(symbol) else {
+            return errorJSON("invalid or missing 'symbol'")
+        }
+        let store = StocksStore.shared
+        // Add to watchlist if not already there
+        if !store.watchlist.contains(where: { $0.symbol == normalized }) {
+            _ = store.add(symbol: normalized)
+        }
+        // Fetch everything in parallel
+        async let quoteTask = store.quote(for: normalized)
+        async let holdersTask: () = store.fetchHolders(symbol: normalized)
+        async let insiderTask: () = store.fetchInsiderTransactions(symbol: normalized)
+        async let proxyTask: () = store.fetchProxyFilings(symbol: normalized)
+        let (quote, _, _, _) = await (quoteTask, holdersTask, insiderTask, proxyTask)
+
+        let holders = store.holdersCache[normalized] ?? []
+        let insiders = store.insiderCache[normalized] ?? []
+        let proxies = store.proxyCache[normalized] ?? []
+
+        var result: [String: Any] = ["status": "ok", "symbol": normalized]
+        if let q = quote {
+            result["price"] = q.price
+            result["change_percent"] = q.changePercent as Any
+        }
+        result["holders"] = ["count": holders.count, "top": holders.prefix(5).map { $0.holderName }]
+        result["insider_transactions"] = ["count": insiders.count,
+                                          "recent_buys": insiders.filter { $0.transactionType == "Purchase" }.count,
+                                          "recent_sells": insiders.filter { $0.transactionType == "Sale" }.count]
+        result["proxy_filings"] = ["count": proxies.count,
+                                   "latest": proxies.first?.filingDate ?? "none"]
+        return jsonString(result)
+    }
+
+    @MainActor
+    static func stockNoteTool(_ call: ToolCall) async -> String {
+        let args = decodeArgs(call, as: StockNoteArgs.self)
+        guard let symbol = args?.symbol,
+              let normalized = StocksStore.normalizeSymbol(symbol) else {
+            return errorJSON("invalid or missing 'symbol'")
+        }
+        guard let note = args?.note, !note.trimmingCharacters(in: .whitespaces).isEmpty else {
+            return errorJSON("'note' content is required")
+        }
+        guard let saved = StocksStore.shared.addNote(symbol: normalized, content: note) else {
+            return errorJSON("failed to save note")
+        }
+        return jsonString(["status": "saved", "symbol": normalized, "note_id": saved.id])
+    }
+
+    @MainActor
+    static func stockFlagTool(_ call: ToolCall) async -> String {
+        let args = decodeArgs(call, as: StockFlagArgs.self)
+        guard let symbol = args?.symbol,
+              let normalized = StocksStore.normalizeSymbol(symbol) else {
+            return errorJSON("invalid or missing 'symbol'")
+        }
+        let store = StocksStore.shared
+        guard let stock = store.trackedStocks.first(where: { $0.symbol == normalized }) else {
+            return errorJSON("'\(normalized)' is not in the tracked stocks. Add it first with add_stock or stock_investigate.")
+        }
+        let action = args?.action?.lowercased() ?? "flag"
+        switch action {
+        case "flag":
+            store.flagStock(id: stock.id, reason: args?.reason ?? "Flagged by agent")
+            return jsonString(["status": "flagged", "symbol": normalized])
+        case "unflag":
+            store.unflagStock(id: stock.id)
+            return jsonString(["status": "unflagged", "symbol": normalized])
+        default:
+            return errorJSON("unknown action '\(action)' — use 'flag' or 'unflag'")
+        }
     }
 
     // MARK: - News argument types

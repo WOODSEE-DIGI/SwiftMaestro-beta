@@ -209,33 +209,38 @@ bundle_whatsapp() {
     cp -R "$src/whatsapp-bridge/" "$dest/whatsapp-bridge/" 2>/dev/null || true
 
     # Create a fully self-contained venv for the WhatsApp Python MCP server.
-    # The source .venv may reference a system interpreter, so we recreate it with
-    # the bundled Python runtime and point the venv python symlinks to the shared
-    # runtime using a relative path. This makes the .dmg work on a clean Mac
-    # without Homebrew or uv.
-    if [ -d "$src/whatsapp-mcp-server/.venv" ]; then
-        log "Creating self-contained Python venv for $name"
-        local venv_dir="$dest/whatsapp-mcp-server/.venv"
-        "$PYTHON_DIR/bin/python3" -m venv "$venv_dir"
+    # Always create from scratch using the bundled Python runtime — the source
+    # .venv may be missing or reference a system interpreter.
+    log "Creating self-contained Python venv for $name"
+    local venv_dir="$dest/whatsapp-mcp-server/.venv"
+    "$PYTHON_DIR/bin/python3" -m venv "$venv_dir"
 
-        # Repoint the venv python symlinks to the bundled Python runtime.
-        # The venv is at .../whatsapp/whatsapp-mcp-server/.venv; the shared
-        # runtime is at .../mcp-servers/.runtime/python, so the relative path is
-        # four levels up and into .runtime/python/bin.
-        rm -f "$venv_dir/bin/python" "$venv_dir/bin/python3" "$venv_dir/bin/python3.11"
-        (cd "$venv_dir/bin" && ln -s ../../../../.runtime/python/bin/python3.11 python3.11 && ln -s python3.11 python3 && ln -s python3 python)
+    # Repoint the venv python symlinks to the bundled Python runtime.
+    # The venv is at .../whatsapp/whatsapp-mcp-server/.venv; the shared
+    # runtime is at .../mcp-servers/.runtime/python, so the relative path is
+    # four levels up and into .runtime/python/bin.
+    rm -f "$venv_dir/bin/python" "$venv_dir/bin/python3" "$venv_dir/bin/python3.11"
+    (cd "$venv_dir/bin" && ln -s ../../../../.runtime/python/bin/python3.11 python3.11 && ln -s python3.11 python3 && ln -s python3 python)
 
-        # Copy the installed site-packages from the source venv.
-        cp -R "$src/whatsapp-mcp-server/.venv/lib/python3.11/site-packages/"* "$venv_dir/lib/python3.11/site-packages/"
-
-        # Remove any broken symlinks left over from the source environment.
-        find "$venv_dir" -type l -print0 | while IFS= read -r -d '' link; do
-            if [ ! -e "$link" ]; then
-                rm -f "$link"
-            fi
-        done
-        log "Created self-contained venv for $name"
+    # Install dependencies from requirements.txt if present.
+    if [ -f "$src/whatsapp-mcp-server/requirements.txt" ]; then
+        "$venv_dir/bin/python3" -m pip install --quiet --no-cache-dir \
+            -r "$src/whatsapp-mcp-server/requirements.txt" \
+            || log "WARN: pip install failed for $name — some features may be unavailable"
+    elif [ -d "$src/whatsapp-mcp-server/.venv" ]; then
+        # Fallback: copy installed site-packages from the source venv.
+        local pyver
+        pyver=$("$PYTHON_DIR/bin/python3" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+        cp -R "$src/whatsapp-mcp-server/.venv/lib/python${pyver}/site-packages/"* "$venv_dir/lib/python${pyver}/site-packages/"
     fi
+
+    # Remove any broken symlinks left over from the source environment.
+    find "$venv_dir" -type l -print0 | while IFS= read -r -d '' link; do
+        if [ ! -e "$link" ]; then
+            rm -f "$link"
+        fi
+    done
+    log "Created self-contained venv for $name"
 
     log "Built $name"
 }
@@ -258,14 +263,71 @@ bundle_node_server "crawlkit-mcp" "$SRC_CRAWLKIT_MCP"
 bundle_webclaw
 bundle_whatsapp
 
-# Playwright is special: huge browser binaries. For now, bundle only the MCP
-# server code and instruct the bundle service to install browsers on first
-# launch via the installCommand. In production we may want to make this an
-# optional download instead.
+# Playwright browsers are vendored INTO the bundle so a user's first launch
+# downloads NOTHING. The revision-pinned Chromium, headless shell, and ffmpeg
+# binaries are fetched ONCE on the build machine (from the local Playwright
+# cache when the pinned revision is already present, otherwise via the bundled
+# playwright-mcp's own pinned installer) and copied into
+# BundledMCP/mcp-servers/playwright/.browsers/. The manifest points the server
+# at it via PLAYWRIGHT_BROWSERS_PATH={‌{SERVER_DIR}}/.browsers.
+bundle_playwright_browsers() {
+    local dest="$1"
+    local browsers="$dest/.browsers"
+    local browsers_json="$dest/node_modules/playwright-core/browsers.json"
+
+    if [ ! -f "$browsers_json" ]; then
+        log "WARN: playwright browsers.json not found at $browsers_json — skipping browser vendoring"
+        return
+    fi
+
+    # Pinned revisions from the bundled playwright-core.
+    local chromium_rev ffmpeg_rev
+    chromium_rev=$(/usr/bin/python3 -c "import json; d=json.load(open('$browsers_json')); print(next(b['revision'] for b in d['browsers'] if b['name']=='chromium'))")
+    ffmpeg_rev=$(/usr/bin/python3 -c "import json; d=json.load(open('$browsers_json')); print(next(b['revision'] for b in d['browsers'] if b['name']=='ffmpeg'))")
+
+    local cache="$HOME/Library/Caches/ms-playwright"
+    mkdir -p "$browsers"
+
+    # Copy revision-matched dirs from the local cache where available.
+    for dir in "chromium-$chromium_rev" "chromium_headless_shell-$chromium_rev" "ffmpeg-$ffmpeg_rev"; do
+        if [ -d "$browsers/$dir" ]; then
+            continue
+        elif [ -d "$cache/$dir" ]; then
+            log "Vendoring $dir from local Playwright cache"
+            cp -R "$cache/$dir" "$browsers/$dir"
+        fi
+    done
+
+    # Anything still missing: fetch with the bundled playwright's own pinned
+    # installer (build machine ONLY — never on a user's machine), then copy in.
+    for dir in "chromium-$chromium_rev" "chromium_headless_shell-$chromium_rev" "ffmpeg-$ffmpeg_rev"; do
+        if [ ! -d "$browsers/$dir" ]; then
+            log "Downloading pinned Playwright browsers (rev $chromium_rev) at bundle time"
+            local staging
+            staging=$(mktemp -d)
+            (cd "$dest" && PLAYWRIGHT_BROWSERS_PATH="$staging" npx --no-install playwright install chromium) \
+                || fail "playwright browser download failed (bundle-time)"
+            for staged in "$staging"/chromium-* "$staging"/chromium_headless_shell-* "$staging"/ffmpeg-*; do
+                [ -d "$staged" ] || continue
+                local base
+                base=$(basename "$staged")
+                [ -d "$browsers/$base" ] || cp -R "$staged" "$browsers/$base"
+            done
+            rm -rf "$staging"
+            break
+        fi
+    done
+
+    # Never ship the installer lock or partial downloads.
+    rm -rf "$browsers/__dirlock"
+    log "Playwright browsers vendored into $browsers"
+}
+
+# Playwright: the MCP server code AND the browser engine both ship in the DMG —
+# nothing downloads at install or first run, ever.
 if [ -d "$SRC_PLAYWRIGHT" ]; then
     bundle_node_server "playwright" "$SRC_PLAYWRIGHT"
-    # Note: `npx playwright install chromium` will run on first launch via the
-    # manifest installCommand. This keeps the initial .dmg smaller.
+    bundle_playwright_browsers "$OUTPUT_DIR/playwright"
 fi
 
 # Verify the manifest is still present.

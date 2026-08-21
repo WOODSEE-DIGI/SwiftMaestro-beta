@@ -13,8 +13,52 @@ final class ChromiumBrowserEngine {
     var lastResponse: String?
     var screenshot: Data?
 
-    /// Path to the Chromium/Chrome executable. Defaults to Google Chrome.
-    var executablePath: String = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    /// Path to the Chromium/Chrome executable.
+    ///
+    /// Resolution order (vendored-first — the DMG must be self-contained):
+    /// 1. Vendored Playwright "Chrome for Testing" (ships in the app bundle,
+    ///    extracted to Application Support with the bundled MCP servers)
+    /// 2. Vendored headless shell (same bundle; no visible window, but CDP
+    ///    automation — screenshots, JS, network capture — works fully)
+    /// 3. User-installed Google Chrome at /Applications
+    ///
+    /// Assigning a custom path overrides all of the above.
+    var executablePath: String = ChromiumBrowserEngine.resolveExecutable()
+
+    /// Cached custom-override flag: once the user (or settings) assigns a path,
+    /// stop re-resolving so their choice sticks.
+    private var hasCustomPath = false
+
+    static func resolveExecutable() -> String {
+        let mcpRoot = "\(NSHomeDirectory())/Library/Application Support/SwiftMaestro/mcp-servers/playwright/.browsers"
+        let candidates = [
+            // Full "Chrome for Testing" app (headed — visible windows)
+            "\(mcpRoot)/chromium-1219/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+            // Headless shell (CDP-only, no window — still automates fully)
+            "\(mcpRoot)/chromium_headless_shell-1219/chrome-headless-shell-mac-arm64/chrome-headless-shell",
+            // Fallback: user-installed Chrome
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        ]
+        for path in candidates where FileManager.default.fileExists(atPath: path) {
+            return path
+        }
+        // Nothing found — return the Chrome default so the error message
+        // names a path the user can plausibly install.
+        return "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    }
+
+    /// Re-run vendored-first resolution (e.g. after bundled server extraction
+    /// completes on first launch). No-op if a custom path was assigned.
+    func refreshExecutablePath() {
+        guard !hasCustomPath else { return }
+        executablePath = Self.resolveExecutable()
+    }
+
+    /// Assign a user-chosen executable path (Settings). Locks out auto-resolution.
+    func setCustomExecutablePath(_ path: String) {
+        executablePath = path
+        hasCustomPath = true
+    }
 
     private var client: ChromiumCDPClient?
 
@@ -97,6 +141,11 @@ final class ChromiumBrowserEngine {
 
     private func ensureClient() async throws {
         if let client = client, await client.isConnected { return }
+
+        // Re-resolve at connect time: on first launch the bundled MCP servers
+        // (including the vendored Chromium binaries) may still be extracting
+        // when this engine was constructed.
+        refreshExecutablePath()
 
         let client = ChromiumCDPClient()
         await client.setEventHandler { [weak self] method, data in

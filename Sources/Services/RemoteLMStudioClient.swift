@@ -66,6 +66,14 @@ final class RemoteLMStudioBackend: GenerationBackend, @unchecked Sendable {
                 }
                 return tool
             }
+            // Some OpenAI-compatible servers (notably LM Studio with certain
+            // model templates) silently IGNORE the tools array unless the
+            // choice is made explicit — the model then freestyles tool calls
+            // as plain text instead of emitting structured tool_calls deltas.
+            // "auto" engages native function calling where supported; servers
+            // that don't support it at all still fall through to the
+            // executor's raw-text tool-call recovery.
+            body["tool_choice"] = "auto"
         }
 
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -79,7 +87,14 @@ final class RemoteLMStudioBackend: GenerationBackend, @unchecked Sendable {
         var toolCallBuffers: [Int: (id: String, name: String, arguments: String)] = [:]
 
         // Use URLSession.bytes for true SSE streaming.
-        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        let (bytes, response): (URLSession.AsyncBytes, URLResponse)
+        do {
+            (bytes, response) = try await URLSession.shared.bytes(for: request)
+        } catch {
+            let elapsed = Date().timeIntervalSince(startTime)
+            NSLog("[REMOTE] CONNECTION FAILED after %.2fs: %@", elapsed, error.localizedDescription)
+            throw error
+        }
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw RemoteModelError.invalidResponse

@@ -4,11 +4,11 @@ import UniformTypeIdentifiers
 
 // MARK: - Canvas view
 
-struct CanvasView: View {
-    @Environment(CanvasStore.self) private var store
+struct WhiteboardView: View {
+    @Environment(WhiteboardStore.self) private var store
 
-    @State private var board: CanvasBoard?
-    @State private var boardData = CanvasBoardData()
+    @State private var board: WhiteboardBoard?
+    @State private var boardData = WhiteboardBoardData()
     @State private var showNewBoardSheet = false
     @State private var newBoardName = ""
     @State private var error: String?
@@ -22,6 +22,18 @@ struct CanvasView: View {
         }
         .task {
             store.loadBoards()
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .whiteboardBoardExternallyModified)
+        ) { note in
+            // An agent tool edited this board on disk — reload it so the open
+            // panel shows the change AND so a later persist doesn't clobber
+            // the agent's edits with our stale in-memory copy.
+            guard let idString = note.userInfo?["boardID"] as? String,
+                  board?.id.uuidString == idString,
+                  let fresh = store.boards.first(where: { $0.id.uuidString == idString })
+            else { return }
+            loadBoard(for: fresh)
         }
         .alert("Canvas Error", isPresented: .constant(error != nil)) {
             Button("OK") { error = nil }
@@ -105,7 +117,7 @@ struct CanvasView: View {
                     newBoardName = ""
                     let newBoard = store.createBoard(name: name)
                     board = newBoard
-                    boardData = CanvasBoardData()
+                    boardData = WhiteboardBoardData()
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(newBoardName.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -120,7 +132,7 @@ struct CanvasView: View {
     @ViewBuilder
     private var canvasDetail: some View {
         if let board {
-            FreeformCanvasView(boardData: $boardData, boardName: board.name)
+            WhiteboardEditorView(boardData: $boardData, boardName: board.name)
                 .id(board.id)
                 .onDisappear {
                     Task { await persistCurrentBoard() }
@@ -136,18 +148,18 @@ struct CanvasView: View {
 
     // MARK: - Board persistence
 
-    private func loadBoard(for board: CanvasBoard?) {
+    private func loadBoard(for board: WhiteboardBoard?) {
         guard let board, let data = board.markupData else {
-            boardData = CanvasBoardData()
+            boardData = WhiteboardBoardData()
             return
         }
-        if let decoded = try? JSONDecoder().decode(CanvasBoardData.self, from: data) {
+        if let decoded = try? JSONDecoder().decode(WhiteboardBoardData.self, from: data) {
             boardData = decoded
         } else if let strokes = try? JSONDecoder().decode([Stroke].self, from: data) {
             // Legacy format — strokes only
-            boardData = CanvasBoardData(strokes: strokes)
+            boardData = WhiteboardBoardData(strokes: strokes)
         } else {
-            boardData = CanvasBoardData()
+            boardData = WhiteboardBoardData()
         }
     }
 
@@ -161,38 +173,38 @@ struct CanvasView: View {
 
     // MARK: - Board actions
 
-    private func duplicateBoard(_ board: CanvasBoard) {
+    private func duplicateBoard(_ board: WhiteboardBoard) {
         let copy = store.duplicate(board)
         self.board = copy
         loadBoard(for: copy)
     }
 
-    private func deleteBoard(_ board: CanvasBoard) {
+    private func deleteBoard(_ board: WhiteboardBoard) {
         store.delete(board.id)
         if self.board?.id == board.id {
             self.board = nil
-            self.boardData = CanvasBoardData()
+            self.boardData = WhiteboardBoardData()
         }
     }
 
-    private func deleteBoardItem(_ board: CanvasBoard) {
+    private func deleteBoardItem(_ board: WhiteboardBoard) {
         store.delete(board.id)
         if self.board?.id == board.id {
             self.board = nil
-            self.boardData = CanvasBoardData()
+            self.boardData = WhiteboardBoardData()
         }
     }
 }
 
 // MARK: - Freeform canvas
 
-struct FreeformCanvasView: View {
-    @Binding var boardData: CanvasBoardData
+struct WhiteboardEditorView: View {
+    @Binding var boardData: WhiteboardBoardData
     let boardName: String
     @Environment(\.colorScheme) private var colorScheme
 
     @State private var selectedObjectID: UUID?
-    @State private var currentTool: CanvasTool = .select
+    @State private var currentTool: WhiteboardTool = .select
     @State private var currentColor: Color = .white
     @State private var currentLineWidth: CGFloat = 3
     @State private var showShapePicker = false
@@ -203,6 +215,10 @@ struct FreeformCanvasView: View {
     @State private var panStart: CGSize = .zero
     @State private var showGrid = true
     @State private var showExportSheet = false
+    /// In-progress connector drag (canvas coordinates). Non-nil while the
+    /// connector tool is down-dragging.
+    @State private var connectorStart: CGPoint? = nil
+    @State private var connectorCurrent: CGPoint? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -267,6 +283,12 @@ struct FreeformCanvasView: View {
             }
             .menuStyle(.borderlessButton)
             .help("Add Shape")
+
+            Button { currentTool = .connector } label: {
+                Image(systemName: "arrow.right.to.line")
+                    .foregroundStyle(currentTool == .connector ? .blue : .secondary)
+            }
+            .help("Connector — drag between shapes to draw a workflow arrow (endpoints snap to shape edges and follow the shapes)")
 
             Button {
                 insertImage()
@@ -431,10 +453,16 @@ struct FreeformCanvasView: View {
             let isDark = colorScheme == .dark
             let bgColor = isDark ? Color(white: 0.12) : Color(white: 0.95)
             let gridDotColor = isDark ? Color.white.opacity(0.15) : Color.black.opacity(0.15)
+            // Objects layer draw order — connectors render UNDER shapes (a
+            // workflow arrow should visually attach to a box's edge, not cover
+            // it). Stable partition: z-order within each group is preserved.
+            let drawOrder = boardData.objects.filter(\.isConnector)
+                + boardData.objects.filter { !$0.isConnector }
 
             ZStack {
                 // Background — drag on empty canvas pans the view (in pen/eraser
-                // mode the drawing layer on top takes the events instead), tap
+                // mode the drawing layer on top takes the events instead; in
+                // connector mode a drag draws a snap-to-shape arrow), tap
                 // deselects.
                 bgColor
                     .ignoresSafeArea()
@@ -442,6 +470,13 @@ struct FreeformCanvasView: View {
                     .gesture(
                         DragGesture()
                             .onChanged { value in
+                                if currentTool == .connector {
+                                    if connectorStart == nil {
+                                        connectorStart = canvasPoint(fromScreen: value.startLocation)
+                                    }
+                                    connectorCurrent = canvasPoint(fromScreen: value.location)
+                                    return
+                                }
                                 if !isPanning {
                                     isPanning = true
                                     panStart = panOffset
@@ -451,21 +486,29 @@ struct FreeformCanvasView: View {
                                     height: panStart.height + value.translation.height
                                 )
                             }
-                            .onEnded { _ in isPanning = false }
+                            .onEnded { _ in
+                                if currentTool == .connector {
+                                    finishConnectorDrag()
+                                    return
+                                }
+                                isPanning = false
+                            }
                     )
 
                 // Grid background (follows zoom + pan)
                 if showGrid {
-                    CanvasGridBackground(dotColor: gridDotColor)
+                    WhiteboardGridBackground(dotColor: gridDotColor)
                         .scaleEffect(zoomScale, anchor: .topLeading)
                         .offset(panOffset)
                         .allowsHitTesting(false)
                 }
 
-                // Objects layer
-                ForEach(boardData.objects) { obj in
-                    CanvasObjectView(
+                // Objects layer — connectors render under shapes (drawOrder is
+                // computed at the top of the GeometryReader).
+                ForEach(drawOrder) { obj in
+                    WhiteboardObjectView(
                         object: obj,
+                        objects: boardData.objects,
                         isSelected: obj.id == selectedObjectID,
                         zoomScale: zoomScale,
                         onUpdate: { updated in
@@ -485,8 +528,33 @@ struct FreeformCanvasView: View {
                     .scaleEffect(zoomScale)
                 }
 
+                // Connector drag preview — dashed line with snap rings on
+                // anchored endpoints, drawn above objects, never hit-tested.
+                if currentTool == .connector,
+                   let startRaw = connectorStart, let currentRaw = connectorCurrent {
+                    let s = snapToAnchor(startRaw)
+                    let e = snapToAnchor(currentRaw)
+                    Canvas { ctx, _ in
+                        var p = Path()
+                        p.move(to: screenPoint(fromCanvas: s.point))
+                        p.addLine(to: screenPoint(fromCanvas: e.point))
+                        ctx.stroke(
+                            p, with: .color(.blue.opacity(0.85)),
+                            style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                        for snapped in [s, e] where snapped.objectID != nil {
+                            let c = screenPoint(fromCanvas: snapped.point)
+                            ctx.stroke(
+                                Path(ellipseIn: CGRect(x: c.x - 7, y: c.y - 7, width: 14, height: 14)),
+                                with: .color(.blue), lineWidth: 2)
+                        }
+                    }
+                    .allowsHitTesting(false)
+                }
+
                 // Drawing layer (pen/eraser). Hit-transparent in select mode so
                 // objects beneath it can be grabbed — see DrawingNSView.hitTest.
+                // (Also hit-transparent in connector mode, so connector drags
+                // reach the background.)
                 DrawingCanvasView(
                     strokes: Binding(
                         get: { boardData.strokes },
@@ -546,12 +614,78 @@ struct FreeformCanvasView: View {
         return CGPoint(x: centre.x + step, y: centre.y + step)
     }
 
+    // MARK: - Connector drag (snap-to-shape arrows)
+
+    /// Canvas ZStack local (screen) point → canvas coordinates.
+    private func canvasPoint(fromScreen p: CGPoint) -> CGPoint {
+        CGPoint(
+            x: (p.x - panOffset.width) / zoomScale,
+            y: (p.y - panOffset.height) / zoomScale)
+    }
+
+    /// Canvas point → ZStack local (screen) coordinates.
+    private func screenPoint(fromCanvas p: CGPoint) -> CGPoint {
+        CGPoint(
+            x: p.x * zoomScale + panOffset.width,
+            y: p.y * zoomScale + panOffset.height)
+    }
+
+    /// Snap a canvas point to the nearest object edge-midpoint anchor within a
+    /// screen-space threshold. Returns the (snapped) point plus the glue
+    /// reference when snapped, or the raw point with nil glue otherwise.
+    private func snapToAnchor(_ point: CGPoint)
+        -> (point: CGPoint, objectID: UUID?, anchor: Connector.Anchor?)
+    {
+        var best: (dist: CGFloat, id: UUID, anchor: Connector.Anchor)?
+        let threshold: CGFloat = 22 / max(zoomScale, 0.01)
+        for obj in boardData.objects where !obj.isConnector {
+            for anchor in Connector.Anchor.allCases {
+                let ap = obj.anchorPoint(anchor)
+                let d = hypot(ap.x - point.x, ap.y - point.y)
+                if d < threshold, best == nil || d < best!.dist {
+                    best = (d, obj.id, anchor)
+                }
+            }
+        }
+        guard let best,
+              let obj = boardData.objects.first(where: { $0.id == best.id })
+        else { return (point, nil, nil) }
+        return (obj.anchorPoint(best.anchor), best.id, best.anchor)
+    }
+
+    /// Commit the in-progress connector drag: snap both ends, ignore mere
+    /// taps, create the object glued to whatever the ends snapped to.
+    private func finishConnectorDrag() {
+        defer {
+            connectorStart = nil
+            connectorCurrent = nil
+        }
+        guard let startRaw = connectorStart, let endRaw = connectorCurrent else { return }
+        let minDrag: CGFloat = 8 / max(zoomScale, 0.01)
+        guard hypot(endRaw.x - startRaw.x, endRaw.y - startRaw.y) > minDrag else { return }
+
+        let s = snapToAnchor(startRaw)
+        let e = snapToAnchor(endRaw)
+        let conn = Connector(
+            fromObjectID: s.objectID, fromAnchor: s.anchor ?? .right,
+            toObjectID: e.objectID, toAnchor: e.anchor ?? .left,
+            startPoint: s.point, endPoint: e.point)
+        var obj = WhiteboardObject(
+            type: .connector(conn), text: "",
+            position: .zero, size: .zero,
+            shapeColor: "#FFFFFF", textColor: "#FFFFFF")
+        obj.syncConnectorFrame(in: boardData.objects)
+        boardData.objects.append(obj)
+        selectedObjectID = obj.id
+        currentTool = .select
+    }
+
     // MARK: - Insert actions
 
     private func insertStickyNote() {
         let colors = ["#FFE066", "#FF9F9B", "#A8E6CF", "#B5DEFF", "#E8DAEF"]
         let color = colors.randomElement()!
-        let obj = CanvasObject(
+        let obj = WhiteboardObject(
             type: .stickyNote(color: color),
             text: "Note",
             position: cascadedInsertPoint(),
@@ -563,7 +697,7 @@ struct FreeformCanvasView: View {
     }
 
     private func insertTextBox() {
-        let obj = CanvasObject(
+        let obj = WhiteboardObject(
             type: .textBox,
             text: "Text",
             position: cascadedInsertPoint(),
@@ -574,8 +708,8 @@ struct FreeformCanvasView: View {
         currentTool = .select
     }
 
-    private func insertShape(_ shape: CanvasObject.ShapeKind) {
-        let obj = CanvasObject(
+    private func insertShape(_ shape: WhiteboardObject.ShapeKind) {
+        let obj = WhiteboardObject(
             type: .shape(shape),
             text: "",
             position: cascadedInsertPoint(),
@@ -594,7 +728,7 @@ struct FreeformCanvasView: View {
         guard panel.runModal() == .OK, let url = panel.url,
               let data = try? Data(contentsOf: url) else { return }
 
-        let obj = CanvasObject(
+        let obj = WhiteboardObject(
             type: .image(data),
             text: "",
             position: cascadedInsertPoint(),
@@ -605,13 +739,39 @@ struct FreeformCanvasView: View {
         currentTool = .select
     }
 
-    private func updateObject(_ updated: CanvasObject) {
+    private func updateObject(_ updated: WhiteboardObject) {
         if let idx = boardData.objects.firstIndex(where: { $0.id == updated.id }) {
             boardData.objects[idx] = updated
+        }
+        // Arrows glued to this object track it: re-resolve their frames from
+        // the object's new geometry.
+        for i in boardData.objects.indices where boardData.objects[i].isConnector {
+            guard case .connector(let conn) = boardData.objects[i].type else { continue }
+            if conn.fromObjectID == updated.id || conn.toObjectID == updated.id {
+                boardData.objects[i].syncConnectorFrame(in: boardData.objects)
+            }
         }
     }
 
     private func deleteObject(_ id: UUID) {
+        // Unglue (don't delete) connectors referencing the doomed object:
+        // freeze each affected endpoint at its last resolved position so the
+        // arrow stays where it was drawn instead of vanishing or jumping.
+        for i in boardData.objects.indices where boardData.objects[i].isConnector {
+            guard case .connector(var conn) = boardData.objects[i].type,
+                  conn.fromObjectID == id || conn.toObjectID == id,
+                  let resolved = boardData.objects[i].resolvedConnectorEndpoints(in: boardData.objects)
+            else { continue }
+            if conn.fromObjectID == id {
+                conn.fromObjectID = nil
+                conn.startPoint = resolved.start
+            }
+            if conn.toObjectID == id {
+                conn.toObjectID = nil
+                conn.endPoint = resolved.end
+            }
+            boardData.objects[i].type = .connector(conn)
+        }
         boardData.objects.removeAll { $0.id == id }
         if selectedObjectID == id { selectedObjectID = nil }
     }
@@ -665,7 +825,7 @@ struct FreeformCanvasView: View {
     }
 
     private func calculateContentSize() -> CGSize {
-        // NOTE: CanvasObject.position is the object's CENTRE (the display layer
+        // NOTE: WhiteboardObject.position is the object's CENTRE (the display layer
         // uses SwiftUI .position). Export used to treat it as top-left, which
         // shifted every object down-right by half its size in exported files.
         var maxX: CGFloat = 800
@@ -728,13 +888,40 @@ struct FreeformCanvasView: View {
         ctx.strokePath()
     }
 
-    private func drawObjectForExport(_ obj: CanvasObject, in ctx: CGContext, size: CGSize) {
+    private func drawObjectForExport(_ obj: WhiteboardObject, in ctx: CGContext, size: CGSize) {
         // position is the CENTRE (display uses SwiftUI .position)
         let rect = CGRect(x: obj.position.x - obj.size.width / 2,
                           y: obj.position.y - obj.size.height / 2,
                           width: obj.size.width, height: obj.size.height)
 
         switch obj.type {
+        case .connector:
+            // Arrows resolve their endpoints live from the glued objects.
+            guard let (s, e) = obj.resolvedConnectorEndpoints(in: boardData.objects) else { break }
+            let color = NSColor(hexString: obj.shapeColor) ?? .white
+            ctx.setStrokeColor(color.cgColor)
+            ctx.setLineWidth(2)
+            ctx.move(to: s)
+            ctx.addLine(to: e)
+            ctx.strokePath()
+            // Arrowhead at the end anchor.
+            let angle = atan2(e.y - s.y, e.x - s.x)
+            let wing = CGFloat.pi * 0.82
+            let len: CGFloat = 13
+            ctx.move(to: e)
+            ctx.addLine(to: CGPoint(x: e.x + len * cos(angle + wing), y: e.y + len * sin(angle + wing)))
+            ctx.move(to: e)
+            ctx.addLine(to: CGPoint(x: e.x + len * cos(angle - wing), y: e.y + len * sin(angle - wing)))
+            ctx.strokePath()
+            if !obj.text.isEmpty {
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+                    .foregroundColor: color,
+                ]
+                NSString(string: obj.text).draw(
+                    at: CGPoint(x: (s.x + e.x) / 2 + 6, y: (s.y + e.y) / 2 - 8),
+                    withAttributes: attrs)
+            }
         case .stickyNote(let color):
             if let c = NSColor(hexString: color) {
                 ctx.setFillColor(c.cgColor)
@@ -789,7 +976,7 @@ struct FreeformCanvasView: View {
         }
     }
 
-    private func shapeCGPath(in rect: CGRect, kind: CanvasObject.ShapeKind) -> CGPath {
+    private func shapeCGPath(in rect: CGRect, kind: WhiteboardObject.ShapeKind) -> CGPath {
         let path = CGMutablePath()
         switch kind {
         case .rectangle:
@@ -890,6 +1077,17 @@ struct FreeformCanvasView: View {
             let y = Int(obj.position.y - obj.size.height / 2)
             let w = Int(obj.size.width), h = Int(obj.size.height)
             switch obj.type {
+            case .connector:
+                guard let (s, e) = obj.resolvedConnectorEndpoints(in: boardData.objects) else { break }
+                let angle = atan2(e.y - s.y, e.x - s.x)
+                let wing = Double.pi * 0.82
+                let len = 13.0
+                let h1x = e.x + len * cos(angle + wing), h1y = e.y + len * sin(angle + wing)
+                let h2x = e.x + len * cos(angle - wing), h2y = e.y + len * sin(angle - wing)
+                svg += "<path d=\"M \(Int(s.x)) \(Int(s.y)) L \(Int(e.x)) \(Int(e.y)) M \(Int(e.x)) \(Int(e.y)) L \(Int(h1x)) \(Int(h1y)) M \(Int(e.x)) \(Int(e.y)) L \(Int(h2x)) \(Int(h2y))\" stroke=\"\(obj.shapeColor)\" stroke-width=\"2\" fill=\"none\" stroke-linecap=\"round\"/>\n"
+                if !obj.text.isEmpty {
+                    svg += "<text x=\"\(Int((s.x + e.x) / 2 + 6))\" y=\"\(Int((s.y + e.y) / 2 - 8))\" font-size=\"11\" fill=\"\(obj.shapeColor)\">\(obj.text)</text>\n"
+                }
             case .stickyNote(let color):
                 svg += "<rect x=\"\(x)\" y=\"\(y)\" width=\"\(w)\" height=\"\(h)\" fill=\"\(color)\" rx=\"4\"/>\n"
                 if !obj.text.isEmpty {
@@ -932,7 +1130,7 @@ struct FreeformCanvasView: View {
 
 // MARK: - Grid background
 
-struct CanvasGridBackground: View {
+struct WhiteboardGridBackground: View {
     let dotColor: Color
 
     var body: some View {
@@ -955,11 +1153,12 @@ struct CanvasGridBackground: View {
 
 // MARK: - Canvas object view
 
-struct CanvasObjectView: View {
-    let object: CanvasObject
+struct WhiteboardObjectView: View {
+    let object: WhiteboardObject
+    let objects: [WhiteboardObject]
     let isSelected: Bool
     let zoomScale: CGFloat
-    var onUpdate: (CanvasObject) -> Void
+    var onUpdate: (WhiteboardObject) -> Void
     var onSelect: () -> Void
     var onDelete: () -> Void
 
@@ -969,6 +1168,13 @@ struct CanvasObjectView: View {
     @State private var resizeOffset: CGSize = .zero
     @State private var isEditingText = false
 
+    /// Glued connectors don't free-drag (they follow their anchors); fully
+    /// free connectors translate both endpoints with the drag.
+    private var connectorIsGlued: Bool {
+        guard case .connector(let conn) = object.type else { return false }
+        return conn.fromObjectID != nil || conn.toObjectID != nil
+    }
+
     var body: some View {
         ZStack(alignment: .topLeading) {
             // Object content (clamped so a fast drag can't invert the frame)
@@ -977,11 +1183,11 @@ struct CanvasObjectView: View {
                        height: max(40, object.size.height + resizeOffset.height))
                 .overlay(
                     RoundedRectangle(cornerRadius: object.cornerRadius)
-                        .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 2)
+                        .stroke(isSelected && !object.isConnector ? Color.accentColor : Color.clear, lineWidth: 2)
                 )
 
-            // Resize handles (when selected)
-            if isSelected && !isEditingText {
+            // Resize handles (when selected — not meaningful for connectors)
+            if isSelected && !isEditingText && !object.isConnector {
                 resizeHandles
             }
         }
@@ -992,17 +1198,28 @@ struct CanvasObjectView: View {
         .gesture(
             DragGesture(minimumDistance: 1)
                 .onChanged { value in
+                    if connectorIsGlued { return }
                     if !isDragging {
                         isDragging = true
                     }
                     dragOffset = value.translation
                 }
                 .onEnded { value in
+                    defer { dragOffset = .zero }
+                    if connectorIsGlued { return }
                     isDragging = false
                     var updated = object
                     updated.position.x += value.translation.width / zoomScale
                     updated.position.y += value.translation.height / zoomScale
-                    dragOffset = .zero
+                    // Free connectors: translate the stored endpoints too, or
+                    // the resolved frame snaps right back to the old location.
+                    if case .connector(var conn) = updated.type {
+                        let dx = value.translation.width / zoomScale
+                        let dy = value.translation.height / zoomScale
+                        conn.startPoint.x += dx; conn.startPoint.y += dy
+                        conn.endPoint.x += dx; conn.endPoint.y += dy
+                        updated.type = .connector(conn)
+                    }
                     onUpdate(updated)
                 }
         )
@@ -1035,6 +1252,9 @@ struct CanvasObjectView: View {
 
         case .image(let data):
             ImageView(data: data)
+
+        case .connector:
+            ConnectorView(object: object, objects: objects, isSelected: isSelected)
         }
     }
 
@@ -1066,6 +1286,84 @@ struct CanvasObjectView: View {
                             onUpdate(updated)
                         }
                 )
+        }
+    }
+}
+
+// MARK: - Connector view
+
+/// Renders a workflow arrow inside its object's (already-synced) bounding
+/// frame: line + arrowhead at the end anchor, optional centred label, and an
+/// invisible fat stroke so the line — not the empty bbox corner — is the click
+/// target. Selected arrows tint accent and show a small red ✕ to delete.
+struct ConnectorView: View {
+    let object: WhiteboardObject
+    let objects: [WhiteboardObject]
+    let isSelected: Bool
+
+    private var endpoints: (start: CGPoint, end: CGPoint)? {
+        object.resolvedConnectorEndpoints(in: objects)
+    }
+
+    /// Endpoints converted to frame-local coordinates.
+    private func localEndpoints() -> (CGPoint, CGPoint)? {
+        guard let (start, end) = endpoints else { return nil }
+        let origin = CGPoint(
+            x: object.position.x - object.size.width / 2,
+            y: object.position.y - object.size.height / 2)
+        return (
+            CGPoint(x: start.x - origin.x, y: start.y - origin.y),
+            CGPoint(x: end.x - origin.x, y: end.y - origin.y))
+    }
+
+    var body: some View {
+        if let (s, e) = localEndpoints() {
+            let color: Color = isSelected ? .accentColor : .white
+            ZStack {
+                // Visible arrow.
+                Canvas { ctx, _ in
+                    var line = Path()
+                    line.move(to: s)
+                    line.addLine(to: e)
+                    ctx.stroke(line, with: .color(color), lineWidth: isSelected ? 3 : 2)
+
+                    // Arrowhead at the end point, rotated to the line's travel.
+                    let angle = atan2(e.y - s.y, e.x - s.x)
+                    let wing: CGFloat = .pi * 0.82
+                    let length: CGFloat = 13
+                    var head = Path()
+                    head.move(to: e)
+                    head.addLine(to: CGPoint(
+                        x: e.x + length * cos(angle + wing),
+                        y: e.y + length * sin(angle + wing)))
+                    head.move(to: e)
+                    head.addLine(to: CGPoint(
+                        x: e.x + length * cos(angle - wing),
+                        y: e.y + length * sin(angle - wing)))
+                    ctx.stroke(head, with: .color(color), lineWidth: isSelected ? 3 : 2)
+                }
+
+                // Optional label at the midpoint.
+                if !object.text.isEmpty {
+                    Text(object.text)
+                        .font(.caption2.weight(.medium))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(
+                            Capsule().fill(Color(white: 0.15).opacity(0.9))
+                        )
+                        .foregroundStyle(.white)
+                        .position(x: (s.x + e.x) / 2, y: (s.y + e.y) / 2)
+                }
+            }
+            // Click target = a fat stroke along the line, not the bbox.
+            .contentShape(
+                Path { p in
+                    p.move(to: s)
+                    p.addLine(to: e)
+                }
+                .strokedPath(StrokeStyle(lineWidth: 16, lineCap: .round))
+            )
         }
     }
 }
@@ -1145,7 +1443,7 @@ struct TextBoxView: View {
 // MARK: - Shape view
 
 struct ShapeView: View {
-    let kind: CanvasObject.ShapeKind
+    let kind: WhiteboardObject.ShapeKind
     let color: String
 
     var body: some View {
@@ -1157,7 +1455,7 @@ struct ShapeView: View {
         }
     }
 
-    private func shapePath(in rect: CGRect, kind: CanvasObject.ShapeKind) -> Path {
+    private func shapePath(in rect: CGRect, kind: WhiteboardObject.ShapeKind) -> Path {
         switch kind {
         case .rectangle:
             return Path(roundedRect: rect, cornerRadius: 0)
@@ -1257,7 +1555,7 @@ struct ImageView: View {
 
 struct DrawingCanvasView: NSViewRepresentable {
     @Binding var strokes: [Stroke]
-    let tool: CanvasTool
+    let tool: WhiteboardTool
     let color: Color
     let lineWidth: CGFloat
     let zoomScale: CGFloat
@@ -1295,7 +1593,7 @@ struct DrawingCanvasView: NSViewRepresentable {
 final class DrawingNSView: NSView {
     var strokes: [Stroke] = []
     var onStrokesChanged: (([Stroke]) -> Void)?
-    var currentTool: CanvasTool = .select
+    var currentTool: WhiteboardTool = .select
     var currentNSColor: NSColor = .white
     var currentLineWidth: CGFloat = 3
     var zoomScale: CGFloat = 1.0
@@ -1425,13 +1723,45 @@ final class DrawingNSView: NSView {
 
 // MARK: - Models
 
-enum CanvasTool: String, CaseIterable {
-    case select, pen, eraser
+enum WhiteboardTool: String, CaseIterable {
+    case select, pen, eraser, connector
 }
 
-struct CanvasBoardData: Codable {
+/// A workflow arrow between two objects. Each endpoint is either GLUED to an
+/// object (resolved live from that object's current position/size, so the
+/// arrow tracks the object when it moves or resizes) or FREE at a fixed canvas
+/// point. Glued endpoints remember which edge anchor they snapped to.
+struct Connector: Codable, Equatable {
+    /// Edge-midpoint anchors a connector endpoint can snap to.
+    enum Anchor: String, Codable, CaseIterable, Sendable {
+        case top, right, bottom, left
+    }
+
+    var fromObjectID: UUID?
+    var fromAnchor: Anchor
+    var toObjectID: UUID?
+    var toAnchor: Anchor
+    /// Canvas-space endpoints, used only when the matching object id is nil.
+    var startPoint: CGPoint
+    var endPoint: CGPoint
+
+    init(
+        fromObjectID: UUID? = nil, fromAnchor: Anchor = .right,
+        toObjectID: UUID? = nil, toAnchor: Anchor = .left,
+        startPoint: CGPoint, endPoint: CGPoint
+    ) {
+        self.fromObjectID = fromObjectID
+        self.fromAnchor = fromAnchor
+        self.toObjectID = toObjectID
+        self.toAnchor = toAnchor
+        self.startPoint = startPoint
+        self.endPoint = endPoint
+    }
+}
+
+struct WhiteboardBoardData: Codable {
     var strokes: [Stroke] = []
-    var objects: [CanvasObject] = []
+    var objects: [WhiteboardObject] = []
 }
 
 struct Stroke: Codable, Equatable {
@@ -1440,7 +1770,7 @@ struct Stroke: Codable, Equatable {
     let width: CGFloat
 }
 
-struct CanvasObject: Codable, Identifiable {
+struct WhiteboardObject: Codable, Identifiable {
     let id: UUID
     var type: ObjectType
     var text: String
@@ -1471,6 +1801,55 @@ struct CanvasObject: Codable, Identifiable {
         case textBox
         case shape(ShapeKind)
         case image(Data)
+        case connector(Connector)
+    }
+}
+
+// MARK: - Connector geometry
+
+extension WhiteboardObject {
+    /// Edge-midpoint anchor in canvas coordinates. `position` is the object's
+    /// CENTRE (the canvas renders with .position), so anchors are centre ±
+    /// half extents.
+    func anchorPoint(_ anchor: Connector.Anchor) -> CGPoint {
+        switch anchor {
+        case .top: return CGPoint(x: position.x, y: position.y - size.height / 2)
+        case .bottom: return CGPoint(x: position.x, y: position.y + size.height / 2)
+        case .left: return CGPoint(x: position.x - size.width / 2, y: position.y)
+        case .right: return CGPoint(x: position.x + size.width / 2, y: position.y)
+        }
+    }
+
+    var isConnector: Bool {
+        if case .connector = type { return true }
+        return false
+    }
+
+    /// Resolved canvas-space endpoints for a connector object: glued ends come
+    /// from the referenced objects' CURRENT geometry (that's the "arrow
+    /// follows the box" behaviour); free ends use the stored points. Falls
+    /// back to stored points when a referenced object no longer exists.
+    func resolvedConnectorEndpoints(in objects: [WhiteboardObject]) -> (start: CGPoint, end: CGPoint)? {
+        guard case .connector(let conn) = type else { return nil }
+        let startObject = conn.fromObjectID.flatMap { id in objects.first { $0.id == id } }
+        let endObject = conn.toObjectID.flatMap { id in objects.first { $0.id == id } }
+        let start = startObject?.anchorPoint(conn.fromAnchor) ?? conn.startPoint
+        let end = endObject?.anchorPoint(conn.toAnchor) ?? conn.endPoint
+        return (start, end)
+    }
+
+    /// Recompute position/size (centre + bounding box) from the resolved
+    /// endpoints so selection frames, export bounds, and hit areas stay right.
+    mutating func syncConnectorFrame(in objects: [WhiteboardObject]) {
+        guard let (start, end) = resolvedConnectorEndpoints(in: objects) else { return }
+        let minX = min(start.x, end.x)
+        let minY = min(start.y, end.y)
+        position = CGPoint(
+            x: (minX + max(start.x, end.x)) / 2,
+            y: (minY + max(start.y, end.y)) / 2)
+        size = CGSize(
+            width: max(1, abs(end.x - start.x)),
+            height: max(1, abs(end.y - start.y)))
     }
 }
 
@@ -1500,6 +1879,6 @@ extension NSColor {
 // MARK: - Preview
 
 #Preview {
-    CanvasView()
-        .environment(CanvasStore())
+    WhiteboardView()
+        .environment(WhiteboardStore())
 }

@@ -19,7 +19,7 @@ struct AppsSettingsTab: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 GroupBox("Apps Launcher") {
-                    Text("Choose which apps appear in the Apps launcher panel. Turn off a whole category to hide its section, or turn off individual apps you don't use. This only changes what's shown in the launcher — it won't close panels that are already open, and it doesn't affect which tools the agent can call (those are managed under Rules and MCP).")
+                    Text("Choose which apps appear in the Apps launcher panel. Turn off a whole category to hide its section, or turn off individual apps you don't use. Security: disabling an Apple app revokes the agent's access to that app's data and actions — the agent cannot read, create, or modify anything in it. It won't close panels that are already open. Non-Apple app tools are managed under Rules and MCP.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)

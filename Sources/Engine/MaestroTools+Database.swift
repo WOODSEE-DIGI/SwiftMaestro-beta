@@ -81,6 +81,10 @@ extension MaestroTools {
                 name: "db_upsert_rows", spec: databaseToolSpecs[16],
                 category: ToolCategory.database.rawValue,
                 handler: { call in await dbUpsertRows(call) }),
+            ToolDefinition(
+                name: "investigation_sync", spec: databaseToolSpecs[17],
+                category: ToolCategory.database.rawValue,
+                handler: { call in await investigationSync(call) }),
         ])
     }
 
@@ -255,6 +259,18 @@ extension MaestroTools {
                     "rows": ["type": "array", "description": "Array of row objects, each including the key field"],
                 ],
                 required: ["table", "key", "rows"]),
+            rawSpec("investigation_sync",
+                "Sync Blocky (blockchain) and/or Stocks (equities) investigation data "
+                + "into the MaestroDB 'Investigations' base — cases, watched wallets, "
+                + "wallet transactions, tracked stocks, insider transactions, proxy "
+                + "filings, and notes. Idempotent: re-running updates existing rows "
+                + "instead of duplicating. After syncing you can query everything with "
+                + "db_list_rows to do cross-domain analysis (e.g. correlate flagged "
+                + "wallets with insider selling).",
+                properties: [
+                    "domain": ["type": "string", "description": "'blockchain', 'stocks', or 'all' (default 'all')."],
+                ],
+                required: []),
         ]
     }
 
@@ -1377,6 +1393,38 @@ extension MaestroTools {
                 + "To match on a different field, pass a different 'key'."
             return jsonString(result)
         } catch { return errorJSON("could not upsert rows: \(error.localizedDescription)") }
+    }
+
+    // MARK: - Investigation sync
+
+    private struct InvestigationSyncArgs: Codable { let domain: String? }
+
+    @MainActor
+    static func investigationSync(_ call: ToolCall) async -> String {
+        let args = decodeArgs(call, as: InvestigationSyncArgs.self)
+        let domain = args?.domain?.lowercased() ?? "all"
+        let bridge = InvestigationBridge.shared
+        do {
+            switch domain {
+            case "blockchain", "blocky":
+                let counts = try bridge.syncBlocky()
+                return jsonString(["status": "synced", "domain": "blockchain",
+                                   "counts": counts, "base": "Investigations"])
+            case "stocks", "equities":
+                let counts = try bridge.syncStocks()
+                return jsonString(["status": "synced", "domain": "stocks",
+                                   "counts": counts, "base": "Investigations"])
+            case "all":
+                let result = try bridge.syncAll()
+                return jsonString(["status": "synced", "domain": "all",
+                                   "counts": result, "base": "Investigations",
+                                   "note": "Query with db_list_rows on the Investigations base tables: Cases, Watched Wallets, Wallet Transactions, Tracked Stocks, Insider Transactions, Proxy Filings, Investigation Notes."])
+            default:
+                return errorJSON("unknown domain '\(domain)' — use 'blockchain', 'stocks', or 'all'")
+            }
+        } catch {
+            return errorJSON("investigation sync failed: \(error.localizedDescription)")
+        }
     }
 
     private static func dbUpdateRow(_ call: ToolCall) async -> String {

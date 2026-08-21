@@ -139,13 +139,17 @@ class ChatViewModel: ObservableObject {
     }
 
     /// Build the generation backend for a model. Local models run fully
-    /// in-process via mlx-swift-lm; remote models (LM Studio) use HTTP.
+    /// in-process via mlx-swift-lm; remote models (LM Studio, Ollama, online
+    /// OpenAI-compatible endpoints like Kimi/Moonshot or Qwen/DashScope) use
+    /// HTTP. API keys travel as `secret://` references and resolve from the
+    /// Keychain only at the HTTP boundary.
     static func makeBackend(
         for model: MaestroModel, engine: MLXInferenceEngine, sessionKey: String
     ) -> GenerationBackend {
         if let remoteURL = model.remoteBaseURL {
             let config = LMStudioConfig(
                 baseURL: remoteURL,
+                apiKey: model.remoteAPIKeyRef ?? "",
                 requestTimeout: model.remoteRequestTimeout ?? 120)
             return RemoteLMStudioBackend(config: config, model: model)
         }
@@ -976,9 +980,32 @@ class ChatViewModel: ObservableObject {
         - For directory exploration, use index_directory (recursive, Spotlight metadata). \
         Only use list_dir for single-directory-level checks.
 
-        WEB RESEARCH — BROWSER FIRST:
-        When the user asks you to research, compare, find prices, look up stores, \
-        or visit ANY website: open the internal browser FIRST. The user should see \
+        RESEARCH CAPTURE — COMPOSITE TOOLS FIRST:
+        When the user asks you to research a topic AND save/keep/archive what you \
+        find ("research X and save", "find prices and keep them", "clip this", \
+        "capture that page", "archive this article", "save what you find"), use \
+        the composite capture tools — do NOT hand-choreograph browser_open + \
+        browser_read + browser_clip:
+        - research_topic(query, max_sources?, template?) — searches the web, \
+        captures the top sources as formatted notes (images + snapshot + \
+        reader.html) into the Notes vault AND queryable rows in MaestroDB's \
+        Web Clips base, and returns a report of what landed where. ONE call does \
+        the whole loop. Template: "Research" (default) or "Forensics" (adds \
+        timestamps, HTTP headers, TLS cert, RDAP domain record — for \
+        investigative provenance).
+        - clip_url(url, template?, destination?) — captures ONE specific page \
+        end-to-end (extract, template render, assets, save to vault + MaestroDB). \
+        Use this when the user gives you the URL.
+        - After research_topic/clip_url, answer from the captured notes — do NOT \
+        re-browse the same pages. The notes are in the vault (Clippings/…) and \
+        the rows are queryable with db_list_rows on the Web Clips base.
+        - The clip templates live in Settings > Clipper; clip_template_list shows \
+        what's available.
+
+        WEB RESEARCH — BROWSER FIRST (interactive/watched browsing):
+        When the user wants to WATCH you browse live (or the task needs clicking, \
+        forms, login, scrolling — interactive work that capture tools can't do), \
+        open the internal browser FIRST. The user should see \
         the SwiftBrowser panel open and watch you work.
         - Step 1: browser_open with the URL — this opens a new tab AND navigates \
         to it in one step. Returns a tab_id.
@@ -1027,8 +1054,10 @@ class ChatViewModel: ObservableObject {
         - After opening a panel (open_panel), you MUST use its tools immediately. \
         Don't open a browser panel and then ignore it — navigate to a URL with \
         browser_open right away.
-        - When research is needed: browser_open(url) → browser_read(tab_id) for \
-        each site. Do NOT skip the browser and use web_search instead.
+        - When SAVE-AND-KEEP research is needed: research_topic or clip_url — \
+        one call per source, writes built in. When INTERACTIVE browsing is \
+        needed (watching live, forms, clicking): browser_open(url) then \
+        browser_read(tab_id). Do NOT mix the two paths on the same task.
 
         SPEED & AUTONOMY:
         - Do NOT create sub-agents for simple research tasks. Handle them directly.
@@ -1058,6 +1087,10 @@ class ChatViewModel: ObservableObject {
 
         RESEARCH → DATABASE WORKFLOW (the core loop — follow it exactly):
         When the user asks you to research online AND build or update a database:
+        NOTE: if the goal is capturing sources into the clip library (Web Clips \
+        base + Notes vault), research_topic does that in one call — this manual \
+        workflow is for building CUSTOM structured tables (e.g. a price table \
+        with your own fields).
         1. open_panel("database", zone="bottom") FIRST — the user watches data \
         land in the bottom row while you browse above.
         2. open_panel("browser") — research happens in the top row.
@@ -1754,22 +1787,31 @@ class ChatViewModel: ObservableObject {
             (MaestroTools.workspace?.effectiveToolCategories(for: agentID),
              MaestroTools.workspace?.compactToolMode(for: agentID) ?? false)
         }
+        // Gate Apple app tools by the launcher toggles: disabled apps
+        // lose their agent tools, not just their launcher rows.
+        let blockedByLauncher = await MainActor.run {
+            AppEnablementStore.shared.blockedToolCategories()
+        }
+        let filteredCategories: Set<ToolCategory>? = {
+            guard let enabledCategories else { return nil }
+            return enabledCategories.subtracting(blockedByLauncher)
+        }()
         // Set immediately before use (mirrors MaestroTools.inheritedRoots)
         // so search_tools/call_tool can see this agent's actual scope.
         await MainActor.run {
-            MaestroTools.currentEnabledCategories = enabledCategories
+            MaestroTools.currentEnabledCategories = filteredCategories
             MaestroTools.currentIsNavigator = isNavigator
         }
         var specs = await MaestroTools.schemas(
             navigator: isNavigator, liteMode: isLiteModel,
-            enabledCategories: enabledCategories, compactMode: compactMode)
+            enabledCategories: filteredCategories, compactMode: compactMode)
         if let mcp {
             // Maestro gets NO MCP tools — it delegates everything.
             // Only project agents get MCP tools (read_note, list_dir, etc.).
             if !isNavigator {
-                if let enabledCategories {
-                    if enabledCategories.contains(ToolCategory.mcp) {
-                        specs += await mcp.currentSchemas(forCategories: enabledCategories)
+                if let filteredCategories {
+                    if filteredCategories.contains(ToolCategory.mcp) {
+                        specs += await mcp.currentSchemas(forCategories: filteredCategories)
                     }
                 } else {
                     specs += await mcp.currentSchemas()

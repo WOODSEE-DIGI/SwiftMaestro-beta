@@ -22,6 +22,20 @@ struct LMStudioConfig {
 
     var chatCompletionURL: URL? {
         guard !baseURL.isEmpty else { return nil }
-        return URL(string: "\(baseURL)/v1/chat/completions")
+        return URL(string: "\(baseURL.openAIBase)/v1/chat/completions")
+    }
+}
+
+extension String {
+    /// The OpenAI-compatible API root with any trailing slashes and ONE
+    /// trailing "/v1" removed, so endpoint paths (`/v1/chat/completions`,
+    /// `/v1/models`) can be appended exactly once. Online presets store base
+    /// URLs that already end in "/v1" (e.g. https://openrouter.ai/api/v1) —
+    /// naive appending produced "/v1/v1/models" and every hosted provider
+    /// 404'd while LM Studio happened to tolerate it.
+    var openAIBase: String {
+        var s = trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if s.hasSuffix("/v1") { s = String(s.dropLast(3)) }
+        return s
     }
 }

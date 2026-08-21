@@ -36,8 +36,27 @@ final class WebKitBrowserEngine: NSObject {
 
     private var observations: [NSKeyValueObservation] = []
 
+    /// True when this engine's webview uses a non-persistent data store —
+    /// cookies, cache, and site storage vanish when the tab closes.
+    let isPrivate: Bool
+
     override init() {
+        self.isPrivate = false
         let configuration = WKWebViewConfiguration()
+        self.webView = WKWebView(frame: .zero, configuration: configuration)
+        super.init()
+        webView.navigationDelegate = self
+        webView.uiDelegate = self
+        setupObservations()
+    }
+
+    /// Private-tab init: non-persistent data store (nothing survives tab close).
+    init(isPrivate: Bool) {
+        self.isPrivate = isPrivate
+        let configuration = WKWebViewConfiguration()
+        if isPrivate {
+            configuration.websiteDataStore = .nonPersistent()
+        }
         self.webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
         webView.navigationDelegate = self

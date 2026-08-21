@@ -146,6 +146,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case mail
     case rules
     case context
+    case clipper
     case mcp
     case storage
     case secrets
@@ -165,6 +166,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .mail: return "Mail"
         case .rules: return "Rules"
         case .context: return "Context"
+        case .clipper: return "Clipper"
         case .mcp: return "MCP"
         case .storage: return "Storage"
         case .secrets: return "Secrets"
@@ -184,6 +186,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .mail: return "envelope"
         case .rules: return "list.bullet.rectangle"
         case .context: return "folder"
+        case .clipper: return "scissors"
         case .mcp: return "server.rack"
         case .storage: return "externaldrive"
         case .secrets: return "key.fill"
@@ -287,6 +290,7 @@ struct SettingsView: View {
         case .mail: MailSettingsTab()
         case .rules: RulesSettingsTab()
         case .context: ContextSettingsTab()
+        case .clipper: ClipperSettingsTab()
         case .mcp: MCPSettingsTab()
         case .storage: StorageSettingsTab()
         case .secrets: SecretsSettingsTab()
@@ -1093,9 +1097,41 @@ struct ModelsSettingsTab: View {
     @Environment(ModelCatalog.self) private var catalog
     @Environment(MLXInferenceEngine.self) private var engine
     @AppStorage("models.localRoot") private var modelsRoot: String = ""
+    /// Download gating: hide models whose estimated memory need (weights +
+    /// 25% runtime headroom) exceeds this Mac's residency budget. Remote and
+    /// already-downloaded models always show. ON by default so a low-memory
+    /// Mac never offers a download that would only swap-crash.
+    @AppStorage("models.onlyShowFitting") private var onlyShowFitting = true
     @State private var hubModelID: String = ""
     @State private var loadingModelID: String? = nil
+    @State private var showingAddProvider = false
+    @State private var providerStore = RemoteProviderStore.shared
     private let sampler = ModelActivitySampler.shared
+
+    /// "Can this Mac ever hold this model" test: weights + ~25% runtime
+    /// headroom (KV cache, activations, Metal buffers) against the residency
+    /// budget — the same numbers the engine's load guard enforces.
+    private func fitInfo(_ model: MaestroModel) -> (fits: Bool, requiredGB: Int, budgetGB: Int) {
+        let requiredGB = model.estimatedMemoryGB + model.estimatedMemoryGB / 4
+        let budgetGB = engine.residentBudgetBytes / 1_073_741_824
+        return (requiredGB <= budgetGB, requiredGB, budgetGB)
+    }
+
+    /// The visible catalog: remote models and on-disk models always show;
+    /// undownloaded local models hide when they can't fit (unless the user
+    /// turns the filter off to see everything).
+    private var visibleModels: [MaestroModel] {
+        catalog.models.filter { model in
+            if model.isRemote || model.localPath != nil { return true }
+            return !onlyShowFitting || fitInfo(model).fits
+        }
+    }
+
+    /// True when this Mac is small enough that local models mostly don't fit —
+    /// used to surface the remote-provider hint banner.
+    private var isLowMemoryMac: Bool {
+        ProcessInfo.processInfo.physicalMemory < 36_700_000_000  // < ~34 GiB
+    }
 
     var body: some View {
         ScrollView {
@@ -1106,9 +1142,16 @@ struct ModelsSettingsTab: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(8)
                 }
+                GroupBox("System Memory (live)") {
+                    SettingsMemoryBar(
+                        residentModelBytes: engine.residentUsedBytes,
+                        residentBudgetBytes: engine.residentBudgetBytes
+                    )
+                    .padding(8)
+                }
                 GroupBox("Resident Models (loaded in memory)") {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("~\(engine.residentUsedBytes / 1_073_741_824) GB of ~\(engine.residentBudgetBytes / 1_073_741_824) GB budget used (reserves 10% of system RAM for the OS). Models stay loaded for instant switching; the least-recently-used is evicted only when a new model won't fit.")
+                        Text("~\(engine.residentUsedBytes / 1_073_741_824) GB of ~\(engine.residentBudgetBytes / 1_073_741_824) GB budget used (reserves 20% of system RAM for the OS). Models stay loaded for instant switching; the least-recently-used is evicted only when a new model won't fit. A model whose memory need exceeds the live system-wide free memory is refused with a clear error instead of stalling the Mac.")
                             .font(.caption).foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         let list = engine.residentModelsReadout
@@ -1142,6 +1185,10 @@ struct ModelsSettingsTab: View {
                             Text("MLX Models (download from Hugging Face on first use)")
                                 .font(.headline)
                             Spacer()
+                            Toggle("Only models that fit this Mac", isOn: $onlyShowFitting)
+                                .toggleStyle(.checkbox)
+                                .font(.caption)
+                                .help("Hide downloads whose estimated memory need exceeds this Mac's residency budget (~\(engine.residentBudgetBytes / 1_073_741_824) GB). Downloaded and remote models always show.")
                             Button {
                                 catalog.refreshLocalPaths()
                             } label: {
@@ -1151,8 +1198,31 @@ struct ModelsSettingsTab: View {
                             .foregroundStyle(.secondary)
                             .help("Refresh local model paths")
                         }
-                        ForEach(catalog.models) { model in
+                        if onlyShowFitting,
+                           catalog.models.count > visibleModels.count {
+                            let hidden = catalog.models.count - visibleModels.count
+                            Text("\(hidden) model\(hidden == 1 ? "" : "s") hidden — too large for this Mac's memory.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        if isLowMemoryMac {
+                            Label(
+                                "This Mac has \(ProcessInfo.processInfo.physicalMemory / 1_073_741_824) GB unified memory — most local models won't fit. Add a remote provider below (LM Studio or Ollama on another machine, or an online API like Kimi or Qwen) and chat with full-size models anyway.",
+                                systemImage: "cloud"
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.blue)
+                            .padding(8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(RoundedRectangle(cornerRadius: 6).fill(Color.blue.opacity(0.08)))
+                        }
+                        ForEach(visibleModels) { model in
                             HStack(alignment: .top, spacing: 8) {
+                                // Provenance dot: local MLX (green) vs remote
+                                // provider (blue/purple/orange), matching the
+                                // model pickers.
+                                Image(nsImage: ChatView.badgeDotImage(model.providerBadge.colorName, size: 12))
+                                    .padding(.top, 3)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(model.displayName).font(.body.bold())
                                     if let localPath = model.localPath {
@@ -1173,7 +1243,13 @@ struct ModelsSettingsTab: View {
                                 }
                                 Spacer()
                                 modelStatus(model: model)
-                                Text("~\(model.estimatedMemoryGB)GB").font(.caption).foregroundStyle(.secondary)
+                                if model.isRemote {
+                                    Text("Remote").font(.caption).foregroundStyle(.secondary)
+                                    Image(systemName: "cloud").foregroundStyle(.blue)
+                                        .help("Runs on a remote OpenAI-compatible endpoint — uses no local memory")
+                                } else {
+                                    Text("~\(model.estimatedMemoryGB)GB").font(.caption).foregroundStyle(.secondary)
+                                }
                                 if model.isVision {
                                     Image(systemName: "eye").foregroundStyle(.blue)
                                 }
@@ -1195,11 +1271,47 @@ struct ModelsSettingsTab: View {
                     }
                     .padding(8)
                 }
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Remote Providers")
+                                .font(.headline)
+                            Spacer()
+                            Button {
+                                showingAddProvider = true
+                            } label: {
+                                Label("Add Provider", systemImage: "plus")
+                                    .font(.caption.weight(.semibold))
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.blue)
+                        }
+                        Text("Run models without loading them locally — LM Studio or Ollama on this Mac or another machine on your network, or an online API (Kimi, Qwen, OpenRouter…). Uses no local memory, so any size model works on any Mac. API keys are stored in the Keychain via the Secrets tab, never in settings.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                        if providerStore.providers.isEmpty {
+                            Text("No remote providers configured.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(providerStore.providers) { provider in
+                                RemoteProviderRow(provider: provider)
+                                Divider()
+                            }
+                        }
+                    }
+                    .padding(8)
+                }
                 Spacer()
             }
             .padding()
         }
         .scrollContentBackground(.hidden)
+        .sheet(isPresented: $showingAddProvider) {
+            AddRemoteProviderSheet()
+        }
         .onAppear {
             // Rescan the model root so models that live under the
             // swiftmaestro-models/ layout are recognized without requiring a
@@ -1330,6 +1442,23 @@ struct ModelsSettingsTab: View {
                 }
             }
             .help(metadataComplete ? "Downloaded locally" : "Weights present but metadata files are missing")
+        } else if model.isRemote {
+            // Remote models run elsewhere — nothing to download or load here.
+            // A quick reachability probe doubles as the row's status.
+            HStack(spacing: 4) {
+                Image(systemName: "network").foregroundStyle(.secondary)
+                Text("Endpoint").font(.caption).foregroundStyle(.secondary)
+            }
+            .help(model.remoteBaseURL ?? "Remote endpoint")
+        } else if !fitInfo(model).fits {
+            // Download gating: never offer a download that this Mac could only
+            // ever load into swap-death. (The engine's load guard would refuse
+            // it anyway — this just says so before a multi-GB download.)
+            let info = fitInfo(model)
+            Text("Won't fit — needs ~\(info.requiredGB) GB, budget ~\(info.budgetGB) GB")
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .help("This model's estimated memory need (weights + runtime headroom) exceeds this Mac's model budget. Load it via a remote provider instead — LM Studio/Ollama on a bigger Mac, or an online API.")
         } else {
             let isRepair = model.localPath != nil
             Button {
@@ -1375,6 +1504,262 @@ struct ModelsSettingsTab: View {
         case .generating: return "Generating"
         case .idle: return "Ready"
         }
+    }
+}
+
+// MARK: - Remote Providers UI
+
+/// One configured remote provider in Settings → Models, with reachability
+/// probe and edit/delete actions.
+private struct RemoteProviderRow: View {
+    let provider: RemoteProvider
+    @State private var providerStore = RemoteProviderStore.shared
+    @State private var probing = false
+    @State private var probeResult: RemoteProviderStore.ProbeResult?
+    @State private var showingEdit = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "cloud.fill").foregroundStyle(.blue)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(provider.name).font(.body.bold())
+                Text("\(provider.kind.rawValue) · \(provider.baseURL)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(provider.modelIDs.joined(separator: ", "))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            Spacer()
+            if probing {
+                ProgressView().frame(width: 14)
+            } else if let probeResult {
+                switch probeResult {
+                case .ok(let count):
+                    Text("\(count) model\(count == 1 ? "" : "s") reachable")
+                        .font(.caption).foregroundStyle(.green)
+                case .reachableNeedsAuth:
+                    Text("Reachable — needs API key")
+                        .font(.caption).foregroundStyle(.orange)
+                case .reachableUnexpected(let status):
+                    Text("Answered (HTTP \(status))")
+                        .font(.caption).foregroundStyle(.orange)
+                case .failed:
+                    Text("Unreachable").font(.caption).foregroundStyle(.red)
+                }
+            }
+            Button {
+                probing = true
+                probeResult = nil
+                Task {
+                    let (result, _) = await RemoteProviderStore.probe(provider)
+                    probeResult = result
+                    probing = false
+                }
+            } label: {
+                Image(systemName: "antenna.radiowaves.left.and.right")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Test connection to \(provider.baseURL)")
+            Button {
+                showingEdit = true
+            } label: {
+                Image(systemName: "pencil")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Edit provider")
+            Button {
+                providerStore.remove(id: provider.id)
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.red.opacity(0.8))
+            .help("Remove provider (its models leave the picker immediately)")
+        }
+        .sheet(isPresented: $showingEdit) {
+            AddRemoteProviderSheet(existing: provider)
+        }
+    }
+}
+
+/// Add/edit sheet for a remote provider. API keys are written to the Keychain
+/// via SecretsStore and stored on the provider only as a `secret://` reference.
+private struct AddRemoteProviderSheet: View {
+    /// When set, the sheet edits this provider instead of creating one.
+    let existing: RemoteProvider?
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var providerStore = RemoteProviderStore.shared
+
+    @State private var kind: RemoteProviderKind
+    @State private var presetID: String = ""
+    @State private var name: String
+    @State private var baseURL: String
+    @State private var modelIDsText: String
+    @State private var apiKey: String = ""
+    @State private var fetchingModels = false
+    @State private var statusLine: String?
+
+    init(existing: RemoteProvider? = nil) {
+        self.existing = existing
+        _kind = State(initialValue: existing?.kind ?? .lmStudio)
+        _name = State(initialValue: existing?.name ?? "")
+        _baseURL = State(initialValue: existing?.baseURL ?? RemoteProviderKind.lmStudio.defaultBaseURL)
+        _modelIDsText = State(initialValue: existing?.modelIDs.joined(separator: ", ") ?? "")
+    }
+
+    private var parsedModelIDs: [String] {
+        modelIDsText
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    private var canSave: Bool {
+        !name.trimmingCharacters(in: .whitespaces).isEmpty
+            && !baseURL.trimmingCharacters(in: .whitespaces).isEmpty
+            && !parsedModelIDs.isEmpty
+            && (kind != .online || !apiKey.isEmpty || existing?.apiKeyRef != nil)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(existing == nil ? "Add Remote Provider" : "Edit Remote Provider")
+                .font(.title2.bold())
+
+            Picker("Type", selection: $kind) {
+                ForEach(RemoteProviderKind.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: kind) { _, newKind in
+                if baseURL.isEmpty || baseURL == kind.defaultBaseURL || RemoteProviderKind.allCases.map(\.defaultBaseURL).contains(baseURL) {
+                    baseURL = newKind.defaultBaseURL
+                }
+                if name.isEmpty { name = newKind.rawValue }
+            }
+
+            if kind == .online {
+                Picker("Preset", selection: $presetID) {
+                    Text("Custom").tag("")
+                    ForEach(RemoteProviderPreset.presets) { Text($0.name).tag($0.id) }
+                }
+                .onChange(of: presetID) { _, newID in
+                    guard let preset = RemoteProviderPreset.presets.first(where: { $0.id == newID }) else { return }
+                    name = preset.name
+                    baseURL = preset.baseURL
+                    if modelIDsText.isEmpty { modelIDsText = preset.suggestedModels.joined(separator: ", ") }
+                }
+                if let preset = RemoteProviderPreset.presets.first(where: { $0.id == presetID }) {
+                    Text(preset.keyHelp).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
+            TextField("Name (e.g. LM Studio on Studio Mac)", text: $name)
+                .textFieldStyle(.roundedBorder)
+            TextField("Base URL", text: $baseURL)
+                .textFieldStyle(.roundedBorder)
+
+            HStack {
+                TextField("Model IDs, comma-separated (e.g. kimi-k3, qwen3:8b)", text: $modelIDsText)
+                    .textFieldStyle(.roundedBorder)
+                Button("Fetch") {
+                    fetchingModels = true
+                    statusLine = nil
+                    let probeProvider = RemoteProvider(
+                        id: existing?.id ?? UUID(),
+                        name: name, kind: kind, baseURL: baseURL,
+                        modelIDs: [], apiKeyRef: existing?.apiKeyRef)
+                    Task {
+                        let (result, ids) = await RemoteProviderStore.probe(probeProvider)
+                        fetchingModels = false
+                        switch result {
+                        case .ok(let count):
+                            if !ids.isEmpty { modelIDsText = ids.joined(separator: ", ") }
+                            statusLine = "Connected — \(count) model(s) reported."
+                        case .reachableNeedsAuth:
+                            statusLine = "Server reachable — it wants the API key first. Paste it above and Save; the key is verified on first chat."
+                        case .reachableUnexpected(let status):
+                            statusLine = "Server answered (HTTP \(status)) but didn't return a model list — check the base URL."
+                        case .failed(let message):
+                            statusLine = message
+                        }
+                    }
+                }
+                .disabled(baseURL.trimmingCharacters(in: .whitespaces).isEmpty || fetchingModels)
+            }
+
+            if kind == .online {
+                SecureField(
+                    existing?.apiKeyRef != nil
+                        ? "API key (leave blank to keep the existing one)"
+                        : "API key",
+                    text: $apiKey
+                )
+                .textFieldStyle(.roundedBorder)
+            }
+
+            if let statusLine {
+                Text(statusLine).font(.caption).foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button(existing == nil ? "Add" : "Save") { save() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!canSave)
+            }
+        }
+        .padding(20)
+        .frame(width: 460)
+    }
+
+    private func save() {
+        let trimmedName = name.trimmingCharacters(in: .whitespaces)
+        let trimmedURL = baseURL.trimmingCharacters(in: .whitespaces)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+
+        // API key → Keychain via SecretsStore; the provider keeps only the
+        // `secret://` reference. Blank in edit mode keeps the existing key.
+        var keyRef = existing?.apiKeyRef
+        if kind == .online, !apiKey.isEmpty {
+            let secretName = "remote-\(trimmedName.lowercased().replacingOccurrences(of: " ", with: "-"))-api-key"
+            do {
+                _ = try SecretsStore.upsert(
+                    name: secretName,
+                    value: apiKey,
+                    scope: .global,
+                    synced: true,
+                    note: "API key for remote provider \(trimmedName)")
+                keyRef = "secret://\(secretName)"
+            } catch {
+                statusLine = "Couldn't store the API key in the Keychain: \(error.localizedDescription)"
+                return
+            }
+        }
+        if kind != .online { keyRef = nil }
+
+        let provider = RemoteProvider(
+            id: existing?.id ?? UUID(),
+            name: trimmedName,
+            kind: kind,
+            baseURL: trimmedURL,
+            modelIDs: parsedModelIDs,
+            apiKeyRef: keyRef,
+            requestTimeout: existing?.requestTimeout ?? (kind == .online ? 300 : 180))
+        if existing == nil {
+            providerStore.add(provider)
+        } else {
+            providerStore.update(provider)
+        }
+        dismiss()
     }
 }
 
@@ -2157,7 +2542,7 @@ struct MCPServerEntry: Identifiable, Codable {
             env: "",
             workingDir: "",
             timeout: 12,
-            enabled: false,
+            enabled: true ,
             notes: "Local-first web scraping (Rust binary, 12+ tools). Install: brew install webclaw"
         ),
         MCPServerEntry(
@@ -2167,7 +2552,7 @@ struct MCPServerEntry: Identifiable, Codable {
             env: "FIRECRAWL_API_URL=http://localhost:3002",
             workingDir: "\(NSHomeDirectory())/GitHub/AI-ML-Agents/firecrawl-mcp-server",
             timeout: 15,
-            enabled: false,
+            enabled: true ,
             notes: "Deep web scrape/search/crawl. Requires Docker: cd ~/GitHub/AI-ML-Agents/firecrawl && docker-compose up -d"
         ),
         MCPServerEntry(
@@ -2242,7 +2627,7 @@ struct MCPServerEntry: Identifiable, Codable {
             env: "CRAWLKIT_BASE_URL=http://localhost:8088",
             workingDir: "\(NSHomeDirectory())/.ai-context/mcp-crawlkit",
             timeout: 12,
-            enabled: false,
+            enabled: true ,
             notes: "Web crawl toolkit (scrape/batch/discover/watch/screenshot). Needs CrawlKit backend at localhost:8088."
         ),
     ]

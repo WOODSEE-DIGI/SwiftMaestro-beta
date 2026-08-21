@@ -67,6 +67,7 @@ struct ModelResourceMonitor: View {
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(.primary)
                 .lineLimit(1)
+                .help("Model id: \(activity.id)")
             Spacer()
             Button {
                 engine.unloadModel(activity.id)
@@ -92,6 +93,7 @@ struct ModelResourceMonitor: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
+        .help("Model state — Ready (loaded in memory, idle), Loading, or Generating.")
     }
 
     private func metricsRow(_ activity: ModelActivity) -> some View {
@@ -100,32 +102,32 @@ struct ModelResourceMonitor: View {
                 Image(systemName: "memorychip")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                    .help("Model memory footprint")
                 Text("\(activity.estimatedMemoryGB) GB")
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
+            .help("Memory this model occupies while loaded (estimated).")
 
             if activity.state == .generating {
                 HStack(spacing: 4) {
                     Image(systemName: "bolt")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
-                        .help("Generation speed")
                     Text(String(format: "%.1f tok/s", activity.currentTokensPerSecond))
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
+                .help("Current generation speed in tokens per second — the graph below is its history.")
             } else if activity.currentTokensPerSecond > 0 {
                 HStack(spacing: 4) {
                     Image(systemName: "bolt")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
-                        .help("Generation speed")
                     Text(String(format: "%.1f tok/s", activity.currentTokensPerSecond))
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
+                .help("Generation speed from the last run, in tokens per second — the graph below is its history.")
             }
         }
     }
@@ -154,6 +156,7 @@ struct ModelResourceMonitor: View {
             }
         }
         .frame(height: 24)
+        .help("Generation speed history for \(activity.name) — tokens per second over recent activity.")
     }
 
     private func statusColor(_ state: ModelActivityState) -> Color {

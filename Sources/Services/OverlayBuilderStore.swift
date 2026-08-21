@@ -98,7 +98,8 @@ enum OverlayType: String, CaseIterable, Codable, Sendable, Identifiable {
         case .ticker, .alert, .webcamFrame, .cornerBug: return "Streaming"
         case .infoPill, .stepCounter, .webLink:          return "Info"
         case .countdown, .brb, .ending:    return "Scenes"
-        case .htmlEditor:                   return "Advanced"
+        // htmlEditor is pinned separately in the sidebar (not in a group).
+        case .htmlEditor:                   return ""
         }
     }
 }
@@ -181,6 +182,74 @@ struct OverlayConfig: Codable, Equatable, Sendable {
 /// Each edit is saved into `typeDrafts[type]` immediately — no presets, no
 /// save button, no linking. Switching types and relaunching the app always
 /// restores exactly what you last saw.
+/// Shared HTML/CSS editor defaults, referenced by `OverlayBuilderStore`'s
+/// hoisted editor state. Lives here (Services) so the store compiles without
+/// duplicating the long default strings; the actual source of truth is still
+/// `OverlayHTMLEditorView.defaultHTML/defaultCSS`.
+enum OverlayHTMLEditorDefaults {
+    static let html = """
+    <div class="overlay">
+      <div class="accent-bar"></div>
+      <div class="content">
+        <div class="title">Your Title Here</div>
+        <div class="subtitle">Subtitle text goes here</div>
+      </div>
+    </div>
+    """
+
+    static let css = """
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif;
+      background: transparent;
+      width: 1920px;
+      height: 1080px;
+      overflow: hidden;
+    }
+
+    .overlay {
+      position: absolute;
+      left: 60px;
+      bottom: 80px;
+      display: flex;
+      flex-direction: row;
+      align-items: stretch;
+      gap: 0;
+    }
+
+    .accent-bar {
+      width: 5px;
+      background: #7c3aed;
+      border-radius: 3px 0 0 3px;
+    }
+
+    .content {
+      background: rgba(12, 12, 18, 0.92);
+      border: 1px solid rgba(124, 58, 237, 0.3);
+      border-left: none;
+      border-radius: 0 10px 10px 0;
+      padding: 18px 28px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .title {
+      color: #ffffff;
+      font-size: 34px;
+      font-weight: 600;
+      letter-spacing: -0.3px;
+    }
+
+    .subtitle {
+      color: rgba(255, 255, 255, 0.7);
+      font-size: 16px;
+      font-weight: 400;
+    }
+    """
+}
+
 @Observable
 @MainActor
 final class OverlayBuilderStore {
@@ -188,6 +257,13 @@ final class OverlayBuilderStore {
 
     /// Currently selected overlay type.
     var selectedType: OverlayType = .lowerThird
+
+    /// HTML/CSS editor source, hoisted from OverlayHTMLEditorView so agent
+    /// tools (overlay_html_get/set) can read and modify the live document.
+    /// The editor binds directly to these; edits from either side update the
+    /// preview immediately.
+    var htmlEditorSource: String = OverlayHTMLEditorDefaults.html
+    var cssEditorSource: String = OverlayHTMLEditorDefaults.css
 
     /// Current field values for the active overlay.
     var currentFields: [String: String] = [:]
@@ -326,6 +402,24 @@ final class OverlayBuilderStore {
         var safeAreaOpacity: Double?
         var safeAreaStyle: Int?
         var safeAreaColorHex: String?
+    }
+
+    /// Applies a website template: loads its HTML/CSS into the editor and,
+    /// for fixed-size assets (Avatar 512px, Banner 1500x500), resizes the
+    /// canvas to the template's natural dimensions so the preview and PNG
+    /// export come out pixel-exact. Shared by the sidebar, the editor's
+    /// Template menu, and the overlay_html_template agent tool.
+    func applyWebsiteTemplate(_ template: WebsiteTemplate) {
+        htmlEditorSource = template.html
+        cssEditorSource = template.css
+        if let w = template.canvasWidth, let h = template.canvasHeight {
+            canvasSizeIndex = CanvasSizePresets.customIndex
+            customWidth = w
+            customHeight = h
+        }
+        if selectedType != .htmlEditor {
+            selectType(.htmlEditor)
+        }
     }
 
     // MARK: - Type Selection

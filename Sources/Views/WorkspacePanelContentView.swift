@@ -30,7 +30,7 @@ struct WorkspacePanelContentView: View {
         case .contacts:
             ContactsView()
         case .canvas:
-            CanvasView()
+            WhiteboardView()
         case .kanban:
             KanbanView()
         case .numbers:
@@ -110,6 +110,8 @@ struct WorkspacePanelContentView: View {
             BackupStatusPanel()
         case .voiceNotes:
             VoiceNotesPanel()
+        case .blocky:
+            BlockyPanel()
         }
         }
     }

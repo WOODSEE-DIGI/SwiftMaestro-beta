@@ -13,6 +13,9 @@ struct RichMarkdownView: View {
     let isUser: Bool
     /// Optional callback when user taps "Run" on a shell code block.
     var onRunCommand: ((String) -> Void)? = nil
+    /// Base directory for resolving relative image paths (clip notes reference
+    /// assets/… folders beside the .md file). Nil = remote URLs only.
+    var baseURL: URL? = nil
 
     /// Parsed segments: alternating text and code blocks.
     private var segments: [MarkdownSegment] {
@@ -24,7 +27,7 @@ struct RichMarkdownView: View {
             ForEach(segments) { segment in
                 switch segment {
                 case .text(let content):
-                    TextSegmentView(content: content, isUser: isUser)
+                    TextSegmentView(content: content, isUser: isUser, baseURL: baseURL)
                 case .code(let language, let code, let id):
                     CodeBlockView(
                         language: language,
@@ -242,6 +245,8 @@ struct TextSegmentView: View {
 
     let content: String
     let isUser: Bool
+    /// Base directory for resolving relative image paths (nil = remote only).
+    var baseURL: URL? = nil
 
     private var blocks: [MarkdownBlock] {
         MarkdownBlockParser.parse(MarkdownParser.autoLinkURLs(content))
@@ -250,7 +255,7 @@ struct TextSegmentView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(blocks) { block in
-                MarkdownBlockView(block: block, textColor: theme.chatText)
+                MarkdownBlockView(block: block, textColor: theme.chatText, baseURL: baseURL)
             }
         }
         .font(.body)
@@ -275,12 +280,14 @@ enum MarkdownBlock: Identifiable {
     case numbered(id: Int, index: Int, text: String, indent: Int)
     case rule(id: Int)
     case table(id: Int, header: [String], rows: [[String]])
+    /// Standalone image line: ![alt](path) — local (vault-relative) or remote.
+    case image(id: Int, alt: String, path: String)
 
     var id: Int {
         switch self {
         case .heading(let id, _, _), .paragraph(let id, _), .blockquote(let id, _),
              .bullet(let id, _, _, _), .numbered(let id, _, _, _), .rule(let id),
-             .table(let id, _, _):
+             .table(let id, _, _), .image(let id, _, _):
             return id
         }
     }
@@ -353,6 +360,14 @@ enum MarkdownBlockParser {
                     continue
                 }
             }
+            // Standalone image line: ![alt](path) on its own line renders as
+            // an actual image (local vault-relative or remote http(s)).
+            if let image = parseImageLine(trimmed) {
+                flushParagraph(); flushQuote()
+                blocks.append(.image(id: nextID, alt: image.alt, path: image.path))
+                nextID += 1
+                i += 1; continue
+            }
             // Bullets (-, *, +) with optional task checkbox.
             if let (text, indent, checked) = parseBullet(rawLine) {
                 flushParagraph()
@@ -383,6 +398,20 @@ enum MarkdownBlockParser {
         let rest = line.dropFirst(level)
         guard rest.first == " " else { return nil }  // "#hashtag" is not a heading
         return (level, rest.trimmingCharacters(in: .whitespaces))
+    }
+
+    /// Parse a standalone image line: ![alt](path). Returns nil unless the
+    /// entire line is one image — inline images inside prose stay as text.
+    private static func parseImageLine(_ line: String) -> (alt: String, path: String)? {
+        guard line.hasPrefix("!["), line.hasSuffix(")"),
+              let openBracket = line.firstIndex(of: "]"),
+              line[line.index(after: openBracket)] == "(" else { return nil }
+        let alt = String(line[line.index(line.startIndex, offsetBy: 2)..<openBracket])
+        let pathStart = line.index(openBracket, offsetBy: 2)
+        let path = String(line[pathStart..<line.index(before: line.endIndex)])
+            .trimmingCharacters(in: .whitespaces)
+        guard !path.isEmpty else { return nil }
+        return (alt, path)
     }
 
     /// Payload of a bullet line (text, indent, checkbox state), or nil when
@@ -479,6 +508,8 @@ struct MarkdownBlockView: View {
     @Environment(ThemeStore.self) private var theme
     let block: MarkdownBlock
     let textColor: Color
+    /// Base directory for resolving relative image paths (nil = remote only).
+    var baseURL: URL? = nil
 
     var body: some View {
         switch block {
@@ -520,7 +551,51 @@ struct MarkdownBlockView: View {
             Divider().padding(.vertical, 4)
         case .table(_, let header, let rows):
             tableview(header: header, rows: rows)
+        case .image(_, let alt, let path):
+            imageView(alt: alt, path: path)
         }
+    }
+
+    /// Render a standalone image block: remote http(s) via AsyncImage, or a
+    /// vault-relative path resolved against the note's directory (baseURL).
+    @ViewBuilder
+    private func imageView(alt: String, path: String) -> some View {
+        if path.hasPrefix("http://") || path.hasPrefix("https://") {
+            AsyncImage(url: URL(string: path)) { phase in
+                switch phase {
+                case .success(let image):
+                    image.resizable().scaledToFit()
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                case .failure:
+                    imagePlaceholder(alt: alt)
+                default:
+                    ProgressView().controlSize(.small).padding(8)
+                }
+            }
+        } else if let baseURL {
+            let fileURL = baseURL.appendingPathComponent(path)
+            if let nsImage = NSImage(contentsOf: fileURL) {
+                Image(nsImage: nsImage)
+                    .resizable().scaledToFit()
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+            } else {
+                imagePlaceholder(alt: alt)
+            }
+        } else {
+            imagePlaceholder(alt: alt)
+        }
+    }
+
+    private func imagePlaceholder(alt: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "photo")
+                .foregroundStyle(theme.chatSecondaryText)
+            Text(alt.isEmpty ? "Image" : alt)
+                .font(.caption)
+                .foregroundStyle(theme.chatSecondaryText)
+        }
+        .padding(8)
+        .background(theme.chatSecondaryText.opacity(0.08), in: .rect(cornerRadius: 6))
     }
 
     private func fontFor(_ level: Int) -> Font {

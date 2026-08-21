@@ -22,6 +22,7 @@ struct ProcessResourceMonitor: View {
                             .foregroundStyle(accent)
                     )
                     .frame(height: 24)
+                    .help("SwiftMaestro CPU % over the last 60 seconds — blue while generating, green idle, orange when stuck.")
             }
 
             if sampler.isStuck {
@@ -67,6 +68,7 @@ struct ProcessResourceMonitor: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
+        .help("What SwiftMaestro is doing right now — green Idle, blue Generating, orange Stuck (no token activity for 15s during a generation).")
     }
 
     private var metricsRow: some View {
@@ -75,31 +77,31 @@ struct ProcessResourceMonitor: View {
                 Image(systemName: "cpu")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                    .help("CPU usage")
                 Text(sampler.current.map { String(format: "%.0f%%", $0.cpuPercent) } ?? "--")
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
+            .help("SwiftMaestro's CPU usage — this app only, not the whole system. The graph below shows the last 60 seconds.")
 
             HStack(spacing: 4) {
                 Image(systemName: "memorychip")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                    .help("RAM usage")
                 Text(sampler.current.map { formatBytes($0.memoryBytes) } ?? "--")
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
+            .help("SwiftMaestro's memory use — this app only, including any loaded AI models.")
 
             HStack(spacing: 4) {
                 Image(systemName: "number")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                    .help("Active threads")
                 Text("\(sampler.current?.threads ?? 0)")
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
+            .help("Live threads inside the SwiftMaestro process. Jumps while generating are normal.")
         }
     }
 

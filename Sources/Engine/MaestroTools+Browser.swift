@@ -60,6 +60,46 @@ extension MaestroTools {
                 name: "browser_links", spec: browserToolSpecs[10],
                 category: ToolCategory.browser.rawValue,
                 handler: { call in await browserLinks(call) }),
+            ToolDefinition(
+                name: "clip_template_list", spec: browserToolSpecs[11],
+                category: ToolCategory.browser.rawValue,
+                handler: { _ in await clipTemplateList() }),
+            ToolDefinition(
+                name: "bookmark_add", spec: browserToolSpecs[12],
+                category: ToolCategory.browser.rawValue,
+                handler: { call in await bookmarkAdd(call) }),
+            ToolDefinition(
+                name: "bookmark_list", spec: browserToolSpecs[13],
+                category: ToolCategory.browser.rawValue,
+                handler: { call in await bookmarkList(call) }),
+            ToolDefinition(
+                name: "bookmark_open", spec: browserToolSpecs[14],
+                category: ToolCategory.browser.rawValue,
+                handler: { call in await bookmarkOpen(call) }),
+            ToolDefinition(
+                name: "bookmark_remove", spec: browserToolSpecs[15],
+                category: ToolCategory.browser.rawValue,
+                handler: { call in await bookmarkRemove(call) }),
+            ToolDefinition(
+                name: "bookmarks_export", spec: browserToolSpecs[16],
+                category: ToolCategory.browser.rawValue,
+                handler: { call in await bookmarksExport(call) }),
+            ToolDefinition(
+                name: "bookmarks_import", spec: browserToolSpecs[17],
+                category: ToolCategory.browser.rawValue,
+                handler: { call in await bookmarksImport(call) }),
+            ToolDefinition(
+                name: "browser_privacy_list", spec: browserToolSpecs[18],
+                category: ToolCategory.browser.rawValue,
+                handler: { _ in await browserPrivacyList() }),
+            ToolDefinition(
+                name: "browser_clear_site_data", spec: browserToolSpecs[19],
+                category: ToolCategory.browser.rawValue,
+                handler: { call in await browserClearSiteData(call) }),
+            ToolDefinition(
+                name: "browser_dismiss_overlays", spec: browserToolSpecs[20],
+                category: ToolCategory.browser.rawValue,
+                handler: { call in await browserDismissOverlays(call) }),
         ])
     }
 
@@ -76,6 +116,7 @@ extension MaestroTools {
                 properties: [
                     "url": ["type": "string", "description": "URL to open and navigate to (https:// added if missing)"],
                     "background": ["type": "boolean", "description": "Open without focusing the tab (default false)"],
+                    "private_tab": ["type": "boolean", "description": "Open in a private tab — non-persistent data store, cookies/cache/storage vanish on tab close (default false)"],
                 ],
                 required: ["url"]),
             rawSpec("browser_list",
@@ -118,10 +159,16 @@ extension MaestroTools {
                 properties: [:],
                 required: []),
             rawSpec("browser_clip",
-                "Clip a tab's page into the Notes vault as a Markdown note (uses the Web Clipper). "
-                + "Defaults to the active tab. Returns the clip status / note filename.",
+                "Clip a tab's page with the Web Clipper (Defuddle extraction + full page metadata: "
+                + "author, published, domain, favicon, image, word count, meta tags, schema.org). "
+                + "Saves a Markdown note with YAML frontmatter to the Notes vault AND/OR a typed row "
+                + "to the MaestroDB 'Web Clips' base (query it later with db_list_rows). Templates "
+                + "auto-match by URL (e.g. YouTube); override with 'template'. List templates with "
+                + "clip_template_list. Defaults to the active tab.",
                 properties: [
                     "tab_id": ["type": "string", "description": "Target tab_id (default: active tab)"],
+                    "template": ["type": "string", "description": "Template NAME (default: auto-match by URL, fallback 'Default')"],
+                    "destination": ["type": "string", "description": "'both' (default), 'notes', or 'maestrodb'"],
                 ],
                 required: []),
             rawSpec("browser_eval",
@@ -149,12 +196,89 @@ extension MaestroTools {
                     "same_domain": ["type": "boolean", "description": "Only links on the current domain (default false)"],
                 ],
                 required: []),
+            rawSpec("clip_template_list",
+                "List the Web Clipper templates (name, URL auto-match patterns, Notes folder, property "
+                + "names). Templates control how clipped pages are formatted and where they're saved.",
+                properties: [:],
+                required: []),
+            rawSpec("bookmark_add",
+                "Bookmark a page in SwiftBrowser. Defaults to the active tab's URL. 'favorite: true' "
+                + "pins it to the Favourites bar under the address field.",
+                properties: [
+                    "url": ["type": "string", "description": "URL to bookmark (default: active tab)"],
+                    "title": ["type": "string", "description": "Bookmark name (default: page title)"],
+                    "folder": ["type": "string", "description": "Folder name, e.g. 'Research' (default: root)"],
+                    "favorite": ["type": "boolean", "description": "Pin to the Favourites bar (default false)"],
+                ],
+                required: []),
+            rawSpec("bookmark_list",
+                "List SwiftBrowser bookmarks, optionally filtered by folder or favorites-only.",
+                properties: [
+                    "folder": ["type": "string", "description": "Only bookmarks in this folder"],
+                    "favorites": ["type": "boolean", "description": "Only Favourites-bar bookmarks"],
+                ],
+                required: []),
+            rawSpec("bookmark_open",
+                "Open a bookmarked URL in the browser (by bookmark title or URL substring match).",
+                properties: [
+                    "query": ["type": "string", "description": "Bookmark title or URL substring to match"],
+                    "new_tab": ["type": "boolean", "description": "Open in a new tab (default false)"],
+                ],
+                required: ["query"]),
+            rawSpec("bookmark_remove",
+                "Remove a bookmark by title or URL substring match.",
+                properties: [
+                    "query": ["type": "string", "description": "Bookmark title or URL substring to match"],
+                ],
+                required: ["query"]),
+            rawSpec("bookmarks_export",
+                "Export all SwiftBrowser bookmarks as a NETSCAPE-format HTML file (readable by Safari, "
+                + "Chrome, Firefox). Saves to the given path or ~/Desktop by default.",
+                properties: [
+                    "path": ["type": "string", "description": "Absolute output path (default: ~/Desktop/SwiftMaestro Bookmarks.html)"],
+                ],
+                required: []),
+            rawSpec("bookmarks_import",
+                "Import bookmarks from a NETSCAPE-format HTML file (the format Safari/Chrome/Firefox "
+                + "export). Favorites/Bookmarks-bar folders become SwiftBrowser Favourites.",
+                properties: [
+                    "path": ["type": "string", "description": "Absolute path to the bookmarks HTML file"],
+                ],
+                required: ["path"]),
+            rawSpec("browser_privacy_list",
+                "List what the browser has stored: per-site data (cookies, cache, local storage, "
+                + "IndexedDB, service workers) and cookie counts. WebKit shared store only — Chromium "
+                + "tabs are session-scoped and persist nothing between launches.",
+                properties: [:],
+                required: []),
+            rawSpec("browser_clear_site_data",
+                "Delete stored site data. With 'domain', clears one site's cookies/cache/storage; "
+                + "without it, clears ALL site data (signs out of websites in SwiftBrowser).",
+                properties: [
+                    "domain": ["type": "string", "description": "Site domain to clear, e.g. 'example.com' (omit to clear everything)"],
+                ],
+                required: []),
+            rawSpec("browser_dismiss_overlays",
+                "Dismiss popup layers blocking a page: newsletter modals, spin-to-win wheels, cookie "
+                + "walls, signup overlays, and their dimmed backdrops. Position-independent — finds "
+                + "dialog-like containers anywhere in the DOM, clicks their close control (so the "
+                + "site cleans up its own state), removes layers that survive, and restores page "
+                + "scrolling. Call this when browser_read/browser_links results look like overlay "
+                + "content instead of the page, or a screenshot shows a modal. Safe to call "
+                + "repeatedly — new layers can spawn after each dismissal; returns counts.",
+                properties: [
+                    "tab_id": ["type": "string", "description": "Target tab_id (default: active tab)"],
+                ],
+                required: []),
         ]
     }
 
-    // MARK: - Args
-
-    private struct OpenArgs: Decodable { let url: String?; let background: LenientBool? }
+    private struct OpenArgs: Decodable {
+        let url: String?
+        let background: LenientBool?
+        /// Open in a private tab (non-persistent data store — nothing survives close).
+        let private_tab: LenientBool?
+    }
     private struct TabIDArgs: Decodable { let tab_id: String? }
     private struct NavigateArgs: Decodable { let action: String?; let tab_id: String? }
     private struct LinksArgs: Decodable { let tab_id: String?; let limit: LenientInt?; let same_domain: LenientBool? }
@@ -343,10 +467,12 @@ extension MaestroTools {
                 + "Send the bare URL only: https://host/path — no quotes, no backslashes.")
         }
         let background = args?.background?.value ?? false
+        let privateTab = args?.private_tab?.value ?? false
         let store = WebBrowserStore.shared
         // Snapshot existing tab ids so we can tell whether we reused one below.
         let tabIDsBefore = Set(store.tabs.map { $0.id })
-        guard let tab = store.openURLInNewTab(urlString, background: background, reuseExisting: true) else {
+        guard let tab = store.openURLInNewTab(urlString, background: background, reuseExisting: !privateTab,
+                                              isPrivate: privateTab) else {
             return errorJSON("Invalid URL: \(urlString)")
         }
         // The tool is named browser_OPEN and the prompt tells the model the
@@ -376,6 +502,7 @@ extension MaestroTools {
             "active": store.selectedTabID == tab.id,
             "background": background,
         ]
+        if privateTab { result["private"] = true }
         if urlString != rawURL { result["sanitized_url"] = true }
         if reusedExisting {
             result["reused_existing"] = true
@@ -582,13 +709,248 @@ extension MaestroTools {
     }
 
     @MainActor
+    private struct ClipArgs: Codable {
+        let tab_id: String?
+        let template: String?      // template NAME; omit for URL auto-match
+        let destination: String?   // "notes", "maestrodb", or "both" (default)
+    }
+
+    @MainActor
     private static func browserClip(_ call: ToolCall) async -> String {
-        let args = decodeArgs(call, as: TabIDArgs.self)
+        let args = decodeArgs(call, as: ClipArgs.self)
         let store = WebBrowserStore.shared
         if let id = agentUUID(args?.tab_id) { store.selectedTabID = id }
         guard store.selectedTab != nil else { return errorJSON("No active tab to clip") }
-        await store.clipCurrentPage()
-        return jsonString(["status": store.lastClipStatus ?? "done"])
+
+        var template: ClipTemplate?
+        if let name = args?.template, !name.isEmpty {
+            template = ClipTemplateStore.shared.templates.first(where: {
+                $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
+            })
+            if template == nil {
+                let available = ClipTemplateStore.shared.templates.map(\.name).joined(separator: ", ")
+                return errorJSON("Unknown template '\(name)'. Available: \(available)")
+            }
+        }
+
+        var destinations: WebBrowserStore.ClipDestinations? = nil
+        switch args?.destination?.lowercased() {
+        case "notes": destinations = .notes
+        case "maestrodb", "maestro", "db": destinations = .maestroDB
+        case "both": destinations = .both
+        case nil, "": break  // template's own destination settings decide
+        default:
+            return errorJSON("unknown destination — use 'notes', 'maestrodb', or 'both'")
+        }
+
+        let outcome = await store.clipCurrentPage(template: template, destinations: destinations)
+        guard let outcome else {
+            return errorJSON(store.lastClipStatus ?? "clip failed")
+        }
+        return jsonString([
+            "status": "clipped",
+            "title": outcome.title,
+            "template": outcome.templateName,
+            "note_path": outcome.notePath as Any,
+            "maestrodb_row": outcome.maestroRowID as Any,
+        ])
+    }
+
+    @MainActor
+    private static func clipTemplateList() async -> String {
+        let templates = ClipTemplateStore.shared.templates
+        return jsonString([
+            "templates": templates.map { t in
+                [
+                    "name": t.name,
+                    "url_patterns": t.urlPatterns.joined(separator: ", "),
+                    "folder": t.folder,
+                    "properties": t.properties.map(\.name).joined(separator: ", "),
+                ]
+            },
+            "count": templates.count,
+        ])
+    }
+
+    // MARK: - Bookmarks
+
+    private struct BookmarkAddArgs: Decodable {
+        let url: String?; let title: String?; let folder: String?; let favorite: LenientBool?
+    }
+    private struct BookmarkListArgs: Decodable { let folder: String?; let favorites: LenientBool? }
+    private struct BookmarkQueryArgs: Decodable { let query: String?; let new_tab: LenientBool? }
+    private struct BookmarkPathArgs: Decodable { let path: String? }
+    private struct ClearSiteDataArgs: Decodable { let domain: String? }
+
+    // MARK: - Privacy tools
+
+    @MainActor
+    private static func browserPrivacyList() async -> String {
+        let privacy = BrowserPrivacyStore.shared
+        await privacy.refresh()
+        return jsonString([
+            "site_count": privacy.siteRecords.count,
+            "cookie_count": privacy.cookies.count,
+            "sites": privacy.siteRecords.map { record in
+                [
+                    "domain": record.domain,
+                    "cookies": record.cookieCount,
+                    "data_types": record.dataTypeSummary,
+                ] as [String: Any]
+            },
+            "note": "WebKit shared store only. Chromium tabs persist nothing (temp profile per launch). "
+                + "Private tabs (browser_open private_tab:true) persist nothing after close.",
+        ])
+    }
+
+    @MainActor
+    private static func browserClearSiteData(_ call: ToolCall) async -> String {
+        let args = decodeArgs(call, as: ClearSiteDataArgs.self)
+        let privacy = BrowserPrivacyStore.shared
+        if let domain = args?.domain, !domain.isEmpty {
+            await privacy.deleteSiteData(forDomain: domain)
+            return jsonString(["status": "cleared", "domain": domain])
+        }
+        await privacy.clearAllSiteData()
+        return jsonString(["status": "cleared_all",
+                           "note": "All cookies, cache, and site storage deleted."])
+    }
+
+    @MainActor
+    private static func browserDismissOverlays(_ call: ToolCall) async -> String {
+        let args = decodeArgs(call, as: TabIDArgs.self)
+        let store = WebBrowserStore.shared
+        guard let tab = resolveTab(args?.tab_id, in: store) else {
+            return errorJSON("No active tab")
+        }
+        guard let result = await OverlayDismissService.shared.dismiss(on: tab) else {
+            return errorJSON("Could not evaluate the overlay dismisser on this tab")
+        }
+        return jsonString([
+            "status": result.didSomething ? "dismissed" : "none_found",
+            "close_clicked": result.clicked,
+            "layers_removed": result.removed,
+            "scroll_restored": result.scrollRestored,
+            "note": result.didSomething
+                ? "Overlays cleared. If the page spawns another layer, call again; then browser_read to verify the real content is reachable."
+                : "No overlay layers found — the page content should be directly readable.",
+        ])
+    }
+
+    @MainActor
+    private static func bookmarkAdd(_ call: ToolCall) async -> String {
+        let args = decodeArgs(call, as: BookmarkAddArgs.self)
+        let store = WebBrowserStore.shared
+        let bookmarks = BookmarkStore.shared
+        var url = args?.url ?? store.selectedTab?.currentURL?.absoluteString
+        var title = args?.title ?? ""
+        if url == nil, let query = args?.title, !query.isEmpty,
+           query.lowercased().hasPrefix("http") {
+            // Model passed the URL in 'title' — recover gracefully
+            url = query
+            title = ""
+        }
+        guard let url, URL(string: url)?.scheme?.hasPrefix("http") == true else {
+            return errorJSON("No URL to bookmark — open a tab first or pass 'url'")
+        }
+        if title.isEmpty { title = store.selectedTab?.title ?? url }
+        let bookmark = bookmarks.add(
+            title: title, url: url,
+            folder: args?.folder ?? "", isFavorite: args?.favorite?.value ?? false)
+        return jsonString([
+            "status": "bookmarked", "title": bookmark.title, "url": bookmark.url,
+            "folder": bookmark.folder, "favorite": bookmark.isFavorite,
+        ])
+    }
+
+    @MainActor
+    private static func bookmarkList(_ call: ToolCall) async -> String {
+        let args = decodeArgs(call, as: BookmarkListArgs.self)
+        var bookmarks = BookmarkStore.shared.bookmarks
+        if let folder = args?.folder, !folder.isEmpty {
+            bookmarks = bookmarks.filter { $0.folder.localizedCaseInsensitiveContains(folder) }
+        }
+        if args?.favorites?.value == true {
+            bookmarks = bookmarks.filter(\.isFavorite)
+        }
+        return jsonString([
+            "count": bookmarks.count,
+            "bookmarks": bookmarks.map { b in
+                [
+                    "title": b.title, "url": b.url, "folder": b.folder,
+                    "favorite": b.isFavorite, "host": b.host,
+                ] as [String: Any]
+            },
+        ])
+    }
+
+    @MainActor
+    private static func bookmarkOpen(_ call: ToolCall) async -> String {
+        let args = decodeArgs(call, as: BookmarkQueryArgs.self)
+        guard let query = args?.query?.lowercased(), !query.isEmpty else {
+            return errorJSON("'query' is required (bookmark title or URL substring)")
+        }
+        let store = WebBrowserStore.shared
+        guard let bookmark = BookmarkStore.shared.bookmarks.first(where: {
+            $0.title.lowercased().contains(query) || $0.url.lowercased().contains(query)
+        }) else {
+            return errorJSON("No bookmark matching '\(query)'")
+        }
+        if args?.new_tab?.value == true {
+            let tab = store.addTab()
+            await store.loadURL(bookmark.url, in: tab)
+        } else {
+            await store.loadURL(bookmark.url, in: store.selectedTab)
+        }
+        return jsonString(["status": "opened", "title": bookmark.title, "url": bookmark.url])
+    }
+
+    @MainActor
+    private static func bookmarkRemove(_ call: ToolCall) async -> String {
+        let args = decodeArgs(call, as: BookmarkQueryArgs.self)
+        guard let query = args?.query?.lowercased(), !query.isEmpty else {
+            return errorJSON("'query' is required (bookmark title or URL substring)")
+        }
+        let bookmarks = BookmarkStore.shared
+        guard let bookmark = bookmarks.bookmarks.first(where: {
+            $0.title.lowercased().contains(query) || $0.url.lowercased().contains(query)
+        }) else {
+            return errorJSON("No bookmark matching '\(query)'")
+        }
+        bookmarks.remove(bookmark)
+        return jsonString(["status": "removed", "title": bookmark.title, "url": bookmark.url])
+    }
+
+    private static func bookmarksExport(_ call: ToolCall) async -> String {
+        let args = decodeArgs(call, as: BookmarkPathArgs.self)
+        let path = args?.path
+            ?? NSHomeDirectory() + "/Desktop/SwiftMaestro Bookmarks.html"
+        let bookmarks = await MainActor.run { BookmarkStore.shared }
+        let count = await MainActor.run { bookmarks.bookmarks.count }
+        guard count > 0 else { return errorJSON("No bookmarks to export") }
+        let html = await MainActor.run { bookmarks.exportHTML() }
+        do {
+            try html.write(toFile: path, atomically: true, encoding: .utf8)
+            return jsonString(["status": "exported", "path": path, "count": count])
+        } catch {
+            return errorJSON("Export failed: \(error.localizedDescription)")
+        }
+    }
+
+    private static func bookmarksImport(_ call: ToolCall) async -> String {
+        let args = decodeArgs(call, as: BookmarkPathArgs.self)
+        guard let path = args?.path, !path.isEmpty else {
+            return errorJSON("'path' is required — the bookmarks HTML file to import")
+        }
+        guard let html = try? String(contentsOfFile: path, encoding: .utf8) else {
+            return errorJSON("Could not read file at \(path)")
+        }
+        let result = await MainActor.run { BookmarkStore.shared.importHTML(html) }
+        return jsonString([
+            "status": "imported", "added": result.added,
+            "skipped_duplicates": result.skippedDuplicates,
+            "folders": result.folders,
+        ])
     }
 
     @MainActor

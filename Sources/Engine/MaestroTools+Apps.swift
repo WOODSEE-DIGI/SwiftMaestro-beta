@@ -39,12 +39,12 @@ extension MaestroTools {
                 handler: { call in await updateKanbanCard(call) }),
             ToolDefinition(name: "delete_kanban_card", spec: appsToolSpecs[10], category: ToolCategory.kanban.rawValue,
                 handler: { call in await deleteKanbanCard(call) }),
-            ToolDefinition(name: "list_canvas_boards", spec: appsToolSpecs[11], category: ToolCategory.canvas.rawValue,
-                handler: { _ in await listCanvasBoards() }),
-            ToolDefinition(name: "create_canvas_board", spec: appsToolSpecs[12], category: ToolCategory.canvas.rawValue,
-                handler: { call in await createCanvasBoard(call) }),
-            ToolDefinition(name: "delete_canvas_board", spec: appsToolSpecs[13], category: ToolCategory.canvas.rawValue,
-                handler: { call in await deleteCanvasBoard(call) }),
+            ToolDefinition(name: "whiteboard_list_boards", spec: appsToolSpecs[11], category: ToolCategory.whiteboard.rawValue,
+                handler: { _ in await listWhiteboardBoards() }),
+            ToolDefinition(name: "whiteboard_create_board", spec: appsToolSpecs[12], category: ToolCategory.whiteboard.rawValue,
+                handler: { call in await createWhiteboardBoard(call) }),
+            ToolDefinition(name: "whiteboard_delete_board", spec: appsToolSpecs[13], category: ToolCategory.whiteboard.rawValue,
+                handler: { call in await deleteWhiteboardBoard(call) }),
             ToolDefinition(name: "list_apple_note_folders", spec: appsToolSpecs[14], category: ToolCategory.notes.rawValue,
                 handler: { _ in await listAppleNoteFolders() }),
             ToolDefinition(name: "list_apple_notes", spec: appsToolSpecs[15], category: ToolCategory.notes.rawValue,
@@ -69,6 +69,16 @@ extension MaestroTools {
                 handler: { call in await writeNumbersCell(call) }),
             ToolDefinition(name: "export_numbers_document", spec: appsToolSpecs[25], category: ToolCategory.numbers.rawValue,
                 handler: { call in await exportNumbersDocument(call) }),
+            ToolDefinition(name: "whiteboard_list_objects", spec: appsToolSpecs[26], category: ToolCategory.whiteboard.rawValue,
+                handler: { call in await whiteboardListObjects(call) }),
+            ToolDefinition(name: "whiteboard_add_shape", spec: appsToolSpecs[27], category: ToolCategory.whiteboard.rawValue,
+                handler: { call in await whiteboardAddShape(call) }),
+            ToolDefinition(name: "whiteboard_add_text", spec: appsToolSpecs[28], category: ToolCategory.whiteboard.rawValue,
+                handler: { call in await whiteboardAddText(call) }),
+            ToolDefinition(name: "whiteboard_connect", spec: appsToolSpecs[29], category: ToolCategory.whiteboard.rawValue,
+                handler: { call in await whiteboardConnect(call) }),
+            ToolDefinition(name: "whiteboard_clear", spec: appsToolSpecs[30], category: ToolCategory.whiteboard.rawValue,
+                handler: { call in await whiteboardClear(call) }),
         ])
     }
 
@@ -158,17 +168,18 @@ extension MaestroTools {
 
             // MARK: Canvas (metadata only — the drawing itself is opaque PaperKit
             // binary data, not something a text model can meaningfully read/write).
-            rawSpec("list_canvas_boards",
-                "List Canvas sketch boards (name, created/modified dates). The drawing content "
-                + "itself isn't readable — this only exposes board metadata.",
+            // MARK: Whiteboard boards (object content is readable via whiteboard_list_objects)
+            rawSpec("whiteboard_list_boards",
+                "List whiteboard boards (name, created/modified dates). Use whiteboard_list_objects "
+                + "to see the shapes, notes, and workflow arrows on a board.",
                 properties: [:], required: []),
-            rawSpec("create_canvas_board",
-                "Create a new empty Canvas sketch board.",
+            rawSpec("whiteboard_create_board",
+                "Create a new empty whiteboard board. Add workflow shapes with whiteboard_add_shape and connect them with whiteboard_connect.",
                 properties: [
                     "name": ["type": "string", "description": "Board name."],
                 ], required: ["name"]),
-            rawSpec("delete_canvas_board",
-                "Delete a Canvas sketch board by name (or id).",
+            rawSpec("whiteboard_delete_board",
+                "Delete a whiteboard board by name (or id).",
                 properties: [
                     "name": ["type": "string", "description": "Board name (or id)."],
                 ], required: ["name"]),
@@ -247,6 +258,59 @@ extension MaestroTools {
                     "path": ["type": "string", "description": "Destination file path, including extension."],
                     "format": ["type": "string", "description": "csv, pdf, or xlsx."],
                 ], required: ["document", "path", "format"]),
+
+            // MARK: Whiteboard objects (workflow diagrams)
+            rawSpec("whiteboard_list_objects",
+                "List the objects on a whiteboard board: shapes, sticky notes, text boxes, images, and "
+                + "connectors (workflow arrows), with ids, text, positions and sizes. Omit 'board' to "
+                + "use the most recently modified board. Use the ids with whiteboard_connect.",
+                properties: [
+                    "board": ["type": "string", "description": "Board name (or id). Omit for the most recently modified board."],
+                ], required: []),
+            rawSpec("whiteboard_add_shape",
+                "Add a shape to a whiteboard board and return its object id. For process workflows, "
+                + "prefer rectangle (steps), diamond (decisions) and roundedRectangle (start/end). "
+                + "Positions are canvas coordinates with the object centred at x/y; omit them to "
+                + "auto-place below existing content. Opens the Whiteboard panel so the user sees it.",
+                properties: [
+                    "board": ["type": "string", "description": "Board name (or id). Omit for the most recently modified board (auto-creates one if none exist)."],
+                    "shape": ["type": "string", "description": "rectangle, roundedRectangle, circle, ellipse, diamond, arrow, star, cloud, or heart."],
+                    "text": ["type": "string", "description": "Label text inside the shape."],
+                    "color": ["type": "string", "description": "Hex color like #3498DB (default blue)."],
+                    "x": ["type": "number", "description": "Canvas x of the shape's centre."],
+                    "y": ["type": "number", "description": "Canvas y of the shape's centre."],
+                    "width": ["type": "number", "description": "Width in canvas points (default 150)."],
+                    "height": ["type": "number", "description": "Height in canvas points (default 150)."],
+                ], required: ["shape"]),
+            rawSpec("whiteboard_add_text",
+                "Add a sticky note or text box to a whiteboard board and return its object id. "
+                + "Use sticky notes for annotations and text boxes for titles/labels on workflows. "
+                + "Opens the Whiteboard panel so the user sees it.",
+                properties: [
+                    "board": ["type": "string", "description": "Board name (or id). Omit for the most recently modified board (auto-creates one if none exist)."],
+                    "text": ["type": "string", "description": "The text content."],
+                    "kind": ["type": "string", "description": "note (sticky note, default) or textbox (plain text)."],
+                    "color": ["type": "string", "description": "Sticky note hex color like #FFE066 (notes only)."],
+                    "x": ["type": "number", "description": "Canvas x of the object's centre."],
+                    "y": ["type": "number", "description": "Canvas y of the object's centre."],
+                ], required: ["text"]),
+            rawSpec("whiteboard_connect",
+                "Draw a workflow arrow between two objects on a whiteboard board. 'from' and 'to' "
+                + "accept object ids (from whiteboard_add_shape/whiteboard_list_objects) or exact "
+                + "object text. The arrow snaps to the best edge anchors based on the objects' "
+                + "relative positions and stays glued when the objects move. "
+                + "Opens the Whiteboard panel so the user sees it.",
+                properties: [
+                    "board": ["type": "string", "description": "Board name (or id). Omit for the most recently modified board."],
+                    "from": ["type": "string", "description": "Source object id or its exact text label."],
+                    "to": ["type": "string", "description": "Target object id or its exact text label."],
+                    "label": ["type": "string", "description": "Optional label on the arrow (e.g. a decision's 'yes'/'no')."],
+                ], required: ["from", "to"]),
+            rawSpec("whiteboard_clear",
+                "Remove ALL objects and pen strokes from a whiteboard board.",
+                properties: [
+                    "board": ["type": "string", "description": "Board name (or id). Omit for the most recently modified board."],
+                ], required: []),
         ]
     }
 
@@ -259,7 +323,7 @@ extension MaestroTools {
     private static let sharedKanbanStore = KanbanStore()
 
     @MainActor
-    private static let sharedCanvasStore = CanvasStore()
+    private static let sharedWhiteboardStore = WhiteboardStore()
 
     @MainActor
     private static let sharedNumbersService = NumbersService()
@@ -595,26 +659,30 @@ extension MaestroTools {
 
     // MARK: - Canvas argument types
 
-    private struct CanvasBoardArgs: Codable { let name: String? }
+    private struct WhiteboardBoardArgs: Codable { let name: String? }
+
+    /// Object-level whiteboard tools take `board` (not `name`) per their
+    /// published specs.
+    private struct WhiteboardBoardKeyArgs: Codable { let board: String? }
 
     @MainActor
-    private static func findCanvasBoard(_ key: String) -> CanvasBoard? {
-        if let byID = sharedCanvasStore.boards.first(where: { $0.id.uuidString.caseInsensitiveCompare(key) == .orderedSame }) {
+    private static func findWhiteboardBoard(_ key: String) -> WhiteboardBoard? {
+        if let byID = sharedWhiteboardStore.boards.first(where: { $0.id.uuidString.caseInsensitiveCompare(key) == .orderedSame }) {
             return byID
         }
-        if let exact = sharedCanvasStore.boards.first(where: { $0.name.caseInsensitiveCompare(key) == .orderedSame }) {
+        if let exact = sharedWhiteboardStore.boards.first(where: { $0.name.caseInsensitiveCompare(key) == .orderedSame }) {
             return exact
         }
-        return sharedCanvasStore.boards.first { $0.name.localizedCaseInsensitiveContains(key) }
+        return sharedWhiteboardStore.boards.first { $0.name.localizedCaseInsensitiveContains(key) }
     }
 
     // MARK: - Canvas implementations
 
-    static func listCanvasBoards() async -> String {
+    static func listWhiteboardBoards() async -> String {
         await MainActor.run {
-            sharedCanvasStore.loadBoards()
-            let boards = sharedCanvasStore.boards
-            guard !boards.isEmpty else { return "No Canvas boards yet. Use create_canvas_board to make one." }
+            sharedWhiteboardStore.loadBoards()
+            let boards = sharedWhiteboardStore.boards
+            guard !boards.isEmpty else { return "No Canvas boards yet. Use whiteboard_create_board to make one." }
             let iso = ISO8601DateFormatter()
             return jsonString(["boards": boards.map { board -> [String: Any] in
                 [
@@ -627,26 +695,287 @@ extension MaestroTools {
         }
     }
 
-    static func createCanvasBoard(_ call: ToolCall) async -> String {
-        guard let args = decodeArgs(call, as: CanvasBoardArgs.self),
+    static func createWhiteboardBoard(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: WhiteboardBoardArgs.self),
               let name = args.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty
-        else { return errorJSON("create_canvas_board requires 'name'") }
+        else { return errorJSON("whiteboard_create_board requires 'name'") }
         return await MainActor.run {
-            let board = sharedCanvasStore.createBoard(name: name)
+            let board = sharedWhiteboardStore.createBoard(name: name)
             return jsonString(["status": "created", "id": board.id.uuidString, "name": board.name])
         }
     }
 
-    static func deleteCanvasBoard(_ call: ToolCall) async -> String {
-        guard let args = decodeArgs(call, as: CanvasBoardArgs.self),
+    static func deleteWhiteboardBoard(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: WhiteboardBoardArgs.self),
               let key = args.name?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty
-        else { return errorJSON("delete_canvas_board requires 'name'") }
+        else { return errorJSON("whiteboard_delete_board requires 'name'") }
         return await MainActor.run {
-            guard let board = findCanvasBoard(key) else {
+            guard let board = findWhiteboardBoard(key) else {
                 return errorJSON("no canvas board matching \"\(key)\".")
             }
-            sharedCanvasStore.delete(board.id)
+            sharedWhiteboardStore.delete(board.id)
             return jsonString(["status": "deleted", "name": board.name])
+        }
+    }
+
+    // MARK: - Whiteboard object implementations (workflow diagrams)
+
+    private struct WhiteboardAddShapeArgs: Codable {
+        let board: String?
+        let shape: String?
+        let text: String?
+        let color: String?
+        let x: Double?
+        let y: Double?
+        let width: Double?
+        let height: Double?
+    }
+
+    private struct WhiteboardAddTextArgs: Codable {
+        let board: String?
+        let text: String?
+        let kind: String?
+        let color: String?
+        let x: Double?
+        let y: Double?
+    }
+
+    private struct WhiteboardConnectArgs: Codable {
+        let board: String?
+        let from: String?
+        let to: String?
+        let label: String?
+    }
+
+    /// Resolve a board by explicit key (id/name/substring), else the most
+    /// recently modified board. When `createIfNone`, an empty store yields a
+    /// fresh "Workflows" board so an agent's first workflow command never
+    /// dead-ends on setup.
+    @MainActor
+    private static func resolveWhiteboard(_ key: String?, createIfNone: Bool) -> WhiteboardBoard? {
+        sharedWhiteboardStore.loadBoards()
+        if let key, !key.isEmpty {
+            return findWhiteboardBoard(key)
+        }
+        if let latest = sharedWhiteboardStore.boards.first { return latest }
+        return createIfNone ? sharedWhiteboardStore.createBoard(name: "Workflows") : nil
+    }
+
+    @MainActor
+    private static func whiteboardData(for board: WhiteboardBoard) -> WhiteboardBoardData {
+        guard let data = board.markupData,
+              let decoded = try? JSONDecoder().decode(WhiteboardBoardData.self, from: data)
+        else { return WhiteboardBoardData() }
+        return decoded
+    }
+
+    /// Persist board object data, reload any open panel showing this board,
+    /// and (for content-creating tools) surface the Whiteboard panel so the
+    /// user watches the workflow appear.
+    @MainActor
+    private static func saveWhiteboardData(
+        _ data: WhiteboardBoardData, for board: WhiteboardBoard, surface: Bool
+    ) {
+        var updated = board
+        updated.markupData = try? JSONEncoder().encode(data)
+        try? sharedWhiteboardStore.save(updated)
+        NotificationCenter.default.post(
+            name: .whiteboardBoardExternallyModified, object: nil,
+            userInfo: ["boardID": updated.id.uuidString])
+        if surface {
+            _ = WorkspaceLayoutState.shared.open(.canvas)
+        }
+    }
+
+    /// Default placement for agent-added objects: under the lowest existing
+    /// content so workflow steps stack downward predictably.
+    private static func nextFreePoint(in data: WhiteboardBoardData) -> CGPoint {
+        guard let lowest = data.objects.map({ $0.position.y + $0.size.height / 2 }).max() else {
+            return CGPoint(x: 400, y: 200)
+        }
+        let left = data.objects.map { $0.position.x - $0.size.width / 2 }.min() ?? 250
+        return CGPoint(x: left + 75, y: lowest + 100)
+    }
+
+    static func whiteboardListObjects(_ call: ToolCall) async -> String {
+        let args = decodeArgs(call, as: WhiteboardBoardKeyArgs.self)
+        return await MainActor.run {
+            guard let board = resolveWhiteboard(args?.board ?? nil, createIfNone: false) else {
+                return errorJSON("No whiteboard boards yet. Add a shape with whiteboard_add_shape (a board is auto-created) or create one with whiteboard_create_board.")
+            }
+            let data = whiteboardData(for: board)
+            return jsonString([
+                "board": board.name,
+                "board_id": board.id.uuidString,
+                "objects": data.objects.map { obj -> [String: Any] in
+                    var d: [String: Any] = [
+                        "id": obj.id.uuidString,
+                        "x": Int(obj.position.x), "y": Int(obj.position.y),
+                        "width": Int(obj.size.width), "height": Int(obj.size.height),
+                    ]
+                    switch obj.type {
+                    case .stickyNote: d["type"] = "sticky_note"
+                    case .textBox: d["type"] = "text_box"
+                    case .shape(let kind):
+                        d["type"] = "shape"
+                        d["shape"] = kind.rawValue
+                    case .image: d["type"] = "image"
+                    case .connector(let conn):
+                        d["type"] = "connector"
+                        d["from"] = conn.fromObjectID?.uuidString ?? "free"
+                        d["to"] = conn.toObjectID?.uuidString ?? "free"
+                    }
+                    if !obj.text.isEmpty { d["text"] = obj.text }
+                    return d
+                },
+            ])
+        }
+    }
+
+    static func whiteboardAddShape(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: WhiteboardAddShapeArgs.self),
+              let shapeName = args.shape, !shapeName.isEmpty
+        else { return errorJSON("whiteboard_add_shape requires 'shape'") }
+        guard let kind = WhiteboardObject.ShapeKind(rawValue: shapeName) else {
+            return errorJSON("unknown shape '\(shapeName)' — use rectangle, roundedRectangle, circle, ellipse, diamond, arrow, star, cloud, or heart.")
+        }
+        return await MainActor.run {
+            guard let board = resolveWhiteboard(args.board, createIfNone: true) else {
+                return errorJSON("no board found for '\(args.board ?? "")'.")
+            }
+            var data = whiteboardData(for: board)
+            let position = (args.x != nil && args.y != nil)
+                ? CGPoint(x: args.x!, y: args.y!)
+                : nextFreePoint(in: data)
+            let obj = WhiteboardObject(
+                type: .shape(kind),
+                text: args.text ?? "",
+                position: position,
+                size: CGSize(width: args.width ?? 150, height: args.height ?? 150),
+                shapeColor: args.color ?? "#3498DB")
+            data.objects.append(obj)
+            saveWhiteboardData(data, for: board, surface: true)
+            return jsonString([
+                "status": "added", "id": obj.id.uuidString,
+                "board": board.name, "board_id": board.id.uuidString,
+            ])
+        }
+    }
+
+    static func whiteboardAddText(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: WhiteboardAddTextArgs.self),
+              let text = args.text, !text.isEmpty
+        else { return errorJSON("whiteboard_add_text requires 'text'") }
+        return await MainActor.run {
+            guard let board = resolveWhiteboard(args.board, createIfNone: true) else {
+                return errorJSON("no board found for '\(args.board ?? "")'.")
+            }
+            var data = whiteboardData(for: board)
+            let isTextBox = args.kind?.lowercased() == "textbox"
+            let position = (args.x != nil && args.y != nil)
+                ? CGPoint(x: args.x!, y: args.y!)
+                : nextFreePoint(in: data)
+            let obj = WhiteboardObject(
+                type: isTextBox
+                    ? .textBox
+                    : .stickyNote(color: args.color ?? "#FFE066"),
+                text: text,
+                position: position,
+                size: isTextBox ? CGSize(width: 250, height: 60) : CGSize(width: 200, height: 200))
+            data.objects.append(obj)
+            saveWhiteboardData(data, for: board, surface: true)
+            return jsonString([
+                "status": "added", "id": obj.id.uuidString,
+                "board": board.name, "board_id": board.id.uuidString,
+            ])
+        }
+    }
+
+    static func whiteboardConnect(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: WhiteboardConnectArgs.self),
+              let fromKey = args.from, !fromKey.isEmpty,
+              let toKey = args.to, !toKey.isEmpty
+        else { return errorJSON("whiteboard_connect requires 'from' and 'to'") }
+        return await MainActor.run {
+            guard let board = resolveWhiteboard(args.board, createIfNone: false) else {
+                return errorJSON("No whiteboard boards yet — add shapes first with whiteboard_add_shape.")
+            }
+            var data = whiteboardData(for: board)
+
+            // Resolve an endpoint key: object id, else exact text match, else
+            // case-insensitive text containment (shapes only — never another
+            // connector).
+            func findObject(_ key: String) -> WhiteboardObject? {
+                let candidates = data.objects.filter { !$0.isConnector }
+                if let byID = candidates.first(where: { $0.id.uuidString.caseInsensitiveCompare(key) == .orderedSame }) {
+                    return byID
+                }
+                if let exact = candidates.first(where: { !$0.text.isEmpty && $0.text == key }) {
+                    return exact
+                }
+                return candidates.first {
+                    !$0.text.isEmpty && $0.text.localizedCaseInsensitiveContains(key)
+                }
+            }
+
+            guard let fromObj = findObject(fromKey) else {
+                return errorJSON("no object matching '\(fromKey)' on board '\(board.name)'. Use whiteboard_list_objects to see ids and labels.")
+            }
+            guard let toObj = findObject(toKey) else {
+                return errorJSON("no object matching '\(toKey)' on board '\(board.name)'. Use whiteboard_list_objects to see ids and labels.")
+            }
+            guard fromObj.id != toObj.id else {
+                return errorJSON("can't connect an object to itself.")
+            }
+
+            // Pick edge anchors from relative geometry: if the target sits to
+            // the right, leave the source's right edge and arrive at its left;
+            // same for vertical. Diagonal ties break toward horizontal.
+            let dx = toObj.position.x - fromObj.position.x
+            let dy = toObj.position.y - fromObj.position.y
+            let fromAnchor: Connector.Anchor
+            let toAnchor: Connector.Anchor
+            if abs(dx) >= abs(dy) {
+                fromAnchor = dx >= 0 ? .right : .left
+                toAnchor = dx >= 0 ? .left : .right
+            } else {
+                fromAnchor = dy >= 0 ? .bottom : .top
+                toAnchor = dy >= 0 ? .top : .bottom
+            }
+
+            let conn = Connector(
+                fromObjectID: fromObj.id, fromAnchor: fromAnchor,
+                toObjectID: toObj.id, toAnchor: toAnchor,
+                startPoint: fromObj.anchorPoint(fromAnchor),
+                endPoint: toObj.anchorPoint(toAnchor))
+            var obj = WhiteboardObject(
+                type: .connector(conn),
+                text: args.label ?? "",
+                position: .zero, size: .zero,
+                shapeColor: "#FFFFFF", textColor: "#FFFFFF")
+            obj.syncConnectorFrame(in: data.objects)
+            data.objects.append(obj)
+            saveWhiteboardData(data, for: board, surface: true)
+            return jsonString([
+                "status": "connected", "id": obj.id.uuidString,
+                "from": fromObj.id.uuidString, "to": toObj.id.uuidString,
+                "board": board.name,
+            ])
+        }
+    }
+
+    static func whiteboardClear(_ call: ToolCall) async -> String {
+        let args = decodeArgs(call, as: WhiteboardBoardKeyArgs.self)
+        return await MainActor.run {
+            guard let board = resolveWhiteboard(args?.board ?? nil, createIfNone: false) else {
+                return errorJSON("No whiteboard boards yet.")
+            }
+            var data = whiteboardData(for: board)
+            let removed = data.objects.count + data.strokes.count
+            data.objects.removeAll()
+            data.strokes.removeAll()
+            saveWhiteboardData(data, for: board, surface: true)
+            return jsonString(["status": "cleared", "board": board.name, "removed": removed])
         }
     }
 

@@ -84,6 +84,16 @@ final class NotesViewModel {
 
         setupDefaultsChangeListener()
 
+        // Reload the vault tree when another panel writes a note externally —
+        // the Web Clipper saves clipped pages straight into the vault, and the
+        // Notes panel must reflect them without a manual refresh.
+        NotificationCenter.default.addObserver(
+            forName: .notesVaultContentChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in await self.load() }
+        }
+
         // One-time migration: move the old app-support notes vault into Documents.
         Task {
             Self.migrateFromAppSupportIfNeeded(to: url)
@@ -138,6 +148,8 @@ final class NotesViewModel {
     }
 
     /// Select a note and load its contents into the editor.
+    /// Non-markdown assets (clip html/json/images) render in NoteAssetViewer
+    /// instead — never route binary files through the text editor.
     func loadSelectedNote() async {
         autosaveTask?.cancel()
         guard let item = selectedItem, item.isNote else {
@@ -354,4 +366,10 @@ final class NotesViewModel {
             errorMessage = "Search failed: \(error.localizedDescription)"
         }
     }
+}
+
+extension Notification.Name {
+    /// Posted after an external writer (e.g. the Web Clipper) adds or modifies
+    /// files in the Notes vault, so open Notes panels reload the tree.
+    static let notesVaultContentChanged = Notification.Name("notesVaultContentChanged")
 }

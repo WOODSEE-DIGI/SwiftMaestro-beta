@@ -2668,10 +2668,13 @@ extension MLXArray {
     /// - ``split(indices:axis:stream:)``
     /// - ``split(_:parts:axis:stream:)``
     public func split(parts: Int, axis: Int = 0, stream: StreamOrDevice = .default) -> [MLXArray] {
-        var vec = mlx_vector_array_new()
-        mlx_split(&vec, ctx, parts.int32, axis.int32, stream.ctx)
-        defer { mlx_vector_array_free(vec) }
-        return mlx_vector_array_values(vec)
+        // SwiftMaestro patch (2026-08-20): checked result — see mlxCheckedSplit.
+        mlxCheckedSplit(
+            expectedCount: parts,
+            context: "MLXArray.split(parts: \(parts), axis: \(axis), input shape: \(shape))"
+        ) { vec in
+            mlx_split(vec, ctx, parts.int32, axis.int32, stream.ctx)
+        }
     }
 
     /// Split an array into 2 pieces along an axis and returns a tuple -- convenient for destructuring.
@@ -2694,10 +2697,13 @@ extension MLXArray {
     /// - ``split(indices:axis:stream:)``
     /// - ``split(_:parts:axis:stream:)``
     public func split(axis: Int = 0, stream: StreamOrDevice = .default) -> (MLXArray, MLXArray) {
-        var vec = mlx_vector_array_new()
-        mlx_split(&vec, ctx, 2, axis.int32, stream.ctx)
-        defer { mlx_vector_array_free(vec) }
-        let pieces = mlx_vector_array_values(vec)
+        // SwiftMaestro patch (2026-08-20): checked result — see mlxCheckedSplit.
+        let pieces = mlxCheckedSplit(
+            expectedCount: 2,
+            context: "MLXArray.split(axis: \(axis), input shape: \(shape))"
+        ) { vec in
+            mlx_split(vec, ctx, 2, axis.int32, stream.ctx)
+        }
         return (pieces[0], pieces[1])
     }
 
@@ -2717,10 +2723,13 @@ extension MLXArray {
     )
         -> [MLXArray]
     {
-        var vec = mlx_vector_array_new()
-        mlx_split_sections(&vec, ctx, indices.asInt32, indices.count, axis.int32, stream.ctx)
-        defer { mlx_vector_array_free(vec) }
-        return mlx_vector_array_values(vec)
+        // SwiftMaestro patch (2026-08-20): checked result — see mlxCheckedSplit.
+        mlxCheckedSplit(
+            expectedCount: indices.count + 1,
+            context: "MLXArray.split(indices: \(Array(indices)), axis: \(axis), input shape: \(shape))"
+        ) { vec in
+            mlx_split_sections(vec, ctx, indices.asInt32, indices.count, axis.int32, stream.ctx)
+        }
     }
 
     /// Element-wise square root

@@ -94,11 +94,11 @@ enum AgentCategory: String, Codable, CaseIterable, Identifiable, Hashable, Senda
         case .analysis:
             base.formUnion([.index, .sqlite, .numbers, .vault, .scraping])
         case .create:
-            base.formUnion([.index, .canvas, .notes])
+            base.formUnion([.index, .whiteboard, .notes])
         case .writing:
             base.formUnion([.index, .notes, .vault])
         case .design:
-            base.formUnion([.index, .canvas, .photos, .vault])
+            base.formUnion([.index, .whiteboard, .photos, .vault])
         case .devops:
             base.formUnion([.index, .server, .sqlite])
         case .testing:

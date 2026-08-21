@@ -104,7 +104,7 @@ struct NotesView: View {
                     Task { await selectItem(withID: newID) }
                 }
             )) { item in
-                Label(item.title, systemImage: item.isFolder ? "folder" : "doc.text")
+                Label(item.title, systemImage: iconFor(item))
                     .tag(item.id)
                     .contextMenu {
                         if item.isFolder {
@@ -216,8 +216,18 @@ struct NotesView: View {
 
     @ViewBuilder
     private var detailPane: some View {
-        if let item = viewModel.selectedItem, item.isNote {
-            NoteEditorView(viewModel: viewModel)
+        if let item = viewModel.selectedItem {
+            if item.isNote {
+                NoteEditorView(viewModel: viewModel)
+            } else if item.isAsset {
+                NoteAssetViewer(item: item)
+            } else {
+                ContentUnavailableView(
+                    "Select a Note",
+                    systemImage: "doc.text",
+                    description: Text("Choose a Markdown note from the sidebar to start editing")
+                )
+            }
         } else {
             ContentUnavailableView(
                 "Select a Note",
@@ -228,6 +238,17 @@ struct NotesView: View {
     }
 
     // MARK: - Helpers
+
+    private func iconFor(_ item: NoteItem) -> String {
+        if item.isFolder { return "folder" }
+        switch item.assetKind {
+        case .html: return "globe"
+        case .json: return "curlybraces"
+        case .image: return "photo"
+        case .text: return "doc.plaintext"
+        default: return item.isNote ? "doc.text" : "doc"
+        }
+    }
 
     private func selectItem(withID id: String?) async {
         if let id, let item = findItem(withID: id, in: viewModel.rootItems) {

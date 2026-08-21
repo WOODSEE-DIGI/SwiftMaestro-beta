@@ -25,7 +25,11 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     case time
     case notes
     case kanban
-    case canvas
+    /// The whiteboard feature. rawValue is "whiteboard"; the legacy "canvas"
+    /// rawValue (from before the Canvas→Whiteboard rename) still decodes to
+    /// this case via the custom init below, so per-agent enabled-category sets
+    /// persisted by older builds keep working.
+    case whiteboard
     case numbers
     case maps
     case photos
@@ -42,8 +46,27 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     case vault
     case database
     case dam
+    /// Blocky — blockchain wallet lookup and transaction tracing (BTC/ETH).
+    case blockchain
+    /// Overlay Builder / HTML Builder panel — overlay types, fields, and the
+    /// live HTML/CSS editor (website templates included).
+    case overlayBuilder
 
     var id: String { rawValue }
+
+    /// Legacy-alias decode: builds that predate the Canvas→Whiteboard rename
+    /// persisted `"canvas"` into per-agent enabled-category sets. Map it onto
+    /// `.whiteboard` so those agents keep their whiteboard tools after upgrade.
+    init?(rawValue: String) {
+        if rawValue == "canvas" {
+            self = .whiteboard
+            return
+        }
+        guard let match = Self.allCases.first(where: { $0.rawValue == rawValue }) else {
+            return nil
+        }
+        self = match
+    }
 
     /// Whether this category's tools can be deferred behind the
     /// `search_tools`/`call_tool` meta-tool pair in "Compact Tool Mode"
@@ -65,9 +88,9 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .workspace, .memory, .messaging, .bus, .rules, .time, .mcp:
             return false
         case .file, .documents, .books, .shell, .server, .index, .system, .sqlite,
-             .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news,
+             .notes, .kanban, .whiteboard, .numbers, .maps, .photos, .stocks, .news,
              .mail, .whatsapp, .discord, .web, .browser, .scraping, .bluesky, .patreon, .vault, .database, .dam,
-             .calendar, .reminders, .contacts:
+             .blockchain, .overlayBuilder, .calendar, .reminders, .contacts:
             return true
         }
     }
@@ -91,7 +114,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .time: return "Time"
         case .notes: return "Notes"
         case .kanban: return "Kanban"
-        case .canvas: return "Whiteboard"
+        case .whiteboard: return "Whiteboard"
         case .numbers: return "Numbers"
         case .maps: return "Maps"
         case .photos: return "Photos"
@@ -108,6 +131,8 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .vault: return "Vault"
         case .database: return "Database"
         case .dam: return "DAM"
+        case .blockchain: return "Blocky"
+        case .overlayBuilder: return "HTML Builder"
         case .calendar: return "Calendar"
         case .reminders: return "Reminders"
         case .contacts: return "Contacts"
@@ -133,7 +158,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .time: return "clock"
         case .notes: return "note.text"
         case .kanban: return "rectangle.split.3x1"
-        case .canvas: return "rectangle.3.group"
+        case .whiteboard: return "rectangle.3.group"
         case .numbers: return "tablecells"
         case .maps: return "map"
         case .photos: return "photo.stack"
@@ -150,6 +175,8 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .vault: return "lock.square"
         case .database: return "cylinder"
         case .dam: return "photo.on.rectangle.angled"
+        case .blockchain: return "link.circle"
+        case .overlayBuilder: return "rectangle.dashed"
         case .calendar: return "calendar"
         case .reminders: return "checklist"
         case .contacts: return "person.2"
@@ -220,8 +247,12 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
                 "list_kanban_boards", "create_kanban_board", "list_kanban_cards",
                 "create_kanban_card", "move_kanban_card", "update_kanban_card", "delete_kanban_card",
             ]
-        case .canvas:
-            return ["list_canvas_boards", "create_canvas_board", "delete_canvas_board"]
+        case .whiteboard:
+            return [
+                "whiteboard_list_boards", "whiteboard_create_board", "whiteboard_delete_board",
+                "whiteboard_list_objects", "whiteboard_add_shape", "whiteboard_add_text",
+                "whiteboard_connect", "whiteboard_clear",
+            ]
         case .numbers:
             return [
                 "list_numbers_documents", "create_numbers_document", "open_numbers_document",
@@ -239,6 +270,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .stocks:
             return [
                 "open_stocks", "list_stocks", "add_stock", "remove_stock", "stock_quote",
+                "stock_report", "stock_alert",
             ]
         case .news:
             return [
@@ -301,6 +333,18 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
                 "dam_search", "dam_import", "dam_list_folders", "dam_list_assets",
                 "dam_asset_info", "dam_set_rating", "dam_set_keywords",
             ]
+        case .blockchain:
+            return [
+                "wallet_lookup", "trace_wallet", "wallet_tags", "blockchain_report",
+                "blockchain_investigation_create", "blockchain_investigation_list",
+                "blockchain_watch_add", "blockchain_watch_list", "blockchain_watch_remove",
+                "blockchain_correlate", "blockchain_flag", "blockchain_export",
+            ]
+        case .overlayBuilder:
+            return [
+                "overlay_html_get", "overlay_html_set", "overlay_html_template",
+                "overlay_list", "overlay_select", "overlay_set_field", "overlay_get_fields",
+            ]
         case .calendar:
             return ["create_calendar_event", "list_calendar_events"]
         case .reminders:
@@ -323,7 +367,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         switch self {
         case .notes: return [.notesMD, .appleNotes]
         case .kanban: return [.kanban]
-        case .canvas: return [.canvas]
+        case .whiteboard: return [.canvas]
         case .numbers: return [.numbers]
         case .maps: return [.maps]
         case .photos: return [.photos]
@@ -335,6 +379,8 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .books: return [.maestroBooks]
         case .database: return [.maestroDB]
         case .dam: return [.damBrowser]
+        case .blockchain: return [.blocky]
+        case .overlayBuilder: return [.htmlBuilder]
         case .documents: return [.maestroDocs]
         case .shell: return [.terminal]
         case .calendar: return [.calendar]
@@ -343,7 +389,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .bus: return [.busMonitor]
         case .file, .server, .index, .memory, .messaging,
              .system, .mcp, .sqlite, .workspace, .rules, .time, .stocks,
-             .news, .web, .scraping, .bluesky, .patreon, .vault:
+             .news, .web, .scraping, .bluesky, .patreon, .vault, .blockchain:
             return []
         }
     }
@@ -357,14 +403,14 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .navigator:
             return [
                 .workspace, .memory, .bus, .system, .rules, .time, .web, .browser, .scraping, .vault, .documents, .books,
-                .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky, .patreon, .database, .dam,
-                .calendar, .reminders, .contacts,
+                .notes, .kanban, .whiteboard, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky, .patreon, .database, .dam, .blockchain,
+                .overlayBuilder, .calendar, .reminders, .contacts,
             ]
         case .project:
             return [
                 .file, .documents, .books, .shell, .server, .index, .memory, .messaging, .bus, .system, .mcp, .sqlite, .web, .browser, .scraping, .vault,
-                .notes, .kanban, .canvas, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky, .patreon, .database, .dam,
-                .calendar, .reminders, .contacts,
+                .notes, .kanban, .whiteboard, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky, .patreon, .database, .dam, .blockchain,
+                .overlayBuilder, .calendar, .reminders, .contacts,
             ]
         }
     }

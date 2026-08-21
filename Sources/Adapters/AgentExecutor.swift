@@ -348,6 +348,8 @@ final class AgentExecutor: Sendable {
                         // tokens (the 14:39 crash). Keep only the last few results full.
                         Self.elideOldToolResults(&convo)
 
+                        NSLog("[AGENT] round \(round): calling streamRound (tools=%d, convo=%d messages)",
+                              specsThisRound.count, convo.count)
                         let (content, rawToolCalls) = try await backend.streamRound(
                             convo: convo,
                             toolSpecs: specsThisRound,
@@ -357,6 +359,8 @@ final class AgentExecutor: Sendable {
                             maxTokens: maxTokens,
                             continuation: continuation
                         )
+                        NSLog("[AGENT] round \(round): streamRound returned (content=%d chars, toolCalls=%d)",
+                              content.count, rawToolCalls.count)
                         // Strip any thinking/channel tags that the model streamed into the
                         // text content before we use it for heuristics, nudges, or history.
                         // This keeps <channel>/</channel> markers from leaking into the
@@ -1759,6 +1763,15 @@ final class AgentExecutor: Sendable {
         let toolID = UUID().uuidString
         let toolStartTime = Date()
         AIBroadcastService.broadcastToolStarted(name: tc.name, id: toolID)
+        // SECURITY GATE: block execution of tools belonging to disabled Apple
+        // apps. The schema filter hides them from the model, but a hallucinated
+        // tool call could still reach here — this is the hard enforcement layer.
+        if await Self.isBlockedByAppEnablement(tc.name) {
+            NSLog("[executeTool] BLOCKED by AppEnablementStore: %@", tc.name)
+            AIBroadcastService.broadcastToolCompleted(
+                name: tc.name, id: toolID, duration: Date().timeIntervalSince(toolStartTime))
+            return "{\"error\":\"\(tc.name) is disabled. The user has revoked agent access to this app in Settings → Apps.\"}"
+        }
         if await MaestroTools.handles(tc.name) {
             let result = await MaestroTools.execute(call)
             NSLog("[executeTool] result for %@: %@", tc.name, String(result.prefix(300)))
@@ -2636,6 +2649,21 @@ final class AgentExecutor: Sendable {
     /// File operation tools that count toward the auto-save threshold.
     static func isFileOpTool(_ name: String) -> Bool {
         fileOpToolNames.contains(name)
+    }
+
+    /// Whether a tool call should be blocked because the user disabled the
+    /// owning Apple app in Settings → Apps. Maps the tool name to its
+    /// `ToolCategory`, then checks if that category is blocked.
+    static func isBlockedByAppEnablement(_ toolName: String) async -> Bool {
+        let blocked = await MainActor.run { AppEnablementStore.shared.blockedToolCategories() }
+        guard !blocked.isEmpty else { return false }
+        // Look up the tool's category from the registry.
+        let allDefs = await ToolRegistry.shared.allDefinitions()
+        guard let definition = allDefs.first(where: { $0.name == toolName }),
+              let categoryString = definition.category,
+              let category = ToolCategory(rawValue: categoryString)
+        else { return false }
+        return blocked.contains(category)
     }
 }
 

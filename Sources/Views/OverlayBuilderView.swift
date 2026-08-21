@@ -12,6 +12,8 @@ struct OverlayBuilderView: View {
     @State private var showForm = true
     @State private var showSafeAreas = false
     @State private var exportAlertMessage: String?
+    @State private var overlaysExpanded = true
+    @State private var websitesExpanded = true
 
     var body: some View {
         HStack(spacing: 0) {
@@ -21,8 +23,9 @@ struct OverlayBuilderView: View {
 
             Divider()
 
-            // ── Inspector (collapsible) ──
-            if showForm {
+            // ── Inspector (collapsible; overlay types only — the HTML
+            // editor manages its own layout, Dreamweaver-style) ──
+            if showForm && store.selectedType != .htmlEditor {
                 formPanel
                     .frame(minWidth: 240, idealWidth: 280, maxWidth: 360)
                     .transition(.move(edge: .leading).combined(with: .opacity))
@@ -31,22 +34,23 @@ struct OverlayBuilderView: View {
 
             // ── Preview + toolbar (fills remaining space) ──
             VStack(spacing: 0) {
-                // Toolbar
-                HStack(spacing: 10) {
-                    Button { showForm.toggle() } label: {
-                        Image(systemName: "sidebar.left")
-                            .foregroundStyle(showForm ? .primary : .secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Toggle Inspector")
+                // Toolbar — overlay types only. The HTML editor has its own
+                // full toolbar (view modes, insert bar, export) so stacking
+                // this one on top just duplicated chrome.
+                if store.selectedType != .htmlEditor {
+                    HStack(spacing: 10) {
+                        Button { showForm.toggle() } label: {
+                            Image(systemName: "sidebar.left")
+                                .foregroundStyle(showForm ? .primary : .secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Toggle Inspector")
 
-                    Text(store.selectedType.displayName)
-                        .font(.headline)
+                        Text(store.selectedType.displayName)
+                            .font(.headline)
 
-                    Spacer()
+                        Spacer()
 
-                    // Hide canvas picker for HTML editor (it manages its own)
-                    if store.selectedType != .htmlEditor {
                         Picker("Canvas", selection: Binding(
                             get: { store.canvasSizeIndex },
                             set: { store.canvasSizeIndex = $0; store.saveGlobals() }
@@ -75,12 +79,12 @@ struct OverlayBuilderView: View {
                         Button("Export All") { showExportAll = true }
                             .buttonStyle(.borderedProminent)
                     }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(.ultraThinMaterial)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(.ultraThinMaterial)
 
-                Divider()
+                    Divider()
+                }
 
                 // Content: HTML editor or normal preview
                 if store.selectedType == .htmlEditor {
@@ -114,19 +118,88 @@ struct OverlayBuilderView: View {
     private var overlayList: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 2) {
-                ForEach(groupedOverlays, id: \.key) { group, items in
-                    Section {
-                        ForEach(items) { type in
-                            overlayRow(type)
-                        }
-                    } header: {
-                        Text(group.uppercased())
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 8)
-                            .padding(.top, 8)
+                // ── HTML / CSS Editor — pinned home of the website builder ──
+                Button {
+                    store.selectType(.htmlEditor)
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: OverlayType.htmlEditor.icon)
+                            .frame(width: 20)
+                            .foregroundStyle(store.selectedType == .htmlEditor ? .white : Color.accentColor)
+                        Text(OverlayType.htmlEditor.displayName)
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(store.selectedType == .htmlEditor ? .white : .primary)
+                        Spacer()
                     }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(
+                        store.selectedType == .htmlEditor
+                            ? RoundedRectangle(cornerRadius: 6).fill(Color.accentColor.opacity(0.4))
+                            : RoundedRectangle(cornerRadius: 6).fill(Color.accentColor.opacity(0.08))
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 4)
+                .padding(.bottom, 4)
+
+                // ── Websites (full-page HTML templates) ──
+                DisclosureGroup(isExpanded: $websitesExpanded) {
+                    ForEach(WebsiteTemplates.all) { tpl in
+                        Button {
+                            store.applyWebsiteTemplate(tpl)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 8) {
+                                    Image(systemName: tpl.icon)
+                                        .frame(width: 20)
+                                        .foregroundStyle(.secondary)
+                                    Text(tpl.name)
+                                        .font(.subheadline)
+                                    Spacer()
+                                }
+                                Text(tpl.description)
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(2)
+                                    .padding(.leading, 28)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                } label: {
+                    Label("Websites", systemImage: "globe")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                }
+                .padding(.horizontal, 4)
+
+                // ── Overlays (stream graphics, collapsible) ──
+                DisclosureGroup(isExpanded: $overlaysExpanded) {
+                    ForEach(groupedOverlays, id: \.key) { group, items in
+                        Section {
+                            ForEach(items) { type in
+                                overlayRow(type)
+                            }
+                        } header: {
+                            Text(group.uppercased())
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 8)
+                                .padding(.top, 8)
+                        }
+                    }
+                } label: {
+                    Label("Overlays", systemImage: "rectangle.on.rectangle")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                }
+                .padding(.horizontal, 4)
             }
             .padding(.vertical, 6)
         }
@@ -134,7 +207,8 @@ struct OverlayBuilderView: View {
     }
 
     private var groupedOverlays: [(key: String, value: [OverlayType])] {
-        let grouped = Dictionary(grouping: OverlayType.allCases, by: \.group)
+        // htmlEditor is pinned at the top of the sidebar, not grouped.
+        let grouped = Dictionary(grouping: OverlayType.allCases.filter { $0 != .htmlEditor }, by: \.group)
         return grouped.sorted { $0.key < $1.key }
     }
 

@@ -117,6 +117,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Finalize any in-progress voice note (header flush + duration). The
         // audio data is already on disk; this just makes the WAV well-formed.
         VoiceNotesStore.shared.finalizeForAppQuit()
+        // Privacy: wipe WebKit cookies/cache/storage on quit when the user
+        // enabled "clear site data on quit" in SwiftBrowser's Privacy popover.
+        if UserDefaults.standard.bool(forKey: "browser.clearOnQuit") {
+            BrowserPrivacyStore.clearAllSiteDataSync()
+        }
         if let mcpService {
             Task { await mcpService.shutdown() }
         }
@@ -174,7 +179,7 @@ struct SwiftMaestroApp: App {
     @State private var eventKitStore = EventKitStore()
     @State private var appleNotesService = AppleNotesService()
     @State private var contactsService = ContactsService()
-    @State private var canvasStore = CanvasStore()
+    @State private var whiteboardStore = WhiteboardStore()
     @State private var kanbanStore = KanbanStore()
     @State private var numbersService = NumbersService()
     @State private var mapsService = AppleMapsService.shared
@@ -207,7 +212,7 @@ struct SwiftMaestroApp: App {
                 .environment(eventKitStore)
                 .environment(appleNotesService)
                 .environment(contactsService)
-                .environment(canvasStore)
+                .environment(whiteboardStore)
                 .environment(kanbanStore)
                 .environment(numbersService)
                 .environment(mapsService)
@@ -437,7 +442,7 @@ struct SwiftMaestroApp: App {
                     .environment(eventKitStore)
                     .environment(appleNotesService)
                     .environment(contactsService)
-                    .environment(canvasStore)
+                    .environment(whiteboardStore)
                     .environment(kanbanStore)
                     .environment(numbersService)
                     .environment(mapsService)
@@ -473,7 +478,7 @@ struct SwiftMaestroApp: App {
                     .environment(eventKitStore)
                     .environment(appleNotesService)
                     .environment(contactsService)
-                    .environment(canvasStore)
+                    .environment(whiteboardStore)
                     .environment(kanbanStore)
                     .environment(numbersService)
                     .environment(mapsService)
@@ -557,13 +562,28 @@ private struct PanelCommands: Commands {
             panelsMenu
 
             // Canvas windows: closing one used to strand its tiles invisibly
-            // until the next app restart. Reopen (or focus) from here instead.
+            // until the next app restart. Reopen (or focus) from here — and
+            // Close Canvas Window removes it entirely (tiles migrate back to
+            // the main canvas).
             if !canvasWindows.isEmpty {
                 Divider()
                 Section("Canvas Windows") {
                     ForEach(canvasWindows) { window in
-                        Button {
-                            openWindow(id: "canvas-window", value: window.id)
+                        Menu {
+                            Button {
+                                openWindow(id: "canvas-window", value: window.id)
+                            } label: {
+                                Label(
+                                    openCanvasWindowIDs.contains(window.id) ? "Focus Window" : "Reopen Window",
+                                    systemImage: "rectangle.on.rectangle"
+                                )
+                            }
+                            Divider()
+                            Button(role: .destructive) {
+                                layout.removeCanvasWindow(id: window.id)
+                            } label: {
+                                Label("Close Canvas Window", systemImage: "xmark.rectangle")
+                            }
                         } label: {
                             Label(
                                 window.name,

@@ -126,7 +126,7 @@ final class MaestroToolsTests: XCTestCase {
         XCTAssertTrue(names.contains("open_url"))
         XCTAssertTrue(names.contains("list_notes"))
         XCTAssertTrue(names.contains("list_kanban_boards"))
-        XCTAssertTrue(names.contains("list_canvas_boards"))
+        XCTAssertTrue(names.contains("whiteboard_list_boards"))
         XCTAssertTrue(names.contains("list_numbers_documents"))
         XCTAssertTrue(names.contains("read_numbers_table"))
     }

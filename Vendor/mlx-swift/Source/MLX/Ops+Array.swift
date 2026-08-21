@@ -1557,6 +1557,46 @@ public func sin(_ array: MLXArray, stream: StreamOrDevice = .default) -> MLXArra
 }
 
 /// Split an array into equal size pieces along a given axis.
+// MARK: - SwiftMaestro patch: checked split (2026-08-20)
+
+/// The mlx-c split entry points catch C++ exceptions, route the message through
+/// the MLX error handler, and LEAVE THE OUTPUT VECTOR EMPTY — and every wrapper
+/// here used to ignore the returned status, so a failed split surfaced
+/// downstream as a misleading "Index out of range" trap. First hit as the
+/// Qwen3-Coder-Next `fixQueryKeyValueOrdering` crash in SwiftMaestro 0.3.6,
+/// where a system-level Metal allocation failure during a second-model load
+/// turned into a phantom array-bounds crash.
+///
+/// This wrapper captures the routed MLX error message for the call and fails at
+/// the site with full context (input shape, axis, split points) instead of
+/// returning a phantom short/empty vector. `fatalError` matches upstream's own
+/// documented fatal-error handler philosophy: an MLX op failure is
+/// unrecoverable for the current computation, but now the crash report carries
+/// the REAL reason instead of a bogus bounds trap.
+@inline(never)
+func mlxCheckedSplit(
+    expectedCount: Int,
+    context: @autoclosure () -> String,
+    call: (UnsafeMutablePointer<mlx_vector_array>) -> Int32
+) -> [MLXArray] {
+    final class Capture: @unchecked Sendable { var message: String? }
+    let capture = Capture()
+    var vec = mlx_vector_array_new()
+    let rc = withErrorHandler({ capture.message = $0 }) { call(&vec) }
+    defer { mlx_vector_array_free(vec) }
+    guard rc == 0 else {
+        fatalError("MLX split failed: \(capture.message ?? "unknown MLX error") [\(context())]")
+    }
+    let pieces = mlx_vector_array_values(vec)
+    if pieces.count != expectedCount {
+        // A "successful" return with the wrong piece count is still
+        // unsubscriptable at the call site — fail here with context instead.
+        fatalError(
+            "MLX split returned \(pieces.count) pieces, expected \(expectedCount) [\(context())]")
+    }
+    return pieces
+}
+
 ///
 /// Splits the array into equal size pieces along a given axis and returns an array of `MLXArray`:
 ///
@@ -1586,10 +1626,13 @@ public func sin(_ array: MLXArray, stream: StreamOrDevice = .default) -> MLXArra
 public func split(_ array: MLXArray, parts: Int, axis: Int = 0, stream: StreamOrDevice = .default)
     -> [MLXArray]
 {
-    var vec = mlx_vector_array_new()
-    mlx_split(&vec, array.ctx, parts.int32, axis.int32, stream.ctx)
-    defer { mlx_vector_array_free(vec) }
-    return mlx_vector_array_values(vec)
+    // SwiftMaestro patch (2026-08-20): checked result — see mlxCheckedSplit.
+    mlxCheckedSplit(
+        expectedCount: parts,
+        context: "split(parts: \(parts), axis: \(axis), input shape: \(array.shape))"
+    ) { vec in
+        mlx_split(vec, array.ctx, parts.int32, axis.int32, stream.ctx)
+    }
 }
 
 /// Split an array into 2 equal size pieces along a given axis.
@@ -1615,10 +1658,13 @@ public func split(_ array: MLXArray, parts: Int, axis: Int = 0, stream: StreamOr
 public func split(_ array: MLXArray, axis: Int = 0, stream: StreamOrDevice = .default)
     -> (MLXArray, MLXArray)
 {
-    var vec = mlx_vector_array_new()
-    mlx_split(&vec, array.ctx, 2, axis.int32, stream.ctx)
-    defer { mlx_vector_array_free(vec) }
-    let pieces = mlx_vector_array_values(vec)
+    // SwiftMaestro patch (2026-08-20): checked result — see mlxCheckedSplit.
+    let pieces = mlxCheckedSplit(
+        expectedCount: 2,
+        context: "split(axis: \(axis), input shape: \(array.shape))"
+    ) { vec in
+        mlx_split(vec, array.ctx, 2, axis.int32, stream.ctx)
+    }
     return (pieces[0], pieces[1])
 }
 
@@ -1638,10 +1684,15 @@ public func split(
     _ array: MLXArray, indices: some Collection<Int>, axis: Int = 0,
     stream: StreamOrDevice = .default
 ) -> [MLXArray] {
-    var vec = mlx_vector_array_new()
-    mlx_split_sections(&vec, array.ctx, indices.asInt32, indices.count, axis.int32, stream.ctx)
-    defer { mlx_vector_array_free(vec) }
-    return mlx_vector_array_values(vec)
+    // SwiftMaestro patch (2026-08-20): checked result — see mlxCheckedSplit.
+    // (Empty indices legitimately return one piece: the whole array — matches
+    // the C++ `indices.empty()` path, so expectedCount is indices.count + 1.)
+    mlxCheckedSplit(
+        expectedCount: indices.count + 1,
+        context: "split(indices: \(Array(indices)), axis: \(axis), input shape: \(array.shape))"
+    ) { vec in
+        mlx_split_sections(vec, array.ctx, indices.asInt32, indices.count, axis.int32, stream.ctx)
+    }
 }
 
 /// Element-wise square root

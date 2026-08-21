@@ -13,6 +13,7 @@ struct WebBrowserPanelView: View {
             Divider()
             WebBrowserToolbar(store: store)
             Divider()
+            FavoritesBarView(store: store)
             if let tab = store.selectedTab {
                 WebBrowserTabContent(tab: tab)
                     .id(tab.id)
@@ -44,6 +45,10 @@ private struct WebBrowserToolbar: View {
     let store: WebBrowserStore
     @Environment(ThemeStore.self) private var theme
     @FocusState private var urlFieldFocused: Bool
+    @State private var showClipPopover = false
+    @State private var showBookmarksPopover = false
+    @State private var showPrivacyPopover = false
+    @State private var bookmarkStore = BookmarkStore.shared
 
     var body: some View {
         HStack(spacing: 8) {
@@ -96,11 +101,67 @@ private struct WebBrowserToolbar: View {
             .help("Go to URL")
 
             Button {
-                Task { await store.clipCurrentPage() }
+                showClipPopover = true
             } label: {
                 Image(systemName: "scissors")
             }
-            .help("Clip this page to Notes")
+            .help("Clip this page (template + destination options)")
+            .popover(isPresented: $showClipPopover, arrowEdge: .bottom) {
+                ClipPopoverView(store: store)
+            }
+
+            // Bookmark current page (star) — filled when already bookmarked
+            let currentURL = store.selectedTab?.currentURL?.absoluteString
+            let isBookmarked = currentURL.map { bookmarkStore.isBookmarked(url: $0) } ?? false
+            Button {
+                guard let url = currentURL else { return }
+                if let existing = bookmarkStore.bookmarks.first(where: { $0.url == url }) {
+                    bookmarkStore.remove(existing)
+                } else {
+                    bookmarkStore.add(
+                        title: store.selectedTab?.title ?? url,
+                        url: url)
+                }
+            } label: {
+                Image(systemName: isBookmarked ? "star.fill" : "star")
+                    .foregroundStyle(isBookmarked ? .yellow : .primary)
+            }
+            .help(isBookmarked ? "Remove bookmark" : "Bookmark this page")
+            .disabled(currentURL == nil)
+
+            // Bookmarks manager
+            Button {
+                showBookmarksPopover = true
+            } label: {
+                Image(systemName: "book")
+            }
+            .help("Bookmarks")
+            .popover(isPresented: $showBookmarksPopover, arrowEdge: .bottom) {
+                BookmarksPopoverView(store: store)
+            }
+
+            // Privacy: cookies + site data + private tabs
+            Button {
+                showPrivacyPopover = true
+            } label: {
+                Image(systemName: "hand.raised")
+            }
+            .help("Privacy: cookies, site data, private tabs")
+            .popover(isPresented: $showPrivacyPopover, arrowEdge: .bottom) {
+                BrowserPrivacyPopover(store: store)
+            }
+
+            // Dismiss popup overlays (newsletter modals, spin-to-win, cookie walls)
+            Button {
+                Task {
+                    if let tab = store.selectedTab {
+                        _ = await OverlayDismissService.shared.dismiss(on: tab)
+                    }
+                }
+            } label: {
+                Image(systemName: "rectangle.slash")
+            }
+            .help("Dismiss popup overlays blocking this page")
 
             Text(store.selectedTab?.engineType.rawValue.capitalized ?? "WebKit")
                 .font(.caption)
@@ -148,6 +209,12 @@ private struct WebBrowserTabStrip: View {
                 }
                 .buttonStyle(.plain)
                 .help("New tab")
+                .contextMenu {
+                    Button("New Tab") { store.addTab() }
+                    Button("New Private Tab") { store.addTab(isPrivate: true) }
+                }
+                // Long-press / right-click reveals the private-tab option;
+                // the "+" button itself always opens the default kind.
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
@@ -170,6 +237,12 @@ private struct WebBrowserTabItem: View {
             store.selectedTabID = tab.id
         } label: {
             HStack(spacing: 6) {
+                if tab.isPrivate {
+                    Image(systemName: "lock.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.purple)
+                        .help("Private tab — nothing persists after close")
+                }
                 Image(systemName: tab.engineType == .webKit ? "safari" : "globe")
                     .font(.caption2)
                 Text(tab.title.isEmpty ? "New Tab" : tab.title)
