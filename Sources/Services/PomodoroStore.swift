@@ -86,6 +86,26 @@ final class PomodoroStore {
         }
     }
 
+    /// Title-bar text (Omarchy waybar style): the REMAINING time counting
+    /// down — always shown, even idle ("25:00 · Ready" before the day starts).
+    var titleBarText: String { Self.formatted(remaining) }
+
+    /// Omarchy tooltip status word: Ready / Running / Paused / Break.
+    var statusWord: String {
+        switch phase {
+        case .idle: return "Ready"
+        case .work: return isPaused ? "Paused" : "Running"
+        case .shortBreak, .longBreak: return "Break"
+        }
+    }
+
+    /// FOCUS CYCLE dot progress for the dashboard: completed this cycle
+    /// (position within the long-break cadence) and the cycle length.
+    var cycleDots: (done: Int, total: Int) {
+        let total = max(2, cyclesBeforeLongBreak)
+        return (todayStats().sessions % total, total)
+    }
+
     // MARK: Settings (persisted — the config.toml equivalent)
 
     var workMinutes: Int {

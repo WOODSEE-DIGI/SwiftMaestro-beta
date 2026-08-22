@@ -115,6 +115,13 @@ struct ContentView: View {
                 }
                 .help("Global default model — used by any agent whose model is set to “Default (global)”.")
             }
+            ToolbarItem(placement: .principal) {
+                // Omarchy-style top-center pomodoro clock: hover for info,
+                // left-click opens the dashboard panel, right-click for controls.
+                PomodoroTitleBarTimer(store: PomodoroStore.shared) {
+                    openPanel(.pomodoro)
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     activeSheet = .newAgent

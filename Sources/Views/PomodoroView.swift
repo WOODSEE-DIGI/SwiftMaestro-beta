@@ -38,6 +38,25 @@ struct PomodoroView: View {
                     .foregroundStyle(.secondary)
             }
 
+            // FOCUS CYCLE dots (Omarchy dashboard): completed this cycle vs
+            // the long-break cadence.
+            if store.phase != .idle {
+                VStack(spacing: 4) {
+                    Text("FOCUS CYCLE")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 8) {
+                        ForEach(0..<store.cycleDots.total, id: \.self) { index in
+                            Circle()
+                                .strokeBorder(index <= store.cycleDots.done
+                                              ? Color.accentColor : Color.secondary.opacity(0.5),
+                                              lineWidth: 2)
+                                .frame(width: 12, height: 12)
+                        }
+                    }
+                }
+            }
+
             // Session label
             TextField("Working on…", text: $store.currentLabel)
                 .textFieldStyle(.roundedBorder)
