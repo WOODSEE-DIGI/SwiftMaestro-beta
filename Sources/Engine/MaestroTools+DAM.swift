@@ -45,7 +45,14 @@ extension MaestroTools {
                 name: "dam_filter_view", spec: damToolSpecs[7],
                 category: ToolCategory.dam.rawValue,
                 handler: { call in await damFilterView(call) }),
+            ToolDefinition(
+                name: "dam_import_lightroom", spec: damToolSpecs[8],
+                category: ToolCategory.dam.rawValue,
+                handler: { call in await damImportLightroom(call) }),
         ])
+
+        // AI tagging (learn-as-you-tag) tools — separate file, same category.
+        await registerDAMTaggingTools()
     }
 
     // MARK: - Tool Specs
@@ -127,6 +134,19 @@ extension MaestroTools {
                     "clear": ["type": "boolean", "description": "If true, reset all filters and show full catalog."],
                 ],
                 required: []),
+            rawSpec("dam_import_lightroom",
+                "Import a Lightroom catalog CSV export into MaestroDAM: upserts "
+                + "assets (rating, pick flag, color label, capture date, "
+                + "dimensions) matched by root+relative path, imports keywords "
+                + "as DAM tags (which become AI learn-as-you-tag exemplars), maps "
+                + "custom labels to tags, and rebuilds the Lightroom folder tree "
+                + "as DAM collections. Works offline — missing files are still "
+                + "cataloged.",
+                properties: [
+                    "path": ["type": "string", "description": "Absolute path to the Lightroom catalog CSV export."],
+                    "root_path": ["type": "string", "description": "Absolute path of the folder that CONTAINS the Lightroom top-level folders (CSV full_path values resolve against it)."],
+                ],
+                required: ["path", "root_path"]),
         ]
     }
 
@@ -153,6 +173,7 @@ extension MaestroTools {
         let folder: String?
         let clear: Bool?
     }
+    private struct ImportLightroomArgs: Codable { let path, root_path: String? }
 
     // MARK: - Helpers
 
@@ -412,6 +433,42 @@ extension MaestroTools {
             updated += 1
         }
         return "\(isReplace ? "Replaced" : "Added") keywords on \(updated) asset(s): \(keywords)"
+    }
+
+    // MARK: - dam_import_lightroom
+
+    private static func damImportLightroom(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: ImportLightroomArgs.self),
+              let path = args.path?.trimmingCharacters(in: .whitespaces),
+              !path.isEmpty,
+              let rootPath = args.root_path?.trimmingCharacters(in: .whitespaces),
+              !rootPath.isEmpty else {
+            return "Error: path and root_path are required."
+        }
+        guard FileManager.default.fileExists(atPath: path) else {
+            return "Error: CSV not found at \(path)"
+        }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: rootPath, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            return "Error: root folder not found at \(rootPath)"
+        }
+        do {
+            let result = try await DAMLightroomImporter.shared.importCSV(
+                at: URL(fileURLWithPath: path),
+                root: URL(fileURLWithPath: rootPath))
+            return "Lightroom import complete: \(result.scanned) rows — "
+                + "\(result.inserted) new assets, \(result.updated) updated, "
+                + "\(result.keywordsApplied) keyword/label tags applied, "
+                + "\(result.collectionsCreated) collections created."
+                + (result.missingOnDisk > 0
+                   ? " \(result.missingOnDisk) files not currently on disk (cataloged offline)."
+                   : "")
+                + "\nTip: run dam_ai_index, then dam_relearn to propagate the "
+                + "imported tags to similar untagged images."
+        } catch {
+            return "Error importing Lightroom CSV: \(error.localizedDescription)"
+        }
     }
 
     // MARK: - dam_filter_view

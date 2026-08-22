@@ -567,6 +567,67 @@ final class DAMViewModel {
         importTask?.cancel()
     }
 
+    // MARK: - Lightroom CSV import
+
+    private(set) var isImportingLightroom = false
+    private(set) var lightroomProgress = ""
+    private(set) var lightroomSummary: String?
+    private var lightroomTask: Task<Void, Never>?
+
+    /// Two-panel flow: pick the CSV export, then the folder that CONTAINS
+    /// the Lightroom top-level folders (CSV paths are catalog-relative).
+    func importLightroomCSVWithPanel() {
+        let csvPanel = NSOpenPanel()
+        csvPanel.canChooseFiles = true
+        csvPanel.canChooseDirectories = false
+        csvPanel.allowsMultipleSelection = false
+        csvPanel.allowedContentTypes = [.commaSeparatedText, .plainText]
+        csvPanel.message = "Choose the Lightroom catalog CSV export"
+        guard csvPanel.runModal() == .OK, let csvURL = csvPanel.url else { return }
+
+        let rootPanel = NSOpenPanel()
+        rootPanel.canChooseFiles = false
+        rootPanel.canChooseDirectories = true
+        rootPanel.allowsMultipleSelection = false
+        rootPanel.message = "Choose the folder that CONTAINS the Lightroom folders (e.g. the parent of “Photos”)"
+        rootPanel.prompt = "Use as Root"
+        guard rootPanel.runModal() == .OK, let rootURL = rootPanel.url else { return }
+
+        isImportingLightroom = true
+        lightroomProgress = "Parsing CSV…"
+        lightroomSummary = nil
+        lightroomTask = Task {
+            do {
+                let result = try await DAMLightroomImporter.shared.importCSV(
+                    at: csvURL, root: rootURL) { scanned, total in
+                        Task { @MainActor [weak self] in
+                            self?.lightroomProgress = "Importing \(scanned)/\(total)…"
+                        }
+                    }
+                lightroomSummary = "Lightroom import: \(result.scanned) rows — "
+                    + "\(result.inserted) new assets, \(result.updated) updated, "
+                    + "\(result.keywordsApplied) keywords/labels tagged, "
+                    + "\(result.collectionsCreated) collections created."
+                    + (result.missingOnDisk > 0
+                       ? " \(result.missingOnDisk) files not on disk (cataloged offline)."
+                       : "")
+                errorMessage = nil
+            } catch is CancellationError {
+                lightroomSummary = "Lightroom import cancelled."
+            } catch {
+                errorMessage = "Lightroom import failed: \(error.localizedDescription)"
+            }
+            isImportingLightroom = false
+            lightroomProgress = ""
+            await reload()
+            await refreshFolderTree()
+        }
+    }
+
+    func cancelLightroomImport() {
+        lightroomTask?.cancel()
+    }
+
     // MARK: - Rating edits
 
     /// Set rating (0–5) for every selected asset and persist.

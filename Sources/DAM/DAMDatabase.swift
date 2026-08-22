@@ -54,6 +54,12 @@ final class DAMDatabase: Sendable {
         try Self.migrator.migrate(dbQueue)
     }
 
+    /// In-memory catalog for unit tests — same migrations, no disk file,
+    /// never touches the user's real catalog.
+    static func makeForTesting() throws -> DAMDatabase {
+        try DAMDatabase(inMemory: ())
+    }
+
     // MARK: - Migrations
 
     private static let migrator: DatabaseMigrator = {
@@ -201,6 +207,41 @@ final class DAMDatabase: Sendable {
             try db.alter(table: "asset") { t in
                 t.add(column: "tagColors", .text)
             }
+        }
+
+        // v6 — AI tagging (learn-as-you-tag). Per-asset Vision feature prints
+        // + normalized OCR tokens power exemplar-based similarity; the
+        // suggestion queue is what the Tagging workspace reviews.
+        migrator.registerMigration("v6-ai-tagging") { db in
+            try db.create(table: "assetFeature") { t in
+                t.column("assetId", .integer).notNull()
+                    .references("asset", onDelete: .cascade)
+                t.column("featurePrint", .blob)
+                t.column("ocrTokens", .text)
+                t.column("computedAt", .datetime)
+                t.primaryKey(["assetId"])
+            }
+
+            try db.create(table: "tagSuggestion") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("assetId", .integer).notNull()
+                    .references("asset", onDelete: .cascade)
+                t.column("tagName", .text).notNull()
+                t.column("confidence", .double).notNull()
+                t.column("state", .text).notNull()
+                    .defaults(to: DAMSuggestionState.pending.rawValue)
+                t.column("exemplarAssetId", .integer)
+                    .references("asset", onDelete: .setNull)
+                t.column("basis", .text).notNull()
+                    .defaults(to: DAMSuggestionBasis.visual.rawValue)
+                t.column("createdAt", .datetime)
+                t.column("resolvedAt", .datetime)
+                t.uniqueKey(["assetId", "tagName"])
+            }
+            try db.create(index: "idx_tagSuggestion_state",
+                          on: "tagSuggestion", columns: ["state", "confidence"])
+            try db.create(index: "idx_tagSuggestion_asset",
+                          on: "tagSuggestion", columns: ["assetId"])
         }
 
         return migrator

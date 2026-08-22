@@ -127,7 +127,7 @@ struct DAMAsset: Codable, FetchableRecord, PersistableRecord, TableRecord,
     var sortType: String { uti ?? "" }
 }
 
-/// A node in the hierarchical tag tree (`/People/Family/Celeste`).
+/// A node in the hierarchical tag tree (`/People/Family/Alex`).
 struct DAMTag: Codable, FetchableRecord, PersistableRecord, TableRecord,
              Identifiable, Hashable, Sendable {
     static let databaseTableName = "tag"
@@ -209,5 +209,72 @@ struct DAMCollectionAsset: Codable, FetchableRecord, PersistableRecord, TableRec
     enum Columns {
         static let collectionId = Column("collectionId")
         static let assetId = Column("assetId")
+    }
+}
+
+// MARK: - AI tagging (learn-as-you-tag) models
+
+/// Per-asset AI similarity features — migration v6. `featurePrint` is an
+/// NSKeyedArchiver-serialized `VNFeaturePrintObservation` (Apple Vision image
+/// similarity fingerprint); `ocrTokens` is a JSON array of normalized OCR word
+/// tokens used for Jaccard text similarity. Both are computed once per asset
+/// and reused by the tagging engine's exemplar-based k-NN propagation.
+struct DAMAssetFeature: Codable, FetchableRecord, PersistableRecord, TableRecord, Sendable {
+    static let databaseTableName = "assetFeature"
+
+    var assetId: Int64
+    var featurePrint: Data?
+    /// JSON array of lowercased, punctuation-stripped OCR word tokens.
+    var ocrTokens: String?
+    var computedAt: Date?
+
+    enum Columns {
+        static let assetId = Column("assetId")
+        static let computedAt = Column("computedAt")
+    }
+}
+
+/// Review state of an AI tag suggestion.
+enum DAMSuggestionState: String, Codable, Sendable {
+    case pending, accepted, rejected, autoApplied
+}
+
+/// What evidence produced a suggestion.
+enum DAMSuggestionBasis: String, Codable, Sendable {
+    case visual, ocr, both
+}
+
+/// One AI tag suggestion for one asset — the learning loop's output. Created
+/// when an untagged asset is similar (visually and/or by OCR text) to a tagged
+/// exemplar. The user accepts/rejects in the Tagging workspace; accepted
+/// suggestions become real tags AND new exemplars, so the system literally
+/// learns as you tag.
+struct DAMTagSuggestion: Codable, FetchableRecord, PersistableRecord, TableRecord,
+                         Identifiable, Hashable, Sendable {
+    static let databaseTableName = "tagSuggestion"
+
+    var id: Int64?
+    var assetId: Int64
+    var tagName: String
+    var confidence: Double
+    var state: DAMSuggestionState
+    /// The tagged asset this was learned from (nil for bulk recomputes where
+    /// the nearest exemplar wasn't tracked).
+    var exemplarAssetId: Int64?
+    var basis: DAMSuggestionBasis
+    var createdAt: Date?
+    var resolvedAt: Date?
+
+    enum Columns {
+        static let id = Column("id")
+        static let assetId = Column("assetId")
+        static let tagName = Column("tagName")
+        static let confidence = Column("confidence")
+        static let state = Column("state")
+        static let exemplarAssetId = Column("exemplarAssetId")
+    }
+
+    mutating func didInsert(_ inserted: InsertionSuccess) {
+        id = inserted.rowID
     }
 }

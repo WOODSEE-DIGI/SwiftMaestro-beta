@@ -16,7 +16,7 @@ import UniformTypeIdentifiers
 /// Tab names are deliberately generic (Home/Edit, not Essentials/Workflow)
 /// to avoid any Adobe look-and-feel entanglement.
 enum DAMWorkspace: String, CaseIterable, Identifiable, Sendable {
-    case home, filmstrip, metadata, libraries, output, edit
+    case home, filmstrip, metadata, libraries, output, edit, tagging
 
     var id: String { rawValue }
 
@@ -30,6 +30,7 @@ enum DAMWorkspace: String, CaseIterable, Identifiable, Sendable {
         case .libraries: return "books.vertical"
         case .output: return "square.and.arrow.up"
         case .edit: return "square.and.pencil"
+        case .tagging: return "wand.and.stars"
         }
     }
 
@@ -41,6 +42,7 @@ enum DAMWorkspace: String, CaseIterable, Identifiable, Sendable {
         case .libraries: return "Preview over grid with a properties panel"
         case .output: return "Export the selection (JPEG render or copy originals)"
         case .edit: return "Batch operations on the selection (rating, keywords)"
+        case .tagging: return "AI-assisted tagging — tag a few images, review suggestions for similar ones"
         }
     }
 }

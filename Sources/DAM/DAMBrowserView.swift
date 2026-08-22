@@ -51,6 +51,7 @@ struct DAMBrowserView: View {
         case .libraries: librariesBody
         case .output: OutputWorkspaceView(viewModel: viewModel)
         case .edit: EditWorkspaceView(viewModel: viewModel)
+        case .tagging: TaggingWorkspaceView(viewModel: viewModel)
         }
     }
 
@@ -65,12 +66,37 @@ struct DAMBrowserView: View {
             }
             .help("Show/hide the Folders tree")
 
-            Button {
-                viewModel.importFolderWithPanel()
+            Menu {
+                Button { viewModel.importFolderWithPanel() } label: {
+                    Label("Import Folder…", systemImage: "folder")
+                }
+                Button { viewModel.importLightroomCSVWithPanel() } label: {
+                    Label("Import Lightroom CSV…", systemImage: "tablecells")
+                }
             } label: {
-                Label("Import Folder…", systemImage: "square.and.arrow.down")
+                Label("Import…", systemImage: "square.and.arrow.down")
             }
-            .disabled(viewModel.isImporting)
+            .disabled(viewModel.isImporting || viewModel.isImportingLightroom)
+
+            if viewModel.isImportingLightroom {
+                Button {
+                    viewModel.cancelLightroomImport()
+                } label: {
+                    Label("Cancel", systemImage: "xmark.circle")
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.red)
+
+                Text(viewModel.lightroomProgress)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            } else if let summary = viewModel.lightroomSummary {
+                Text(summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
 
             if viewModel.isImporting {
                 Button {
