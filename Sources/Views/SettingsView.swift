@@ -350,6 +350,7 @@ struct AppearanceSettingsTab: View {
         .busMonitor, .notesMD, .appleNotes, .calendar, .reminders, .contacts,
         .canvas, .kanban, .numbers, .whatsapp, .terminal,
         .webBrowser, .damBrowser, .maestroDocs, .maestroBooks, .maestroDB, .htmlBuilder, .backup, .voiceNotes,
+        .pomodoro,
     ]
 
     // Collapsible section state. "Appearance" and "App Panels" open by

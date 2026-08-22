@@ -237,6 +237,8 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
     case voiceNotes
     /// Blocky — blockchain wallet lookup and transaction tracing (BTC/ETH).
     case blocky
+    /// Pomodoro — focus/break timer with menu-bar counter (pomarchy-style).
+    case pomodoro
 
     var icon: String {
         switch self {
@@ -277,6 +279,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .backup: return "arrow.triangle.2.circlepath"
         case .voiceNotes: return "mic.circle"
         case .blocky: return "link.circle"
+        case .pomodoro: return "timer"
         }
     }
 
@@ -324,6 +327,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .backup: return "backup"
         case .voiceNotes: return "voiceNotes"
         case .blocky: return "blocky"
+        case .pomodoro: return "pomodoro"
         }
     }
 
@@ -369,6 +373,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .backup: return "Backup"
         case .voiceNotes: return "Voice Notes"
         case .blocky: return "Blocky"
+        case .pomodoro: return "Pomodoro"
         }
     }
 
@@ -434,6 +439,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .backup: return "backup"
         case .voiceNotes: return "voiceNotes"
         case .blocky: return "blocky"
+        case .pomodoro: return "pomodoro"
         }
     }
 }

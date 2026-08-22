@@ -318,6 +318,24 @@ struct SwiftMaestroApp: App {
                     let worker = BusWorker(engine: engine, mcpService: mcpService)
                     busWorker = worker
                     MaestroTools.busWorker = worker
+                    // System health watchdog: crash/hang notifications → "Diagnose
+                    // with Maestro" seeds the Navigator chat with the crash context.
+                    SystemHealthWatchService.shared.onDiagnose = { summary in
+                        let navigator = workspace.navigator
+                        let model = catalog.effectiveModel(for: navigator)
+                        let vm = ChatViewModelCache.shared.viewModel(
+                            for: navigator,
+                            projectName: workspace.projectName(for: navigator))
+                        vm.inputText = SystemHealthWatchService.diagnosticPrompt(for: summary)
+                        // Privacy gate: auto-send only to local models; a remote
+                        // provider gets a pre-filled draft the user reviews first
+                        // (crash reports can contain paths and usernames).
+                        if let model, !model.isRemote {
+                            vm.send(engine: engine, catalog: catalog, model: model)
+                        }
+                        openOrFocusPanel(.agentChat(navigator.id))
+                    }
+                    SystemHealthWatchService.shared.start()
                     // Validate capabilities for every locally-present model so
                     // tool-call format / thinking support are known before any
                     // generation runs. This is fast (JSON reads only).
@@ -518,8 +536,35 @@ struct SwiftMaestroApp: App {
         // content's size (so it can't be resized). `.contentMinSize` enforces only
         // the content's MINIMUM, letting the user resize the window larger to use
         // available screen space (e.g. see the Appearance preview without scrolling).
-        .windowResizability(.contentMinSize)
+        // Pomodoro menu-bar extra — the pomarchy pattern on macOS: icon +
+        // live counter always visible; left-click opens the state-aware menu.
+        MenuBarExtra {
+            PomodoroMenuBarMenu(store: PomodoroStore.shared) {
+                openOrFocusPanel(.pomodoro)
+            }
+        } label: {
+            PomodoroMenuBarLabel(store: PomodoroStore.shared)
+        }
+        .menuBarExtraStyle(.menu)
         #endif
+    }
+
+    /// Menu-bar companion to `PanelCommands.openOrFocus`: dock the panel into
+    /// the grid, or front it (floating window / canvas tile) when already open.
+    private func openOrFocusPanel(_ kind: WorkspacePanelKind) {
+        switch workspaceLayout.open(kind) {
+        case .floated:
+            openWindow(id: "workspace-panel-window", value: WorkspacePanelWindowID(kind: kind))
+        case .alreadyOpen:
+            if workspaceLayout.isFloating(kind) {
+                openWindow(id: "workspace-panel-window", value: WorkspacePanelWindowID(kind: kind))
+            } else if let tile = workspaceLayout.canvasTile(containing: kind) {
+                workspaceLayout.bringTileToFront(tile.id)
+            }
+            NotificationCenter.default.post(name: .bringWorkspacePanelToFront, object: kind)
+        case .dockedDirectly:
+            break
+        }
     }
 }
 

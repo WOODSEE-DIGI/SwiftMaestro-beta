@@ -112,6 +112,8 @@ struct WorkspacePanelContentView: View {
             VoiceNotesPanel()
         case .blocky:
             BlockyPanel()
+        case .pomodoro:
+            PomodoroView()
         }
         }
     }
