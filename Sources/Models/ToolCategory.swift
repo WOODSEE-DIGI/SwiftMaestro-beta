@@ -132,7 +132,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .database: return "Database"
         case .dam: return "DAM"
         case .blockchain: return "Blocky"
-        case .overlayBuilder: return "HTML Builder"
+        case .overlayBuilder: return "SwiftWeaver"
         case .calendar: return "Calendar"
         case .reminders: return "Reminders"
         case .contacts: return "Contacts"
@@ -176,7 +176,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .database: return "cylinder"
         case .dam: return "photo.on.rectangle.angled"
         case .blockchain: return "link.circle"
-        case .overlayBuilder: return "rectangle.dashed"
+        case .overlayBuilder: return "chevron.left.forwardslash.chevron.right"
         case .calendar: return "calendar"
         case .reminders: return "checklist"
         case .contacts: return "person.2"
@@ -342,8 +342,8 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             ]
         case .overlayBuilder:
             return [
-                "overlay_html_get", "overlay_html_set", "overlay_html_template",
-                "overlay_list", "overlay_select", "overlay_set_field", "overlay_get_fields",
+                "weaver_html_get", "weaver_html_set", "weaver_html_template",
+                "weaver_list_templates",
             ]
         case .calendar:
             return ["create_calendar_event", "list_calendar_events"]

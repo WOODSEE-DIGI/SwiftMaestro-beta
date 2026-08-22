@@ -365,7 +365,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .maestroDocs: return "MaestroDocs"
         case .maestroBooks: return "MaestroBooks"
         case .maestroDB: return "MaestroDB"
-        case .htmlBuilder: return "HTML Builder"
+        case .htmlBuilder: return "SwiftWeaver"
         case .backup: return "Backup"
         case .voiceNotes: return "Voice Notes"
         case .blocky: return "Blocky"

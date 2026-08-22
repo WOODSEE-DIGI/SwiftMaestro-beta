@@ -105,7 +105,7 @@ struct WorkspacePanelContentView: View {
         case .maestroDB:
             MaestroDBView()
         case .htmlBuilder:
-            OverlayBuilderView()
+            SwiftWeaverView()
         case .backup:
             BackupStatusPanel()
         case .voiceNotes:

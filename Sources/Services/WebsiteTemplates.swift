@@ -23,7 +23,7 @@ struct WebsiteTemplate: Sendable, Identifiable {
 
 enum WebsiteTemplates {
 
-    static let all: [WebsiteTemplate] = [blog, vlog, myspace, tumblr, memeLab, avatar, banner, linkBio]
+    static let all: [WebsiteTemplate] = [blog, vlog, myspot, timble, memeLab, avatar, banner, linkBio]
 
     // MARK: - Blog
 
@@ -143,14 +143,14 @@ enum WebsiteTemplates {
 
     // MARK: - MySpace (retro social profile)
 
-    static let myspace = WebsiteTemplate(
-        name: "MySpace",
+    static let myspot = WebsiteTemplate(
+        name: "MySpot",
         icon: "person.2",
-        description: "Retro 2005 social profile: top 8 friends, comments, glitter",
+        description: "Retro 2005 social profile: top 8 friends, comments",
         html: """
         <div class="page">
           <header class="ms-header">
-            <div class="ms-logo">MySpace</div>
+            <div class="ms-logo">MySpot</div>
             <div class="ms-tagline">a place for friends</div>
           </header>
           <div class="profile-grid">
@@ -207,14 +207,14 @@ enum WebsiteTemplates {
 
     // MARK: - Tumblr (dashboard feed)
 
-    static let tumblr = WebsiteTemplate(
-        name: "Tumblr",
-        icon: "t.circle",
+    static let timble = WebsiteTemplate(
+        name: "Timble",
+        icon: "square.stack.3d.up",
         description: "Microblog dashboard: icon rail, post feed, notes",
         html: """
-        <div class="tumblr-page">
+        <div class="timble-page">
           <aside class="rail">
-            <div class="rail-logo">t</div>
+            <div class="rail-logo">Ti</div>
             <nav class="rail-nav"><a href="#">DASH</a><a href="#">EXPLORE</a><a href="#">INBOX</a><a href="#">BLOG</a></nav>
           </aside>
           <main class="feed">
@@ -249,7 +249,7 @@ enum WebsiteTemplates {
         css: """
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, sans-serif; background: #001935; color: #e8e8ec; min-height: 100vh; }
-        .tumblr-page { display: grid; grid-template-columns: 220px 1fr; min-height: 100vh; }
+        .timble-page { display: grid; grid-template-columns: 220px 1fr; min-height: 100vh; }
         .rail { background: #001224; padding: 24px 16px; }
         .rail-logo { font-size: 40px; font-weight: 800; color: #fff; margin-bottom: 32px; }
         .rail-nav a { display: block; color: #9fb3c8; text-decoration: none; font-size: 13px; letter-spacing: 2px; padding: 10px 8px; border-radius: 8px; }

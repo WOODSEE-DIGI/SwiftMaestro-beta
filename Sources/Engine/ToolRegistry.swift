@@ -46,7 +46,7 @@ extension MaestroTools {
         await registerDAMTools()
         await registerBlockyTools()
         await registerResearchTools()
-        await registerOverlayTools()
+        await registerSwiftWeaverTools()
 
         // Tool providers — plugins that register their own tools.
         await registerToolProvider(ObsidianToolProvider())

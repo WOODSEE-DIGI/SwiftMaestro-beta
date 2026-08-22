@@ -7,11 +7,12 @@ import WebKit
 /// code editor (tabbed HTML / CSS), the right pane is a live WKWebView
 /// preview that re-renders on every keystroke. Exports to transparent PNG
 /// via WKWebView snapshot.
-struct OverlayHTMLEditorView: View {
-    @State private var store = OverlayBuilderStore.shared
+struct SwiftWeaverEditorView: View {
+    @State private var store = SwiftWeaverStore.shared
     @State private var selectedTab: CodeTab = .html
     @State private var fontSize: Double = 13
     @State private var viewMode: ViewMode = .split
+    @State private var splitVertical = false   // split mode: side-by-side vs top/bottom
     @State private var cursorLocation: Int = 0
     @State private var exportAlertMessage: String?
     @State private var pendingInsert: String?
@@ -30,8 +31,8 @@ struct OverlayHTMLEditorView: View {
 
     // MARK: - Default Templates
 
-    static let defaultHTML = OverlayHTMLEditorDefaults.html
-    static let defaultCSS = OverlayHTMLEditorDefaults.css
+    static let defaultHTML = SwiftWeaverDefaults.html
+    static let defaultCSS = SwiftWeaverDefaults.css
 
     // MARK: - Template Gallery
 
@@ -229,6 +230,18 @@ struct OverlayHTMLEditorView: View {
                 .pickerStyle(.segmented)
                 .frame(width: 200)
 
+                // Split orientation (only meaningful in Split mode)
+                Button {
+                    splitVertical.toggle()
+                } label: {
+                    Image(systemName: splitVertical ? "rectangle.split.1x2" : "rectangle.split.2x1")
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+                .disabled(viewMode != .split)
+                .opacity(viewMode == .split ? 1 : 0.4)
+                .help(splitVertical ? "Switch to side-by-side split" : "Switch to top/bottom split")
+
                 Divider().frame(height: 16)
 
                 // HTML Snippets
@@ -263,22 +276,12 @@ struct OverlayHTMLEditorView: View {
                 }
                 .menuStyle(.borderlessButton)
 
-                // Template Gallery — overlay starters + full website templates
+                // Template Gallery — full website templates
                 Menu {
                     Section("Websites") {
                         ForEach(WebsiteTemplates.all) { tpl in
                             Button {
                                 store.applyWebsiteTemplate(tpl)
-                            } label: {
-                                Label(tpl.name, systemImage: tpl.icon)
-                            }
-                        }
-                    }
-                    Section("Overlays") {
-                        ForEach(Self.templates, id: \.name) { tpl in
-                            Button {
-                                store.htmlEditorSource = tpl.html
-                                store.cssEditorSource = tpl.css
                             } label: {
                                 Label(tpl.name, systemImage: tpl.icon)
                             }
@@ -292,14 +295,51 @@ struct OverlayHTMLEditorView: View {
 
                 Divider().frame(height: 16)
 
+                // New document
+                Button {
+                    store.newDocument()
+                } label: {
+                    Label("New", systemImage: "doc")
+                        .font(.caption)
+                }
+                .help("New blank document")
+
+                // Open .html file (splits into HTML + CSS panes)
+                Button {
+                    openDocument()
+                } label: {
+                    Label("Open", systemImage: "folder")
+                        .font(.caption)
+                }
+                .help("Open an .html file")
+
+                // Save / Save As
+                Button {
+                    saveDocument()
+                } label: {
+                    Label("Save", systemImage: "square.and.arrow.down")
+                        .font(.caption)
+                }
+                .help("Save (Save As if untitled)")
+
+                Button {
+                    saveDocumentAs()
+                } label: {
+                    Label("Save As", systemImage: "square.and.arrow.down.on.square")
+                        .font(.caption)
+                }
+                .help("Save As...")
+
+                Divider().frame(height: 16)
+
                 // Copy HTML
                 Button {
                     let combined = """
                     <!DOCTYPE html>
                     <html><head><style>
-                    \(store.cssEditorSource)
+                    \(store.cssSource)
                     </style></head><body>
-                    \(store.htmlEditorSource)
+                    \(store.htmlSource)
                     </body></html>
                     """
                     NSPasteboard.general.clearContents()
@@ -312,8 +352,8 @@ struct OverlayHTMLEditorView: View {
 
                 // Format
                 Button {
-                    store.htmlEditorSource = Self.beautifyHTML(store.htmlEditorSource)
-                    store.cssEditorSource = Self.beautifyCSS(store.cssEditorSource)
+                    store.htmlSource = Self.beautifyHTML(store.htmlSource)
+                    store.cssSource = Self.beautifyCSS(store.cssSource)
                 } label: {
                     Label("Format", systemImage: "text.justify.left")
                         .font(.caption)
@@ -343,16 +383,30 @@ struct OverlayHTMLEditorView: View {
                 previewPane
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .split:
-                HSplitView {
-                    codeEditorPane
-                        .frame(minWidth: 280, idealWidth: 420, maxWidth: 600)
-                    previewPane
-                        .frame(minWidth: 300)
+                if splitVertical {
+                    VSplitView {
+                        codeEditorPane
+                            .frame(minHeight: 160, idealHeight: 320)
+                        previewPane
+                            .frame(minHeight: 200)
+                    }
+                } else {
+                    HSplitView {
+                        codeEditorPane
+                            .frame(minWidth: 280, idealWidth: 420, maxWidth: 600)
+                        previewPane
+                            .frame(minWidth: 300)
+                    }
                 }
             }
 
+            // ── Font editor (right-click in preview) ──
+            if store.fontEditSelector != nil {
+                fontEditPanel
+            }
+
             // ── CSS variables panel (Dreamweaver Properties inspector) ──
-            if !cssVariables.isEmpty {
+            if !cssVariables.isEmpty || !ruleColors.isEmpty {
                 cssVariablesPanel
             }
 
@@ -425,7 +479,7 @@ struct OverlayHTMLEditorView: View {
 
             // Code editor
             CodeTextView(
-                text: selectedTab == .html ? $store.htmlEditorSource : $store.cssEditorSource,
+                text: selectedTab == .html ? $store.htmlSource : $store.cssSource,
                 fontSize: fontSize,
                 language: selectedTab == .html ? "html" : "css",
                 pendingInsert: $pendingInsert,
@@ -438,50 +492,66 @@ struct OverlayHTMLEditorView: View {
 
     private var previewPane: some View {
         GeometryReader { geo in
-            // Dark work area
-            Color(white: 0.10)
-                .ignoresSafeArea()
-
-            let margin: CGFloat = 24
-            let maxW = geo.size.width - margin * 2
-            let maxH = geo.size.height - margin * 2
-            let scale = min(maxW / CGFloat(store.canvasWidth), maxH / CGFloat(store.canvasHeight))
-            let dispW = CGFloat(store.canvasWidth) * scale
-            let dispH = CGFloat(store.canvasHeight) * scale
-
-            // Canvas frame
-            ZStack {
-                // Drop shadow
-                Rectangle()
-                    .fill(Color.black.opacity(0.35))
-                    .frame(width: dispW + 2, height: dispH + 2)
-                    .offset(x: 2, y: 2)
-
-                // Canvas background (transparent for HTML overlays)
-                Rectangle()
-                    .fill(Color(white: 0.04))
-                    .frame(width: dispW, height: dispH)
-
-                // WKWebView preview
+            if store.fluidPreview {
+                // Browser-style: fluid page fills the whole pane, no canvas frame
                 HTMLPreviewWebView(
-                    htmlSource: store.htmlEditorSource,
-                    cssSource: store.cssEditorSource,
-                    canvasWidth: store.canvasWidth,
-                    canvasHeight: store.canvasHeight
+                    htmlSource: store.htmlSource,
+                    cssSource: store.cssSource,
+                    canvasWidth: Int(geo.size.width),
+                    canvasHeight: Int(geo.size.height)
                 )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .onAppear { store.previewScale = 1.0 }
+            } else {
+                // Fixed canvas (overlays, avatar/banner assets): framed view
+                fixedCanvasPreview(geo: geo)
+            }
+        }
+    }
+
+    private func fixedCanvasPreview(geo: GeometryProxy) -> some View {
+        let margin: CGFloat = 24
+        let maxW = geo.size.width - margin * 2
+        let maxH = geo.size.height - margin * 2 - 26  // room for dim label
+        let scale = min(maxW / CGFloat(store.canvasWidth), maxH / CGFloat(store.canvasHeight))
+        let dispW = CGFloat(store.canvasWidth) * scale
+        let dispH = CGFloat(store.canvasHeight) * scale
+
+        return ZStack {
+            Color(white: 0.10).ignoresSafeArea()
+                .onAppear { store.previewScale = Double(scale) }
+                .onChange(of: scale) { store.previewScale = Double(scale) }
+
+            VStack(spacing: 8) {
+                ZStack {
+                    Rectangle()
+                        .fill(Color.black.opacity(0.35))
+                        .offset(x: 2, y: 2)
+
+                    Rectangle()
+                        .fill(Color(white: 0.04))
+
+                    // Render at NATIVE canvas pixels (so px-based CSS like the
+                    // Banner's 1500px body never clips), scaled down to fit.
+                    HTMLPreviewWebView(
+                        htmlSource: store.htmlSource,
+                        cssSource: store.cssSource,
+                        canvasWidth: store.canvasWidth,
+                        canvasHeight: store.canvasHeight
+                    )
+                    .frame(width: CGFloat(store.canvasWidth),
+                           height: CGFloat(store.canvasHeight))
+                    .scaleEffect(scale, anchor: .center)
+                    .clipShape(Rectangle())
+
+                    Rectangle()
+                        .strokeBorder(Color.white.opacity(0.3), lineWidth: 1.5)
+                }
                 .frame(width: dispW, height: dispH)
-                .clipShape(Rectangle())
 
-                // Border
-                Rectangle()
-                    .strokeBorder(Color.white.opacity(0.3), lineWidth: 1.5)
-                    .frame(width: dispW, height: dispH)
-
-                // Dimension label
                 Text("\(store.canvasWidth) × \(store.canvasHeight)")
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
                     .foregroundStyle(.white.opacity(0.3))
-                    .position(x: dispW / 2, y: dispH + 18)
             }
             .position(x: geo.size.width / 2, y: geo.size.height / 2)
         }
@@ -541,7 +611,7 @@ struct OverlayHTMLEditorView: View {
     /// reports the open-tag stack, e.g. body > div.container > p.
     private var tagBreadcrumb: String {
         guard selectedTab == .html else { return "css" }
-        let source = store.htmlEditorSource
+        let source = store.htmlSource
         let upto = min(cursorLocation, source.count)
         let prefix = String(source.prefix(upto))
         var stack: [String] = []
@@ -581,15 +651,22 @@ struct OverlayHTMLEditorView: View {
 
             Spacer()
 
+            // Current file
+            Text(store.fileURL?.lastPathComponent ?? "untitled")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.tertiary)
+
             // Doc stats
-            let src = selectedTab == .html ? store.htmlEditorSource : store.cssEditorSource
+            let src = selectedTab == .html ? store.htmlSource : store.cssSource
             Text("\(src.split(separator: "\n", omittingEmptySubsequences: false).count) lines")
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(.tertiary)
             Text("\(src.utf8.count) bytes")
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(.tertiary)
-            Text("\(store.canvasWidth)×\(store.canvasHeight)")
+            Text(store.fluidPreview
+                 ? "fluid (browser)"
+                 : "\(store.canvasWidth)×\(store.canvasHeight)")
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(.tertiary)
         }
@@ -598,100 +675,402 @@ struct OverlayHTMLEditorView: View {
         .background(.bar)
     }
 
+    // MARK: - Font Editor Panel (right-click in preview)
+
+    @State private var fontSizeValue: Double = 16
+    @State private var fontBold = false
+    @State private var fontItalic = false
+    @State private var fontColorHex = "#ffffff"
+    @State private var fontAlign = 0  // 0=left 1=center 2=right
+
+    private var fontEditPanel: some View {
+        VStack(spacing: 0) {
+            Divider()
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Label("Text", systemImage: "textformat")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                    Text(store.fontEditInfo)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                    Spacer()
+                    Button {
+                        store.fontEditSelector = nil
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                HStack(spacing: 14) {
+                    // Size
+                    HStack(spacing: 6) {
+                        Text("Size").font(.caption2).foregroundStyle(.secondary)
+                        Slider(value: $fontSizeValue, in: 8...120) { editing in
+                            if !editing {
+                                store.applyFontEdit(property: "font-size", value: "\(Int(fontSizeValue))px")
+                            }
+                        }
+                        .frame(width: 110)
+                        Text("\(Int(fontSizeValue))px")
+                            .font(.system(size: 10, design: .monospaced))
+                            .frame(width: 34)
+                    }
+
+                    // Bold / Italic
+                    Toggle("B", isOn: $fontBold)
+                        .toggleStyle(.button)
+                        .font(.system(size: 12, weight: .bold))
+                        .controlSize(.small)
+                        .onChange(of: fontBold) {
+                            store.applyFontEdit(property: "font-weight", value: fontBold ? "700" : "400")
+                        }
+                    Toggle("I", isOn: $fontItalic)
+                        .toggleStyle(.button)
+                        .font(.system(size: 12))
+                        .italic()
+                        .controlSize(.small)
+                        .onChange(of: fontItalic) {
+                            store.applyFontEdit(property: "font-style", value: fontItalic ? "italic" : "normal")
+                        }
+
+                    // Color
+                    ColorPicker("", selection: Binding(
+                        get: { Color(hex6: fontColorHex) },
+                        set: {
+                            fontColorHex = $0.hexString
+                            store.applyFontEdit(property: "color", value: fontColorHex)
+                        }
+                    ))
+                    .labelsHidden()
+                    .frame(width: 24, height: 24)
+
+                    // Alignment
+                    Picker("", selection: $fontAlign) {
+                        Image(systemName: "text.alignleft").tag(0)
+                        Image(systemName: "text.aligncenter").tag(1)
+                        Image(systemName: "text.alignright").tag(2)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 110)
+                    .onChange(of: fontAlign) {
+                        let align = ["left", "center", "right"][fontAlign]
+                        store.applyFontEdit(property: "text-align", value: align)
+                    }
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(.bar)
+        }
+    }
+
     // MARK: - CSS Variables Panel (Properties inspector)
 
     /// A CSS custom property found in the current document.
+    /// A color found in the current document — custom property or
+    /// `var(--name, fallback)`. Carries the Color plus enough source
+    /// context to write a change back.
     private struct CSSVariable: Identifiable {
-        let name: String      // e.g. "--sprite"
-        let hex: String       // current #rrggbb value
+        let name: String        // e.g. "--sprite"
+        let color: Color
+        let rawValue: String    // original declaration text ("#d63c6e" / "rgba(...)")
         var id: String { name }
     }
 
-    /// Scans the CSS source for `--name: #hex` declarations, then for
-    /// `var(--name, #hex)` fallbacks in both CSS and HTML (the Meme Lab
-    /// templates declare colors only as fallbacks). First occurrence wins.
+    @State private var colorsPanelExpanded = true
+
+    private var cssVariablesPanel: some View {
+        VStack(spacing: 0) {
+            Divider()
+            HStack(spacing: 8) {
+                Image(systemName: colorsPanelExpanded ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.tertiary)
+                Text("COLORS")
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                Spacer()
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .contentShape(Rectangle())
+            .onTapGesture { colorsPanelExpanded.toggle() }
+
+            if colorsPanelExpanded {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(cssVariables) { v in
+                            colorChip(v)
+                        }
+                        if !cssVariables.isEmpty && !ruleColors.isEmpty {
+                            Rectangle()
+                                .fill(Color.primary.opacity(0.15))
+                                .frame(width: 1, height: 34)
+                                .padding(.horizontal, 4)
+                        }
+                        ForEach(ruleColors) { rc in
+                            ruleColorChip(rc)
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 8)
+                }
+            }
+        }
+        .background(.bar)
+        .animation(.easeInOut(duration: 0.15), value: colorsPanelExpanded)
+    }
+
+    private func colorChip(_ v: CSSVariable) -> some View {
+        VStack(spacing: 3) {
+            ColorPicker("", selection: Binding(
+                get: { v.color },
+                set: { setCSSVariable(v.name, rawValue: v.rawValue, hex: $0.hexString) }
+            ))
+            .labelsHidden()
+            .frame(width: 26, height: 26)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.15)))
+            Text(v.name.replacingOccurrences(of: "--", with: ""))
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .frame(width: 64)
+        .padding(.vertical, 5)
+        .background(Color.primary.opacity(0.05))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .help("\(v.name): \(v.rawValue)")
+    }
+
+    /// A direct color inside a CSS rule: selector + property + value.
+    private struct CSSRuleColor: Identifiable {
+        let selector: String    // e.g. ".ms-header"
+        let property: String    // e.g. "background", "color", "border-color"
+        let rawValue: String    // the color token as written
+        let color: Color
+        var id: String { selector + property + rawValue }
+    }
+
+    /// Scans CSS (then HTML) for custom-property colors: declarations
+    /// `--name: value` and `var(--name, fallback)` usages. Supports #hex,
+    /// rgb(), and rgba() values. First occurrence wins.
     private var cssVariables: [CSSVariable] {
         var found: [CSSVariable] = []
         var seen = Set<String>()
+        let colorValue = #"(#[0-9a-fA-F]{3,8}|rgba?\([^)]+\))"#
 
-        // 1. Declarations: --name: #hex;
-        for match in store.cssEditorSource.matches(of: #/(--[a-zA-Z0-9-]+)\s*:\s*(#[0-9a-fA-F]{3,8})/#) {
-            let name = String(match.1)
-            if !seen.contains(name) {
+        // 1. Declarations: --name: <color>;
+        let decl = try! NSRegularExpression(pattern: "(--[a-zA-Z0-9-]+)\\s*:\\s*" + colorValue)
+        for m in decl.matches(in: store.cssSource, range: NSRange(store.cssSource.startIndex..., in: store.cssSource)) {
+            guard let nr = Range(m.range(at: 1), in: store.cssSource),
+                  let vr = Range(m.range(at: 2), in: store.cssSource) else { continue }
+            let name = String(store.cssSource[nr])
+            let raw = String(store.cssSource[vr])
+            if !seen.contains(name), let c = Self.parseCSSColor(raw) {
                 seen.insert(name)
-                found.append(CSSVariable(name: name, hex: String(match.2)))
+                found.append(CSSVariable(name: name, color: c, rawValue: raw))
             }
         }
-        // 2. Fallbacks: var(--name, #hex) — covers templates that never
-        //    declare the variable, only consume it with a default.
-        for source in [store.cssEditorSource, store.htmlEditorSource] {
-            for match in source.matches(of: #/var\((--[a-zA-Z0-9-]+)\s*,\s*(#[0-9a-fA-F]{3,8})\)/#) {
-                let name = String(match.1)
-                if !seen.contains(name) {
+        // 2. Fallbacks: var(--name, <color>)
+        let fb = try! NSRegularExpression(pattern: "var\\((--[a-zA-Z0-9-]+)\\s*,\\s*" + colorValue + "\\)")
+        for source in [store.cssSource, store.htmlSource] {
+            for m in fb.matches(in: source, range: NSRange(source.startIndex..., in: source)) {
+                guard let nr = Range(m.range(at: 1), in: source),
+                      let vr = Range(m.range(at: 2), in: source) else { continue }
+                let name = String(source[nr])
+                let raw = String(source[vr])
+                if !seen.contains(name), let c = Self.parseCSSColor(raw) {
                     seen.insert(name)
-                    found.append(CSSVariable(name: name, hex: String(match.2)))
+                    found.append(CSSVariable(name: name, color: c, rawValue: raw))
                 }
             }
         }
         return found
     }
 
-    private var cssVariablesPanel: some View {
-        VStack(spacing: 0) {
-            Divider()
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 14) {
-                    Text("COLORS")
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .foregroundStyle(.tertiary)
-                    ForEach(cssVariables) { v in
-                        HStack(spacing: 6) {
-                            ColorPicker("", selection: Binding(
-                                get: { Color(hex: v.hex) ?? .white },
-                                set: { setCSSVariable(v.name, hex: $0.hexString) }
-                            ))
-                            .labelsHidden()
-                            .frame(width: 22, height: 22)
-                            Text(v.name.replacingOccurrences(of: "--", with: ""))
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
+    /// Scans every CSS rule for direct color properties (color, background,
+    /// background-color, border-color, outline-color, fill, stroke) with hex
+    /// or rgb()/rgba() values. This is what templates like Blog/MySpot use
+    /// instead of custom properties. Dedupes by selector+property (first win).
+    private var ruleColors: [CSSRuleColor] {
+        var found: [CSSRuleColor] = []
+        var seen = Set<String>()
+        let props = "color|background-color|background|border-color|outline-color|fill|stroke"
+        let colorTok = "#[0-9a-fA-F]{3,8}|rgba?\\([^)]+\\)"
+        let ruleRx = try! NSRegularExpression(
+            pattern: "([.#][a-zA-Z0-9_-]+)[^{]*\\{([^}]*)\\}")
+        let css = store.cssSource
+        for m in ruleRx.matches(in: css, range: NSRange(css.startIndex..., in: css)) {
+            guard let selR = Range(m.range(at: 1), in: css),
+                  let bodyR = Range(m.range(at: 2), in: css) else { continue }
+            let selector = String(css[selR])
+            let body = String(css[bodyR])
+            let propRx = try! NSRegularExpression(
+                pattern: "(" + props + ")\\s*:\\s*([^;]*?\\b(" + colorTok + ")[^;]*);")
+            for pm in propRx.matches(in: body, range: NSRange(body.startIndex..., in: body)) {
+                guard let propR = Range(pm.range(at: 1), in: body),
+                      let tokR = Range(pm.range(at: 3), in: body) else { continue }
+                let prop = String(body[propR])
+                let tok = String(body[tokR])
+                let key = selector + "|" + prop
+                guard !seen.contains(key), let c = Self.parseCSSColor(tok) else { continue }
+                seen.insert(key)
+                found.append(CSSRuleColor(selector: selector, property: prop, rawValue: tok, color: c))
             }
-            .background(.bar)
+        }
+        return found
+    }
+
+    /// Parses #rgb/#rrggbb/#rrggbbaa, rgb(...), rgba(...) into a Color.
+    private static func parseCSSColor(_ raw: String) -> Color? {
+        let s = raw.trimmingCharacters(in: .whitespaces)
+        if s.hasPrefix("#") { return Color(hex6: s) }
+        if s.hasPrefix("rgb") {
+            guard let open = s.firstIndex(of: "("), let close = s.lastIndex(of: ")") else { return nil }
+            let parts = s[s.index(after: open)..<close].split(separator: ",").map {
+                $0.trimmingCharacters(in: .whitespaces)
+            }
+            guard parts.count >= 3,
+                  let r = Double(parts[0]), let g = Double(parts[1]), let b = Double(parts[2]) else { return nil }
+            let a = parts.count > 3 ? (Double(parts[3]) ?? 1.0) : 1.0
+            let norm: (Double) -> Double = { $0 > 1 ? $0 / 255 : $0 }
+            return Color(.sRGB, red: norm(r), green: norm(g), blue: norm(b), opacity: a)
+        }
+        return nil
+    }
+
+    private func ruleColorChip(_ rc: CSSRuleColor) -> some View {
+        VStack(spacing: 3) {
+            ColorPicker("", selection: Binding(
+                get: { rc.color },
+                set: { setRuleColor(rc, hex: $0.hexString) }
+            ))
+            .labelsHidden()
+            .frame(width: 26, height: 26)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.15)))
+            Text(rc.selector.replacingOccurrences(of: ".", with: ""))
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Text(rc.property)
+                .font(.system(size: 7, design: .monospaced))
+                .foregroundStyle(.quaternary)
+                .lineLimit(1)
+        }
+        .frame(width: 72)
+        .padding(.vertical, 5)
+        .background(Color.primary.opacity(0.05))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .help("\(rc.selector) { \(rc.property): \(rc.rawValue) }")
+    }
+
+    /// Rewrites a rule color: finds the selector's rule block, then replaces
+    /// the color token inside that property's declaration. Only touches the
+    /// targeted rule, so other rules using the same hex are unaffected.
+    private func setRuleColor(_ rc: CSSRuleColor, hex: String) {
+        let css = store.cssSource
+        guard let selRange = css.range(of: rc.selector),
+              let braceRange = css.range(of: "{", range: selRange.upperBound..<css.endIndex),
+              let closeRange = css.range(of: "}", range: braceRange.upperBound..<css.endIndex)
+        else { return }
+        var body = String(css[braceRange.upperBound..<closeRange.lowerBound])
+        let propPattern = NSRegularExpression.escapedPattern(for: rc.property)
+            + #"\s*:[^;]*"# + NSRegularExpression.escapedPattern(for: rc.rawValue) + #"[^;]*;"#
+        guard let declRange = body.range(of: propPattern, options: .regularExpression),
+              let tokRange = body[declRange].range(of: rc.rawValue) else { return }
+        // Absolute offsets in the original source
+        let bodyOffset = css.distance(from: css.startIndex, to: braceRange.upperBound)
+        let declOffset = body.distance(from: body.startIndex, to: declRange.lowerBound)
+        let tokOffset = body.distance(from: declRange.lowerBound, to: tokRange.lowerBound)
+        let absStart = css.index(css.startIndex, offsetBy: bodyOffset + declOffset + tokOffset)
+        let absEnd = css.index(absStart, offsetBy: rc.rawValue.count)
+        var out = css
+        out.replaceSubrange(absStart..<absEnd, with: hex)
+        store.cssSource = out
+    }
+
+    /// Rewrites the variable's color in the source. The scanner hands us the
+    /// original declaration text (hex or rgba); we replace every occurrence
+    /// of `--name: <raw>` and `var(--name, <raw>)` in CSS and HTML with the
+    /// new hex value so the preview always reflects the pick.
+    private func setCSSVariable(_ name: String, rawValue: String, hex: String) {
+        let escapedName = NSRegularExpression.escapedPattern(for: name)
+        let escapedRaw = NSRegularExpression.escapedPattern(for: rawValue)
+
+        let patterns = [
+            escapedName + #"\s*:\s*"# + escapedRaw,          // declaration
+            #"var\("# + escapedName + #",\s*"# + escapedRaw,  // fallback
+        ]
+        for pattern in patterns {
+            var css = store.cssSource
+            while let r = css.range(of: pattern, options: .regularExpression) {
+                // Replace only the color token: find rawValue inside the match
+                if let rawRange = css[r].range(of: rawValue) {
+                    css.replaceSubrange(rawRange, with: hex)
+                } else {
+                    break
+                }
+            }
+            store.cssSource = css
+            var html = store.htmlSource
+            while let r = html.range(of: pattern, options: .regularExpression) {
+                if let rawRange = html[r].range(of: rawValue) {
+                    html.replaceSubrange(rawRange, with: hex)
+                } else {
+                    break
+                }
+            }
+            store.htmlSource = html
         }
     }
 
-    /// Rewrites the variable's color in the source. Targets the declaration
-    /// `--name: #old` first; if absent, rewrites every `var(--name, #old)`
-    /// fallback in CSS and HTML so the preview always reflects the pick.
-    private func setCSSVariable(_ name: String, hex: String) {
-        let escaped = NSRegularExpression.escapedPattern(for: name)
+    // MARK: - File Operations
 
-        // Declaration: --name: #oldhex -> --name: #newhex
-        let declPattern = NSRegularExpression.escapedPattern(for: name) + #"\s*:\s*#[0-9a-fA-F]{3,8}"#
-        if let matchRange = store.cssEditorSource.range(of: declPattern, options: .regularExpression),
-           let hexStart = store.cssEditorSource[matchRange].firstIndex(of: "#") {
-            store.cssEditorSource.replaceSubrange(hexStart..<matchRange.upperBound, with: hex)
-            return
+    private func openDocument() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.html]
+        panel.allowsMultipleSelection = false
+        panel.message = "Open an HTML file into the editor"
+        panel.begin { result in
+            guard result == .OK, let url = panel.url else { return }
+            do {
+                try store.openDocument(from: url)
+            } catch {
+                exportAlertMessage = "Could not open \(url.lastPathComponent): \(error.localizedDescription)"
+            }
         }
-        // Fallback: var(--name, #old) -> var(--name, #new) — rewrite all.
-        let fbPattern = #"var\("# + escaped + #",\s*#[0-9a-fA-F]{3,8}"#
-        var css = store.cssEditorSource
-        while let matchRange = css.range(of: fbPattern, options: .regularExpression),
-              let hexStart = css[matchRange].firstIndex(of: "#") {
-            css.replaceSubrange(hexStart..<matchRange.upperBound, with: hex)
+    }
+
+    private func saveDocument() {
+        if let url = store.fileURL {
+            do {
+                try store.saveDocument(to: url)
+            } catch {
+                exportAlertMessage = "Could not save: \(error.localizedDescription)"
+            }
+        } else {
+            saveDocumentAs()
         }
-        store.cssEditorSource = css
-        var html = store.htmlEditorSource
-        while let matchRange = html.range(of: fbPattern, options: .regularExpression),
-              let hexStart = html[matchRange].firstIndex(of: "#") {
-            html.replaceSubrange(hexStart..<matchRange.upperBound, with: hex)
+    }
+
+    private func saveDocumentAs() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.html]
+        panel.nameFieldStringValue = store.fileURL?.lastPathComponent ?? "index.html"
+        panel.begin { result in
+            guard result == .OK, let url = panel.url else { return }
+            do {
+                try store.saveDocument(to: url)
+            } catch {
+                exportAlertMessage = "Could not save: \(error.localizedDescription)"
+            }
         }
-        store.htmlEditorSource = html
     }
 
     // MARK: - Export
@@ -699,13 +1078,14 @@ struct OverlayHTMLEditorView: View {
     private func exportPNG() {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.png]
-        panel.nameFieldStringValue = "html-overlay-\(store.canvasWidth)x\(store.canvasHeight).png"
+        let baseName = store.fileURL?.deletingPathExtension().lastPathComponent ?? "html-overlay"
+        panel.nameFieldStringValue = "\(baseName)-\(store.canvasWidth)x\(store.canvasHeight).png"
         panel.begin { result in
             guard result == .OK, let url = panel.url else { return }
             // Snapshot the WKWebView via JavaScript
             Task { @MainActor in
                 guard let data = await HTMLSnapshotService.snapshot(
-                    html: store.htmlEditorSource, css: store.cssEditorSource,
+                    html: store.htmlSource, css: store.cssSource,
                     width: store.canvasWidth, height: store.canvasHeight
                 ) else {
                     exportAlertMessage = "Could not render the HTML overlay as a PNG."
@@ -775,6 +1155,13 @@ struct HTMLPreviewWebView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.suppressesIncrementalRendering = true
+
+        // Direct-manipulation bridge: shift+drag to move, right-click for fonts
+        let script = WKUserScript(source: WebEditBridgeJS.source,
+                                  injectionTime: .atDocumentEnd, forMainFrameOnly: true)
+        config.userContentController.addUserScript(script)
+        config.userContentController.add(context.coordinator, name: "webEdit")
+
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.setValue(false, forKey: "drawsBackground")  // transparent background
         webView.navigationDelegate = context.coordinator
@@ -790,10 +1177,38 @@ struct HTMLPreviewWebView: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    class Coordinator: NSObject, WKNavigationDelegate {
+    class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         var pendingHTML = ""
         var pendingCSS = ""
         private var updateTask: Task<Void, Never>?
+
+        // MARK: Edit bridge messages (shift+drag move, right-click font edit)
+
+        func userContentController(_ userContentController: WKUserContentController,
+                                   didReceive message: WKScriptMessage) {
+            guard message.name == "webEdit",
+                  let body = message.body as? [String: Any],
+                  let type = body["type"] as? String else { return }
+            Task { @MainActor in
+                let store = SwiftWeaverStore.shared
+                switch type {
+                case "move":
+                    guard let selector = body["selector"] as? String else { return }
+                    let dx = (body["dx"] as? Double) ?? 0
+                    let dy = (body["dy"] as? Double) ?? 0
+                    let position = (body["position"] as? String) ?? "static"
+                    store.applyWebMove(selector: selector, dx: dx, dy: dy, position: position)
+                case "font":
+                    guard let selector = body["selector"] as? String else { return }
+                    store.fontEditSelector = selector
+                    let text = (body["text"] as? String) ?? ""
+                    let size = (body["fontSize"] as? String) ?? ""
+                    store.fontEditInfo = "\(selector)  \"\(text)\"  \(size)"
+                default:
+                    break
+                }
+            }
+        }
 
         func scheduleUpdate(webView: WKWebView) {
             updateTask?.cancel()
