@@ -56,10 +56,14 @@ echo "--- Building full installer ---"
 ./scripts/package-full.sh
 mv "${APP_NAME}-${VERSION}-full.dmg" "$DIST_DIR/"
 
-# Note: the lightweight beta DMG (app + WhisperKit only) was retired
-# 2026-08-15 — the full installer is distributed via Onidel storage on
-# swiftmaestro.com, so the 3GB lite variant no longer ships.
-# scripts/package-light.sh remains in the repo for reference but is unused.
+# Build the light installer (app + WhisperKit, no Gemma 4) — the variant for
+# Macs under 32 GB that run chat on online models or a networked LM Studio
+# host. Revived as a supported product line 2026-08-22 (was retired as the
+# "-beta" DMG on 2026-08-15 when only the full installer shipped).
+echo ""
+echo "--- Building light installer ---"
+./scripts/package-light.sh
+mv "${APP_NAME}-${VERSION}-light.dmg" "$DIST_DIR/"
 
 # Generate the Sparkle appcast.
 echo ""
@@ -131,8 +135,9 @@ if [ "${UPLOAD:-0}" = "1" ]; then
     fi
 
     echo ""
-    echo "--- Uploading DMG to Onidel Object Storage (Sydney) ---"
+    echo "--- Uploading DMGs to Onidel Object Storage (Sydney) ---"
     "$ONIDEL_UPLOAD" "$DIST_DIR/${APP_NAME}-${VERSION}-full.dmg"
+    "$ONIDEL_UPLOAD" "$DIST_DIR/${APP_NAME}-${VERSION}-light.dmg"
 
     echo ""
     echo "--- Uploading appcast.xml to Onidel ---"

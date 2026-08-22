@@ -1,7 +1,8 @@
 #!/bin/bash
 # Package a "light" SwiftMaestro .dmg that includes the WhisperKit model but not
-# the Gemma 4 MLX model. The app is expected to already be built at
-# build/Release/SwiftMaestro.app.
+# the Gemma 4 MLX model — the variant for Macs under 32 GB unified memory, where
+# chat runs on online models or a networked LM Studio host instead of a bundled
+# local model. The app is expected to already be built at build/Release/SwiftMaestro.app.
 #
 # Env overrides:
 #   VERSION=<x.y.z>          (default reads from app Info.plist)
@@ -29,7 +30,7 @@ fi
 # Default the DMG version to the app's own CFBundleShortVersionString so the
 # installer and the app bundle can never drift.
 VERSION="${VERSION:-$(defaults read "$PWD/$APP_PATH/Contents/Info.plist" CFBundleShortVersionString)}"
-DMG="${APP_NAME}-${VERSION}-beta.dmg"
+DMG="${APP_NAME}-${VERSION}-light.dmg"
 
 if [ ! -d "$WHISPER_MODEL_PATH" ]; then
     echo "Whisper model not found at $WHISPER_MODEL_PATH"
@@ -72,13 +73,17 @@ codesign -dvv "$APP_STAGE" 2>&1 | grep -E "Authority|TeamIdentifier|Identifier" 
 ln -s /Applications "$STAGE/Applications"
 
 cat > "$STAGE/README.txt" <<EOF
-SwiftMaestro ${VERSION} (Light / Beta Installer)
-=================================================
+SwiftMaestro ${VERSION} (Light Installer)
+=========================================
 
 Drag SwiftMaestro.app to /Applications.
 
-This light installer includes the WhisperKit speech-to-text model. The larger
-Gemma 4 MLX model can be downloaded separately from the Models tab.
+This light installer includes the WhisperKit speech-to-text model and is the
+recommended download for Macs with less than 32 GB of unified memory. Instead
+of a bundled chat model, use online model providers or connect to an LM Studio
+server (including one running on another Mac on your network) in
+Settings → Models. Any local MLX model can still be downloaded later from the
+Models tab if memory allows.
 
 Links:
 - Website:    https://swiftmaestro.com
