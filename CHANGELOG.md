@@ -17,3 +17,7 @@
 - **Blocky + Stocks investigations** — GRDB-backed investigation panels with agent tools and MaestroDB sync.
 - **Obsidian-class Web Clipper** — full metadata capture, templates, Wayback-grade asset archiving.
 - **SwiftWeaver HTML Builder** — visual HTML editor with live preview.
+
+## Fixes
+
+- **macOS 14/15 launch crash fixed** — an unused hard link to the PaperKit framework (macOS 26+ only) crashed the app on launch for Sonoma/Sequoia users. Both installers now launch correctly on macOS 14+.

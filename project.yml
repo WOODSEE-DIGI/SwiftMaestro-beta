@@ -197,8 +197,11 @@ targets:
       - sdk: Contacts.framework
       - sdk: MapKit.framework
       - sdk: Photos.framework
-      - sdk: PaperKit.framework
-      - sdk: PencilKit.framework
+      # PaperKit.framework (macOS 26+ only) and PencilKit.framework were
+      # hard-linked here but never used by any code — the link crashed the app
+      # on launch for macOS 14/15 users ("Library not loaded: PaperKit").
+      # Removed 2026-08-23. If PaperKit is ever actually needed, weak-link it
+      # (`weak: true`) and gate usage behind #available(macOS 26, *).
       - sdk: IOKit.framework
       - sdk: WebKit.framework
       - sdk: QuickLookThumbnailing.framework
