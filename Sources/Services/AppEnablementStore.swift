@@ -16,9 +16,9 @@ enum AppCategory: String, CaseIterable, Codable, Sendable {
     /// Section title shown in the launcher and in Settings.
     var title: String {
         switch self {
-        case .appleApps: return "Apple Apps"
-        case .studio: return "Studio"
-        case .swiftApps: return "Swift Apps"
+        case .appleApps: return String(localized: "Apple Apps")
+        case .studio: return String(localized: "Studio")
+        case .swiftApps: return String(localized: "Swift Apps")
         }
     }
 

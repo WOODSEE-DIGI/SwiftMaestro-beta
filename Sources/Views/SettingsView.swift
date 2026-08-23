@@ -159,22 +159,22 @@ enum SettingsTab: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .models: return "Models"
-        case .tuning: return "Tuning"
-        case .visionProxy: return "Vision Proxy"
-        case .appearance: return "Appearance"
-        case .apps: return "Apps"
-        case .mail: return "Mail"
-        case .rules: return "Rules"
-        case .context: return "Context"
-        case .clipper: return "Clipper"
-        case .mcp: return "MCP"
-        case .storage: return "Storage"
-        case .secrets: return "Secrets"
-        case .whisper: return "Whisper"
-        case .shell: return "Shell"
-        case .healing: return "Self-Healing"
-        case .about: return "About"
+        case .models: return String(localized: "Models")
+        case .tuning: return String(localized: "Tuning")
+        case .visionProxy: return String(localized: "Vision Proxy")
+        case .appearance: return String(localized: "Appearance")
+        case .apps: return String(localized: "Apps")
+        case .mail: return String(localized: "Mail")
+        case .rules: return String(localized: "Rules")
+        case .context: return String(localized: "Context")
+        case .clipper: return String(localized: "Clipper")
+        case .mcp: return String(localized: "MCP")
+        case .storage: return String(localized: "Storage")
+        case .secrets: return String(localized: "Secrets")
+        case .whisper: return String(localized: "Whisper")
+        case .shell: return String(localized: "Shell")
+        case .healing: return String(localized: "Self-Healing")
+        case .about: return String(localized: "About")
         }
     }
 

@@ -1744,6 +1744,18 @@ class ChatViewModel: ObservableObject {
                 .joined(separator: "\n")
             content += "\n\nFollow these rules at all times:\n\(list)"
         }
+
+        // Multilingual UX: the UI is localized (30 languages) but the models
+        // are natively multilingual — answer in whatever language the user
+        // writes in so a Japanese/Norwegian/Arabic user gets a native
+        // conversation, not an English one.
+        content += """
+
+
+            LANGUAGE: Always respond in the same language the user writes in. \
+            Tool names and code stay in English; prose, explanations, and \
+            conversation match the user's language.
+            """
         return Message(role: .system, content: content)
     }
 
