@@ -8,6 +8,13 @@ struct AudioDevice: Identifiable, Hashable, Sendable {
     let name: String
     let hasInput: Bool
     let hasOutput: Bool
+    /// CoreAudio transport: 'blth'/'blua' Bluetooth, 'airp' AirPlay, etc.
+    let transportType: UInt32
+
+    var isBluetooth: Bool {
+        transportType == kAudioDeviceTransportTypeBluetooth
+            || transportType == kAudioDeviceTransportTypeBluetoothLE
+    }
 }
 
 // MARK: - Audio device manager
@@ -39,12 +46,78 @@ final class AudioDeviceManager: @unchecked Sendable {
         guard result == noErr else { return [] }
 
         return deviceIDs.map { id in
-            AudioDevice(
+            let transport = deviceTransportType(id: id)
+            let isBluetooth = transport == kAudioDeviceTransportTypeBluetooth
+                || transport == kAudioDeviceTransportTypeBluetoothLE
+            var hasInput = deviceHasStreams(id: id, scope: kAudioDevicePropertyScopeInput)
+            var hasOutput = deviceHasStreams(id: id, scope: kAudioDevicePropertyScopeOutput)
+            // Bluetooth headsets (AirPods etc.) can report zero streams while
+            // idle — without this they'd vanish from both pickers even though
+            // they're valid routes the moment audio starts.
+            if isBluetooth {
+                hasInput = true
+                hasOutput = true
+            }
+            return AudioDevice(
                 id: id,
                 name: deviceName(id: id),
-                hasInput: deviceHasStreams(id: id, scope: kAudioDevicePropertyScopeInput),
-                hasOutput: deviceHasStreams(id: id, scope: kAudioDevicePropertyScopeOutput)
+                hasInput: hasInput,
+                hasOutput: hasOutput,
+                transportType: transport
             )
+        }
+    }
+
+    // MARK: - Hot-plug notifications
+
+    private let changeLock = NSLock()
+    private var changeHandlers: [UUID: () -> Void] = [:]
+    private var deviceListenerInstalled = false
+
+    /// Register a handler fired on the main queue whenever the CoreAudio
+    /// device list changes (Bluetooth connect/disconnect, USB plug, …).
+    /// Returns a token; pass to `removeDevicesChangedHandler` to unsubscribe.
+    @discardableResult
+    func addDevicesChangedHandler(_ handler: @escaping () -> Void) -> UUID {
+        installDeviceListenerIfNeeded()
+        let token = UUID()
+        changeLock.lock()
+        changeHandlers[token] = handler
+        changeLock.unlock()
+        return token
+    }
+
+    func removeDevicesChangedHandler(_ token: UUID) {
+        changeLock.lock()
+        changeHandlers[token] = nil
+        changeLock.unlock()
+    }
+
+    private func installDeviceListenerIfNeeded() {
+        changeLock.lock()
+        defer { changeLock.unlock() }
+        guard !deviceListenerInstalled else { return }
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let status = AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            DispatchQueue.global(qos: .userInitiated)
+        ) { [weak self] _, _ in
+            self?.notifyDevicesChanged()
+        }
+        deviceListenerInstalled = (status == noErr)
+    }
+
+    private func notifyDevicesChanged() {
+        changeLock.lock()
+        let handlers = Array(changeHandlers.values)
+        changeLock.unlock()
+        for handler in handlers {
+            DispatchQueue.main.async(execute: handler)
         }
     }
 
@@ -172,6 +245,18 @@ final class AudioDeviceManager: @unchecked Sendable {
         let result = AudioObjectGetPropertyData(id, &propertyAddress, 0, nil, &dataSize, &name)
         guard result == noErr, let name = name else { return "Unknown Device" }
         return name.takeRetainedValue() as String
+    }
+
+    private func deviceTransportType(id: AudioDeviceID) -> UInt32 {
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var transport: UInt32 = 0
+        var dataSize = UInt32(MemoryLayout<UInt32>.size)
+        let result = AudioObjectGetPropertyData(id, &propertyAddress, 0, nil, &dataSize, &transport)
+        return result == noErr ? transport : 0
     }
 
     private func deviceHasStreams(id: AudioDeviceID, scope: AudioObjectPropertyScope) -> Bool {

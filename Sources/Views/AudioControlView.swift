@@ -1,5 +1,6 @@
 import SwiftUI
 import CoreAudio
+import AVKit
 
 /// Native audio control panel: choose system input/output devices, mute them,
 /// and set their volume. Lives under "Swift Apps" in the sidebar.
@@ -14,6 +15,7 @@ struct AudioControlView: View {
     @State private var inputVolume: Double = 0.5
     @State private var outputVolume: Double = 0.5
     @State private var meter = MeterDisplay()
+    @State private var deviceListenerToken: UUID?
 
     var body: some View {
         Form {
@@ -63,6 +65,12 @@ struct AudioControlView: View {
             }
 
             Section("Output") {
+                HStack {
+                    Spacer()
+                    AirPlayRoutePicker()
+                        .frame(width: 22, height: 22)
+                        .help("AirPlay: route audio to Apple TV, HomePod, or another Mac")
+                }
                 Picker("Output Device", selection: Binding(
                     get: { selectedOutputID },
                     set: { newValue in
@@ -150,8 +158,19 @@ struct AudioControlView: View {
         .scrollContentBackground(.hidden)
         .task {
             refreshDevices()
+            // Rebuild the pickers when devices hot-plug (AirPods connecting,
+            // USB interfaces, HDMI) — CoreAudio fires kAudioHardwarePropertyDevices.
+            deviceListenerToken = AudioDeviceManager.shared.addDevicesChangedHandler {
+                refreshDevices()
+            }
         }
-        .onDisappear { meter.stop() }
+        .onDisappear {
+            meter.stop()
+            if let deviceListenerToken {
+                AudioDeviceManager.shared.removeDevicesChangedHandler(deviceListenerToken)
+                self.deviceListenerToken = nil
+            }
+        }
     }
 
     private func refreshDevices() {
@@ -185,4 +204,19 @@ struct AudioControlView: View {
             outputVolume = Double(AudioDeviceManager.shared.volume(deviceID: id, scope: kAudioDevicePropertyScopeOutput) ?? 0.5)
         }
     }
+}
+
+// MARK: - AirPlay route picker
+
+/// The system AirPlay picker (Apple TV, HomePod, AirPlay-capable Macs).
+/// AirPlay targets are NOT CoreAudio HAL devices, so they can't appear in the
+/// output-device picker — this is the sanctioned AppKit control for them.
+struct AirPlayRoutePicker: NSViewRepresentable {
+    func makeNSView(context: Context) -> AVRoutePickerView {
+        let view = AVRoutePickerView()
+        view.isRoutePickerButtonBordered = false
+        return view
+    }
+
+    func updateNSView(_ nsView: AVRoutePickerView, context: Context) {}
 }
