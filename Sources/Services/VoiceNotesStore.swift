@@ -315,6 +315,16 @@ final class VoiceNotesStore {
             return
         }
 
+        // Insert the shared 8-band EQ BEFORE the tap and writer: recordings
+        // and the level meter both see the EQ'd signal. The EQ node connects
+        // through to the (muted) main mixer so the render graph has a full
+        // pull path; outputVolume 0 keeps it silent — no feedback.
+        let eqNode = AudioEQSettings.makeEQUnit(from: await AudioEQSettings.shared.snapshot)
+        engine.attach(eqNode)
+        engine.connect(input, to: eqNode, format: hwFormat)
+        engine.connect(eqNode, to: engine.mainMixerNode, format: hwFormat)
+        engine.mainMixerNode.outputVolume = 0
+
         try? FileManager.default.createDirectory(at: indexDir, withIntermediateDirectories: true)
         do {
             try FileManager.default.createDirectory(at: recordingsFolder, withIntermediateDirectories: true)
@@ -343,10 +353,11 @@ final class VoiceNotesStore {
             return
         }
 
-        // The tap captures the writer actor directly (Sendable) — no MainActor
-        // hop for disk writes, and no reading of actor state from the RT
-        // thread. UI updates keep the existing MainActor task pattern.
-        input.installTap(onBus: 0, bufferSize: 2048, format: hwFormat) { [weak self] buffer, _ in
+        // The tap sits on the EQ node's output (post-EQ). It captures the
+        // writer actor directly (Sendable) — no MainActor hop for disk writes,
+        // and no reading of actor state from the RT thread. UI updates keep
+        // the existing MainActor task pattern.
+        eqNode.installTap(onBus: 0, bufferSize: 2048, format: hwFormat) { [weak self] buffer, _ in
             let frames = Int(buffer.frameLength)
             guard frames > 0, let channelData = buffer.floatChannelData else { return }
 
@@ -384,7 +395,7 @@ final class VoiceNotesStore {
             engine.prepare()
             try engine.start()
         } catch {
-            input.removeTap(onBus: 0)
+            eqNode.removeTap(onBus: 0)
             try? await writer.close()
             try? FileManager.default.removeItem(at: fileURL)
             await MainActor.run {

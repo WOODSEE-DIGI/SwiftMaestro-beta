@@ -13,6 +13,7 @@ struct AudioControlView: View {
     @State private var outputMuted: Bool = false
     @State private var inputVolume: Double = 0.5
     @State private var outputVolume: Double = 0.5
+    @State private var meter = AudioMeterEngine.shared
 
     var body: some View {
         Form {
@@ -106,6 +107,39 @@ struct AudioControlView: View {
                 ))
             }
 
+            Section("Live Input Monitor") {
+                VStack(spacing: 8) {
+                    RetroSpectrumMeter(spectrum: meter.spectrum)
+                        .frame(height: 128)
+                    RetroLevelMeter(level: meter.level, peak: meter.peakLevel, label: "MIC")
+                    HStack {
+                        Button(meter.isRunning ? "Stop Monitor" : "Start Monitor") {
+                            meter.isRunning ? meter.stop() : meter.start()
+                        }
+                        .controlSize(.small)
+                        if meter.isRunning {
+                            Circle()
+                                .fill(RetroPalette.green)
+                                .frame(width: 8, height: 8)
+                            Text("listening — mic check")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .listRowBackground(Color.clear)
+            }
+
+            Section("Equalizer") {
+                RetroEQBank()
+                    .listRowBackground(Color.clear)
+                Text("Applied to the Voice Notes recording chain — meters and the "
+                     + "recording see the EQ'd signal.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .listRowBackground(Color.clear)
+            }
+
             Section {
                 Button("Refresh Devices") {
                     refreshDevices()
@@ -117,6 +151,7 @@ struct AudioControlView: View {
         .task {
             refreshDevices()
         }
+        .onDisappear { meter.stop() }
     }
 
     private func refreshDevices() {

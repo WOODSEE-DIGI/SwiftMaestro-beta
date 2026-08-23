@@ -214,6 +214,13 @@ struct VoiceNotesPanel: View {
                                 .foregroundStyle(.secondary)
                                 .contentTransition(.numericText())
                         }
+                        // Retro segmented VU bar (btop-style) over the EQ'd
+                        // signal, above the scrolling waveform.
+                        RetroLevelMeter(
+                            level: store.recordingLevel,
+                            peak: store.levelHistory.max() ?? 0,
+                            label: "REC")
+                            .frame(height: 44)
                         // Live level meter
                         LevelMeter(history: store.levelHistory)
                             .frame(height: 22)
