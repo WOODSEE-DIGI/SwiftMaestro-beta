@@ -329,11 +329,11 @@ struct MediaInfo {
     var channels: Int?
 
     var displayTitle: String {
-        title ?? "Unknown Track"
+        title ?? String(localized: "Unknown Track")
     }
 
     var displayArtist: String {
-        artist ?? "Unknown Artist"
+        artist ?? String(localized: "Unknown Artist")
     }
 
     var displayFormat: String {
