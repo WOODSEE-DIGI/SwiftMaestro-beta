@@ -26,16 +26,45 @@ struct MediaPlayerView: View {
             .padding(.top, 8)
             .padding(.bottom, 4)
 
-            // Visualization
-            MediaPlayerVisualization(spectrum: engine.spectrumBands, caps: engine.spectrumCaps)
-                .padding(.horizontal, 8)
-                .padding(.bottom, 4)
+            // Video surface when the item has picture; retro spectrum for
+            // audio-only files. (Waveform stays either way.)
+            if engine.mediaInfo.hasVideo {
+                MediaPlayerVideoView(player: engine.playerForVideo)
+                    .frame(minHeight: 220)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 4)
+            } else {
+                // Visualization
+                MediaPlayerVisualization(spectrum: engine.spectrumBands, caps: engine.spectrumCaps)
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 4)
 
-            // Waveform
-            MediaPlayerWaveformView(samples: engine.spectrumBands.map { $0 * 2 - 1 }, barColor: RetroPalette.green)
-                .frame(height: 60)
-                .padding(.horizontal, 8)
+                // Waveform
+                MediaPlayerWaveformView(samples: engine.spectrumBands.map { $0 * 2 - 1 }, barColor: RetroPalette.green)
+                    .frame(height: 60)
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 4)
+            }
+
+            // FFmpeg preparation / failure status
+            if engine.isPreparingMedia {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("CONVERTING FOR PLAYBACK…")
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(RetroPalette.amber)
+                }
                 .padding(.bottom, 4)
+            } else if let prepError = engine.preparationError {
+                Text(prepError)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(RetroPalette.red)
+                    .lineLimit(2)
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 4)
+            }
 
             // Progress bar
             MediaPlayerProgressBar(

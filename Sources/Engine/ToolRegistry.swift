@@ -45,6 +45,7 @@ extension MaestroTools {
         await registerDatabaseTools()
         await registerDAMTools()
         await registerPomodoroTools()
+        await registerMediaPlayerTools()
         await registerSystemHealthTools()
         await registerBlockyTools()
         await registerResearchTools()

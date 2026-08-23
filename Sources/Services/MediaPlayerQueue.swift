@@ -277,18 +277,28 @@ final class MediaPlayerQueue {
 
 /// File types the media player can open.
 enum MediaPlayerFormat {
-    /// Formats handled natively by AVKit (hardware-accelerated).
+    /// Formats AVKit on macOS actually decodes (hardware-accelerated where
+    /// available). Anything NOT in this set routes through the FFmpeg
+    /// fallback (remux or transcode to H.264/AAC MP4, or AAC M4A for audio).
     static let nativeExtensions: Set<String> = [
-        // Video
-        "mp4", "mov", "m4v", "m4v", "avi", "mkv", "webm", "ts", "mts", "m2ts",
-        "3gp", "3g2", "flv", "wmv", "vob", "ogv",
+        // Video (QuickTime-family containers + codecs AVPlayer handles)
+        "mp4", "mov", "m4v", "3gp", "3g2",
         // Audio
         "mp3", "m4a", "aac", "wav", "aiff", "aif", "caf", "flac", "alac",
-        "ogg", "opus", "wma", "ac3", "eac3", "dts", "dtshd",
+        "ac3", "eac3",
     ]
 
-    /// All supported extensions (native AVKit).
-    static var allSupported: Set<String> { nativeExtensions }
+    /// Known media formats that need the FFmpeg fallback.
+    static let ffmpegExtensions: Set<String> = [
+        // Video
+        "mkv", "avi", "webm", "ts", "mts", "m2ts", "flv", "wmv", "vob", "ogv",
+        "mpg", "mpeg", "divx",
+        // Audio
+        "ogg", "opus", "wma", "dts", "dtshd", "ape", "mka",
+    ]
+
+    /// All extensions the player will attempt to open.
+    static var allSupported: Set<String> { nativeExtensions.union(ffmpegExtensions) }
 
     /// Check if a URL is a supported media file.
     static func canPlay(_ url: URL) -> Bool {
@@ -296,9 +306,10 @@ enum MediaPlayerFormat {
         return allSupported.contains(ext)
     }
 
-    /// Whether a format needs FFmpeg fallback (not natively supported by AVKit).
+    /// Whether a format needs the FFmpeg fallback (not natively decodable by
+    /// macOS AVKit). Unknown extensions are attempted natively first; the
+    /// caller falls back if AVPlayer reports a failure.
     static func needsFFmpeg(_ url: URL) -> Bool {
-        let ext = url.pathExtension.lowercased()
-        return !nativeExtensions.contains(ext)
+        ffmpegExtensions.contains(url.pathExtension.lowercased())
     }
 }

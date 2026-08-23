@@ -48,6 +48,8 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     case dam
     /// Blocky — blockchain wallet lookup and transaction tracing (BTC/ETH).
     case blockchain
+    /// Media Player panel — playback control, volume, seek, and queue tools.
+    case mediaPlayer
     /// Overlay Builder / HTML Builder panel — overlay types, fields, and the
     /// live HTML/CSS editor (website templates included).
     case overlayBuilder
@@ -90,7 +92,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .file, .documents, .books, .shell, .server, .index, .system, .sqlite,
              .notes, .kanban, .whiteboard, .numbers, .maps, .photos, .stocks, .news,
              .mail, .whatsapp, .discord, .web, .browser, .scraping, .bluesky, .patreon, .vault, .database, .dam,
-             .blockchain, .overlayBuilder, .calendar, .reminders, .contacts:
+             .blockchain, .overlayBuilder, .calendar, .reminders, .contacts, .mediaPlayer:
             return true
         }
     }
@@ -133,6 +135,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .dam: return "DAM"
         case .blockchain: return "Blocky"
         case .overlayBuilder: return "SwiftWeaver"
+        case .mediaPlayer: return "Media Player"
         case .calendar: return "Calendar"
         case .reminders: return "Reminders"
         case .contacts: return "Contacts"
@@ -177,6 +180,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .dam: return "photo.on.rectangle.angled"
         case .blockchain: return "link.circle"
         case .overlayBuilder: return "chevron.left.forwardslash.chevron.right"
+        case .mediaPlayer: return "play.rectangle.on.rectangle"
         case .calendar: return "calendar"
         case .reminders: return "checklist"
         case .contacts: return "person.2"
@@ -333,6 +337,11 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
                 "dam_search", "dam_import", "dam_list_folders", "dam_list_assets",
                 "dam_asset_info", "dam_set_rating", "dam_set_keywords",
             ]
+        case .mediaPlayer:
+            return [
+                "play_media", "pause_media", "resume_media", "seek_media",
+                "set_volume", "list_media_queue", "add_to_queue",
+            ]
         case .blockchain:
             return [
                 "wallet_lookup", "trace_wallet", "wallet_tags", "blockchain_report",
@@ -380,6 +389,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .database: return [.maestroDB]
         case .dam: return [.damBrowser]
         case .blockchain: return [.blocky]
+        case .mediaPlayer: return [.mediaPlayer]
         case .overlayBuilder: return [.htmlBuilder]
         case .documents: return [.maestroDocs]
         case .shell: return [.terminal]

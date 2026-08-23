@@ -58,6 +58,22 @@ final class MediaPlayerEngine {
     /// Audio tap for real-time spectrum visualization.
     private let audioTap = MediaPlayerAudioTap()
 
+    /// FFmpeg fallback for formats AVKit cannot decode.
+    private let transcoder = MediaPlayerTranscoder()
+
+    /// The temp file produced by an FFmpeg conversion for the current item,
+    /// if any. Deleted on stop so transcodes never accumulate.
+    private var convertedTempURL: URL?
+
+    /// True while a format is being probed/remuxed/transcoded for playback.
+    var isPreparingMedia = false
+
+    /// Last preparation failure (unsupported codec, corrupt file, …).
+    var preparationError: String?
+
+    /// Read-only access to the shared player for the video surface.
+    var playerForVideo: AVPlayer { player }
+
     /// Latest spectrum snapshot (24 bands, 0…1). Updated periodically from the UI timer.
     var spectrumBands: [Float] = Array(repeating: 0, count: 24)
     var spectrumCaps: [Float] = Array(repeating: 0, count: 24)
@@ -92,11 +108,30 @@ final class MediaPlayerEngine {
 
     // MARK: - Playback Controls
 
-    /// Load a media file and prepare it for playback.
+    /// Load a media file and prepare it for playback. Non-native formats are
+    /// remuxed/transcoded via the FFmpeg fallback first.
     func load(url: URL) async {
         stop()
 
-        let asset = AVURLAsset(url: url)
+        // Route through the FFmpeg fallback when the format is one AVKit
+        // cannot decode (MKV, WebM, Ogg/Opus, DTS, …). Native formats pass
+        // through untouched.
+        isPreparingMedia = true
+        preparationError = nil
+        let playable: URL
+        do {
+            playable = try await transcoder.playableURL(for: url)
+        } catch {
+            isPreparingMedia = false
+            preparationError = error.localizedDescription
+            return
+        }
+        isPreparingMedia = false
+        if playable != url {
+            convertedTempURL = playable
+        }
+
+        let asset = AVURLAsset(url: playable)
         let item = AVPlayerItem(asset: asset)
 
         currentURL = url
@@ -164,6 +199,10 @@ final class MediaPlayerEngine {
         spectrumCaps = Array(repeating: 0, count: 24)
         itemObserver = nil
         statusObservation = nil
+        preparationError = nil
+        // Delete the FFmpeg conversion for the stopped item, if any.
+        transcoder.removeConvertedFile(convertedTempURL)
+        convertedTempURL = nil
     }
 
     /// Seek to a specific time (seconds).
