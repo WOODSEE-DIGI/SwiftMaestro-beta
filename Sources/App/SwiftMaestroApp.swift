@@ -343,6 +343,17 @@ struct SwiftMaestroApp: App {
                     if mechanic.modelID == nil, ModelCatalog.mechanicModelAvailable {
                         workspace.setModel(ModelCatalog.mechanicModelID, for: mechanic.id)
                     }
+                    // Developer machines: give the Mechanic the SwiftMaestro repo as
+                    // its working directory so git history + docs/ are authorized
+                    // tool scope (it can consult known-good committed state when
+                    // diagnosing). End users have no repo — they keep the default
+                    // app-support root, which is always authorized.
+                    if mechanic.workingDirectory == nil {
+                        let repo = NSHomeDirectory() + "/GitHub/FUSV/SwiftMaestro"
+                        if FileManager.default.fileExists(atPath: repo + "/.git") {
+                            workspace.setWorkingDirectory(repo, for: mechanic.id)
+                        }
+                    }
                     // Validate capabilities for every locally-present model so
                     // tool-call format / thinking support are known before any
                     // generation runs. This is fast (JSON reads only).

@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import MLXLMCommon
 import SwiftMaestroKit
 
@@ -48,6 +49,18 @@ extension MaestroTools {
                 name: "settings_restore_backup", spec: systemHealthToolSpecs[8],
                 category: ToolCategory.system.rawValue,
                 handler: { _ in await settingsRestoreBackup() }),
+            ToolDefinition(
+                name: "config_history", spec: systemHealthToolSpecs[9],
+                category: ToolCategory.system.rawValue,
+                handler: { _ in await configHistory() }),
+            ToolDefinition(
+                name: "config_restore_point", spec: systemHealthToolSpecs[10],
+                category: ToolCategory.system.rawValue,
+                handler: { call in await configRestorePoint(call) }),
+            ToolDefinition(
+                name: "app_version_rollback", spec: systemHealthToolSpecs[11],
+                category: ToolCategory.system.rawValue,
+                handler: { call in await appVersionRollback(call) }),
         ])
     }
 
@@ -125,6 +138,34 @@ extension MaestroTools {
                 + "toggles, and tuning revert to the backed-up state; a restart may "
                 + "be needed. Errors if no backup exists.",
                 properties: [:], required: []),
+            rawSpec("config_history",
+                "List versioned configuration restore points (settings + MCP "
+                + "registry snapshots kept in a local git history). Each point "
+                + "has a commit id, date, and note. Use with "
+                + "config_restore_point to roll back to ANY point — not just "
+                + "the latest backup.",
+                properties: [:], required: []),
+            rawSpec("config_restore_point",
+                "Restore SwiftMaestro settings (and MCP registry if present in "
+                + "the commit) from a specific restore point listed by "
+                + "config_history. Tell the user what will change BEFORE "
+                + "calling; a restart may be needed.",
+                properties: [
+                    "sha": ["type": "string", "description": "Commit id from config_history."],
+                ],
+                required: ["sha"]),
+            rawSpec("app_version_rollback",
+                "List recent SwiftMaestro releases from the public appcast, or "
+                + "download a chosen earlier version's DMG to ~/Downloads and "
+                + "open it so the user can reinstall — the last-resort recovery "
+                + "when a new release itself is broken. action='list' first, "
+                + "then action='download' with version only after the user "
+                + "confirms which one.",
+                properties: [
+                    "action": ["type": "string", "description": "'list' or 'download'."],
+                    "version": ["type": "string", "description": "Version to download (e.g. 0.3.6) — required for download."],
+                ],
+                required: ["action"]),
         ]
     }
 
@@ -365,9 +406,14 @@ extension MaestroTools {
     }
 
     private static func settingsBackupNow() async -> String {
-        await MainActor.run { SettingsBackupService.shared.backup() }
-        return "Settings snapshot saved to the known-good backup "
-            + "(~/Library/Application Support/SwiftMaestro/backups/settings-backup.json)."
+        do {
+            let sha = try await ConfigVersionStore.shared.snapshot(note: "manual backup via agent")
+            return "Settings + MCP registry committed to the config history "
+                + "(restore point \(sha)). Restore anytime with config_history "
+                + "+ config_restore_point."
+        } catch {
+            return "Error: config snapshot failed: \(error.localizedDescription)"
+        }
     }
 
     private static func settingsRestoreBackup() async -> String {
@@ -377,5 +423,105 @@ extension MaestroTools {
               + "everything (model paths, panels) to take effect."
             : "No settings backup exists yet — nothing was changed. Run "
               + "settings_backup_now first next time."
+    }
+
+    // MARK: - Config history + app rollback (Mechanic's reset-to-known-good)
+
+    private static func configHistory() async -> String {
+        do {
+            let points = try ConfigVersionStore.shared.history()
+            if points.isEmpty {
+                return "No restore points yet — one is created by every "
+                    + "settings_backup_now call."
+            }
+            var out = "Config restore points (newest first):\n\n"
+            for p in points {
+                out += "- `\(p.sha)` — \(p.date)\n  \(p.note)\n"
+            }
+            return out
+        } catch {
+            return "Error reading config history: \(error.localizedDescription)"
+        }
+    }
+
+    private struct RestorePointArgs: Codable { let sha: String? }
+
+    private static func configRestorePoint(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: RestorePointArgs.self),
+              let sha = args.sha?.trimmingCharacters(in: .whitespaces), !sha.isEmpty else {
+            return "Error: sha is required (see config_history)."
+        }
+        do {
+            let restored = try await ConfigVersionStore.shared.restore(sha: sha)
+            guard !restored.isEmpty else {
+                return "Restore point \(sha) contained nothing restorable — no changes made."
+            }
+            return "Restored from \(sha): \(restored.joined(separator: ", ")). "
+                + "A restart may be needed for everything to take effect."
+        } catch {
+            return "Error restoring \(sha): \(error.localizedDescription)"
+        }
+    }
+
+    private struct RollbackArgs: Codable { let action: String?; let version: String? }
+
+    private static func appVersionRollback(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: RollbackArgs.self),
+              let action = args.action?.lowercased() else {
+            return "Error: action is required ('list' or 'download')."
+        }
+        let appcastURL = "https://s3.ap-southeast-2.onidel.cloud/swiftmaestro-releases/appcast.xml"
+        guard let url = URL(string: appcastURL) else { return "Error: bad appcast URL." }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            guard let text = String(data: data, encoding: .utf8) else {
+                return "Error: appcast unreadable."
+            }
+            // The appcast carries the LATEST item only (Sparkle convention) —
+            // the release-notes md + dmg URLs are derived from it. The full
+            // version list lives on the GitHub beta releases page.
+            if action == "list" {
+                let version = extractBetween("<sparkle:shortVersionString>", "</", text) ?? "unknown"
+                let dmg = extractBetween("enclosure url=\"", "\"", text) ?? ""
+                return "Current published release: \(version)\nDMG: \(dmg)\n\n"
+                    + "Earlier full installers follow the same URL pattern:\n"
+                    + "https://s3.ap-southeast-2.onidel.cloud/swiftmaestro-releases/SwiftMaestro-<VERSION>-full.dmg\n"
+                    + "Known recent versions: 0.3.8, 0.3.6, 0.3.5, 0.3.4, 0.3.3. "
+                    + "Confirm the target version with the user, then call with "
+                    + "action='download' and version."
+            }
+            guard action == "download",
+                  let version = args.version?.trimmingCharacters(in: .whitespaces),
+                  !version.isEmpty else {
+                return "Error: action='download' needs a version (e.g. 0.3.6)."
+            }
+            let dmgURL = "https://s3.ap-southeast-2.onidel.cloud/swiftmaestro-releases/SwiftMaestro-\(version)-full.dmg"
+            guard let remote = URL(string: dmgURL) else { return "Error: bad DMG URL." }
+            let dest = URL(fileURLWithPath: NSHomeDirectory()
+                + "/Downloads/SwiftMaestro-\(version)-full.dmg")
+            let (tmp, response) = try await URLSession.shared.download(from: remote)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                return "Error: no DMG found for \(version) at the release URL "
+                    + "(HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)). "
+                    + "Check the version against the list."
+            }
+            try FileManager.default.moveItem(at: tmp, to: dest)
+            await MainActor.run { NSWorkspace.shared.open(dest) }
+            return "Downloaded SwiftMaestro \(version) to ~/Downloads and opened the DMG. "
+                + "Guide the user: quit SwiftMaestro, drag the older app to /Applications "
+                + "replacing the current one, relaunch. Their settings are untouched; if "
+                + "settings are part of the problem, restore a point from config_history "
+                + "after relaunch."
+        } catch {
+            return "Error during rollback: \(error.localizedDescription)"
+        }
+    }
+
+    /// Text between two markers (tiny appcast scraping — no regex needed).
+    private static func extractBetween(_ start: String, _ end: String, _ text: String) -> String? {
+        guard let startRange = text.range(of: start) else { return nil }
+        let rest = text[startRange.upperBound...]
+        guard let endRange = rest.range(of: end) else { return nil }
+        return String(rest[..<endRange.lowerBound])
     }
 }

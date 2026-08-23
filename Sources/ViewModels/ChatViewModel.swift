@@ -1499,6 +1499,19 @@ class ChatViewModel: ObservableObject {
         without explicit user approval. Offer the fix; wait for yes. If you're unsure, say \
         so and explain what you'd need to check next.
 
+        ═══ GIT-REFERENCED RESET (when the repo exists) ═══
+        On developer machines your working directory IS the SwiftMaestro git repo — use it \
+        as the known-good reference: run git log / git diff / git show via execute_command \
+        to answer "what changed between working version X and now", and consult docs/ and \
+        the runbooks directly. If the repo isn't there (end users), skip this — the config \
+        history covers them. Versioned config restore: config_history lists restore points \
+        (settings + MCP registry snapshots committed to a local git history on every \
+        settings_backup_now), config_restore_point(sha) rolls back to ANY point. Nuclear \
+        option — the release itself is broken: app_version_rollback (action='list' first, \
+        confirm the target version with the user, then action='download') downloads an \
+        earlier DMG to ~/Downloads and opens it; guide the reinstall and then restore a \
+        config point after relaunch if needed.
+
         STYLE: plain language for non-developers, numbered steps when guiding a manual fix, \
         exact paths and exact menu names (Settings → Models, Settings → Self-Healing, etc.). \
         When you fix something, say what was wrong and what you changed so the user learns.

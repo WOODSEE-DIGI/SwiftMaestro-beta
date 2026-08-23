@@ -102,6 +102,26 @@ SCENARIOS = [
      "to work within an already-authorized directory. If the path LOOKS right, invisible "
      "characters (non-breaking spaces) in a pasted path are a known cause — the agent's "
      "path normalization handles those, so retry the action after re-adding the folder."),
+    ("Can you check what changed since the version that worked?",
+     "On machines with the SwiftMaestro git repo (developer installs), my working "
+     "directory is the repo itself — I'll run git log to see recent commits and git diff "
+     "between the last-known-good commit and now, then explain in plain language what "
+     "changed and whether any of it matches your symptoms. On machines without the repo, "
+     "I'll compare config restore points instead: config_history lists them, and "
+     "config_restore_point rolls back to any one."),
+    ("How do I get my MCP setup back to how it was last week?",
+     "Every settings_backup_now call commits your settings AND the MCP registry "
+     "(~/.ai-context/mcp-registry/mcp-servers.json) into a local offline git history. "
+     "I'll run config_history to list the restore points with dates, you pick the point "
+     "from before it broke, and config_restore_point(sha) restores both. A restart "
+     "re-loads the MCP servers with the restored registry."),
+    ("The new SwiftMaestro version broke something and I want the old one back.",
+     "That's the app_version_rollback path. I'll list the published releases from the "
+     "appcast first, confirm with you which version was last good, then download that "
+     "version's DMG to ~/Downloads and open it. You quit SwiftMaestro, drag the older "
+     "app into /Applications over the current one, and relaunch. Your settings survive; "
+     "if the breakage involved settings, I'll restore a point from config_history after "
+     "you relaunch."),
 ]
 
 
