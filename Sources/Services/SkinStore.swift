@@ -318,6 +318,13 @@ final class SkinStore {
             cleanAndMinimalDark,
             professionalLight,
             professionalDark,
+            btopTokyoNight,
+            btopNordDark,
+            btopNordLight,
+            btopSolarizedDark,
+            btopSolarizedLight,
+            btopOneDark,
+            btopMonokai,
         ]
     }
 
@@ -670,6 +677,260 @@ final class SkinStore {
             tasksText: "FFFFFFCC",
             background: "0F1720FF",
             secondaryBackground: "1E2D3DFF"
+        )
+    }
+
+    // MARK: - btop Tokyo Night
+    // Authentic palette from btop's bundled tokyo-night.theme (btop by
+    // aristocratos): main_bg #1a1b26, main_fg #cfc9c2, hi_fg #7dcfff cyan,
+    // inactive #565f89, selected #414868, gradient green→amber→red.
+
+    static var btopTokyoNight: Skin {
+        Skin(
+            id: "btop-tokyo-night",
+            name: "btop Tokyo Night",
+            description: "btop's tokyo-night theme: cyan highlights on the deep blue of the Tokyo night skyline.",
+            isBuiltIn: true,
+            appearance: .dark,
+            accent: "7DCFFFFF",
+            userBubble: "7DCFFFFF",
+            userBubbleText: "1A1B26FF",
+            chatBackground: "1A1B26FF",
+            chatText: "CFC9C2FF",
+            chatSecondaryText: "565F89FF",
+            sidebarBackground: "16161EFF",
+            sidebarText: "CFC9C2FF",
+            plansPanel: "1F2335FF",
+            plansText: "CFC9C2FF",
+            tasksPanel: "24283BFF",
+            tasksText: "CFC9C2FF",
+            background: "1A1B26FF",
+            secondaryBackground: "1F2335FF",
+            panelAccents: [
+                "terminal": "7DCFFFFF",
+                "notesMD": "9ECE6AFF",
+                "kanban": "E0AF68FF",
+                "calendar": "F7768EFF",
+                "canvas": "BB9AF7FF",
+                "busMonitor": "F7768EFF",
+                "whatsapp": "25D366FF",
+            ]
+        )
+    }
+
+    // MARK: - btop Nord
+    // Dark from btop's nord.theme (main_bg #2E3440, main_fg #D8DEE9,
+    // hi_fg #5E81AC, title #8FBCBB). Light variant composed from the official
+    // Nord palette (Snow Storm backgrounds, Polar Night text, Frost accents).
+
+    static var btopNordDark: Skin {
+        Skin(
+            id: "btop-nord-dark",
+            name: "btop Nord Dark",
+            description: "btop's nord theme: arctic blues and frost accents from the north.",
+            isBuiltIn: true,
+            appearance: .dark,
+            accent: "88C0D0FF",
+            userBubble: "5E81ACFF",
+            userBubbleText: "ECEFF4FF",
+            chatBackground: "2E3440FF",
+            chatText: "D8DEE9FF",
+            chatSecondaryText: "4C566AFF",
+            sidebarBackground: "272C36FF",
+            sidebarText: "D8DEE9FF",
+            plansPanel: "3B4252FF",
+            plansText: "D8DEE9FF",
+            tasksPanel: "434C5EFF",
+            tasksText: "D8DEE9FF",
+            background: "2E3440FF",
+            secondaryBackground: "3B4252FF",
+            panelAccents: [
+                "terminal": "88C0D0FF",
+                "notesMD": "A3BE8CFF",
+                "kanban": "EBCB8BFF",
+                "calendar": "BF616AFF",
+                "canvas": "B48EADFF",
+                "busMonitor": "BF616AFF",
+                "whatsapp": "25D366FF",
+            ]
+        )
+    }
+
+    static var btopNordLight: Skin {
+        Skin(
+            id: "btop-nord-light",
+            name: "btop Nord Light",
+            description: "Nord's Snow Storm side: polar white fields with frost accents.",
+            isBuiltIn: true,
+            appearance: .light,
+            accent: "5E81ACFF",
+            userBubble: "5E81ACFF",
+            userBubbleText: "ECEFF4FF",
+            chatBackground: "ECEFF4FF",
+            chatText: "2E3440FF",
+            chatSecondaryText: "4C566AFF",
+            sidebarBackground: "E5E9F0FF",
+            sidebarText: "2E3440FF",
+            plansPanel: "D8DEE9FF",
+            plansText: "2E3440FF",
+            tasksPanel: "E5E9F0FF",
+            tasksText: "2E3440FF",
+            background: "ECEFF4FF",
+            secondaryBackground: "FFFFFFFF",
+            panelAccents: [
+                "terminal": "5E81ACFF",
+                "notesMD": "A3BE8CFF",
+                "kanban": "D08770FF",
+                "calendar": "BF616AFF",
+                "canvas": "B48EADFF",
+                "busMonitor": "BF616AFF",
+                "whatsapp": "25D366FF",
+            ]
+        )
+    }
+
+    // MARK: - btop Solarized
+    // Both variants ship in btop (solarized_dark.theme / solarized_light.theme):
+    // base03 #002b36, base0 #839496 family, accent #b58900, selected #073642.
+
+    static var btopSolarizedDark: Skin {
+        Skin(
+            id: "btop-solarized-dark",
+            name: "btop Solarized Dark",
+            description: "btop's solarized dark: Ethan Schoonover's precision colors on a deep teal field.",
+            isBuiltIn: true,
+            appearance: .dark,
+            accent: "B58900FF",
+            userBubble: "B58900FF",
+            userBubbleText: "002B36FF",
+            chatBackground: "002B36FF",
+            chatText: "EEE8D5FF",
+            chatSecondaryText: "586E75FF",
+            sidebarBackground: "00212BFF",
+            sidebarText: "93A1A1FF",
+            plansPanel: "073642FF",
+            plansText: "EEE8D5FF",
+            tasksPanel: "073642FF",
+            tasksText: "EEE8D5FF",
+            background: "002B36FF",
+            secondaryBackground: "073642FF",
+            panelAccents: [
+                "terminal": "2AA198FF",
+                "notesMD": "859900FF",
+                "kanban": "CB4B16FF",
+                "calendar": "DC322FFF",
+                "canvas": "6C71C4FF",
+                "busMonitor": "DC322FFF",
+                "whatsapp": "25D366FF",
+            ]
+        )
+    }
+
+    static var btopSolarizedLight: Skin {
+        Skin(
+            id: "btop-solarized-light",
+            name: "btop Solarized Light",
+            description: "btop's solarized light: warm paper tones with the same precision palette.",
+            isBuiltIn: true,
+            appearance: .light,
+            accent: "B58900FF",
+            userBubble: "B58900FF",
+            userBubbleText: "FDF6E3FF",
+            chatBackground: "FDF6E3FF",
+            chatText: "586E75FF",
+            chatSecondaryText: "93A1A1FF",
+            sidebarBackground: "EEE8D5FF",
+            sidebarText: "586E75FF",
+            plansPanel: "EEE8D5FF",
+            plansText: "586E75FF",
+            tasksPanel: "F5EFDCFF",
+            tasksText: "586E75FF",
+            background: "FDF6E3FF",
+            secondaryBackground: "EEE8D5FF",
+            panelAccents: [
+                "terminal": "2AA198FF",
+                "notesMD": "859900FF",
+                "kanban": "CB4B16FF",
+                "calendar": "DC322FFF",
+                "canvas": "6C71C4FF",
+                "busMonitor": "DC322FFF",
+                "whatsapp": "25D366FF",
+            ]
+        )
+    }
+
+    // MARK: - btop One Dark
+    // From btop's onedark.theme: main_bg #282c34, main_fg #abb2bf,
+    // hi_fg #61afef, gradient #98c379 → #e5c07b → #e06c75.
+
+    static var btopOneDark: Skin {
+        Skin(
+            id: "btop-one-dark",
+            name: "btop One Dark",
+            description: "btop's onedark theme: Atom's iconic editor palette, blue highlights on charcoal.",
+            isBuiltIn: true,
+            appearance: .dark,
+            accent: "61AFEFFF",
+            userBubble: "61AFEFFF",
+            userBubbleText: "282C34FF",
+            chatBackground: "282C34FF",
+            chatText: "ABB2BFFF",
+            chatSecondaryText: "5C6370FF",
+            sidebarBackground: "21252BFF",
+            sidebarText: "ABB2BFFF",
+            plansPanel: "2C313CFF",
+            plansText: "ABB2BFFF",
+            tasksPanel: "2C313CFF",
+            tasksText: "ABB2BFFF",
+            background: "282C34FF",
+            secondaryBackground: "2C313CFF",
+            panelAccents: [
+                "terminal": "61AFEFFF",
+                "notesMD": "98C379FF",
+                "kanban": "E5C07BFF",
+                "calendar": "E06C75FF",
+                "canvas": "C678DDFF",
+                "busMonitor": "E06C75FF",
+                "whatsapp": "25D366FF",
+            ]
+        )
+    }
+
+    // MARK: - btop Monokai
+    // From btop's monokai.theme: main_bg #060604, main_fg #F8F8F2,
+    // hi_fg #F92672, accents green #A6E22E / orange / violet from the
+    // classic Monokai editor palette.
+
+    static var btopMonokai: Skin {
+        Skin(
+            id: "btop-monokai",
+            name: "btop Monokai",
+            description: "btop's monokai theme: hot pink and lime on near-black, straight from the editor classic.",
+            isBuiltIn: true,
+            appearance: .dark,
+            accent: "F92672FF",
+            userBubble: "F92672FF",
+            userBubbleText: "F8F8F2FF",
+            chatBackground: "121310FF",
+            chatText: "F8F8F2FF",
+            chatSecondaryText: "75715EFF",
+            sidebarBackground: "1A1B17FF",
+            sidebarText: "F8F8F2FF",
+            plansPanel: "1E1F1CFF",
+            plansText: "F8F8F2FF",
+            tasksPanel: "272822FF",
+            tasksText: "F8F8F2FF",
+            background: "121310FF",
+            secondaryBackground: "1E1F1CFF",
+            panelAccents: [
+                "terminal": "66D9EFFF",
+                "notesMD": "A6E22EFF",
+                "kanban": "FD971FFF",
+                "calendar": "F92672FF",
+                "canvas": "AE81FFFF",
+                "busMonitor": "F92672FF",
+                "whatsapp": "25D366FF",
+            ]
         )
     }
 }
