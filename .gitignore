@@ -35,3 +35,7 @@ Vendor/**/*.xcworkspace
 
 # Firecrawl research cache
 .firecrawl/
+
+# Private: investor/outreach research must NEVER live in this repo (moved to ~/Documents/SwiftMaestro Notes)
+docs/outreach/
+outreach/
