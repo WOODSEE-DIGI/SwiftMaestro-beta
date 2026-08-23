@@ -109,7 +109,7 @@ struct AudioControlView: View {
 
             Section("Live Input Monitor") {
                 VStack(spacing: 8) {
-                    RetroSpectrumMeter(spectrum: meter.spectrum)
+                    RetroSpectrumMeter(spectrum: meter.spectrum, caps: meter.spectrumCaps)
                         .frame(height: 128)
                     RetroLevelMeter(level: meter.level, peak: meter.peak, label: "MIC")
                     HStack {

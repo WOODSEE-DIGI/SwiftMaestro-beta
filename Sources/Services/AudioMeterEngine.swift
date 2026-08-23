@@ -41,17 +41,9 @@ final class AudioMeterEngine: @unchecked Sendable {
     private var peakLevel: Float = 0
     private let lock = NSLock()
 
-    // MARK: - DSP buffers (flat class properties — preallocated at start,
-    // written only by the tap thread while it holds the lock; exclusivity
-    // checker sees each as distinct storage)
+    // MARK: - DSP (shared analyzer — preallocated at start, tap-thread only)
 
-    private var fftSetup: vDSP.FFT<DSPSplitComplex>?
-    private var window: [Float] = []
-    private var windowed: [Float] = []
-    private var splitRe: [Float] = []
-    private var splitIm: [Float] = []
-    private var magnitudes: [Float] = []
-    private var bandBins: [[Int]] = []
+    private var analyzer: SpectrumAnalyzer?
 
     private let bufferSize = 2048
 
@@ -104,7 +96,11 @@ final class AudioMeterEngine: @unchecked Sendable {
         let hwFormat = input.inputFormat(forBus: 0)
         guard hwFormat.sampleRate > 0, hwFormat.channelCount > 0 else { return }
 
-        prepareDSP(sampleRate: Float(hwFormat.sampleRate))
+        let analyzer = SpectrumAnalyzer(bandCount: 24, bufferSize: bufferSize)
+        analyzer.prepare(sampleRate: Float(hwFormat.sampleRate))
+        lock.lock()
+        self.analyzer = analyzer
+        lock.unlock()
 
         input.installTap(onBus: 0, bufferSize: UInt32(bufferSize), format: hwFormat) {
             [weak self] buffer, _ in
@@ -140,34 +136,6 @@ final class AudioMeterEngine: @unchecked Sendable {
         for observer in currentObservers { observer(zero) }
     }
 
-    // MARK: - DSP prep (called on the starting thread, before the tap exists)
-
-    private func prepareDSP(sampleRate: Float) {
-        let n = bufferSize
-        let fft = vDSP.FFT(log2n: UInt(log2(Float(n))), radix: .radix2,
-                           ofType: DSPSplitComplex.self)
-        let window = vDSP.window(ofType: Float.self,
-                                 usingSequence: .hanningDenormalized,
-                                 count: n, isHalfWindow: false)
-        let binHz = sampleRate / Float(n)
-        let bandBins: [[Int]] = (0..<24).map { band in
-            let lo = 20.0 * pow(1000.0, Double(band) / 24.0)
-            let hi = 20.0 * pow(1000.0, Double(band + 1) / 24.0)
-            let loBin = max(1, Int(lo / Double(binHz)))
-            let hiBin = min(n / 2 - 1, max(loBin + 1, Int(hi / Double(binHz))))
-            return Array(loBin..<hiBin)
-        }
-        lock.lock()
-        fftSetup = fft
-        self.window = window
-        windowed = [Float](repeating: 0, count: n)
-        splitRe = [Float](repeating: 0, count: n / 2)
-        splitIm = [Float](repeating: 0, count: n / 2)
-        magnitudes = [Float](repeating: 0, count: n / 2)
-        self.bandBins = bandBins
-        lock.unlock()
-    }
-
     // MARK: - Tap processing (realtime audio thread)
     //
     // Everything the FFT touches is a flat class property (distinct storage
@@ -176,7 +144,7 @@ final class AudioMeterEngine: @unchecked Sendable {
 
     private func processTapBuffer(_ buffer: AVAudioPCMBuffer) {
         lock.lock()
-        guard isRunning, let fftSetup else {
+        guard isRunning, let analyzer else {
             lock.unlock()
             return
         }
@@ -190,40 +158,13 @@ final class AudioMeterEngine: @unchecked Sendable {
         var sumSquares: Float = 0
         var peak: Float = 0
         for i in 0..<frames {
-            let s = channelData[0][i * stride]
-            windowed[i] = s * window[i]
-            sumSquares += s * s
-            if abs(s) > peak { peak = abs(s) }
+            let sample = channelData[0][i * stride]
+            sumSquares += sample * sample
+            if abs(sample) > peak { peak = abs(sample) }
         }
-        for i in frames..<bufferSize { windowed[i] = 0 }
         let rms = min(1, sqrt(sumSquares / Float(frames)) * 3)
+        let bands = analyzer.process(buffer)
 
-        windowed.withUnsafeBufferPointer { srcPtr in
-            splitRe.withUnsafeMutableBufferPointer { rePtr in
-                splitIm.withUnsafeMutableBufferPointer { imPtr in
-                    var split = DSPSplitComplex(realp: rePtr.baseAddress!, imagp: imPtr.baseAddress!)
-                    srcPtr.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: frames / 2) { complexPtr in
-                        vDSP_ctoz(complexPtr, 2, &split, 1, vDSP_Length(frames / 2))
-                    }
-                    fftSetup.forward(input: split, output: &split)
-                }
-            }
-        }
-        let binCount = bufferSize / 2
-        for bin in 0..<binCount {
-            let re = splitRe[bin]
-            let im = splitIm[bin]
-            magnitudes[bin] = re * re + im * im
-        }
-
-        var bands = [Float](repeating: 0, count: 24)
-        for (band, bins) in bandBins.enumerated() {
-            var sum: Float = 0
-            for bin in bins { sum += magnitudes[bin] }
-            let mean = sum / Float(max(1, bins.count))
-            let db = 10 * log10(max(mean, 1e-12))
-            bands[band] = max(0, min(1, (db + 60) / 60))
-        }
         peakLevel = max(peak, peakLevel * 0.985)
         let frame = MeterFrame(level: rms, peak: peakLevel, spectrum: bands)
         let currentObservers = Array(observers.values)
@@ -247,9 +188,45 @@ final class MeterDisplay {
     private(set) var level: Float = 0
     private(set) var peak: Float = 0
     private(set) var spectrum: [Float] = Array(repeating: 0, count: 24)
+    /// Per-band falling peak caps (the white marker above each bar).
+    private(set) var spectrumCaps: [Float] = Array(repeating: 0, count: 24)
     private(set) var isRunning = false
 
     private var observerID: UUID?
+
+    /// VU ballistics: fast attack, slow release — meters breathe like analog
+    /// instead of stepping per frame. Applied UI-side so the engine stays raw.
+    private func applyBallistics(_ frame: MeterFrame) {
+        // Level: instant rise, eased fall.
+        if frame.level > level {
+            level = frame.level
+        } else {
+            level = max(frame.level, level - 0.04)
+        }
+        if frame.peak > peak {
+            peak = frame.peak
+        } else {
+            peak = max(frame.peak, peak - 0.012)
+        }
+        // Bands + caps.
+        var smoothed = spectrum
+        var caps = spectrumCaps
+        for i in 0..<min(frame.spectrum.count, smoothed.count) {
+            let newValue = frame.spectrum[i]
+            if newValue > smoothed[i] {
+                smoothed[i] = newValue            // attack: instant
+            } else {
+                smoothed[i] = max(newValue, smoothed[i] - 0.035)  // release
+            }
+            if newValue > caps[i] {
+                caps[i] = newValue                // cap jumps to peak
+            } else {
+                caps[i] = max(0, caps[i] - 0.008) // cap falls slowly
+            }
+        }
+        spectrum = smoothed
+        spectrumCaps = caps
+    }
 
     func toggle() {
         isRunning ? stop() : start()
@@ -260,9 +237,7 @@ final class MeterDisplay {
             observerID = AudioMeterEngine.shared.addObserver { frame in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
-                    self.level = frame.level
-                    self.peak = frame.peak
-                    self.spectrum = frame.spectrum
+                    self.applyBallistics(frame)
                 }
             }
         }
@@ -280,5 +255,6 @@ final class MeterDisplay {
         level = 0
         peak = 0
         spectrum = Array(repeating: 0, count: 24)
+        spectrumCaps = Array(repeating: 0, count: 24)
     }
 }

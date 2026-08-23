@@ -33,11 +33,14 @@ enum RetroPalette {
 struct RetroSpectrumMeter: View {
     let spectrum: [Float]          // 0…1 per band
     var cellsPerBar: Int = 12
+    /// Per-band falling peak caps (white marker above the bar) — nil hides them.
+    var caps: [Float]? = nil
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 3) {
             ForEach(0..<spectrum.count, id: \.self) { band in
-                RetroBarColumn(value: spectrum[band], cells: cellsPerBar)
+                RetroBarColumn(value: spectrum[band], cells: cellsPerBar,
+                               cap: caps != nil && band < caps!.count ? caps![band] : nil)
             }
         }
         .padding(8)
@@ -47,6 +50,7 @@ struct RetroSpectrumMeter: View {
             RoundedRectangle(cornerRadius: 8)
                 .strokeBorder(RetroPalette.green.opacity(0.35), lineWidth: 1)
         )
+        .retroScanlines()
     }
 }
 
@@ -54,14 +58,21 @@ struct RetroSpectrumMeter: View {
 private struct RetroBarColumn: View {
     let value: Float
     let cells: Int
+    var cap: Float? = nil
 
     var body: some View {
         VStack(spacing: 2) {
             ForEach((0..<cells).reversed(), id: \.self) { row in
                 let fraction = Double(row + 1) / Double(cells)
                 let filled = Double(value) * Double(cells) >= Double(row + 1)
+                let isCap: Bool = {
+                    guard let cap, cap > value, cap > 0.02 else { return false }
+                    return abs(Double(cap) * Double(cells) - Double(row + 1)) < 0.5
+                }()
                 RoundedRectangle(cornerRadius: 1.5)
-                    .fill(filled ? RetroPalette.zone(fraction: fraction) : RetroPalette.dim)
+                    .fill(isCap ? Color.white
+                          : filled ? RetroPalette.zone(fraction: fraction)
+                          : RetroPalette.dim)
                     .frame(maxWidth: .infinity)
                     .frame(height: 7)
             }
@@ -113,6 +124,7 @@ struct RetroLevelMeter: View {
             RoundedRectangle(cornerRadius: 8)
                 .strokeBorder(RetroPalette.green.opacity(0.35), lineWidth: 1)
         )
+        .retroScanlines()
     }
 
     private var dbText: String {
@@ -228,5 +240,33 @@ private struct RetroEQSlider: View {
         frequency >= 1000
             ? String(format: "%gk", Double(frequency) / 1000.0)   // %g trims: "2.4k"
             : String(format: "%g", Double(frequency))
+    }
+}
+
+
+// MARK: - Scanlines (CRT phosphor finish)
+
+/// Subtle horizontal scanlines over a meter — the CRT phosphor-glass look.
+private struct RetroScanlineOverlay: View {
+    var body: some View {
+        Canvas { context, size in
+            var y: CGFloat = 1
+            while y < size.height {
+                let line = Path { path in
+                    path.move(to: CGPoint(x: 0, y: y))
+                    path.addLine(to: CGPoint(x: size.width, y: y))
+                }
+                context.stroke(line, with: .color(Color.black.opacity(0.22)), lineWidth: 1)
+                y += 3
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+extension View {
+    /// CRT scanlines over the meter face.
+    func retroScanlines() -> some View {
+        overlay(RetroScanlineOverlay().clipShape(RoundedRectangle(cornerRadius: 8)))
     }
 }

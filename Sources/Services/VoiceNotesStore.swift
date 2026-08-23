@@ -62,6 +62,11 @@ final class VoiceNotesStore {
     private(set) var recordingLevel: Float = 0
     /// Rolling level history for the mini waveform (most recent last).
     private(set) var levelHistory: [Float] = []
+    /// Live 24-band spectrum of the recording (post-EQ) — drives the retro
+    /// spectrum strip in the panel while recording.
+    private(set) var recordingSpectrum: [Float] = Array(repeating: 0, count: 24)
+    /// Shared FFT analyzer (tap-thread only; rebuilt with each recording).
+    private var spectrumAnalyzer: SpectrumAnalyzer?
     /// The note currently being recorded (shown highlighted in the list).
     private(set) var activeNoteID: UUID?
     private(set) var playingNoteID: UUID?
@@ -320,6 +325,11 @@ final class VoiceNotesStore {
         // through to the (muted) main mixer so the render graph has a full
         // pull path; outputVolume 0 keeps it silent — no feedback.
         let eqNode = AudioEQSettings.makeEQUnit(from: await AudioEQSettings.shared.snapshot)
+
+        // Spectrum analyzer for the retro panel strip — computed from the same
+        // post-EQ tap buffers; preallocated here on the setup thread.
+        let analyzer = SpectrumAnalyzer(bandCount: 24, bufferSize: 2048)
+        analyzer.prepare(sampleRate: Float(hwFormat.sampleRate))
         engine.attach(eqNode)
         engine.connect(input, to: eqNode, format: hwFormat)
         engine.connect(eqNode, to: engine.mainMixerNode, format: hwFormat)
@@ -374,6 +384,7 @@ final class VoiceNotesStore {
             }
             let rawRMS = sqrt(sumSquares / Float(frames))
             let rms = min(1, rawRMS * 3)
+            let bands = analyzer.process(buffer)
 
             Task {
                 try? await writer.appendSlice(samples)
@@ -383,6 +394,13 @@ final class VoiceNotesStore {
                 self.recordingFrames += Int64(frames)
                 self.recordingElapsed = Double(self.recordingFrames) / self.recordingSampleRate
                 self.recordingLevel = rms
+                // Light release smoothing so the strip decays instead of
+                // snapping to silence between syllables.
+                var smoothed = self.recordingSpectrum
+                for i in 0..<min(bands.count, smoothed.count) {
+                    smoothed[i] = max(bands[i], smoothed[i] - 0.05)
+                }
+                self.recordingSpectrum = smoothed
                 self.levelHistory.append(rms)
                 if self.levelHistory.count > 48 { self.levelHistory.removeFirst(self.levelHistory.count - 48) }
                 if rawRMS >= Self.voiceRMSThreshold {
@@ -417,6 +435,8 @@ final class VoiceNotesStore {
             self.recordingElapsed = 0
             self.levelHistory = []
             self.recordingLevel = 0
+            self.recordingSpectrum = Array(repeating: 0, count: 24)
+            self.spectrumAnalyzer = analyzer
 
             let note = VoiceNote(
                 id: UUID(), createdAt: Date(), duration: 0,

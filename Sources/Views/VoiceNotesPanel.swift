@@ -214,6 +214,9 @@ struct VoiceNotesPanel: View {
                                 .foregroundStyle(.secondary)
                                 .contentTransition(.numericText())
                         }
+                        // Live spectrum of the EQ'd recording (btop strip).
+                        RetroSpectrumMeter(spectrum: store.recordingSpectrum, cellsPerBar: 8)
+                            .frame(height: 72)
                         // Retro segmented VU bar (btop-style) over the EQ'd
                         // signal, above the scrolling waveform.
                         RetroLevelMeter(
