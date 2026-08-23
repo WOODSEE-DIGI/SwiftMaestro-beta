@@ -23,25 +23,49 @@ struct AudioControlView: View {
     var body: some View {
         Form {
             Section("Input") {
-                Picker("Input Device", selection: Binding(
-                    get: { selectedInputID },
-                    set: { newValue in
-                        selectedInputID = newValue
-                        if let id = newValue {
-                            AudioDeviceManager.shared.setDefaultInputDevice(id: id)
-                            whisper.selectedInputDeviceID = id
-                        } else {
-                            whisper.selectedInputDeviceID = nil
-                        }
+                // Same clean single list as Output — headsets like AirPods
+                // are microphones too, so paired-but-unconnected Bluetooth
+                // devices get the same tap-to-connect rows here.
+                VStack(spacing: 2) {
+                    inputRow(
+                        name: "System Default",
+                        icon: "sparkles",
+                        isSelected: selectedInputID == nil,
+                        detail: nil
+                    ) {
+                        selectedInputID = nil
+                        whisper.selectedInputDeviceID = nil
                         refreshState()
                     }
-                )) {
-                    Text("System Default").tag(AudioDeviceID?.none)
+
                     ForEach(inputDevices) { device in
-                        Text(device.name).tag(Optional(device.id))
+                        inputRow(
+                            name: device.name,
+                            icon: inputIcon(for: device),
+                            isSelected: selectedInputID == device.id,
+                            detail: nil
+                        ) {
+                            selectedInputID = device.id
+                            AudioDeviceManager.shared.setDefaultInputDevice(id: device.id)
+                            whisper.selectedInputDeviceID = device.id
+                            refreshState()
+                        }
+                    }
+
+                    let unconnected = unconnectedBluetoothInputs
+                    ForEach(unconnected) { bt in
+                        inputRow(
+                            name: bt.name,
+                            icon: bt.name.localizedCaseInsensitiveContains("airpods") ? "airpodspro" : "headphones",
+                            isSelected: false,
+                            detail: connectingAddresses.contains(bt.address) ? "Connecting…" : "Not connected — tap to connect",
+                            dimmed: true
+                        ) {
+                            connectBluetoothInput(bt)
+                        }
                     }
                 }
-                .pickerStyle(.menu)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
 
                 HStack {
                     Text("Volume")
@@ -259,6 +283,57 @@ struct AudioControlView: View {
                 connectingAddresses.remove(device.address)
             }
         }
+    }
+
+    /// Paired BT devices that aren't currently present as HAL inputs.
+    private var unconnectedBluetoothInputs: [PairedBluetoothAudioDevice] {
+        let connectedNames = Set(inputDevices.filter(\.isBluetooth).map(\.name))
+        return pairedBluetooth.filter { !$0.isConnected && !connectedNames.contains($0.name) }
+    }
+
+    private func inputIcon(for device: AudioDevice) -> String {
+        if device.isBluetooth {
+            return device.name.localizedCaseInsensitiveContains("airpods") ? "airpodspro" : "headphones"
+        }
+        return "mic"
+    }
+
+    /// Connect a paired BT device and select it as the INPUT once CoreAudio
+    /// publishes its microphone (HFP profile arrives with the audio link).
+    private func connectBluetoothInput(_ device: PairedBluetoothAudioDevice) {
+        connectingAddresses.insert(device.address)
+        Task {
+            let match = await AudioDeviceManager.shared.connectBluetoothAndAwaitDevice(device)
+            await MainActor.run {
+                refreshDevices()
+                // The awaited match is the OUTPUT side; find the input side
+                // of the same device by name.
+                let input = inputDevices.first(where: { $0.name == device.name && $0.hasInput })
+                if let input {
+                    selectedInputID = input.id
+                    AudioDeviceManager.shared.setDefaultInputDevice(id: input.id)
+                    whisper.selectedInputDeviceID = input.id
+                } else if let match {
+                    // Fallback: same HAL device object may carry both scopes.
+                    selectedInputID = match.id
+                    AudioDeviceManager.shared.setDefaultInputDevice(id: match.id)
+                    whisper.selectedInputDeviceID = match.id
+                }
+                connectingAddresses.remove(device.address)
+            }
+        }
+    }
+
+    /// Input-list row — identical shape to outputRow.
+    private func inputRow(
+        name: String,
+        icon: String,
+        isSelected: Bool,
+        detail: String?,
+        dimmed: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        outputRow(name: name, icon: icon, isSelected: isSelected, detail: detail, dimmed: dimmed, action: action)
     }
 
     /// One row of the always-visible output device list: icon, name,

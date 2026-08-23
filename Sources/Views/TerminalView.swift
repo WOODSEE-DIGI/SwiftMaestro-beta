@@ -19,11 +19,19 @@ struct TerminalView: View {
 
     @State private var tab: Tab = .live
 
-    /// Live shell instances. Each gets its own LiveTerminalView (own PTY +
-    /// login shell); all stay mounted in a ZStack so background shells keep
-    /// running while hidden behind the active one.
-    @State private var shells: [UUID] = [UUID()]
+    /// One live shell tab: its own PTY + process. All stay mounted in a
+    /// ZStack so background shells keep running while hidden.
+    struct ShellTab: Identifiable, Hashable {
+        let id = UUID()
+        var title: String
+        /// nil = login shell; set = custom process (e.g. serial screen session)
+        var launchCommand: String? = nil
+    }
+
+    @State private var shells: [ShellTab] = [ShellTab(title: "Shell 1")]
     @State private var activeShell: UUID?
+    @State private var showDisplaySettings = false
+    @State private var terminalSettings = TerminalSettings.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -36,10 +44,10 @@ struct TerminalView: View {
             switch tab {
             case .live:
                 ZStack {
-                    ForEach(shells, id: \.self) { id in
-                        LiveTerminalView()
-                            .opacity(id == activeShellID ? 1 : 0)
-                            .allowsHitTesting(id == activeShellID)
+                    ForEach(shells) { shellTab in
+                        LiveTerminalView(launchCommand: shellTab.launchCommand)
+                            .opacity(shellTab.id == activeShellID ? 1 : 0)
+                            .allowsHitTesting(shellTab.id == activeShellID)
                     }
                 }
             case .agentLog:
@@ -51,27 +59,29 @@ struct TerminalView: View {
     }
 
     private var activeShellID: UUID? {
-        activeShell ?? shells.first
+        activeShell ?? shells.first?.id
     }
 
     /// Shell tab strip — visible, labeled chips (no cryptic icons): each is
-    /// a live process. "+" opens another login shell; × terminates it.
+    /// a live process. "New Shell" opens another login shell; × terminates it.
+    /// Serial opens a `screen` session to a USB-serial board (Arduino etc.).
+    /// Display customizes font/colors for every shell.
     private var shellTabStrip: some View {
         HStack(spacing: 6) {
-            ForEach(Array(shells.enumerated()), id: \.element) { index, id in
-                let isActive = id == activeShellID
+            ForEach(shells) { shellTab in
+                let isActive = shellTab.id == activeShellID
                 HStack(spacing: 6) {
-                    Text("Shell \(index + 1)")
+                    Text(shellTab.title)
                         .font(.caption.monospaced().weight(isActive ? .semibold : .regular))
                     if shells.count > 1 {
                         Button {
-                            closeShell(id)
+                            closeShell(shellTab.id)
                         } label: {
                             Image(systemName: "xmark")
                                 .font(.caption.weight(.bold))
                         }
                         .buttonStyle(.plain)
-                        .help("Close Shell \(index + 1) (terminates its process)")
+                        .help("Close \(shellTab.title) (terminates its process)")
                     }
                 }
                 .padding(.horizontal, 10)
@@ -86,13 +96,13 @@ struct TerminalView: View {
                         .strokeBorder(isActive ? Color.accentColor.opacity(0.6) : Color.secondary.opacity(0.3), lineWidth: 1)
                 )
                 .contentShape(Rectangle())
-                .onTapGesture { activeShell = id }
+                .onTapGesture { activeShell = shellTab.id }
             }
 
             Button {
-                let id = UUID()
-                shells.append(id)
-                activeShell = id
+                let tab = ShellTab(title: "Shell \(nextShellNumber)")
+                shells.append(tab)
+                activeShell = tab.id
             } label: {
                 HStack(spacing: 4) {
                     Image(systemName: "plus")
@@ -107,17 +117,96 @@ struct TerminalView: View {
             .controlSize(.small)
             .help("Open another terminal shell (separate process)")
 
+            serialMenu
+
+            Button {
+                showDisplaySettings = true
+            } label: {
+                Text("Display…")
+                    .font(.caption.monospaced())
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help("Terminal font, size, and colors (applies to all shells)")
+            .popover(isPresented: $showDisplaySettings) {
+                TerminalDisplaySettingsView(settings: terminalSettings)
+            }
+
             Spacer()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
     }
 
+    private var nextShellNumber: Int {
+        var n = 1
+        let existing = Set(shells.map(\.title))
+        while existing.contains("Shell \(n)") { n += 1 }
+        return n
+    }
+
+    /// USB-serial board picker (Arduino, ESP32, CH340, FTDI, …). Selecting a
+    /// board + baud opens a new tab running `screen` on the device — the
+    /// battle-tested serial monitor path. End with Ctrl-A then \\ inside
+    /// the session, or just close the tab.
+    private var serialMenu: some View {
+        Menu {
+            let devices = Self.serialDevices()
+            if devices.isEmpty {
+                Text("No USB-serial boards found")
+                Text("Plug in an Arduino/ESP32 and reopen this menu")
+            } else {
+                ForEach(devices, id: \.self) { device in
+                    Menu(device) {
+                        ForEach(Self.serialBaudRates, id: \.self) { baud in
+                            Button("\(baud) baud") {
+                                openSerial(device: device, baud: baud)
+                            }
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "cable.connector")
+                    .font(.caption.weight(.bold))
+                Text("Serial")
+                    .font(.caption.monospaced())
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Connect to an Arduino/ESP32 or other USB-serial board via screen(1)")
+    }
+
+    static let serialBaudRates: [Int] = [9600, 19200, 38400, 57600, 74880, 115200, 230400]
+
+    /// USB-serial device nodes present in /dev right now.
+    static func serialDevices() -> [String] {
+        let prefixes = ["tty.usbmodem", "tty.usbserial", "tty.wchusbserial", "tty.SLAB_USBtoUART", "tty.usbserial-"]
+        let entries = (try? FileManager.default.contentsOfDirectory(atPath: "/dev")) ?? []
+        return entries
+            .filter { name in prefixes.contains(where: { name.hasPrefix($0) }) }
+            .sorted()
+            .map { "/dev/\($0)" }
+    }
+
+    private func openSerial(device: String, baud: Int) {
+        let short = device.replacingOccurrences(of: "/dev/tty.", with: "")
+        let tab = ShellTab(title: short, launchCommand: "exec screen \(device) \(baud)")
+        shells.append(tab)
+        activeShell = tab.id
+    }
+
     private func closeShell(_ id: UUID) {
-        guard let index = shells.firstIndex(of: id) else { return }
+        guard let index = shells.firstIndex(where: { $0.id == id }) else { return }
         shells.remove(at: index)
         if activeShell == id {
-            activeShell = shells[min(index, shells.count - 1)]
+            activeShell = shells[min(index, shells.count - 1)].id
         }
     }
 
