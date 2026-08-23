@@ -114,6 +114,8 @@ struct WorkspacePanelContentView: View {
             BlockyPanel()
         case .pomodoro:
             PomodoroView()
+        case .mediaPlayer:
+            MediaPlayerView()
         }
         }
     }

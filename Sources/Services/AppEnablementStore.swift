@@ -44,7 +44,7 @@ enum AppCategory: String, CaseIterable, Codable, Sendable {
             // Bus Monitor is deliberately NOT listed: it's agent-infrastructure
             // debugging, not a user app. The panel kind still works — agents can
             // open it with open_panel("bus") when diagnosing bus traffic.
-            return [.audioControl, .notesMD, .voiceNotes, .canvas, .kanban, .terminal, .webBrowser, .damBrowser, .maestroDocs, .maestroBooks, .maestroDB, .htmlBuilder, .backup, .stocks, .blocky, .pomodoro]
+            return [.audioControl, .mediaPlayer, .notesMD, .voiceNotes, .canvas, .kanban, .terminal, .webBrowser, .damBrowser, .maestroDocs, .maestroBooks, .maestroDB, .htmlBuilder, .backup, .stocks, .blocky, .pomodoro]
         }
     }
 
@@ -67,7 +67,7 @@ extension WorkspacePanelKind {
             return .appleApps
         case .tethering, .streamIngest, .broadcast, .streamMixer, .ndiBrowser, .colorAdjustments, .scenes:
             return .studio
-        case .audioControl, .notesMD, .voiceNotes, .canvas, .kanban, .terminal, .webBrowser, .damBrowser, .maestroDocs, .maestroBooks, .maestroDB, .htmlBuilder, .backup, .stocks, .blocky, .pomodoro:
+        case .audioControl, .mediaPlayer, .notesMD, .voiceNotes, .canvas, .kanban, .terminal, .webBrowser, .damBrowser, .maestroDocs, .maestroBooks, .maestroDB, .htmlBuilder, .backup, .stocks, .blocky, .pomodoro:
             return .swiftApps
         default:
             return nil

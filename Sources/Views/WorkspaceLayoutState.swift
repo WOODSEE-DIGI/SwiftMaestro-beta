@@ -239,6 +239,9 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
     case blocky
     /// Pomodoro — focus/break timer with menu-bar counter (pomarchy-style).
     case pomodoro
+    /// MediaPlayer — retro-styled (BTOP+) media player with AVKit playback,
+    /// spectrum visualization, playlist queue, and volume control.
+    case mediaPlayer
 
     var icon: String {
         switch self {
@@ -280,6 +283,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .voiceNotes: return "mic.circle"
         case .blocky: return "link.circle"
         case .pomodoro: return "timer"
+        case .mediaPlayer: return "play.circle"
         }
     }
 
@@ -328,6 +332,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .voiceNotes: return "voiceNotes"
         case .blocky: return "blocky"
         case .pomodoro: return "pomodoro"
+        case .mediaPlayer: return "mediaPlayer"
         }
     }
 
@@ -374,6 +379,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .voiceNotes: return "Voice Notes"
         case .blocky: return "Blocky"
         case .pomodoro: return "Pomodoro"
+        case .mediaPlayer: return "Media Player"
         }
     }
 
@@ -440,6 +446,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .voiceNotes: return "voiceNotes"
         case .blocky: return "blocky"
         case .pomodoro: return "pomodoro"
+        case .mediaPlayer: return "mediaPlayer"
         }
     }
 }
