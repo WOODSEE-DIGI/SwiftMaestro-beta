@@ -1754,7 +1754,15 @@ final class AgentExecutor: Sendable {
         argsJSON = Self.injectAgentID(
             into: argsJSON, toolName: tc.name, agentID: agentID
         )
-        let call = Self.toolCall(name: tc.name, argumentsJSON: argsJSON)
+        // SELF-HEALING PRE-PASS: apply this model's learned quirk profile
+        // (argument coercions that healed past failures for this exact model)
+        // before the call is constructed — new external models never need
+        // manual per-model fixing once the guardian has seen them twice.
+        argsJSON = await ToolCallGuardian.shared.applyQuirks(
+            argsJSON, tool: tc.name, modelID: modelID)
+        // (The ToolCall is constructed inside each guardian closure from the
+        // Sendable name+argsJSON so retries get a fresh value and no
+        // non-Sendable capture crosses the actor boundary.)
         // Expose the working directory to file tools so they treat it as an
         // implicit authorized root (agents can create/edit under their cwd
         // without requiring manual Settings → Context entries).
@@ -1773,7 +1781,14 @@ final class AgentExecutor: Sendable {
             return "{\"error\":\"\(tc.name) is disabled. The user has revoked agent access to this app in Settings → Apps.\"}"
         }
         if await MaestroTools.handles(tc.name) {
-            let result = await MaestroTools.execute(call)
+            // Guardian wrap: classify failures, retry transients, enrich errors
+            // with recovery hints, record + learn per-model. The call is
+            // re-created inside the closure from Sendable strings only.
+            let result = await ToolCallGuardian.shared.run(
+                name: tc.name, argsJSON: argsJSON, modelID: modelID
+            ) {
+                await MaestroTools.execute(Self.toolCall(name: tc.name, argumentsJSON: argsJSON))
+            }
             NSLog("[executeTool] result for %@: %@", tc.name, String(result.prefix(300)))
             AIBroadcastService.broadcastToolCompleted(
                 name: tc.name, id: toolID, duration: Date().timeIntervalSince(toolStartTime))
@@ -1787,13 +1802,21 @@ final class AgentExecutor: Sendable {
             return result
         }
         if let mcp, await mcp.handles(tc.name) {
-            let result = await mcp.execute(call)
+            let result = await ToolCallGuardian.shared.run(
+                name: tc.name, argsJSON: argsJSON, modelID: modelID
+            ) {
+                await mcp.execute(Self.toolCall(name: tc.name, argumentsJSON: argsJSON))
+            }
             NSLog("[executeTool] MCP result for %@: %@", tc.name, String(result.prefix(300)))
             AIBroadcastService.broadcastToolCompleted(
                 name: tc.name, id: toolID, duration: Date().timeIntervalSince(toolStartTime))
             return result
         }
-        let result = await MaestroTools.execute(call)
+        let result = await ToolCallGuardian.shared.run(
+            name: tc.name, argsJSON: argsJSON, modelID: modelID
+        ) {
+            await MaestroTools.execute(Self.toolCall(name: tc.name, argumentsJSON: argsJSON))
+        }
         AIBroadcastService.broadcastToolCompleted(
             name: tc.name, id: toolID, duration: Date().timeIntervalSince(toolStartTime))
         return result

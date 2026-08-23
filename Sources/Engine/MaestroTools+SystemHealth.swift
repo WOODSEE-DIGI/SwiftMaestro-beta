@@ -32,6 +32,14 @@ extension MaestroTools {
                 name: "diagnose_crash", spec: systemHealthToolSpecs[4],
                 category: ToolCategory.system.rawValue,
                 handler: { call in await diagnoseCrash(call) }),
+            ToolDefinition(
+                name: "self_healing_stats", spec: systemHealthToolSpecs[5],
+                category: ToolCategory.system.rawValue,
+                handler: { _ in await selfHealingStats() }),
+            ToolDefinition(
+                name: "self_healing_failures", spec: systemHealthToolSpecs[6],
+                category: ToolCategory.system.rawValue,
+                handler: { call in await selfHealingFailures(call) }),
         ])
     }
 
@@ -82,6 +90,20 @@ extension MaestroTools {
                     "process": ["type": "string", "description": "Process name to diagnose."],
                 ],
                 required: ["process"]),
+            rawSpec("self_healing_stats",
+                "Report the ToolCallGuardian's self-healing activity: tool "
+                + "failures by class, heal rate, and the learned per-model "
+                + "quirk profiles that stop repeat failures before they happen. "
+                + "Use when the user asks whether agents are having tool trouble.",
+                properties: [:], required: []),
+            rawSpec("self_healing_failures",
+                "List the most recent tool call failures (newest first) with "
+                + "tool, failure class, model, and whether the guardian healed "
+                + "it. Use to inspect what's actually breaking.",
+                properties: [
+                    "limit": ["type": "integer", "description": "Max entries (default 15, max 50)."],
+                ],
+                required: []),
         ]
     }
 
@@ -305,5 +327,19 @@ extension MaestroTools {
         // Drain whatever remains after exit.
         data.append(handle.readDataToEndOfFile())
         return String(data: data.prefix(maxBytes), encoding: .utf8) ?? ""
+    }
+
+    // MARK: - Self-healing (ToolCallGuardian) handlers
+
+    private static func selfHealingStats() async -> String {
+        await ToolCallGuardian.shared.statsSummary()
+    }
+
+    private struct FailuresArgs: Codable { let limit: Int? }
+
+    private static func selfHealingFailures(_ call: ToolCall) async -> String {
+        let args = decodeArgs(call, as: FailuresArgs.self)
+        let limit = min(args?.limit ?? 15, 50)
+        return await ToolCallGuardian.shared.recentFailuresText(limit: limit)
     }
 }
