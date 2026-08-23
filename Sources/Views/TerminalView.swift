@@ -17,17 +17,38 @@ struct TerminalView: View {
         var id: String { rawValue }
     }
 
-    @State private var tab: Tab = .live
-
-    /// One live shell tab: its own PTY + process. All stay mounted in a
-    /// ZStack so background shells keep running while hidden.
+    /// One terminal tab. A tab holds one or two panes (split view); each pane
+    /// is its own independent PTY process or serial link.
     struct ShellTab: Identifiable, Hashable {
+        enum PaneKind: Hashable {
+            /// Login shell (nil command) or a custom command tab.
+            case shell(command: String?)
+            /// Native USB-serial link (Arduino, ESP32, …) via SerialSession.
+            case serial(device: String, baud: Int)
+        }
+
+        struct Pane: Identifiable, Hashable {
+            let id = UUID()
+            var kind: PaneKind
+        }
+
         let id = UUID()
         var title: String
-        /// nil = login shell; set = custom process (e.g. serial screen session)
-        var launchCommand: String? = nil
+        var panes: [Pane]
+        /// .horizontal = side-by-side, .vertical = stacked. nil = single pane.
+        var splitAxis: Axis?
+        /// Per-tab TerminalSettings preset name; nil follows the global settings.
+        var presetName: String?
+
+        init(title: String, kind: PaneKind = .shell(command: nil)) {
+            self.title = title
+            self.panes = [Pane(kind: kind)]
+            self.splitAxis = nil
+            self.presetName = nil
+        }
     }
 
+    @State private var tab: Tab = .live
     @State private var shells: [ShellTab] = [ShellTab(title: "Shell 1")]
     @State private var activeShell: UUID?
     @State private var showDisplaySettings = false
@@ -45,7 +66,7 @@ struct TerminalView: View {
             case .live:
                 ZStack {
                     ForEach(shells) { shellTab in
-                        LiveTerminalView(launchCommand: shellTab.launchCommand)
+                        paneContainer(for: shellTab)
                             .opacity(shellTab.id == activeShellID ? 1 : 0)
                             .allowsHitTesting(shellTab.id == activeShellID)
                     }
@@ -62,10 +83,64 @@ struct TerminalView: View {
         activeShell ?? shells.first?.id
     }
 
-    /// Shell tab strip — visible, labeled chips (no cryptic icons): each is
-    /// a live process. "New Shell" opens another login shell; × terminates it.
-    /// Serial opens a `screen` session to a USB-serial board (Arduino etc.).
-    /// Display customizes font/colors for every shell.
+    private var activeTabIndex: Int? {
+        shells.firstIndex(where: { $0.id == activeShellID })
+    }
+
+    // MARK: - Panes
+
+    @ViewBuilder
+    private func paneContainer(for shellTab: ShellTab) -> some View {
+        if shellTab.panes.count > 1, let axis = shellTab.splitAxis {
+            if axis == .horizontal {
+                HStack(spacing: 0) {
+                    terminalPane(shellTab.panes[0], presetName: shellTab.presetName)
+                    Divider()
+                    terminalPane(shellTab.panes[1], presetName: shellTab.presetName)
+                }
+            } else {
+                VStack(spacing: 0) {
+                    terminalPane(shellTab.panes[0], presetName: shellTab.presetName)
+                    Divider()
+                    terminalPane(shellTab.panes[1], presetName: shellTab.presetName)
+                }
+            }
+        } else if let first = shellTab.panes.first {
+            terminalPane(first, presetName: shellTab.presetName)
+        }
+    }
+
+    @ViewBuilder
+    private func terminalPane(_ pane: ShellTab.Pane, presetName: String?) -> some View {
+        let preset = presetName.flatMap { name in
+            TerminalSettings.presets.first(where: { $0.name == name })
+        }
+        switch pane.kind {
+        case .shell(let command):
+            LiveTerminalView(launchCommand: command, presetOverride: preset)
+        case .serial(let device, let baud):
+            SerialTerminalView(device: device, baud: baud, presetOverride: preset)
+        }
+    }
+
+    private func splitActiveTab(_ axis: Axis) {
+        guard let idx = activeTabIndex, shells[idx].panes.count == 1 else { return }
+        shells[idx].panes.append(ShellTab.Pane(kind: .shell(command: nil)))
+        shells[idx].splitAxis = axis
+    }
+
+    private func unsplitActiveTab() {
+        guard let idx = activeTabIndex, shells[idx].panes.count > 1 else { return }
+        shells[idx].panes.removeLast()
+        shells[idx].splitAxis = nil
+    }
+
+    // MARK: - Tab strip
+
+    /// Shell tab strip — visible, labeled chips (no cryptic icons). Right-click
+    /// a chip for its per-tab profile (font/color preset) and close action.
+    /// "New Shell" opens another login shell; Serial opens a native USB-serial
+    /// link; Split runs two panes side-by-side or stacked in the active tab.
     private var shellTabStrip: some View {
         HStack(spacing: 6) {
             ForEach(shells) { shellTab in
@@ -81,7 +156,7 @@ struct TerminalView: View {
                                 .font(.caption.weight(.bold))
                         }
                         .buttonStyle(.plain)
-                        .help("Close \(shellTab.title) (terminates its process)")
+                        .help("Close \(shellTab.title) (terminates its processes)")
                     }
                 }
                 .padding(.horizontal, 10)
@@ -97,6 +172,26 @@ struct TerminalView: View {
                 )
                 .contentShape(Rectangle())
                 .onTapGesture { activeShell = shellTab.id }
+                .contextMenu {
+                    Menu("Profile") {
+                        Button(shellTab.presetName == nil ? "✓ Default (follow Display settings)" : "Default (follow Display settings)") {
+                            setPreset(nil, for: shellTab.id)
+                        }
+                        Divider()
+                        ForEach(TerminalSettings.presets, id: \.name) { preset in
+                            Button(shellTab.presetName == preset.name ? "✓ \(preset.name)" : preset.name) {
+                                setPreset(preset.name, for: shellTab.id)
+                            }
+                        }
+                    }
+                    if shellTab.panes.count > 1 {
+                        Button("Unsplit") { unsplitActiveTab() }
+                    }
+                    if shells.count > 1 {
+                        Divider()
+                        Button("Close Tab") { closeShell(shellTab.id) }
+                    }
+                }
             }
 
             Button {
@@ -118,6 +213,7 @@ struct TerminalView: View {
             .help("Open another terminal shell (separate process)")
 
             serialMenu
+            splitMenu
 
             Button {
                 showDisplaySettings = true
@@ -140,6 +236,11 @@ struct TerminalView: View {
         .padding(.vertical, 6)
     }
 
+    private func setPreset(_ name: String?, for tabID: UUID) {
+        guard let idx = shells.firstIndex(where: { $0.id == tabID }) else { return }
+        shells[idx].presetName = name
+    }
+
     private var nextShellNumber: Int {
         var n = 1
         let existing = Set(shells.map(\.title))
@@ -147,10 +248,32 @@ struct TerminalView: View {
         return n
     }
 
-    /// USB-serial board picker (Arduino, ESP32, CH340, FTDI, …). Selecting a
-    /// board + baud opens a new tab running `screen` on the device — the
-    /// battle-tested serial monitor path. End with Ctrl-A then \\ inside
-    /// the session, or just close the tab.
+    /// Split control for the active tab (iTerm2-style: two independent panes).
+    private var splitMenu: some View {
+        let canSplit = activeTabIndex.map { shells[$0].panes.count == 1 } ?? false
+        let canUnsplit = activeTabIndex.map { shells[$0].panes.count > 1 } ?? false
+        return Menu {
+            Button("Split Right") { splitActiveTab(.horizontal) }
+                .disabled(!canSplit)
+            Button("Split Down") { splitActiveTab(.vertical) }
+                .disabled(!canSplit)
+            Divider()
+            Button("Unsplit") { unsplitActiveTab() }
+                .disabled(!canUnsplit)
+        } label: {
+            Text("Split")
+                .font(.caption.monospaced())
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Two independent panes in the active tab (each is its own process)")
+    }
+
+    /// USB-serial board picker (Arduino, ESP32, CH340, FTDI, …) — opens a tab
+    /// with a NATIVE termios serial link (no screen subprocess). Unplugging
+    /// the board or closing the tab ends the session cleanly.
     private var serialMenu: some View {
         Menu {
             let devices = Self.serialDevices()
@@ -160,7 +283,7 @@ struct TerminalView: View {
             } else {
                 ForEach(devices, id: \.self) { device in
                     Menu(device) {
-                        ForEach(Self.serialBaudRates, id: \.self) { baud in
+                        ForEach(SerialSession.supportedBauds, id: \.self) { baud in
                             Button("\(baud) baud") {
                                 openSerial(device: device, baud: baud)
                             }
@@ -180,10 +303,8 @@ struct TerminalView: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .help("Connect to an Arduino/ESP32 or other USB-serial board via screen(1)")
+        .help("Connect to an Arduino/ESP32 or other USB-serial board (native link)")
     }
-
-    static let serialBaudRates: [Int] = [9600, 19200, 38400, 57600, 74880, 115200, 230400]
 
     /// USB-serial device nodes present in /dev right now.
     static func serialDevices() -> [String] {
@@ -197,7 +318,7 @@ struct TerminalView: View {
 
     private func openSerial(device: String, baud: Int) {
         let short = device.replacingOccurrences(of: "/dev/tty.", with: "")
-        let tab = ShellTab(title: short, launchCommand: "exec screen \(device) \(baud)")
+        let tab = ShellTab(title: short, kind: .serial(device: device, baud: baud))
         shells.append(tab)
         activeShell = tab.id
     }

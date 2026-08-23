@@ -18,9 +18,11 @@ import SwiftTerm
 
 struct LiveTerminalView: NSViewRepresentable {
 
-    /// Optional command replacing the default login shell — used by serial
-    /// tabs (e.g. "exec screen /dev/tty.usbmodem101 115200").
+    /// Optional command replacing the default login shell.
     var launchCommand: String?
+
+    /// Per-tab preset override; nil follows the global TerminalSettings.
+    var presetOverride: TerminalSettings.Preset? = nil
 
     @State private var settings = TerminalSettings.shared
 
@@ -59,10 +61,18 @@ struct LiveTerminalView: NSViewRepresentable {
     }
 
     private func applyTheme(to view: LocalProcessTerminalView) {
-        view.font = settings.font
-        view.nativeBackgroundColor = settings.backgroundColor
-        view.nativeForegroundColor = settings.foregroundColor
-        view.caretColor = settings.cursorColor
+        if let presetOverride {
+            view.font = NSFont(name: presetOverride.fontName, size: presetOverride.fontSize)
+                ?? NSFont.monospacedSystemFont(ofSize: presetOverride.fontSize, weight: .regular)
+            if let bg = TerminalSettings.nsColor(fromHex: presetOverride.backgroundHex) { view.nativeBackgroundColor = bg }
+            if let fg = TerminalSettings.nsColor(fromHex: presetOverride.foregroundHex) { view.nativeForegroundColor = fg }
+            if let cursor = TerminalSettings.nsColor(fromHex: presetOverride.cursorHex) { view.caretColor = cursor }
+        } else {
+            view.font = settings.font
+            view.nativeBackgroundColor = settings.backgroundColor
+            view.nativeForegroundColor = settings.foregroundColor
+            view.caretColor = settings.cursorColor
+        }
     }
 
     /// Handles `LocalProcessTerminalViewDelegate` callbacks. Title changes and
