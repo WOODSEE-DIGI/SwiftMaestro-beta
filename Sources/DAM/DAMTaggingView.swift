@@ -91,11 +91,15 @@ struct TaggingWorkspaceView: View {
                 Slider(value: Binding(
                     get: { tagging.thresholds.suggest },
                     set: { tagging.thresholds.suggest = min($0, tagging.thresholds.autoApply - 0.01) }
-                ), in: 0.3...0.98)
-                .frame(width: 90)
-                .onChange(of: tagging.thresholds.suggest) { _, _ in
-                    Task { await tagging.reload() }
+                ), in: 0.3...0.98) { editing in
+                    // Reload when the drag ENDS, not per tick: firing reload()
+                    // (which rewrites the queue arrays) mid-render is the exact
+                    // mutation-during-body-eval pattern that crashes SwiftUI.
+                    if !editing {
+                        Task { await tagging.reload() }
+                    }
                 }
+                .frame(width: 90)
             }
             .help("Minimum confidence for a suggestion to appear in the queue")
 
@@ -119,7 +123,7 @@ struct TaggingWorkspaceView: View {
                 Task { await tagging.acceptAllAboveThreshold() }
             } label: {
                 Label("Accept all ≥ \(Int(tagging.thresholds.autoApply * 100))%",
-                      systemImage: "checkmark.circle.badge.checkmark")
+                      systemImage: "checkmark.square.stack.fill")
             }
             .controlSize(.small)
             .disabled(tagging.queue.isEmpty || tagging.isPropagating)

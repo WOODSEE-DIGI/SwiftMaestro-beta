@@ -160,6 +160,29 @@ final class PomodoroStore {
         startPhase(.shortBreak, minutes: shortBreakMinutes)
     }
 
+    /// Start a long break directly (dashboard phase-tab parity — the Omarchy
+    /// dashboard lets any of the three phases be started from its tabs).
+    func startLongBreak() {
+        startPhase(.longBreak, minutes: longBreakMinutes)
+    }
+
+    /// 0…1 progress through the current phase — drives the dashboard's
+    /// circular countdown ring (idle = empty track, like Omarchy's READY).
+    var progress: Double {
+        guard phase != .idle, phaseDuration > 0 else { return 0 }
+        return min(1, max(0, elapsed / phaseDuration))
+    }
+
+    /// Configured duration (minutes) for a phase — used by the dashboard's
+    /// idle phase-preview tabs.
+    func configuredMinutes(for phase: Phase) -> Int {
+        switch phase {
+        case .idle, .work: return workMinutes
+        case .shortBreak: return shortBreakMinutes
+        case .longBreak: return longBreakMinutes
+        }
+    }
+
     func pause() {
         guard phase != .idle, !isPaused, let endDate else { return }
         pausedRemaining = max(0, endDate.timeIntervalSinceNow)
@@ -251,7 +274,13 @@ final class PomodoroStore {
                     self.advancePhase(completedNaturally: true)
                     return
                 }
-                self.remaining = left
+                // Only write when the DISPLAYED second changes: @Observable
+                // notifies on every write (even equal values), and the title-bar
+                // timer re-renders per write — 2 writes/sec of unchanged mm:ss
+                // was measurable AttributeGraph churn in the window toolbar.
+                if Int(left.rounded(.up)) != Int(self.remaining.rounded(.up)) {
+                    self.remaining = left
+                }
             }
         }
     }
