@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import CoreAudio
 
 // MARK: - Media Player View
 //
@@ -8,8 +9,14 @@ import UniformTypeIdentifiers
 // volume, playlist, and media info into a cohesive retro-themed layout.
 
 struct MediaPlayerView: View {
+    @Environment(WhisperKitService.self) private var whisper
     @State private var engine = MediaPlayerEngine.shared
     @State private var queue = MediaPlayerQueue.shared
+    @State private var outputDevices: [AudioDevice] = []
+    @State private var pairedBluetooth: [PairedBluetoothAudioDevice] = []
+    @State private var connectingAddresses: Set<String> = []
+    @State private var deviceListenerToken: UUID?
+    @State private var airPlayHandle = AirPlayRoutePickerHandle()
 
     /// Visualization timer.
     @State private var vizTimer: Timer?
@@ -149,6 +156,87 @@ struct MediaPlayerView: View {
 
                 Spacer()
 
+                // Audio output route — same device manager as Audio Control,
+                // refreshed live by the CoreAudio hot-plug listener. Selecting
+                // sets the system output (AVPlayer follows it); paired-but-idle
+                // Bluetooth devices can be connected from here too.
+                Menu {
+                    Button {
+                        whisper.selectedOutputDeviceID = nil
+                    } label: {
+                        if whisper.selectedOutputDeviceID == nil {
+                            Label("System Default", systemImage: "checkmark")
+                        } else {
+                            Text("System Default")
+                        }
+                    }
+
+                    Divider()
+
+                    ForEach(outputDevices) { device in
+                        Button {
+                            whisper.selectedOutputDeviceID = device.id
+                            AudioDeviceManager.shared.setDefaultOutputDevice(id: device.id)
+                        } label: {
+                            if activeOutputID == device.id {
+                                Label(device.name, systemImage: "checkmark")
+                            } else {
+                                Text(device.name)
+                            }
+                        }
+                    }
+
+                    let unconnected = pairedBluetooth.filter { bt in
+                        !bt.isConnected
+                            && !outputDevices.filter(\.isBluetooth).map(\.name).contains(bt.name)
+                    }
+                    if !unconnected.isEmpty {
+                        Divider()
+                        ForEach(unconnected) { bt in
+                            Button {
+                                connectBluetooth(bt)
+                            } label: {
+                                Text(connectingAddresses.contains(bt.address)
+                                     ? "\(bt.name) — connecting…"
+                                     : "\(bt.name) — not connected, tap to connect")
+                            }
+                        }
+                    }
+
+                    Divider()
+
+                    Button("AirPlay Devices…") {
+                        airPlayHandle.openPicker()
+                    }
+                } label: {
+                    Text("OUT: \(activeOutputName)")
+                        .font(.caption.monospaced().weight(.medium))
+                        .foregroundStyle(RetroPalette.green)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: 160)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 5)
+                                .strokeBorder(RetroPalette.green.opacity(0.4), lineWidth: 1)
+                        )
+                        .contentShape(Rectangle())
+                }
+                .menuStyle(.borderlessButton)
+                .help("Audio output device (same route as Audio Control)")
+                .fixedSize()
+                .background(
+                    // Hidden system picker that the "AirPlay Devices…" menu
+                    // item forwards into; associated with the media player so
+                    // AirPlay targets this stream.
+                    AirPlayRoutePicker(handle: airPlayHandle, player: engine.playerForVideo)
+                        .frame(width: 1, height: 1)
+                        .opacity(0.01)
+                )
+
+                Spacer()
+
                 Button {
                     showFilePicker = true
                 } label: {
@@ -188,9 +276,17 @@ struct MediaPlayerView: View {
         .onAppear {
             queue.load()
             startVisualization()
+            refreshOutputDevices()
+            deviceListenerToken = AudioDeviceManager.shared.addDevicesChangedHandler {
+                refreshOutputDevices()
+            }
         }
         .onDisappear {
             vizTimer?.invalidate()
+            if let deviceListenerToken {
+                AudioDeviceManager.shared.removeDevicesChangedHandler(deviceListenerToken)
+                self.deviceListenerToken = nil
+            }
         }
         // Player keyboard shortcuts (macOS 14+ .onKeyPress; panel scope).
         .focusable()
@@ -226,6 +322,44 @@ struct MediaPlayerView: View {
     }
 
     // MARK: - Helpers
+
+    /// The route audio actually takes: the user's saved choice, else the
+    /// current system default.
+    private var activeOutputID: AudioDeviceID? {
+        if let saved = whisper.selectedOutputDeviceID,
+           outputDevices.contains(where: { $0.id == saved }) {
+            return saved
+        }
+        return AudioDeviceManager.shared.defaultOutputDeviceID
+    }
+
+    private var activeOutputName: String {
+        if let id = activeOutputID,
+           let device = outputDevices.first(where: { $0.id == id }) {
+            return device.name
+        }
+        return "System"
+    }
+
+    private func refreshOutputDevices() {
+        outputDevices = AudioDeviceManager.shared.outputDevices
+        pairedBluetooth = AudioDeviceManager.shared.pairedBluetoothAudioDevices
+    }
+
+    private func connectBluetooth(_ device: PairedBluetoothAudioDevice) {
+        connectingAddresses.insert(device.address)
+        Task {
+            let match = await AudioDeviceManager.shared.connectBluetoothAndAwaitDevice(device)
+            await MainActor.run {
+                refreshOutputDevices()
+                if let match {
+                    whisper.selectedOutputDeviceID = match.id
+                    AudioDeviceManager.shared.setDefaultOutputDevice(id: match.id)
+                }
+                connectingAddresses.remove(device.address)
+            }
+        }
+    }
 
     private var repeatIcon: String {
         switch queue.repeatMode {

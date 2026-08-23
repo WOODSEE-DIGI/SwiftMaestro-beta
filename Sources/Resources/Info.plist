@@ -26,6 +26,8 @@
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>SwiftMaestro uses automation to create notes in the Notes app and to compose drafts and read message details in Mail when you ask it to.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>SwiftMaestro lists your paired Bluetooth audio devices in Audio Control and the Media Player so you can connect and route sound to them (for example, AirPods currently connected to your iPhone).</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>SwiftMaestro creates calendar events when you ask it to.</string>
 	<key>NSCameraUsageDescription</key>

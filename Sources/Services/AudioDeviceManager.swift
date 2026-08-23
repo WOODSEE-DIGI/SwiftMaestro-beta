@@ -101,6 +101,24 @@ final class AudioDeviceManager: @unchecked Sendable {
         }
     }
 
+    /// Open the Bluetooth link and wait (up to `timeout`) for CoreAudio to
+    /// publish the device as a HAL output — BT negotiation takes a moment.
+    /// Shared by Audio Control and the Media Player so both behave the same.
+    @discardableResult
+    func connectBluetoothAndAwaitDevice(_ device: PairedBluetoothAudioDevice, timeout: TimeInterval = 12) async -> AudioDevice? {
+        if !device.isConnected {
+            _ = connectBluetoothDevice(address: device.address)
+        }
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let match = allDevices.first(where: { $0.name == device.name && $0.hasOutput }) {
+                return match
+            }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+        return nil
+    }
+
     /// Open a Bluetooth connection to a paired device (equivalent to
     /// selecting it in the Sound menu). Returns true if the link opened.
     @discardableResult

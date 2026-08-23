@@ -248,27 +248,16 @@ struct AudioControlView: View {
     private func connectBluetooth(_ device: PairedBluetoothAudioDevice) {
         connectingAddresses.insert(device.address)
         Task {
-            _ = await Task.detached {
-                AudioDeviceManager.shared.connectBluetoothDevice(address: device.address)
-            }.value
-            // BT negotiation takes a moment — poll for the HAL device.
-            for _ in 0..<24 {
-                try? await Task.sleep(for: .milliseconds(500))
-                await MainActor.run { refreshDevices() }
-                let match = await MainActor.run {
-                    outputDevices.first(where: { $0.name == device.name && $0.hasOutput })
-                }
+            let match = await AudioDeviceManager.shared.connectBluetoothAndAwaitDevice(device)
+            await MainActor.run {
+                refreshDevices()
                 if let match {
-                    await MainActor.run {
-                        selectedOutputID = match.id
-                        AudioDeviceManager.shared.setDefaultOutputDevice(id: match.id)
-                        whisper.selectedOutputDeviceID = match.id
-                        connectingAddresses.remove(device.address)
-                    }
-                    return
+                    selectedOutputID = match.id
+                    AudioDeviceManager.shared.setDefaultOutputDevice(id: match.id)
+                    whisper.selectedOutputDeviceID = match.id
                 }
+                connectingAddresses.remove(device.address)
             }
-            await MainActor.run { connectingAddresses.remove(device.address) }
         }
     }
 
@@ -367,13 +356,22 @@ final class AirPlayRoutePickerHandle {
 
 struct AirPlayRoutePicker: NSViewRepresentable {
     let handle: AirPlayRoutePickerHandle
+    /// Optional player association — routes that player's audio specifically.
+    var player: AVPlayer? = nil
 
     func makeNSView(context: Context) -> AVRoutePickerView {
         let view = AVRoutePickerView()
         view.isRoutePickerButtonBordered = false
+        if let player {
+            view.player = player
+        }
         handle.pickerView = view
         return view
     }
 
-    func updateNSView(_ nsView: AVRoutePickerView, context: Context) {}
+    func updateNSView(_ nsView: AVRoutePickerView, context: Context) {
+        if let player, nsView.player !== player {
+            nsView.player = player
+        }
+    }
 }
