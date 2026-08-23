@@ -340,7 +340,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .mediaPlayer:
             return [
                 "play_media", "pause_media", "resume_media", "seek_media",
-                "set_volume", "list_media_queue", "add_to_queue",
+                "set_volume", "list_media_queue", "add_to_queue", "media_diagnose",
             ]
         case .blockchain:
             return [

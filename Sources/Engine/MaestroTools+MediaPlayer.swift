@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import MLXLMCommon
 import SwiftMaestroKit
@@ -44,6 +45,10 @@ extension MaestroTools {
                 name: "add_to_queue", spec: mediaPlayerToolSpecs[6],
                 category: ToolCategory.mediaPlayer.rawValue,
                 handler: { call in await addToQueue(call) }),
+            ToolDefinition(
+                name: "media_diagnose", spec: mediaPlayerToolSpecs[7],
+                category: ToolCategory.mediaPlayer.rawValue,
+                handler: { call in await mediaDiagnose(call) }),
         ])
     }
 
@@ -94,6 +99,18 @@ extension MaestroTools {
                 properties: [
                     "path": ["type": "string", "description": "Absolute or working-directory-relative path to an audio/video file."],
                     "play_next": ["type": "boolean", "description": "Insert directly after the current entry instead of appending."],
+                ],
+                required: ["path"]),
+            rawSpec("media_diagnose",
+                "Diagnose why a media file won't play in the Media Player. Returns: "
+                + "the file's streams/codecs (ffprobe), whether it plays natively or "
+                + "needs FFmpeg conversion (and which route: remux vs transcode), "
+                + "whether a cached conversion exists and is valid, and an actual "
+                + "AVFoundation load test result. Use this FIRST when a user reports "
+                + "playback problems, before guessing. The path must be inside an "
+                + "authorized folder.",
+                properties: [
+                    "path": ["type": "string", "description": "Absolute or working-directory-relative path to the media file."],
                 ],
                 required: ["path"]),
         ]
@@ -251,6 +268,81 @@ extension MaestroTools {
             queue.append(url: url)
             return "Media Player: queued '\(url.lastPathComponent)' (position \(queue.entries.count))."
         }
+    }
+
+    // MARK: - Diagnostics
+
+    private struct DiagnoseArgs: Codable { let path: String? }
+
+    private static func mediaDiagnose(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: DiagnoseArgs.self),
+              let path = args.path, !path.isEmpty else {
+            return "Error: path is required."
+        }
+        guard let url = authorizedMediaURL(path) else {
+            return "Error: path is empty, does not resolve, or is outside the authorized folders (Settings → Context)."
+        }
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return "Error: no file at '\(url.path)'."
+        }
+
+        var report: [String] = ["Media diagnosis: \(url.lastPathComponent)"]
+
+        // 1. Codec/container probe.
+        let ffmpeg = FFmpegService()
+        var probedVideo: String?
+        var probedAudio: String?
+        if let result = try? await ffmpeg.runFFprobe(arguments: [
+            "-v", "error",
+            "-show_entries", "stream=codec_type,codec_name,codec_tag_string:format=format_name,duration",
+            "-of", "csv=p=0", url.path,
+        ]) {
+            let lines = String(decoding: result.stdout, as: UTF8.self)
+                .split(separator: "\n").map(String.init)
+            for line in lines {
+                let parts = line.split(separator: ",").map(String.init)
+                if parts.first == "video" { probedVideo = parts.dropFirst().first.map { String($0) } }
+                if parts.first == "audio" && probedAudio == nil { probedAudio = parts.dropFirst().first.map { String($0) } }
+            }
+            let container = lines.last?.split(separator: ",").first.map(String.init) ?? "unknown"
+            report.append("Probe: container=\(container), video=\(probedVideo ?? "none"), audio=\(probedAudio ?? "none")")
+        } else {
+            report.append("Probe: ffprobe FAILED to read the file (corrupt or unreadable).")
+        }
+
+        // 2. Playback route decision.
+        if MediaPlayerFormat.needsFFmpeg(url) {
+            let remuxableVideo: Set<String> = ["h264", "hevc"]
+            let remuxableAudio: Set<String> = ["aac", "mp3", "ac3", "eac3", "alac"]
+            let route = (probedVideo.map { remuxableVideo.contains($0) } ?? false)
+                && (probedAudio.map { remuxableAudio.contains($0) } ?? true)
+                ? "FFmpeg remux (fast, lossless, hvc1-tagged)" : "FFmpeg full transcode (H.264/AAC — slow)"
+            report.append("Route: not native to AVKit → \(route)")
+        } else {
+            report.append("Route: native AVKit playback (no conversion)")
+        }
+
+        // 3. Conversion cache state.
+        let tempDir = MediaPlayerTranscoder.tempDirectory.path
+        let cached = (try? FileManager.default.contentsOfDirectory(atPath: tempDir))?
+            .filter { $0.hasPrefix("conv-") } ?? []
+        report.append("Conversion cache: \(cached.isEmpty ? "empty" : cached.joined(separator: ", "))")
+
+        // 4. The decisive test: can AVFoundation actually load it?
+        let asset = AVURLAsset(url: url)
+        do {
+            let videoTracks = try await asset.loadTracks(withMediaType: .video)
+            let audioTracks = try await asset.loadTracks(withMediaType: .audio)
+            let duration = try await asset.load(.duration)
+            report.append("AVFoundation load: OK — \(videoTracks.count) video, \(audioTracks.count) audio track(s), \(Int(duration.seconds))s")
+        } catch {
+            report.append("AVFoundation load: FAILED — \(error.localizedDescription)")
+            report.append("Recommendation: if this file is native-listed but fails here, convert it via FFmpeg (play_media will do this automatically once re-routed).")
+        }
+
+        let engineError = await MainActor.run { MediaPlayerEngine.shared.preparationError }
+        report.append("Engine state: \(engineError ?? "no active error")")
+        return report.joined(separator: "\n")
     }
 
     // MARK: - Helpers
