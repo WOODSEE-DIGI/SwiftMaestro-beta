@@ -120,7 +120,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .numbers: return "Numbers"
         case .maps: return "Maps"
         case .photos: return "Photos"
-        case .stocks: return "Stocks"
+        case .stocks: return "Stocky"
         case .news: return "News"
         case .mail: return "Apple Mail"
         case .whatsapp: return "WhatsApp"

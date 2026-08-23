@@ -75,7 +75,7 @@ final class InvestigationBridge {
         let tableSpecs: [(String, String, [(String, DBFieldType, [String])])] = [
             ("cases", "Cases", [
                 ("Name", .text, []),
-                ("Domain", .select, ["Blockchain", "Stocks"]),
+                ("Domain", .select, ["Blockchain", "Stocky"]),
                 ("Status", .select, ["Open", "Monitoring", "Closed"]),
                 ("Source", .text, []),
                 ("Source ID", .text, []),

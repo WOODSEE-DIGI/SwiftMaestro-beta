@@ -260,7 +260,7 @@ extension MaestroTools {
                 ],
                 required: ["table", "key", "rows"]),
             rawSpec("investigation_sync",
-                "Sync Blocky (blockchain) and/or Stocks (equities) investigation data "
+                "Sync Blocky (blockchain) and/or Stocky (equities) investigation data "
                 + "into the MaestroDB 'Investigations' base — cases, watched wallets, "
                 + "wallet transactions, tracked stocks, insider transactions, proxy "
                 + "filings, and notes. Idempotent: re-running updates existing rows "

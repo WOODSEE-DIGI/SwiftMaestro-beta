@@ -1,6 +1,6 @@
 import SwiftUI
 
-// MARK: - Stocks panel
+// MARK: - Stocky panel
 //
 // Two-tab stock panel: Watchlist (saved stocks) and Discover (market movers).
 // Data from Yahoo Finance's chart and screener APIs — no API key needed.

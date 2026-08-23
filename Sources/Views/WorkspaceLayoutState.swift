@@ -352,7 +352,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .numbers: return "Numbers"
         case .maps: return "Maps"
         case .photos: return "Photos"
-        case .stocks: return "Stocks"
+        case .stocks: return "Stocky"
         case .mail: return "Mail"
         case .whatsapp: return "WhatsApp"
         case .discord: return "Discord"

@@ -96,7 +96,7 @@ extension InvestigationBridge {
         for group in groups {
             try upsertRow(tableKey: "cases", sourceKey: "stocks:group:\(group.id)", values: [
                 "Name": group.name,
-                "Domain": "Stocks",
+                "Domain": "Stocky",
                 "Status": "Monitoring",
                 "Source": "stocks",
                 "Source ID": group.id,

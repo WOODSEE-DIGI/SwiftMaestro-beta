@@ -14,7 +14,7 @@
 
 ## Also in this release (0.3.7 features)
 
-- **Blocky + Stocks investigations** — GRDB-backed investigation panels with agent tools and MaestroDB sync.
+- **Blocky + Stocky investigations** — GRDB-backed investigation panels with agent tools and MaestroDB sync.
 - **Obsidian-class Web Clipper** — full metadata capture, templates, Wayback-grade asset archiving.
 - **SwiftWeaver HTML Builder** — visual HTML editor with live preview.
 

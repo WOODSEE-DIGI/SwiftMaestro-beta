@@ -61,7 +61,7 @@ extension MaestroTools {
             ToolDefinition(name: "apple_mail_selected_message", spec: appleAppsToolSpecs[14], category: ToolCategory.mail.rawValue,
                 handler: { _ in await mailSelectedMessageTool() }),
 
-            // MARK: Stocks panel tools
+            // MARK: Stocky panel tools
             ToolDefinition(name: "list_stocks", spec: appleAppsToolSpecs[15], category: ToolCategory.stocks.rawValue,
                 handler: { _ in await listStocksTool() }),
             ToolDefinition(name: "add_stock", spec: appleAppsToolSpecs[16], category: ToolCategory.stocks.rawValue,
@@ -180,17 +180,17 @@ extension MaestroTools {
                 "Read the message currently selected in Mail.app's front viewer: subject, sender, Message-ID, recipients. Requires Automation permission for Mail.",
                 properties: [:], required: []),
 
-            // MARK: Stocks panel tools (watchlist + quotes via Yahoo Finance — no API key)
+            // MARK: Stocky panel tools (watchlist + quotes via Yahoo Finance — no API key)
             rawSpec("list_stocks",
-                "List the Stocks panel watchlist with the latest cached quote for each symbol (price, intraday change, day range).",
+                "List the Stocky panel watchlist with the latest cached quote for each symbol (price, intraday change, day range).",
                 properties: [:], required: []),
             rawSpec("add_stock",
-                "Add a symbol to the Stocks panel watchlist and fetch its quote. Symbols: US tickers plain ('AAPL'), other markets with suffix ('bhp.au'), indices with caret ('^spx').",
+                "Add a symbol to the Stocky panel watchlist and fetch its quote. Symbols: US tickers plain ('AAPL'), other markets with suffix ('bhp.au'), indices with caret ('^spx').",
                 properties: [
                     "symbol": ["type": "string", "description": "Ticker symbol, e.g. 'AAPL'."],
                 ], required: ["symbol"]),
             rawSpec("remove_stock",
-                "Remove a symbol from the Stocks panel watchlist.",
+                "Remove a symbol from the Stocky panel watchlist.",
                 properties: [
                     "symbol": ["type": "string", "description": "Ticker symbol to remove."],
                 ], required: ["symbol"]),
@@ -240,13 +240,13 @@ extension MaestroTools {
                     "symbol": ["type": "string", "description": "Ticker symbol to investigate, e.g. 'AAPL'."],
                 ], required: ["symbol"]),
             rawSpec("stock_note",
-                "Add an investigation note to a stock. Notes persist in the database and are shown in the Stocks panel Notes tab.",
+                "Add an investigation note to a stock. Notes persist in the database and are shown in the Stocky panel Notes tab.",
                 properties: [
                     "symbol": ["type": "string", "description": "Ticker symbol."],
                     "note": ["type": "string", "description": "Note content — observations, thesis, findings."],
                 ], required: ["symbol", "note"]),
             rawSpec("stock_flag",
-                "Flag or unflag a stock as suspicious. Flagged stocks show an orange flag in the Stocks panel. Use to mark stocks under suspicion for fraud, insider trading patterns, or other concerns.",
+                "Flag or unflag a stock as suspicious. Flagged stocks show an orange flag in the Stocky panel. Use to mark stocks under suspicion for fraud, insider trading patterns, or other concerns.",
                 properties: [
                     "symbol": ["type": "string", "description": "Ticker symbol."],
                     "action": ["type": "string", "description": "'flag' or 'unflag' (default 'flag')."],
