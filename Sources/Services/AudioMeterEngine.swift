@@ -8,13 +8,16 @@ import Accelerate
 // on the selected microphone, computing per-buffer RMS/peak plus a 24-band
 // log-spaced spectrum (Accelerate vDSP FFT).
 //
-// THREADING MODEL (rewritten after the RealtimeMessenger assertion crash):
-// this engine is NOT actor-isolated. All RT-shared state lives in one
-// lock-guarded State struct; the audio tap thread touches state only under
-// the lock, and UI receives per-buffer frames through @Sendable observer
-// callbacks that hop to MainActor themselves. Previous version ran the FFT
-// on the MainActor and called into it from the realtime audio thread — an
-// actor violation that tripped CoreAudio's RealtimeMessenger queue assert.
+// THREADING + EXCLUSIVITY MODEL (two crashes shaped this):
+//  1. Not actor-isolated (running DSP on a @MainActor class from the RT audio
+//     thread tripped CoreAudio's RealtimeMessenger queue assert).
+//  2. DSP buffers are FLAT class properties, never a struct member accessed
+//     inside another member's withUnsafe* scope — nested accesses on one
+//     struct's storage trip Swift's exclusivity checker
+//     ("Simultaneous accesses … modification requires exclusive access").
+//  3. Cross-thread traffic is minimal: the tap thread computes under a lock;
+//     UI receives immutable MeterFrames via @Sendable observers that hop to
+//     MainActor themselves.
 //
 // METERING ONLY: nothing is played back, so there is zero feedback risk.
 
@@ -29,37 +32,34 @@ final class AudioMeterEngine: @unchecked Sendable {
 
     static let shared = AudioMeterEngine()
 
-    // MARK: - Thread-safe state
+    // MARK: - Lock-guarded control state (small; never accessed in nested
+    // withUnsafe* scopes — measurements go out via value-type MeterFrames)
 
-    private struct State {
-        var isRunning = false
-        var engine: AVAudioEngine?
-        // DSP (all preallocated at start; the tap thread never allocates)
-        var fftSetup: vDSP.FFT<DSPSplitComplex>?
-        var window: [Float] = []
-        var windowed: [Float] = []
-        var splitRe: [Float] = []
-        var splitIm: [Float] = []
-        var magnitudes: [Float] = []
-        var bandBins: [[Int]] = []
-        // Latest measurements
-        var level: Float = 0
-        var peakLevel: Float = 0
-        var spectrum: [Float] = Array(repeating: 0, count: 24)
-        // Observers (UI) — called with a frame per processed buffer
-        var observers: [UUID: @Sendable (MeterFrame) -> Void] = [:]
-    }
-
-    private var state = State()
+    private var isRunning = false
+    private var engine: AVAudioEngine?
+    private var observers: [UUID: @Sendable (MeterFrame) -> Void] = [:]
+    private var peakLevel: Float = 0
     private let lock = NSLock()
+
+    // MARK: - DSP buffers (flat class properties — preallocated at start,
+    // written only by the tap thread while it holds the lock; exclusivity
+    // checker sees each as distinct storage)
+
+    private var fftSetup: vDSP.FFT<DSPSplitComplex>?
+    private var window: [Float] = []
+    private var windowed: [Float] = []
+    private var splitRe: [Float] = []
+    private var splitIm: [Float] = []
+    private var magnitudes: [Float] = []
+    private var bandBins: [[Int]] = []
 
     private let bufferSize = 2048
 
     private init() {}
 
-    var isRunning: Bool {
+    var running: Bool {
         lock.lock(); defer { lock.unlock() }
-        return state.isRunning
+        return isRunning
     }
 
     // MARK: - Observers
@@ -67,19 +67,19 @@ final class AudioMeterEngine: @unchecked Sendable {
     @discardableResult
     func addObserver(_ observer: @escaping @Sendable (MeterFrame) -> Void) -> UUID {
         let id = UUID()
-        lock.lock(); state.observers[id] = observer; lock.unlock()
+        lock.lock(); observers[id] = observer; lock.unlock()
         return id
     }
 
     func removeObserver(_ id: UUID) {
-        lock.lock(); state.observers[id] = nil; lock.unlock()
+        lock.lock(); observers[id] = nil; lock.unlock()
     }
 
     // MARK: - Start / stop
 
     func start() {
         lock.lock()
-        guard !state.isRunning else { lock.unlock(); return }
+        guard !isRunning else { lock.unlock(); return }
         lock.unlock()
 
         let engine = AVAudioEngine()
@@ -120,22 +120,24 @@ final class AudioMeterEngine: @unchecked Sendable {
             return
         }
         lock.lock()
-        state.engine = engine
-        state.isRunning = true
+        self.engine = engine
+        isRunning = true
         lock.unlock()
     }
 
     func stop() {
         lock.lock()
-        let engine = state.engine
-        state.engine = nil
-        state.isRunning = false
-        state.level = 0
-        state.peakLevel = 0
-        state.spectrum = Array(repeating: 0, count: 24)
+        let engine = self.engine
+        self.engine = nil
+        isRunning = false
+        peakLevel = 0
+        let currentObservers = Array(observers.values)
         lock.unlock()
         engine?.inputNode.removeTap(onBus: 0)
         engine?.stop()
+        // Push one zeroed frame so UI meters fall to idle immediately.
+        let zero = MeterFrame(level: 0, peak: 0, spectrum: Array(repeating: 0, count: 24))
+        for observer in currentObservers { observer(zero) }
     }
 
     // MARK: - DSP prep (called on the starting thread, before the tap exists)
@@ -156,21 +158,25 @@ final class AudioMeterEngine: @unchecked Sendable {
             return Array(loBin..<hiBin)
         }
         lock.lock()
-        state.fftSetup = fft
-        state.window = window
-        state.windowed = [Float](repeating: 0, count: n)
-        state.splitRe = [Float](repeating: 0, count: n / 2)
-        state.splitIm = [Float](repeating: 0, count: n / 2)
-        state.magnitudes = [Float](repeating: 0, count: n / 2)
-        state.bandBins = bandBins
+        fftSetup = fft
+        self.window = window
+        windowed = [Float](repeating: 0, count: n)
+        splitRe = [Float](repeating: 0, count: n / 2)
+        splitIm = [Float](repeating: 0, count: n / 2)
+        magnitudes = [Float](repeating: 0, count: n / 2)
+        self.bandBins = bandBins
         lock.unlock()
     }
 
-    // MARK: - Tap processing (realtime audio thread — lock-guarded, no allocs)
+    // MARK: - Tap processing (realtime audio thread)
+    //
+    // Everything the FFT touches is a flat class property (distinct storage
+    // per property), so the nested withUnsafe* scopes never overlap on one
+    // aggregate's storage — that overlap was the exclusivity crash.
 
     private func processTapBuffer(_ buffer: AVAudioPCMBuffer) {
         lock.lock()
-        guard state.isRunning, let fftSetup = state.fftSetup else {
+        guard isRunning, let fftSetup else {
             lock.unlock()
             return
         }
@@ -185,16 +191,16 @@ final class AudioMeterEngine: @unchecked Sendable {
         var peak: Float = 0
         for i in 0..<frames {
             let s = channelData[0][i * stride]
-            state.windowed[i] = s * state.window[i]
+            windowed[i] = s * window[i]
             sumSquares += s * s
             if abs(s) > peak { peak = abs(s) }
         }
-        for i in frames..<bufferSize { state.windowed[i] = 0 }
+        for i in frames..<bufferSize { windowed[i] = 0 }
         let rms = min(1, sqrt(sumSquares / Float(frames)) * 3)
 
-        state.windowed.withUnsafeBufferPointer { srcPtr in
-            state.splitRe.withUnsafeMutableBufferPointer { rePtr in
-                state.splitIm.withUnsafeMutableBufferPointer { imPtr in
+        windowed.withUnsafeBufferPointer { srcPtr in
+            splitRe.withUnsafeMutableBufferPointer { rePtr in
+                splitIm.withUnsafeMutableBufferPointer { imPtr in
                     var split = DSPSplitComplex(realp: rePtr.baseAddress!, imagp: imPtr.baseAddress!)
                     srcPtr.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: frames / 2) { complexPtr in
                         vDSP_ctoz(complexPtr, 2, &split, 1, vDSP_Length(frames / 2))
@@ -205,27 +211,25 @@ final class AudioMeterEngine: @unchecked Sendable {
         }
         let binCount = bufferSize / 2
         for bin in 0..<binCount {
-            let re = state.splitRe[bin]
-            let im = state.splitIm[bin]
-            state.magnitudes[bin] = re * re + im * im
+            let re = splitRe[bin]
+            let im = splitIm[bin]
+            magnitudes[bin] = re * re + im * im
         }
 
         var bands = [Float](repeating: 0, count: 24)
-        for (band, bins) in state.bandBins.enumerated() {
+        for (band, bins) in bandBins.enumerated() {
             var sum: Float = 0
-            for bin in bins { sum += state.magnitudes[bin] }
+            for bin in bins { sum += magnitudes[bin] }
             let mean = sum / Float(max(1, bins.count))
             let db = 10 * log10(max(mean, 1e-12))
             bands[band] = max(0, min(1, (db + 60) / 60))
         }
-        state.level = rms
-        state.peakLevel = max(peak, state.peakLevel * 0.985)
-        state.spectrum = bands
-        let frame = MeterFrame(level: rms, peak: state.peakLevel, spectrum: bands)
-        let observers = Array(state.observers.values)
+        peakLevel = max(peak, peakLevel * 0.985)
+        let frame = MeterFrame(level: rms, peak: peakLevel, spectrum: bands)
+        let currentObservers = Array(observers.values)
         lock.unlock()
 
-        for observer in observers { observer(frame) }
+        for observer in currentObservers { observer(frame) }
     }
 }
 
@@ -263,7 +267,7 @@ final class MeterDisplay {
             }
         }
         AudioMeterEngine.shared.start()
-        isRunning = AudioMeterEngine.shared.isRunning
+        isRunning = AudioMeterEngine.shared.running
     }
 
     func stop() {
