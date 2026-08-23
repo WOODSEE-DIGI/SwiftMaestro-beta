@@ -50,6 +50,9 @@ struct TerminalTriggersView: View {
                             .controlSize(.small)
                         Toggle("Badge", isOn: $trigger.badge)
                             .controlSize(.small)
+                        Toggle("Notify", isOn: $trigger.notify)
+                            .controlSize(.small)
+                            .help("macOS notification on match (asks permission once)")
                         Button(role: .destructive) {
                             engine.triggers.removeAll { $0.id == trigger.id }
                         } label: {

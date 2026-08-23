@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import UserNotifications
 
 // MARK: - Terminal Trigger Engine
 //
@@ -24,10 +25,35 @@ struct TerminalTrigger: Identifiable, Codable, Hashable {
     var isEnabled: Bool = true
     var beep: Bool = true
     var badge: Bool = true
+    /// Post a macOS notification when matched (asks permission on first use).
+    var notify: Bool = false
 
     /// Compiled lazily; invalid patterns simply never match.
     var regex: NSRegularExpression? {
         try? NSRegularExpression(pattern: pattern, options: [])
+    }
+
+    /// Custom decode so trigger files written before `notify` existed still load.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        pattern = try c.decode(String.self, forKey: .pattern)
+        isEnabled = try c.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
+        beep = try c.decodeIfPresent(Bool.self, forKey: .beep) ?? true
+        badge = try c.decodeIfPresent(Bool.self, forKey: .badge) ?? true
+        notify = try c.decodeIfPresent(Bool.self, forKey: .notify) ?? false
+    }
+
+    init(id: UUID = UUID(), name: String, pattern: String,
+         isEnabled: Bool = true, beep: Bool = true, badge: Bool = true, notify: Bool = false) {
+        self.id = id
+        self.name = name
+        self.pattern = pattern
+        self.isEnabled = isEnabled
+        self.beep = beep
+        self.badge = badge
+        self.notify = notify
     }
 }
 
@@ -91,6 +117,42 @@ final class TerminalTriggerEngine: @unchecked Sendable {
         if rule.badge {
             let callback = onBadge
             DispatchQueue.main.async { callback?(tab, rule, line) }
+        }
+        if rule.notify {
+            postNotification(for: rule, line: line)
+        }
+    }
+
+    // MARK: - Notifications
+
+    /// Post a macOS notification for a matched trigger. Requests authorization
+    /// on first use; if denied (or the signing context can't deliver — ad-hoc
+    /// Debug builds), the beep/badge already fired so nothing is lost.
+    private func postNotification(for rule: TerminalTrigger, line: String) {
+        Task {
+            let center = UNUserNotificationCenter.current()
+            let settings = await center.notificationSettings()
+            switch settings.authorizationStatus {
+            case .notDetermined:
+                let granted = (try? await center.requestAuthorization(options: [.alert])) ?? false
+                guard granted else { return }
+            case .authorized, .provisional, .ephemeral:
+                break
+            case .denied:
+                return
+            @unknown default:
+                return
+            }
+
+            let content = UNMutableNotificationContent()
+            content.title = "Terminal trigger: \(rule.name)"
+            content.body = String(line.prefix(200))
+            let request = UNNotificationRequest(
+                identifier: "terminal-trigger-\(UUID().uuidString)",
+                content: content,
+                trigger: nil
+            )
+            try? await center.add(request)
         }
     }
 
