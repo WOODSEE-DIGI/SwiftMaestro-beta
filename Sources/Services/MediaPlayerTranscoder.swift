@@ -35,6 +35,27 @@ struct MediaPlayerTranscoder: Sendable {
 
     private let ffmpeg = FFmpegService()
 
+    /// Conversions currently running, keyed by source content stamp. Two
+    /// loads of the same file (double-click, drop+tap) must NOT spawn two
+    /// ffmpeg processes writing the same temp file — the second caller
+    /// awaits the first one's task instead. (An actor, not a lock: NSLock is
+    /// unavailable from async contexts under Swift 6 strict concurrency.)
+    private actor ConversionCoordinator {
+        static let shared = ConversionCoordinator()
+        private var inFlight: [String: Task<URL, Error>] = [:]
+
+        func task(for key: String, make: @Sendable () -> Task<URL, Error>) -> Task<URL, Error> {
+            if let existing = inFlight[key] { return existing }
+            let task = make()
+            inFlight[key] = task
+            return task
+        }
+
+        func finish(_ key: String) {
+            inFlight[key] = nil
+        }
+    }
+
     /// Directory holding converted temp files for this app install.
     static var tempDirectory: URL {
         let dir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
@@ -60,6 +81,19 @@ struct MediaPlayerTranscoder: Sendable {
     func playableURL(for source: URL) async throws -> URL {
         guard MediaPlayerFormat.needsFFmpeg(source) else { return source }
 
+        let key = cacheKey(for: source)
+
+        // In-flight dedup: await the running conversion of this exact file.
+        let task = await ConversionCoordinator.shared.task(for: key) {
+            Task<URL, Error> { try await self.convertIfNeeded(source: source) }
+        }
+        defer {
+            Task { await ConversionCoordinator.shared.finish(key) }
+        }
+        return try await task.value
+    }
+
+    private func convertIfNeeded(source: URL) async throws -> URL {
         sweepStaleTempFiles()
 
         let info = try await probe(source)
@@ -190,18 +224,18 @@ struct MediaPlayerTranscoder: Sendable {
         // (ffmpeg can "succeed" with a half-muxed file when a subtitle or
         // data stream errors mid-conversion; without this check AVPlayer
         // gets a broken file and shows the QuickTime placeholder.)
+        // NOTE: csv=p=0 prints BARE values (no "duration=" prefix) —
+        // duration arrives as a lone numeric line.
         let probeResult = try? await ffmpeg.runFFprobe(arguments: [
             "-v", "error",
-            "-show_entries", "format=duration",
-            "-show_entries", "stream=codec_type",
+            "-show_entries", "format=duration:stream=codec_type",
             "-of", "csv=p=0",
             destination.path,
         ])
         let probeOut = probeResult.map { String(decoding: $0.stdout, as: UTF8.self) } ?? ""
-        let hasVideoOut = probeOut.contains("video")
-        let hasDuration = probeOut.contains("duration=")
-            && !probeOut.contains("duration=0.000000")
-            && !probeOut.contains("duration=N/A")
+        let probeLines = probeOut.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        let hasVideoOut = probeLines.contains("video")
+        let hasDuration = probeLines.contains(where: { Double($0).map { $0 > 0 } ?? false })
         guard hasDuration, (!expectVideo || hasVideoOut) else {
             try? FileManager.default.removeItem(at: destination)
             throw TranscodeError.ffmpegFailed("conversion output failed validation (missing \(!hasDuration ? "duration" : "video stream"))")
@@ -216,12 +250,17 @@ struct MediaPlayerTranscoder: Sendable {
     private static let converterVersion = "v2"
 
     private func destinationURL(for source: URL, extension ext: String) -> URL {
+        let name = String(cacheKey(for: source).unicodeScalars.map { $0.value }.reduce(into: UInt32(5381)) { $0 = $0 &* 33 &+ $1 }, radix: 16)
+        return Self.tempDirectory.appendingPathComponent("conv-\(name).\(ext)")
+    }
+
+    /// Version-tagged content stamp: same file content + same converter =
+    /// same conversion, across plays.
+    private func cacheKey(for source: URL) -> String {
         let attrs = try? FileManager.default.attributesOfItem(atPath: source.path)
         let size = (attrs?[.size] as? Int64) ?? 0
         let mtime = (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
-        let key = "\(Self.converterVersion)#\(source.path)#\(size)#\(Int(mtime))"
-        let name = String(key.unicodeScalars.map { $0.value }.reduce(into: UInt32(5381)) { $0 = $0 &* 33 &+ $1 }, radix: 16)
-        return Self.tempDirectory.appendingPathComponent("conv-\(name).\(ext)")
+        return "\(Self.converterVersion)#\(source.path)#\(size)#\(Int(mtime))"
     }
 
     private func existingConversion(for source: URL) -> URL? {
