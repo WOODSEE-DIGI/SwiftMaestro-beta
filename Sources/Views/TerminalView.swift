@@ -52,7 +52,11 @@ struct TerminalView: View {
     @State private var shells: [ShellTab] = [ShellTab(title: "Shell 1")]
     @State private var activeShell: UUID?
     @State private var showDisplaySettings = false
+    @State private var showTriggerSettings = false
     @State private var terminalSettings = TerminalSettings.shared
+    @State private var triggerEngine = TerminalTriggerEngine.shared
+    /// Tabs with an unread trigger alert; cleared when the tab is focused.
+    @State private var badgedTabs: Set<UUID> = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -77,10 +81,25 @@ struct TerminalView: View {
         }
         .frame(minWidth: 360, idealWidth: 480)
         .background(Color(nsColor: .windowBackgroundColor))
+        .onAppear { registerTriggerBadgeHandler() }
     }
 
     private var activeShellID: UUID? {
-        activeShell ?? shells.first?.id
+        get { activeShell ?? shells.first?.id }
+    }
+
+    /// Focus a tab and clear its trigger badge.
+    private func activateTab(_ id: UUID) {
+        activeShell = id
+        badgedTabs.remove(id)
+    }
+
+    private func registerTriggerBadgeHandler() {
+        triggerEngine.onBadge = { tabID, _, _ in
+            if tabID != activeShellID {
+                badgedTabs.insert(tabID)
+            }
+        }
     }
 
     private var activeTabIndex: Int? {
@@ -94,32 +113,34 @@ struct TerminalView: View {
         if shellTab.panes.count > 1, let axis = shellTab.splitAxis {
             if axis == .horizontal {
                 HStack(spacing: 0) {
-                    terminalPane(shellTab.panes[0], presetName: shellTab.presetName)
+                    terminalPane(shellTab.panes[0], presetName: shellTab.presetName, tabID: shellTab.id)
                     Divider()
-                    terminalPane(shellTab.panes[1], presetName: shellTab.presetName)
+                    terminalPane(shellTab.panes[1], presetName: shellTab.presetName, tabID: shellTab.id)
                 }
             } else {
                 VStack(spacing: 0) {
-                    terminalPane(shellTab.panes[0], presetName: shellTab.presetName)
+                    terminalPane(shellTab.panes[0], presetName: shellTab.presetName, tabID: shellTab.id)
                     Divider()
-                    terminalPane(shellTab.panes[1], presetName: shellTab.presetName)
+                    terminalPane(shellTab.panes[1], presetName: shellTab.presetName, tabID: shellTab.id)
                 }
             }
         } else if let first = shellTab.panes.first {
-            terminalPane(first, presetName: shellTab.presetName)
+            terminalPane(first, presetName: shellTab.presetName, tabID: shellTab.id)
         }
     }
 
     @ViewBuilder
-    private func terminalPane(_ pane: ShellTab.Pane, presetName: String?) -> some View {
+    private func terminalPane(_ pane: ShellTab.Pane, presetName: String?, tabID: UUID) -> some View {
         let preset = presetName.flatMap { name in
             TerminalSettings.presets.first(where: { $0.name == name })
         }
         switch pane.kind {
         case .shell(let command):
-            LiveTerminalView(launchCommand: command, presetOverride: preset)
+            LiveTerminalView(launchCommand: command, presetOverride: preset,
+                             paneID: pane.id, tabID: tabID)
         case .serial(let device, let baud):
-            SerialTerminalView(device: device, baud: baud, presetOverride: preset)
+            SerialTerminalView(device: device, baud: baud, presetOverride: preset,
+                               paneID: pane.id, tabID: tabID)
         }
     }
 
@@ -146,6 +167,12 @@ struct TerminalView: View {
             ForEach(shells) { shellTab in
                 let isActive = shellTab.id == activeShellID
                 HStack(spacing: 6) {
+                    if badgedTabs.contains(shellTab.id) {
+                        Circle()
+                            .fill(Color.orange)
+                            .frame(width: 8, height: 8)
+                            .help("A trigger matched in this tab")
+                    }
                     Text(shellTab.title)
                         .font(.caption.monospaced().weight(isActive ? .semibold : .regular))
                     if shells.count > 1 {
@@ -171,7 +198,7 @@ struct TerminalView: View {
                         .strokeBorder(isActive ? Color.accentColor.opacity(0.6) : Color.secondary.opacity(0.3), lineWidth: 1)
                 )
                 .contentShape(Rectangle())
-                .onTapGesture { activeShell = shellTab.id }
+                .onTapGesture { activateTab(shellTab.id) }
                 .contextMenu {
                     Menu("Profile") {
                         Button(shellTab.presetName == nil ? "✓ Default (follow Display settings)" : "Default (follow Display settings)") {
@@ -214,6 +241,22 @@ struct TerminalView: View {
 
             serialMenu
             splitMenu
+            tmuxMenu
+
+            Button {
+                showTriggerSettings = true
+            } label: {
+                Text("Triggers (\(triggerEngine.triggers.filter(\.isEnabled).count))")
+                    .font(.caption.monospaced())
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help("Regex rules that beep and/or badge a tab when output matches (iTerm2-style triggers)")
+            .popover(isPresented: $showTriggerSettings) {
+                TerminalTriggersView(engine: triggerEngine)
+            }
 
             Button {
                 showDisplaySettings = true
@@ -271,6 +314,81 @@ struct TerminalView: View {
         .help("Two independent panes in the active tab (each is its own process)")
     }
 
+    // MARK: - tmux
+
+    /// tmux sessions: attach to an existing one (survives tab closes and app
+    /// restarts on the server side) or create a new named session. iTerm2
+    /// uses tmux -CC control mode; we use plain attach/new — same persistence
+    /// benefit without the control-mode protocol work.
+    private var tmuxMenu: some View {
+        Menu {
+            if Self.tmuxBinary == nil {
+                Text("tmux not installed")
+                Text("brew install tmux, then reopen this menu")
+            } else {
+                Button("New Session (\(Self.defaultTmuxSession))") {
+                    openTmux(session: Self.defaultTmuxSession, attachIfExists: true)
+                }
+                Divider()
+                let sessions = Self.tmuxSessions()
+                if sessions.isEmpty {
+                    Text("No running tmux sessions")
+                } else {
+                    ForEach(sessions, id: \.self) { session in
+                        Button("Attach: \(session)") {
+                            openTmux(session: session, attachIfExists: false)
+                        }
+                    }
+                }
+            }
+        } label: {
+            Text("tmux")
+                .font(.caption.monospaced())
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Attach to or create persistent tmux sessions (sessions survive tab closes)")
+    }
+
+    static let defaultTmuxSession = "main"
+
+    static var tmuxBinary: String? {
+        for path in ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"] {
+            if FileManager.default.fileExists(atPath: path) { return path }
+        }
+        return nil
+    }
+
+    /// Names of currently running tmux sessions (nil-safe, non-blocking).
+    static func tmuxSessions() -> [String] {
+        guard let binary = tmuxBinary else { return [] }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: binary)
+        process.arguments = ["ls", "-F", "#{session_name}"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        guard let _ = try? process.run() else { return [] }
+        process.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        return String(decoding: data, as: UTF8.self)
+            .split(separator: "\n")
+            .map { String($0) }
+            .filter { !$0.isEmpty }
+    }
+
+    private func openTmux(session: String, attachIfExists: Bool) {
+        guard let binary = Self.tmuxBinary else { return }
+        let command = attachIfExists
+            ? "exec \(binary) new-session -A -s '\(session)'"
+            : "exec \(binary) attach-session -t '\(session)'"
+        let tab = ShellTab(title: "tmux:\(session)", kind: .shell(command: command))
+        shells.append(tab)
+        activateTab(tab.id)
+    }
+
     /// USB-serial board picker (Arduino, ESP32, CH340, FTDI, …) — opens a tab
     /// with a NATIVE termios serial link (no screen subprocess). Unplugging
     /// the board or closing the tab ends the session cleanly.
@@ -325,6 +443,10 @@ struct TerminalView: View {
 
     private func closeShell(_ id: UUID) {
         guard let index = shells.firstIndex(where: { $0.id == id }) else { return }
+        for pane in shells[index].panes {
+            TerminalTriggerEngine.shared.clearPane(pane.id)
+        }
+        badgedTabs.remove(id)
         shells.remove(at: index)
         if activeShell == id {
             activeShell = shells[min(index, shells.count - 1)].id

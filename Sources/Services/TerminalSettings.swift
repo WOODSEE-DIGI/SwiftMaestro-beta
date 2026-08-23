@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftTerm
 
 // MARK: - Terminal Settings
 //
@@ -18,6 +19,11 @@ final class TerminalSettings: @unchecked Sendable {
     var foregroundHex: String { didSet { save() } }
     var backgroundHex: String { didSet { save() } }
     var cursorHex: String { didSet { save() } }
+    /// Scrollback buffer lines per terminal (SwiftTerm changeScrollback).
+    var scrollbackLines: Int { didSet { save() } }
+    /// 16-color ANSI palette preset name; "Default" leaves SwiftTerm's
+    /// built-in palette untouched.
+    var paletteName: String { didSet { save() } }
 
     private init() {
         let defaults = Self.presetDefaultDark
@@ -26,6 +32,8 @@ final class TerminalSettings: @unchecked Sendable {
         foregroundHex = defaults.foregroundHex
         backgroundHex = defaults.backgroundHex
         cursorHex = defaults.cursorHex
+        scrollbackLines = 10_000
+        paletteName = "Default"
         load()
     }
 
@@ -112,6 +120,48 @@ final class TerminalSettings: @unchecked Sendable {
         return family
     }
 
+    // MARK: - ANSI palettes
+    // 16 entries each: 0-7 normal (black red green yellow blue magenta cyan
+    // white), 8-15 bright. "Default" is nil — SwiftTerm's stock palette.
+
+    static let palettes: [(name: String, colors: [String]?)] = [
+        ("Default", nil),
+        ("btop Phosphor", [
+            "0A0F0A", "FF4D40", "33FF59", "FFB000", "3FBFBF", "4DA6FF", "B85CFF", "CFFFD8",
+            "1E3320", "FF6B5E", "6BFF8A", "FFD24D", "6FD9D9", "7DBCFF", "D29BFF", "FFFFFF",
+        ]),
+        ("Solarized Dark", [
+            "073642", "DC322F", "859900", "B58900", "268BD2", "D33682", "2AA198", "EEE8D5",
+            "002B36", "CB4B16", "586E75", "657B83", "839496", "6C71C4", "93A1A1", "FDF6E3",
+        ]),
+        ("Solarized Light", [
+            "EEE8D5", "DC322F", "859900", "B58900", "268BD2", "D33682", "2AA198", "073642",
+            "FDF6E3", "CB4B16", "93A1A1", "839496", "657B83", "6C71C4", "586E75", "002B36",
+        ]),
+        ("Amber CRT", [
+            "0F0800", "FF5A1F", "FFB000", "FFE08A", "FF8C00", "D2691E", "FFC04D", "FFEECC",
+            "332000", "FF7A3D", "FFC933", "FFEBB0", "FFA626", "E0852A", "FFD280", "FFF7E6",
+        ]),
+    ]
+
+    /// The active palette as SwiftTerm Colors, or nil for the stock palette.
+    var paletteColors: [SwiftTerm.Color]? {
+        guard let entry = Self.palettes.first(where: { $0.name == paletteName }),
+              let hexes = entry.colors else { return nil }
+        return hexes.compactMap { hex in
+            guard let ns = Self.nsColor(fromHex: hex) else { return nil }
+            guard let srgb = ns.usingColorSpace(.sRGB) else { return nil }
+            return SwiftTerm.Color(
+                red: UInt16(srgb.redComponent * 65535),
+                green: UInt16(srgb.greenComponent * 65535),
+                blue: UInt16(srgb.blueComponent * 65535)
+            )
+        }
+    }
+
+    /// Scrollback choices offered in the Display popover.
+    static let scrollbackChoices: [Int] = [1_000, 5_000, 10_000, 50_000, 100_000]
+
     // MARK: - Hex helpers
 
     static func nsColor(fromHex hex: String) -> NSColor? {
@@ -142,6 +192,8 @@ final class TerminalSettings: @unchecked Sendable {
         var foregroundHex: String
         var backgroundHex: String
         var cursorHex: String
+        var scrollbackLines: Int?
+        var paletteName: String?
     }
 
     private static var fileURL: URL {
@@ -154,7 +206,8 @@ final class TerminalSettings: @unchecked Sendable {
     private func save() {
         let p = Persisted(fontName: fontName, fontSize: fontSize,
                           foregroundHex: foregroundHex, backgroundHex: backgroundHex,
-                          cursorHex: cursorHex)
+                          cursorHex: cursorHex, scrollbackLines: scrollbackLines,
+                          paletteName: paletteName)
         try? JSONEncoder().encode(p).write(to: Self.fileURL, options: .atomic)
     }
 
@@ -166,5 +219,7 @@ final class TerminalSettings: @unchecked Sendable {
         foregroundHex = p.foregroundHex
         backgroundHex = p.backgroundHex
         cursorHex = p.cursorHex
+        if let scrollbackLines = p.scrollbackLines { self.scrollbackLines = scrollbackLines }
+        if let paletteName = p.paletteName { self.paletteName = paletteName }
     }
 }

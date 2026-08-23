@@ -70,6 +70,37 @@ struct TerminalDisplaySettingsView: View {
                 set: { settings.cursorHex = $0 }
             ))
 
+            // Scrollback + palette
+            HStack {
+                Text("Scrollback")
+                    .frame(width: 90, alignment: .leading)
+                Picker("", selection: Binding(
+                    get: { settings.scrollbackLines },
+                    set: { settings.scrollbackLines = $0 }
+                )) {
+                    ForEach(TerminalSettings.scrollbackChoices, id: \.self) { lines in
+                        Text("\(lines / 1_000)k lines").tag(lines)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 120)
+            }
+
+            HStack {
+                Text("ANSI Palette")
+                    .frame(width: 90, alignment: .leading)
+                Picker("", selection: Binding(
+                    get: { settings.paletteName },
+                    set: { settings.paletteName = $0 }
+                )) {
+                    ForEach(TerminalSettings.palettes, id: \.name) { palette in
+                        Text(palette.name).tag(palette.name)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 190)
+            }
+
             Divider()
 
             // Live preview

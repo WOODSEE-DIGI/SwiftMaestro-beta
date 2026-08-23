@@ -24,10 +24,17 @@ struct LiveTerminalView: NSViewRepresentable {
     /// Per-tab preset override; nil follows the global TerminalSettings.
     var presetOverride: TerminalSettings.Preset? = nil
 
+    /// Trigger-engine wiring: paneID keys the output line buffer, tabID is
+    /// what gets badged when a trigger matches.
+    var paneID: UUID?
+    var tabID: UUID?
+
     @State private var settings = TerminalSettings.shared
 
     func makeNSView(context: Context) -> LocalProcessTerminalView {
-        let view = LocalProcessTerminalView(frame: .zero)
+        let view = TappedLocalProcessTerminalView(frame: .zero)
+        view.triggerPaneID = paneID
+        view.triggerTabID = tabID
         view.processDelegate = context.coordinator
         applyTheme(to: view)
 
@@ -49,6 +56,8 @@ struct LiveTerminalView: NSViewRepresentable {
         _ = settings.foregroundHex
         _ = settings.backgroundHex
         _ = settings.cursorHex
+        _ = settings.scrollbackLines
+        _ = settings.paletteName
         applyTheme(to: nsView)
     }
 
@@ -72,6 +81,10 @@ struct LiveTerminalView: NSViewRepresentable {
             view.nativeBackgroundColor = settings.backgroundColor
             view.nativeForegroundColor = settings.foregroundColor
             view.caretColor = settings.cursorColor
+        }
+        view.changeScrollback(settings.scrollbackLines)
+        if let palette = settings.paletteColors {
+            view.installColors(palette)
         }
     }
 

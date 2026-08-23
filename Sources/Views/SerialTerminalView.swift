@@ -20,6 +20,11 @@ struct SerialTerminalView: NSViewRepresentable {
     /// Per-tab preset override; nil follows the global TerminalSettings.
     var presetOverride: TerminalSettings.Preset?
 
+    /// Trigger-engine wiring: paneID keys the output line buffer, tabID is
+    /// what gets badged when a trigger matches.
+    var paneID: UUID?
+    var tabID: UUID?
+
     @State private var settings = TerminalSettings.shared
 
     func makeNSView(context: Context) -> SwiftTerm.TerminalView {
@@ -28,7 +33,13 @@ struct SerialTerminalView: NSViewRepresentable {
         applyTheme(to: view)
 
         do {
+            let pane = paneID
+            let tab = tabID
             let session = try SerialSession(device: device, baud: baud) { bytes in
+                // Triggers see the raw stream before rendering.
+                if let pane, let tab {
+                    TerminalTriggerEngine.shared.processOutput(ArraySlice(bytes), pane: pane, tab: tab)
+                }
                 // Read pump thread → main; feed is main-thread only.
                 let terminalView = context.coordinator.terminalView
                 DispatchQueue.main.async {
@@ -50,6 +61,8 @@ struct SerialTerminalView: NSViewRepresentable {
         _ = settings.foregroundHex
         _ = settings.backgroundHex
         _ = settings.cursorHex
+        _ = settings.scrollbackLines
+        _ = settings.paletteName
         applyTheme(to: nsView)
     }
 
@@ -74,6 +87,10 @@ struct SerialTerminalView: NSViewRepresentable {
             view.nativeBackgroundColor = settings.backgroundColor
             view.nativeForegroundColor = settings.foregroundColor
             view.caretColor = settings.cursorColor
+        }
+        view.changeScrollback(settings.scrollbackLines)
+        if let palette = settings.paletteColors {
+            view.installColors(palette)
         }
     }
 
