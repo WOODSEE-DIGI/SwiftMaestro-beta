@@ -61,6 +61,10 @@ extension MaestroTools {
                 name: "app_version_rollback", spec: systemHealthToolSpecs[11],
                 category: ToolCategory.system.rawValue,
                 handler: { call in await appVersionRollback(call) }),
+            ToolDefinition(
+                name: "send_diagnostic_report", spec: systemHealthToolSpecs[12],
+                category: ToolCategory.system.rawValue,
+                handler: { call in await sendDiagnosticReport(call) }),
         ])
     }
 
@@ -166,6 +170,21 @@ extension MaestroTools {
                     "version": ["type": "string", "description": "Version to download (e.g. 0.3.6) — required for download."],
                 ],
                 required: ["action"]),
+            rawSpec("send_diagnostic_report",
+                "Open the anonymous diagnostic report sheet for the user when a "
+                + "problem needs a code fix (something you cannot repair at "
+                + "runtime). You PREPARE the report only — the sheet opens "
+                + "pre-filled with your description (and optional media path), "
+                + "and the user reviews the exact redacted payload and presses "
+                + "Send themselves. NEVER claim a report was sent — you cannot "
+                + "send one; only the user can. Use after media_diagnose or "
+                + "diagnose_crash when the evidence points to an app bug.",
+                properties: [
+                    "description": ["type": "string", "description": "Plain-English summary of the problem + the key evidence (codecs, errors, versions). This text goes into the report."],
+                    "media_path": ["type": "string", "description": "Optional path of a media file to include a diagnosis for."],
+                ],
+                required: ["description"]),
+
         ]
     }
 
@@ -523,5 +542,27 @@ extension MaestroTools {
         let rest = text[startRange.upperBound...]
         guard let endRange = rest.range(of: end) else { return nil }
         return String(rest[..<endRange.lowerBound])
+    }
+
+    // MARK: - Diagnostic report (user-consented send)
+
+    private struct DiagReportArgs: Codable {
+        let description: String?
+        let media_path: String?
+    }
+
+    private static func sendDiagnosticReport(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: DiagReportArgs.self),
+              let description = args.description, !description.isEmpty else {
+            return "Error: description is required."
+        }
+        await MainActor.run {
+            var info: [String: Any] = ["description": description]
+            if let mediaPath = args.media_path, !mediaPath.isEmpty {
+                info["mediaPath"] = mediaPath
+            }
+            NotificationCenter.default.post(name: .openDiagnosticReport, object: nil, userInfo: info)
+        }
+        return "Diagnostic report sheet opened for the user with your description pre-filled. They will review the exact redacted payload and decide whether to send it — only the user can press Send."
     }
 }

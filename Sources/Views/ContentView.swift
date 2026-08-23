@@ -52,6 +52,7 @@ struct ContentView: View {
         case whisperSetup
         case notesOnboarding
         case agentCategory(AgentRecord)
+        case diagnosticReport(description: String, mediaPath: String)
 
         var id: Int {
             switch self {
@@ -62,6 +63,7 @@ struct ContentView: View {
             case .whisperSetup: return 3
             case .notesOnboarding: return 4
             case .agentCategory(let agent): return 5 + agent.id.hashValue
+            case .diagnosticReport: return 7
             }
         }
     }
@@ -172,6 +174,10 @@ struct ContentView: View {
                 OnboardingView(onDone: { onboardingSeen = true; activeSheet = nil; advanceFirstRunSheets() })
                     .environment(catalog)
                     .environment(engine)
+            case .diagnosticReport(let description, let mediaPath):
+                DiagnosticReportView(initialDescription: description, initialMediaPath: mediaPath)
+            case .diagnosticReport(let description, let mediaPath):
+                DiagnosticReportView(initialDescription: description, initialMediaPath: mediaPath)
             case .welcome:
                 WelcomeView(onDone: { welcomeSeen = true; activeSheet = nil; advanceFirstRunSheets() })
                     .environment(catalog)
@@ -211,6 +217,11 @@ struct ContentView: View {
                 : flags.contains(.shift) ? .bottom
                 : .right
             openPanel(kind, zone: zone)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openDiagnosticReport)) { notification in
+            let description = notification.userInfo?["description"] as? String ?? ""
+            let mediaPath = notification.userInfo?["mediaPath"] as? String ?? ""
+            activeSheet = .diagnosticReport(description: description, mediaPath: mediaPath)
         }
         .onReceive(NotificationCenter.default.publisher(for: .newAgentRequested)) { _ in
             activeSheet = .newAgent

@@ -673,6 +673,15 @@ private struct PanelCommands: Commands {
 
             Divider()
         }
+
+        // Anonymous, user-initiated diagnostic reporting (Help menu). Opens a
+        // sheet that previews the exact redacted payload — nothing sends until
+        // the user clicks Send (every report is its own act of consent).
+        CommandGroup(after: .help) {
+            Button("Send Diagnostic Report…") {
+                NotificationCenter.default.post(name: .openDiagnosticReport, object: nil)
+            }
+        }
     }
 
     // MARK: Agent Chats submenu
