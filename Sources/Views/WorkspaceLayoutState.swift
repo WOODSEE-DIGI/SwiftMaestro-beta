@@ -342,44 +342,44 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
     var staticDisplayName: String? {
         switch self {
         case .agentChat: return nil
-        case .notesMD: return "Notes.md"
-        case .appleNotes: return "Apple Notes"
-        case .calendar: return "Calendar"
-        case .reminders: return "Reminders"
-        case .contacts: return "Contacts"
-        case .canvas: return "Whiteboard"
-        case .kanban: return "Kanban"
-        case .numbers: return "Numbers"
-        case .maps: return "Maps"
-        case .photos: return "Photos"
-        case .stocks: return "Stocky"
-        case .mail: return "Mail"
-        case .whatsapp: return "WhatsApp"
-        case .discord: return "Discord"
+        case .notesMD: return String(localized: "Notes.md")
+        case .appleNotes: return String(localized: "Apple Notes")
+        case .calendar: return String(localized: "Calendar")
+        case .reminders: return String(localized: "Reminders")
+        case .contacts: return String(localized: "Contacts")
+        case .canvas: return String(localized: "Whiteboard")
+        case .kanban: return String(localized: "Kanban")
+        case .numbers: return String(localized: "Numbers")
+        case .maps: return String(localized: "Maps")
+        case .photos: return String(localized: "Photos")
+        case .stocks: return String(localized: "Stocky")
+        case .mail: return String(localized: "Mail")
+        case .whatsapp: return String(localized: "WhatsApp")
+        case .discord: return String(localized: "Discord")
         case .plugin: return nil
-        case .terminal: return "Terminal"
-        case .busMonitor: return "Bus Monitor"
-        case .audioControl: return "Audio Control"
-        case .tethering: return "Cameras"
-        case .streamIngest: return "Stream Ingest"
-        case .broadcast: return "Broadcast"
-        case .streamMixer: return "Stream Mixer"
-        case .ndiBrowser: return "NDI Browser"
-        case .colorAdjustments: return "Color Adjustments"
-        case .scenes: return "Scenes"
-        case .agents: return "Agents"
-        case .appLauncher: return "Apps"
-        case .webBrowser: return "SwiftBrowser"
-        case .damBrowser: return "MaestroDAM"
-        case .maestroDocs: return "MaestroDocs"
-        case .maestroBooks: return "MaestroBooks"
-        case .maestroDB: return "MaestroDB"
-        case .htmlBuilder: return "SwiftWeaver"
-        case .backup: return "Backup"
-        case .voiceNotes: return "Voice Notes"
-        case .blocky: return "Blocky"
-        case .pomodoro: return "Pomodoro"
-        case .mediaPlayer: return "Media Player"
+        case .terminal: return String(localized: "Terminal")
+        case .busMonitor: return String(localized: "Bus Monitor")
+        case .audioControl: return String(localized: "Audio Control")
+        case .tethering: return String(localized: "Cameras")
+        case .streamIngest: return String(localized: "Stream Ingest")
+        case .broadcast: return String(localized: "Broadcast")
+        case .streamMixer: return String(localized: "Stream Mixer")
+        case .ndiBrowser: return String(localized: "NDI Browser")
+        case .colorAdjustments: return String(localized: "Color Adjustments")
+        case .scenes: return String(localized: "Scenes")
+        case .agents: return String(localized: "Agents")
+        case .appLauncher: return String(localized: "Apps")
+        case .webBrowser: return String(localized: "SwiftBrowser")
+        case .damBrowser: return String(localized: "MaestroDAM")
+        case .maestroDocs: return String(localized: "MaestroDocs")
+        case .maestroBooks: return String(localized: "MaestroBooks")
+        case .maestroDB: return String(localized: "MaestroDB")
+        case .htmlBuilder: return String(localized: "SwiftWeaver")
+        case .backup: return String(localized: "Backup")
+        case .voiceNotes: return String(localized: "Voice Notes")
+        case .blocky: return String(localized: "Blocky")
+        case .pomodoro: return String(localized: "Pomodoro")
+        case .mediaPlayer: return String(localized: "Media Player")
         }
     }
 
