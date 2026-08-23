@@ -43,7 +43,16 @@
 
 ## Pomodoro title-bar clock
 
-- Omarchy-style top-center clock in the main window: remaining time with per-state tint, hover for stats, left-click opens the dashboard panel, right-click for controls.
+- Omarchy-style top-center clock in the main window: remaining time with per-state tint, hover for stats, left-click opens the dashboard panel, right-click for controls. Left-click now drops a full pomarchy-style dashboard popover beneath the clock: phase ring, focus-cycle dots, inline duration steppers, and today's stats.
+
+## Media Player — retro panel with a real spectrum
+
+- **New Media Player panel** (btop-styled): now-playing card, playlist with shuffle/repeat + drag-drop, segmented progress bar with click-to-seek, transport with seek ±15s, and segmented volume slider. Keyboard: space play/pause, arrows seek/volume, N/P next/previous track.
+- **Live 24-band spectrum** driven by the actual audio: a background decoder reads the playing file's audio track in lockstep with the playhead (within half a second, re-synced on every seek) and feeds the same FFT engine as the Audio Control meters. No simulated bars — the spectrum is the music.
+
+## Seven btop-inspired skins
+
+- Settings → Appearance gains **btop Tokyo Night**, **btop Nord** (Dark + Light), **btop Solarized** (Dark + Light), **btop One Dark**, and **btop Monokai** — authentic palettes mapped from btop's own theme files, with matching panel accents.
 
 ## Fixes
 
