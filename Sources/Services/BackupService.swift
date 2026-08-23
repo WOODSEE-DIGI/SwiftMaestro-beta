@@ -301,6 +301,23 @@ final class BackupService: @unchecked Sendable {
                 pruneError = error.localizedDescription
             }
 
+            // Integrity: fast structural verification after every successful
+            // backup. Restic content IDs are SHA-256 of the content, so
+            // `restic check` re-verifies the repository's hash tree (metadata
+            // only — no blob re-read, so this is cheap). A failed check is
+            // non-fatal to the backup itself but is recorded on the log entry
+            // and shown by the status panel's verification badge. The deep
+            // `check --read-data` variant stays a manual "Verify Now" action.
+            var verifyPassed: Bool?
+            var verifyError: String?
+            do {
+                _ = try await runRestic(args: ["-r", repoURL, "check"], environment: env)
+                verifyPassed = true
+            } catch {
+                verifyPassed = false
+                verifyError = error.localizedDescription
+            }
+
             await MainActor.run {
                 currentState.pruneComplete = true
                 currentState.phase = .finished
@@ -312,7 +329,13 @@ final class BackupService: @unchecked Sendable {
                     self.logs[idx].totalSizeBytes = self.currentState.totalBytes
                     self.logs[idx].uploadedBytes = self.currentState.bytesUploaded
                     self.logs[idx].snapshotID = self.currentState.snapshotID
-                    if let pruneError {
+                    if let verifyPassed {
+                        self.logs[idx].checksumVerified = verifyPassed
+                        self.logs[idx].checksumResult = verifyPassed ? .passed : .failed
+                    }
+                    if let verifyError {
+                        self.logs[idx].errorMessage = "Integrity check failed: \(verifyError)"
+                    } else if let pruneError {
                         self.logs[idx].errorMessage = "Prune failed: \(pruneError)"
                     } else if self.currentState.errorCount > 0 {
                         self.logs[idx].errorMessage = "\(self.currentState.errorCount) files could not be read"

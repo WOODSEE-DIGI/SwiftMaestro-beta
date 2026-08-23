@@ -11,6 +11,8 @@ struct BackupStatusPanel: View {
     @State private var editingJobID: UUID?
     @State private var showingNewDestination = false
     @State private var showingNewJob = false
+    @State private var verifyingDestinationID: UUID?
+    @State private var verifyResults: [UUID: String] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -298,8 +300,30 @@ struct BackupStatusPanel: View {
             }.padding(.leading, 38).font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button("Edit") { editingDestinationID = dest.id }.buttonStyle(.bordered).controlSize(.small)
+                Button {
+                    Task { await verifyNow(dest) }
+                } label: {
+                    if verifyingDestinationID == dest.id {
+                        HStack(spacing: 4) {
+                            ProgressView().controlSize(.mini)
+                            Text("Verifying…")
+                        }
+                    } else {
+                        Text("Verify Now")
+                    }
+                }
+                .buttonStyle(.bordered).controlSize(.small)
+                .disabled(verifyingDestinationID != nil)
+                .help("Deep integrity check: re-reads every blob and re-verifies its SHA-256. Slow on large/network repositories.")
                 Button("Delete", role: .destructive) { backupService.deleteDestination(dest) }.buttonStyle(.bordered).controlSize(.small)
             }.padding(.leading, 38)
+            if let result = verifyResults[dest.id] {
+                Text(result)
+                    .font(.caption)
+                    .foregroundStyle(result.hasPrefix("Deep verification passed") ? .green : .red)
+                    .lineLimit(3)
+                    .padding(.leading, 38)
+            }
         }.padding(12).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
     }
 
@@ -447,6 +471,34 @@ struct BackupStatusPanel: View {
             try await backupService.runBackup(job: job, destination: dest, password: password)
         } catch {
             // Service already recorded the failure in currentState/logs; nothing more to do.
+        }
+    }
+
+    /// Deep "Verify Now" action: restic `check --read-data` re-reads every
+    /// blob in the repository and re-verifies its SHA-256 content ID.
+    /// (Routine post-backup runs use the fast structural `check`; this is
+    /// the exhaustive manual one.)
+    private func verifyNow(_ dest: BackupDestination) async {
+        verifyingDestinationID = dest.id
+        defer { verifyingDestinationID = nil }
+
+        var password = (try? KeychainService.read(service: "com.woodseedigi.swiftmaestro", account: "backup-repo-\(dest.id.uuidString)")) ?? ""
+        if password.isEmpty {
+            let pwFile = NSHomeDirectory() + "/.restic-password"
+            password = (try? String(contentsOfFile: pwFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)) ?? ""
+        }
+        guard !password.isEmpty else {
+            verifyResults[dest.id] = "No repository password found in Keychain or ~/.restic-password"
+            return
+        }
+
+        do {
+            let result = try await backupService.verifyRepository(destination: dest, password: password)
+            verifyResults[dest.id] = result.passed
+                ? "Deep verification passed — every blob's SHA-256 re-verified."
+                : "Verification FAILED: \(result.output.suffix(200))"
+        } catch {
+            verifyResults[dest.id] = "Verification error: \(error.localizedDescription)"
         }
     }
 

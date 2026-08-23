@@ -49,6 +49,14 @@
 
 - **New Media Player panel** (btop-styled): now-playing card, playlist with shuffle/repeat + drag-drop, segmented progress bar with click-to-seek, transport with seek ±15s, and segmented volume slider. Keyboard: space play/pause, arrows seek/volume, N/P next/previous track.
 - **Live 24-band spectrum** driven by the actual audio: a background decoder reads the playing file's audio track in lockstep with the playhead (within half a second, re-synced on every seek) and feeds the same FFT engine as the Audio Control meters. No simulated bars — the spectrum is the music.
+- **Video playback**: files with a video track open in a native AVKit surface (fullscreen + Picture in Picture supported); the spectrum stays for audio-only files.
+- **FFmpeg fallback**: MKV, WebM, AVI, Ogg/Opus, WMA, DTS and friends play too — the bundled FFmpeg remuxes (instant, lossless) when the codecs are MP4-compatible, or transcodes to H.264/AAC when they aren't. Conversions are cached per file and cleaned up automatically.
+- **Agent tools**: `play_media`, `pause_media`, `resume_media`, `seek_media`, `set_volume`, `list_media_queue`, `add_to_queue` — agents can drive the player ("queue up the interview recordings").
+
+## Backup integrity verification
+
+- **Every backup is now verified**: after a successful run, the repository's hash tree is re-checked (restic content IDs are SHA-256) and the result is stamped on the log entry — the status panel's verification badge is now real, not decorative.
+- **"Verify Now"** on any destination card runs the exhaustive deep check (`check --read-data`): every blob is re-read and re-hashed. Slow on large/network repositories; use it to prove a repo end-to-end.
 
 ## Seven btop-inspired skins
 
