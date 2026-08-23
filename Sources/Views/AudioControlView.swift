@@ -16,6 +16,9 @@ struct AudioControlView: View {
     @State private var outputVolume: Double = 0.5
     @State private var meter = MeterDisplay()
     @State private var deviceListenerToken: UUID?
+    @State private var pairedBluetooth: [PairedBluetoothAudioDevice] = []
+    @State private var connectingAddresses: Set<String> = []
+    @State private var airPlayHandle = AirPlayRoutePickerHandle()
 
     var body: some View {
         Form {
@@ -65,31 +68,73 @@ struct AudioControlView: View {
             }
 
             Section("Output") {
-                HStack {
-                    Spacer()
-                    AirPlayRoutePicker()
-                        .frame(width: 22, height: 22)
-                        .help("AirPlay: route audio to Apple TV, HomePod, or another Mac")
-                }
-                Picker("Output Device", selection: Binding(
-                    get: { selectedOutputID },
-                    set: { newValue in
-                        selectedOutputID = newValue
-                        if let id = newValue {
-                            AudioDeviceManager.shared.setDefaultOutputDevice(id: id)
-                            whisper.selectedOutputDeviceID = id
-                        } else {
-                            whisper.selectedOutputDeviceID = nil
-                        }
+                // Single always-visible device list (no dropdown, no hidden
+                // icons): every HAL output, paired-but-unconnected Bluetooth
+                // devices with a one-tap Connect, and AirPlay as a real row.
+                VStack(spacing: 2) {
+                    outputRow(
+                        name: "System Default",
+                        icon: "sparkles",
+                        isSelected: selectedOutputID == nil,
+                        detail: nil
+                    ) {
+                        selectedOutputID = nil
+                        whisper.selectedOutputDeviceID = nil
                         refreshState()
                     }
-                )) {
-                    Text("System Default").tag(AudioDeviceID?.none)
+
                     ForEach(outputDevices) { device in
-                        Text(device.name).tag(Optional(device.id))
+                        outputRow(
+                            name: device.name,
+                            icon: outputIcon(for: device),
+                            isSelected: selectedOutputID == device.id,
+                            detail: nil
+                        ) {
+                            selectedOutputID = device.id
+                            AudioDeviceManager.shared.setDefaultOutputDevice(id: device.id)
+                            whisper.selectedOutputDeviceID = device.id
+                            refreshState()
+                        }
                     }
+
+                    let unconnected = unconnectedBluetoothOutputs
+                    ForEach(unconnected) { bt in
+                        outputRow(
+                            name: bt.name,
+                            icon: bt.name.localizedCaseInsensitiveContains("airpods") ? "airpodspro" : "headphones",
+                            isSelected: false,
+                            detail: connectingAddresses.contains(bt.address) ? "Connecting…" : "Not connected — tap to connect",
+                            dimmed: true
+                        ) {
+                            connectBluetooth(bt)
+                        }
+                    }
+
+                    // AirPlay targets (Apple TV / HomePod / other Macs) are not
+                    // CoreAudio devices — this row drives the system picker.
+                    HStack(spacing: 10) {
+                        Image(systemName: "airplayaudio")
+                            .font(.body)
+                            .frame(width: 24)
+                        Text("AirPlay Devices…")
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 7)
+                    .padding(.horizontal, 10)
+                    .contentShape(Rectangle())
+                    .onTapGesture { airPlayHandle.openPicker() }
+                    .overlay(alignment: .leading) {
+                        AirPlayRoutePicker(handle: airPlayHandle)
+                            .frame(width: 24, height: 24)
+                            .padding(.leading, 10)
+                            .opacity(0.02)
+                    }
+                    .help("Route audio to Apple TV, HomePod, or another Mac via AirPlay")
                 }
-                .pickerStyle(.menu)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
 
                 HStack {
                     Text("Volume")
@@ -176,7 +221,95 @@ struct AudioControlView: View {
     private func refreshDevices() {
         inputDevices = AudioDeviceManager.shared.inputDevices
         outputDevices = AudioDeviceManager.shared.outputDevices
+        pairedBluetooth = AudioDeviceManager.shared.pairedBluetoothAudioDevices
         refreshState()
+    }
+
+    /// Paired BT devices that aren't currently present as HAL outputs —
+    /// shown dimmed with a Connect affordance, like the Sound menu does.
+    private var unconnectedBluetoothOutputs: [PairedBluetoothAudioDevice] {
+        let connectedNames = Set(outputDevices.filter(\.isBluetooth).map(\.name))
+        return pairedBluetooth.filter { !$0.isConnected && !connectedNames.contains($0.name) }
+    }
+
+    private func outputIcon(for device: AudioDevice) -> String {
+        if device.isBluetooth {
+            return device.name.localizedCaseInsensitiveContains("airpods") ? "airpodspro" : "headphones"
+        }
+        let name = device.name.lowercased()
+        if name.contains("display") || name.contains("benq") || name.contains("monitor") { return "display" }
+        if name.contains("mac") { return "macmini" }
+        return "hifispeaker"
+    }
+
+    /// One-tap connect for a paired-but-idle Bluetooth device (Sound-menu
+    /// behavior): open the BT link, then once CoreAudio surfaces it (the
+    /// hot-plug listener also refreshes the list), select it as output.
+    private func connectBluetooth(_ device: PairedBluetoothAudioDevice) {
+        connectingAddresses.insert(device.address)
+        Task {
+            _ = await Task.detached {
+                AudioDeviceManager.shared.connectBluetoothDevice(address: device.address)
+            }.value
+            // BT negotiation takes a moment — poll for the HAL device.
+            for _ in 0..<24 {
+                try? await Task.sleep(for: .milliseconds(500))
+                await MainActor.run { refreshDevices() }
+                let match = await MainActor.run {
+                    outputDevices.first(where: { $0.name == device.name && $0.hasOutput })
+                }
+                if let match {
+                    await MainActor.run {
+                        selectedOutputID = match.id
+                        AudioDeviceManager.shared.setDefaultOutputDevice(id: match.id)
+                        whisper.selectedOutputDeviceID = match.id
+                        connectingAddresses.remove(device.address)
+                    }
+                    return
+                }
+            }
+            await MainActor.run { connectingAddresses.remove(device.address) }
+        }
+    }
+
+    /// One row of the always-visible output device list: icon, name,
+    /// optional dimmed detail line, and a trailing check when selected.
+    /// Large tap target, no hidden controls.
+    private func outputRow(
+        name: String,
+        icon: String,
+        isSelected: Bool,
+        detail: String?,
+        dimmed: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.body)
+                    .frame(width: 24)
+                    .foregroundStyle(isSelected ? Color.accentColor : (dimmed ? .secondary : .primary))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(name)
+                        .foregroundStyle(dimmed ? .secondary : .primary)
+                    if let detail {
+                        Text(detail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(Color.accentColor)
+                }
+            }
+            .padding(.vertical, 7)
+            .padding(.horizontal, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private func refreshState() {
@@ -211,10 +344,34 @@ struct AudioControlView: View {
 /// The system AirPlay picker (Apple TV, HomePod, AirPlay-capable Macs).
 /// AirPlay targets are NOT CoreAudio HAL devices, so they can't appear in the
 /// output-device picker — this is the sanctioned AppKit control for them.
+/// Handle that lets a custom SwiftUI row trigger the AVRoutePickerView's
+/// popover (it has no public "open" API — we click its internal button).
+final class AirPlayRoutePickerHandle {
+    fileprivate weak var pickerView: AVRoutePickerView?
+
+    func openPicker() {
+        guard let pickerView else { return }
+        if let button = Self.findButton(in: pickerView) {
+            button.performClick(nil)
+        }
+    }
+
+    private static func findButton(in view: NSView) -> NSButton? {
+        if let button = view as? NSButton { return button }
+        for sub in view.subviews {
+            if let found = findButton(in: sub) { return found }
+        }
+        return nil
+    }
+}
+
 struct AirPlayRoutePicker: NSViewRepresentable {
+    let handle: AirPlayRoutePickerHandle
+
     func makeNSView(context: Context) -> AVRoutePickerView {
         let view = AVRoutePickerView()
         view.isRoutePickerButtonBordered = false
+        handle.pickerView = view
         return view
     }
 

@@ -1,5 +1,6 @@
 import Foundation
 import CoreAudio
+import IOBluetooth
 
 // MARK: - Audio device model
 
@@ -15,6 +16,18 @@ struct AudioDevice: Identifiable, Hashable, Sendable {
         transportType == kAudioDeviceTransportTypeBluetooth
             || transportType == kAudioDeviceTransportTypeBluetoothLE
     }
+}
+
+// MARK: - Paired Bluetooth audio device model
+
+/// A Bluetooth audio device paired with this Mac (pairing records sync via
+/// iCloud), whether or not it is currently connected. Mirrors what the macOS
+/// Sound menu shows; CoreAudio only lists these once they CONNECT.
+struct PairedBluetoothAudioDevice: Identifiable, Hashable, Sendable {
+    let address: String
+    let name: String
+    let isConnected: Bool
+    var id: String { address }
 }
 
 // MARK: - Audio device manager
@@ -66,6 +79,36 @@ final class AudioDeviceManager: @unchecked Sendable {
                 transportType: transport
             )
         }
+    }
+
+    // MARK: - Paired Bluetooth audio devices
+
+    /// Audio-class devices paired with this Mac (AirPods, BT speakers,
+    /// headsets), connected or not. Pairing records come from iCloud sync,
+    /// so AirPods "connected to my iPhone" still appear — tapping Connect
+    /// opens the Bluetooth link, after which CoreAudio surfaces the device
+    /// and the hot-plug listener refreshes the pickers.
+    var pairedBluetoothAudioDevices: [PairedBluetoothAudioDevice] {
+        guard let paired = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] else { return [] }
+        return paired.compactMap { device in
+            // Major class 0x04 = Audio/Video (headphones, headsets, speakers).
+            guard device.deviceClassMajor == BluetoothDeviceClassMajor(kBluetoothDeviceClassMajorAudio) else { return nil }
+            return PairedBluetoothAudioDevice(
+                address: device.addressString,
+                name: device.name ?? device.addressString,
+                isConnected: device.isConnected()
+            )
+        }
+    }
+
+    /// Open a Bluetooth connection to a paired device (equivalent to
+    /// selecting it in the Sound menu). Returns true if the link opened.
+    @discardableResult
+    func connectBluetoothDevice(address: String) -> Bool {
+        guard let paired = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice],
+              let device = paired.first(where: { $0.addressString == address }) else { return false }
+        if device.isConnected() { return true }
+        return device.openConnection() == kIOReturnSuccess
     }
 
     // MARK: - Hot-plug notifications
