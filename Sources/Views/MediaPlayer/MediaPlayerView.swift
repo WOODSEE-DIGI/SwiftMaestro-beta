@@ -148,14 +148,14 @@ struct MediaPlayerView: View {
             .padding(.bottom, 4)
 
             // Playlist
-            MediaPlayerPlaylistView(queue: queue) { idx in
+            MediaPlayerPlaylistView(queue: queue, onPlayEntry: { idx in
                 if let url = queue.playIndex(idx) {
                     Task {
                         await engine.load(url: url)
                         engine.play()
                     }
                 }
-            }
+            }, onOpenFiles: { showFilePicker = true })
         }
         .background(RetroPalette.background)
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
@@ -219,7 +219,14 @@ struct MediaPlayerView: View {
     }
 
     private var mediaTypes: [UTType] {
-        [.movie, .mpeg4Movie, .quickTimeMovie, .audio, .mpeg4Audio, .mp3, .wav]
+        // Generic AV supertypes PLUS every extension MediaPlayerFormat can
+        // play (native or via FFmpeg) — .movie/.audio alone don't reliably
+        // cover .mkv/.webm/.opus/.dts on every macOS version, which would
+        // leave FFmpeg-fallback formats unpickable in the file picker.
+        let generic: [UTType] = [.movie, .mpeg4Movie, .quickTimeMovie, .audio, .mpeg4Audio, .mp3, .wav]
+        let byExtension = MediaPlayerFormat.allSupported.compactMap { UTType(filenameExtension: $0) }
+        var seen = Set(generic)
+        return generic + byExtension.filter { seen.insert($0).inserted }
     }
 
     // MARK: - File Handling

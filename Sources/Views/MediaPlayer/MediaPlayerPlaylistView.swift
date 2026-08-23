@@ -8,6 +8,8 @@ import SwiftUI
 struct MediaPlayerPlaylistView: View {
     @Bindable var queue: MediaPlayerQueue
     let onPlayEntry: (Int) -> Void
+    /// Open the file picker (wired to the parent view's fileImporter).
+    var onOpenFiles: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -65,7 +67,21 @@ struct MediaPlayerPlaylistView: View {
             Text("No tracks")
                 .font(.caption.monospaced())
                 .foregroundStyle(RetroPalette.dim)
-            Text("Open a file or drag media here")
+            Button {
+                onOpenFiles()
+            } label: {
+                Text("Open files…")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(RetroPalette.green)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(RetroPalette.green.opacity(0.5), lineWidth: 1)
+                    )
+            }
+            .buttonStyle(.plain)
+            Text("or drag media anywhere on this panel")
                 .font(.caption2.monospaced())
                 .foregroundStyle(RetroPalette.dim.opacity(0.6))
             Spacer()
