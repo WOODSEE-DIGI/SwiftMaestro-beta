@@ -10,6 +10,35 @@ options:
   knownRegions:
     - en
     - ja
+    - zh-Hans
+    - zh-Hant
+    - ko
+    - de
+    - fr
+    - es
+    - es-419
+    - it
+    - pt-BR
+    - pt-PT
+    - nl
+    - ru
+    - ar
+    - hi
+    - th
+    - vi
+    - id
+    - tr
+    - pl
+    - sv
+    - da
+    - nb
+    - fi
+    - cs
+    - el
+    - he
+    - hu
+    - ro
+    - uk
 
 packages:
   SwiftMaestroKit:
