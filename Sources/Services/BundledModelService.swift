@@ -87,11 +87,14 @@ final class BundledModelService: @unchecked Sendable {
         )
     }
 
-    /// The Mechanic support model is bundled in BOTH full and light .dmgs —
-    /// small (≈2.5 GB) so in-app help works on fresh installs with nothing
-    /// else configured (Light users may never download a chat model).
+    /// The Mechanic support model (fine-tuned Qwen3-4B — see
+    /// scripts/mechanic-training/) is bundled in BOTH full and light .dmgs:
+    /// small (~2.1 GB) so in-app help works on fresh installs with nothing
+    /// else configured (Light users may never download a chat model). The
+    /// Mechanic agent prefers this fine-tuned dir; users who delete it can
+    /// re-fetch the stock Qwen3-4B from Settings → Models.
     private var mechanicModel: BundledModelDescriptor {
-        let name = "Qwen3-4B-Instruct-2507-4bit"
+        let name = "SwiftMaestro-Mechanic-4bit"
         return BundledModelDescriptor(
             name: name,
             bundleSubpath: "swiftmaestro-models/\(name)",

@@ -19,7 +19,7 @@ MODEL_PATH="${MODEL_PATH:-$HOME/Ai-models/models/swiftmaestro-models/gemma-4-26B
 WHISPER_MODEL_PATH="${WHISPER_MODEL_PATH:-$HOME/Library/Application Support/SwiftMaestro/WhisperKit/models/argmaxinc/whisperkit-coreml/openai_whisper-large-v3}"
 # Mechanic support model (Qwen3-4B) — bundled in BOTH installers so in-app
 # help works on fresh/broken installs.
-MECHANIC_MODEL_PATH="${MECHANIC_MODEL_PATH:-$HOME/Ai-models/models/swiftmaestro-models/Qwen3-4B-Instruct-2507-4bit}"
+MECHANIC_MODEL_PATH="${MECHANIC_MODEL_PATH:-$HOME/Ai-models/models/swiftmaestro-models/SwiftMaestro-Mechanic-4bit}"
 TEAM_ID="${TEAM_ID:-3BMZ2ULZ54}"
 SIGN_IDENTITY="${SIGN_IDENTITY:-Developer ID Application}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-SwiftMaestroNotary}"
