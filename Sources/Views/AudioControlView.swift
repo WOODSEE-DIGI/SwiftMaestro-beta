@@ -13,7 +13,7 @@ struct AudioControlView: View {
     @State private var outputMuted: Bool = false
     @State private var inputVolume: Double = 0.5
     @State private var outputVolume: Double = 0.5
-    @State private var meter = AudioMeterEngine.shared
+    @State private var meter = MeterDisplay()
 
     var body: some View {
         Form {
@@ -111,10 +111,10 @@ struct AudioControlView: View {
                 VStack(spacing: 8) {
                     RetroSpectrumMeter(spectrum: meter.spectrum)
                         .frame(height: 128)
-                    RetroLevelMeter(level: meter.level, peak: meter.peakLevel, label: "MIC")
+                    RetroLevelMeter(level: meter.level, peak: meter.peak, label: "MIC")
                     HStack {
                         Button(meter.isRunning ? "Stop Monitor" : "Start Monitor") {
-                            meter.isRunning ? meter.stop() : meter.start()
+                            meter.toggle()
                         }
                         .controlSize(.small)
                         if meter.isRunning {

@@ -123,7 +123,7 @@ struct TaggingWorkspaceView: View {
                 Task { await tagging.acceptAllAboveThreshold() }
             } label: {
                 Label("Accept all ≥ \(Int(tagging.thresholds.autoApply * 100))%",
-                      systemImage: "checkmark.square.stack.fill")
+                      systemImage: "checkmark.circle.fill")
             }
             .controlSize(.small)
             .disabled(tagging.queue.isEmpty || tagging.isPropagating)
