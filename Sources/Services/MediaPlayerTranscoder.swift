@@ -74,7 +74,7 @@ struct MediaPlayerTranscoder: Sendable {
             return try await convert(
                 source: source,
                 extension: "m4a",
-                arguments: ["-vn", "-c:a", "aac", "-b:a", "256k"]
+                arguments: ["-vn", "-sn", "-dn", "-c:a", "aac", "-b:a", "256k"]
             )
         }
 
@@ -85,11 +85,18 @@ struct MediaPlayerTranscoder: Sendable {
 
         if vOK && aOK {
             do {
-                return try await convert(
-                    source: source,
-                    extension: "mp4",
-                    arguments: ["-c", "copy", "-movflags", "+faststart"]
-                )
+                // HEVC in MP4 must carry the hvc1 tag (parameter sets in the
+                // sample description) — ffmpeg writes hev1 by default, which
+                // AVPlayer cannot decode (plays audio-only with the QuickTime
+                // placeholder). h264 must NOT be re-tagged (it wants avc1).
+                var args = ["-map", "0:v:0", "-map", "0:a:0?", "-c", "copy",
+                            "-sn", "-dn", "-avoid_negative_ts", "make_zero",
+                            "-movflags", "+faststart"]
+                if info.videoCodec == "hevc" {
+                    args.append(contentsOf: ["-tag:v", "hvc1"])
+                }
+                return try await convert(source: source, extension: "mp4",
+                                         arguments: args, expectVideo: true)
             } catch {
                 // Remux rejected (e.g. weird timebase) — fall through to a
                 // full transcode rather than failing the file outright.
@@ -100,11 +107,15 @@ struct MediaPlayerTranscoder: Sendable {
             source: source,
             extension: "mp4",
             arguments: [
+                "-map", "0:v:0", "-map", "0:a:0?",
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
                 "-pix_fmt", "yuv420p",
                 "-c:a", "aac", "-b:a", "192k",
+                "-sn", "-dn",
+                "-max_muxing_queue_size", "4096",
                 "-movflags", "+faststart",
-            ]
+            ],
+            expectVideo: true
         )
     }
 
@@ -156,7 +167,7 @@ struct MediaPlayerTranscoder: Sendable {
 
     // MARK: - Conversion
 
-    private func convert(source: URL, extension ext: String, arguments: [String]) async throws -> URL {
+    private func convert(source: URL, extension ext: String, arguments: [String], expectVideo: Bool = false) async throws -> URL {
         let destination = destinationURL(for: source, extension: ext)
         try? FileManager.default.removeItem(at: destination)
 
@@ -173,16 +184,42 @@ struct MediaPlayerTranscoder: Sendable {
             try? FileManager.default.removeItem(at: destination)
             throw TranscodeError.ffmpegFailed(stderrString(result).suffix(400).description)
         }
+
+        // …and the output must actually contain what the source promised:
+        // a non-zero duration, and a video stream when the source had one.
+        // (ffmpeg can "succeed" with a half-muxed file when a subtitle or
+        // data stream errors mid-conversion; without this check AVPlayer
+        // gets a broken file and shows the QuickTime placeholder.)
+        let probeResult = try? await ffmpeg.runFFprobe(arguments: [
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-show_entries", "stream=codec_type",
+            "-of", "csv=p=0",
+            destination.path,
+        ])
+        let probeOut = probeResult.map { String(decoding: $0.stdout, as: UTF8.self) } ?? ""
+        let hasVideoOut = probeOut.contains("video")
+        let hasDuration = probeOut.contains("duration=")
+            && !probeOut.contains("duration=0.000000")
+            && !probeOut.contains("duration=N/A")
+        guard hasDuration, (!expectVideo || hasVideoOut) else {
+            try? FileManager.default.removeItem(at: destination)
+            throw TranscodeError.ffmpegFailed("conversion output failed validation (missing \(!hasDuration ? "duration" : "video stream"))")
+        }
         return destination
     }
 
     /// Deterministic temp name from source path + content stamp, so the same
-    /// unchanged file maps to the same conversion across plays.
+    /// unchanged file maps to the same conversion across plays. The converter
+    /// version invalidates conversions made by older, buggier argument sets
+    /// (v1 = pre-hvc1/pre-validation remuxes that could be unplayable).
+    private static let converterVersion = "v2"
+
     private func destinationURL(for source: URL, extension ext: String) -> URL {
         let attrs = try? FileManager.default.attributesOfItem(atPath: source.path)
         let size = (attrs?[.size] as? Int64) ?? 0
         let mtime = (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
-        let key = "\(source.path)#\(size)#\(Int(mtime))"
+        let key = "\(Self.converterVersion)#\(source.path)#\(size)#\(Int(mtime))"
         let name = String(key.unicodeScalars.map { $0.value }.reduce(into: UInt32(5381)) { $0 = $0 &* 33 &+ $1 }, radix: 16)
         return Self.tempDirectory.appendingPathComponent("conv-\(name).\(ext)")
     }
