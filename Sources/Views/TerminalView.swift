@@ -19,19 +19,106 @@ struct TerminalView: View {
 
     @State private var tab: Tab = .live
 
+    /// Live shell instances. Each gets its own LiveTerminalView (own PTY +
+    /// login shell); all stay mounted in a ZStack so background shells keep
+    /// running while hidden behind the active one.
+    @State private var shells: [UUID] = [UUID()]
+    @State private var activeShell: UUID?
+
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
+            if tab == .live {
+                shellTabStrip
+                Divider()
+            }
             switch tab {
             case .live:
-                LiveTerminalView()
+                ZStack {
+                    ForEach(shells, id: \.self) { id in
+                        LiveTerminalView()
+                            .opacity(id == activeShellID ? 1 : 0)
+                            .allowsHitTesting(id == activeShellID)
+                    }
+                }
             case .agentLog:
                 AgentCommandLogView()
             }
         }
         .frame(minWidth: 360, idealWidth: 480)
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var activeShellID: UUID? {
+        activeShell ?? shells.first
+    }
+
+    /// Shell tab strip — visible, labeled chips (no cryptic icons): each is
+    /// a live process. "+" opens another login shell; × terminates it.
+    private var shellTabStrip: some View {
+        HStack(spacing: 6) {
+            ForEach(Array(shells.enumerated()), id: \.element) { index, id in
+                let isActive = id == activeShellID
+                HStack(spacing: 6) {
+                    Text("Shell \(index + 1)")
+                        .font(.caption.monospaced().weight(isActive ? .semibold : .regular))
+                    if shells.count > 1 {
+                        Button {
+                            closeShell(id)
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.caption.weight(.bold))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Close Shell \(index + 1) (terminates its process)")
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .foregroundStyle(isActive ? Color.accentColor : .secondary)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(isActive ? Color.accentColor.opacity(0.15) : Color.clear)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(isActive ? Color.accentColor.opacity(0.6) : Color.secondary.opacity(0.3), lineWidth: 1)
+                )
+                .contentShape(Rectangle())
+                .onTapGesture { activeShell = id }
+            }
+
+            Button {
+                let id = UUID()
+                shells.append(id)
+                activeShell = id
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "plus")
+                        .font(.caption.weight(.bold))
+                    Text("New Shell")
+                        .font(.caption.monospaced())
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help("Open another terminal shell (separate process)")
+
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+    }
+
+    private func closeShell(_ id: UUID) {
+        guard let index = shells.firstIndex(of: id) else { return }
+        shells.remove(at: index)
+        if activeShell == id {
+            activeShell = shells[min(index, shells.count - 1)]
+        }
     }
 
     private var header: some View {
