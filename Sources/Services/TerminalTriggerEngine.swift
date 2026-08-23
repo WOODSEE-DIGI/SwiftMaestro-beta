@@ -155,4 +155,47 @@ final class TappedLocalProcessTerminalView: LocalProcessTerminalView {
         super.dataReceived(slice: slice)
     }
 }
+
+/// Serial-tab terminal: plain SwiftTerm.TerminalView that OWNS its
+/// SerialSession and its delegate proxy (so both survive SwiftUI layout churn
+/// together with the pooled view).
+///
+/// Why a proxy instead of self-delegation: SwiftTerm.TerminalView is
+/// MainActor-isolated while TerminalViewDelegate is not, so the view can't
+/// conform cross-module in Swift 6 strict concurrency. A plain NSObject
+/// delegate is exactly the pattern the shell tabs already use.
+final class TappedTerminalView: SwiftTerm.TerminalView {
+    var triggerPaneID: UUID?
+    var triggerTabID: UUID?
+    var serialSession: SerialSession?
+
+    /// Strong ref keeps the delegate alive for the view's lifetime.
+    var delegateProxy: SerialTerminalDelegate?
+}
+
+/// Nonisolated delegate for serial tabs; forwards keystrokes to the view's
+/// SerialSession and opens links on the main thread.
+final class SerialTerminalDelegate: NSObject, SwiftTerm.TerminalViewDelegate {
+    weak var view: TappedTerminalView?
+
+    init(view: TappedTerminalView) {
+        self.view = view
+    }
+
+    func sizeChanged(source: SwiftTerm.TerminalView, newCols: Int, newRows: Int) {}
+    func setTerminalTitle(source: SwiftTerm.TerminalView, title: String) {}
+    func hostCurrentDirectoryUpdate(source: SwiftTerm.TerminalView, directory: String?) {}
+    func scrolled(source: SwiftTerm.TerminalView, position: Double) {}
+    func rangeChanged(source: SwiftTerm.TerminalView, startY: Int, endY: Int) {}
+
+    func requestOpenLink(source: SwiftTerm.TerminalView, link: String, params: [String: String]) {
+        guard let url = URL(string: link) else { return }
+        DispatchQueue.main.async { NSWorkspace.shared.open(url) }
+    }
+
+    /// Keystrokes from the terminal → the board.
+    func send(source: SwiftTerm.TerminalView, data: ArraySlice<UInt8>) {
+        view?.serialSession?.send(Array(data))
+    }
+}
 #endif

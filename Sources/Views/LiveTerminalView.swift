@@ -29,22 +29,28 @@ struct LiveTerminalView: NSViewRepresentable {
     var paneID: UUID?
     var tabID: UUID?
 
+
     @State private var settings = TerminalSettings.shared
 
     func makeNSView(context: Context) -> LocalProcessTerminalView {
-        let view = TappedLocalProcessTerminalView(frame: .zero)
-        view.triggerPaneID = paneID
-        view.triggerTabID = tabID
-        view.processDelegate = context.coordinator
-        applyTheme(to: view)
+        // Pooled by pane ID: split-tree restructuring and theme updates tear
+        // down and recreate the REPRESENTABLE, but the terminal NSView (and
+        // its live process) must survive. Explicit pane/tab close terminates.
+        TerminalPaneRegistry.shared.shellView(for: paneID ?? UUID()) {
+            let view = TappedLocalProcessTerminalView(frame: .zero)
+            view.triggerPaneID = paneID
+            view.triggerTabID = tabID
+            view.processDelegate = context.coordinator
+            applyTheme(to: view)
 
-        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
-        if let launchCommand {
-            view.startProcess(executable: shell, args: ["-l", "-c", launchCommand], currentDirectory: NSHomeDirectory())
-        } else {
-            view.startProcess(executable: shell, args: ["-l"], currentDirectory: NSHomeDirectory())
+            let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+            if let launchCommand {
+                view.startProcess(executable: shell, args: ["-l", "-c", launchCommand], currentDirectory: NSHomeDirectory())
+            } else {
+                view.startProcess(executable: shell, args: ["-l"], currentDirectory: NSHomeDirectory())
+            }
+            return view
         }
-        return view
     }
 
     func updateNSView(_ nsView: LocalProcessTerminalView, context: Context) {
@@ -62,7 +68,9 @@ struct LiveTerminalView: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ nsView: LocalProcessTerminalView, coordinator: Coordinator) {
-        nsView.terminate()
+        // Deliberately NOT terminating: the pane registry owns the process
+        // lifecycle; SwiftUI tears this view down on every split/theme change
+        // and the shell must survive.
     }
 
     func makeCoordinator() -> Coordinator {

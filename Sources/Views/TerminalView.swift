@@ -17,8 +17,10 @@ struct TerminalView: View {
         var id: String { rawValue }
     }
 
-    /// One terminal tab. A tab holds one or two panes (split view); each pane
-    /// is its own independent PTY process or serial link.
+    /// One terminal tab. Panes form a recursive split tree (iTerm2-style):
+    /// every leaf is its own independent PTY process or serial link, and any
+    /// leaf can be split again. Split/close act on the FOCUSED pane (tracked
+    /// via the terminal views' first-responder hook).
     struct ShellTab: Identifiable, Hashable {
         enum PaneKind: Hashable {
             /// Login shell (nil command) or a custom command tab.
@@ -32,18 +34,67 @@ struct TerminalView: View {
             var kind: PaneKind
         }
 
+        /// Binary split tree. .horizontal = side-by-side, .vertical = stacked.
+        indirect enum PaneNode: Hashable {
+            case leaf(Pane)
+            case split(Axis, PaneNode, PaneNode)
+
+            var leafCount: Int {
+                switch self {
+                case .leaf: return 1
+                case .split(_, let first, let second): return first.leafCount + second.leafCount
+                }
+            }
+
+            var firstLeaf: Pane? {
+                switch self {
+                case .leaf(let pane): return pane
+                case .split(_, let first, _): return first.firstLeaf
+                }
+            }
+
+            var allPanes: [Pane] {
+                switch self {
+                case .leaf(let pane): return [pane]
+                case .split(_, let first, let second): return first.allPanes + second.allPanes
+                }
+            }
+
+            /// Return a new tree with the given leaf split into two.
+            func splitting(_ id: UUID, axis: Axis, newPane: Pane) -> PaneNode {
+                switch self {
+                case .leaf(let pane):
+                    guard pane.id == id else { return self }
+                    return .split(axis, .leaf(pane), .leaf(newPane))
+                case .split(let a, let first, let second):
+                    return .split(a, first.splitting(id, axis: axis, newPane: newPane),
+                                  second.splitting(id, axis: axis, newPane: newPane))
+                }
+            }
+
+            /// Return a new tree with the given leaf removed; its former
+            /// sibling subtree collapses into the freed space.
+            func removing(_ id: UUID) -> PaneNode {
+                switch self {
+                case .leaf:
+                    return self // leaf removal is handled by its parent split
+                case .split(let axis, let first, let second):
+                    if case .leaf(let pane) = first, pane.id == id { return second }
+                    if case .leaf(let pane) = second, pane.id == id { return first }
+                    return .split(axis, first.removing(id), second.removing(id))
+                }
+            }
+        }
+
         let id = UUID()
         var title: String
-        var panes: [Pane]
-        /// .horizontal = side-by-side, .vertical = stacked. nil = single pane.
-        var splitAxis: Axis?
+        var root: PaneNode
         /// Per-tab TerminalSettings preset name; nil follows the global settings.
         var presetName: String?
 
         init(title: String, kind: PaneKind = .shell(command: nil)) {
             self.title = title
-            self.panes = [Pane(kind: kind)]
-            self.splitAxis = nil
+            self.root = .leaf(Pane(kind: kind))
             self.presetName = nil
         }
     }
@@ -106,26 +157,34 @@ struct TerminalView: View {
         shells.firstIndex(where: { $0.id == activeShellID })
     }
 
-    // MARK: - Panes
+    // MARK: - Panes (recursive split tree)
 
     @ViewBuilder
     private func paneContainer(for shellTab: ShellTab) -> some View {
-        if shellTab.panes.count > 1, let axis = shellTab.splitAxis {
+        renderNode(shellTab.root, tabID: shellTab.id, presetName: shellTab.presetName)
+    }
+
+    /// Recursive tree render. Returns AnyView because Swift opaque result
+    /// types cannot be recursive; the terminal NSViews themselves are pooled
+    /// in TerminalPaneRegistry so this type erasure never costs a process.
+    private func renderNode(_ node: ShellTab.PaneNode, tabID: UUID, presetName: String?) -> AnyView {
+        switch node {
+        case .leaf(let pane):
+            return AnyView(terminalPane(pane, presetName: presetName, tabID: tabID))
+        case .split(let axis, let first, let second):
             if axis == .horizontal {
-                HStack(spacing: 0) {
-                    terminalPane(shellTab.panes[0], presetName: shellTab.presetName, tabID: shellTab.id)
+                return AnyView(HStack(spacing: 0) {
+                    renderNode(first, tabID: tabID, presetName: presetName)
                     Divider()
-                    terminalPane(shellTab.panes[1], presetName: shellTab.presetName, tabID: shellTab.id)
-                }
+                    renderNode(second, tabID: tabID, presetName: presetName)
+                })
             } else {
-                VStack(spacing: 0) {
-                    terminalPane(shellTab.panes[0], presetName: shellTab.presetName, tabID: shellTab.id)
+                return AnyView(VStack(spacing: 0) {
+                    renderNode(first, tabID: tabID, presetName: presetName)
                     Divider()
-                    terminalPane(shellTab.panes[1], presetName: shellTab.presetName, tabID: shellTab.id)
-                }
+                    renderNode(second, tabID: tabID, presetName: presetName)
+                })
             }
-        } else if let first = shellTab.panes.first {
-            terminalPane(first, presetName: shellTab.presetName, tabID: shellTab.id)
         }
     }
 
@@ -144,16 +203,35 @@ struct TerminalView: View {
         }
     }
 
-    private func splitActiveTab(_ axis: Axis) {
-        guard let idx = activeTabIndex, shells[idx].panes.count == 1 else { return }
-        shells[idx].panes.append(ShellTab.Pane(kind: .shell(command: nil)))
-        shells[idx].splitAxis = axis
+    /// Split a specific pane of the active tab (explicitly targeted from the
+    /// Split menu — no invisible focus rules).
+    private func splitPane(_ paneID: UUID, axis: Axis) {
+        guard let idx = activeTabIndex else { return }
+        shells[idx].root = shells[idx].root.splitting(
+            paneID, axis: axis, newPane: ShellTab.Pane(kind: .shell(command: nil)))
     }
 
-    private func unsplitActiveTab() {
-        guard let idx = activeTabIndex, shells[idx].panes.count > 1 else { return }
-        shells[idx].panes.removeLast()
-        shells[idx].splitAxis = nil
+    /// Close a specific pane; its sibling subtree collapses into the space.
+    /// The registry terminates the pane's process explicitly — SwiftUI layout
+    /// teardown deliberately does not.
+    private func closePane(_ paneID: UUID) {
+        guard let idx = activeTabIndex, shells[idx].root.leafCount > 1 else { return }
+        TerminalTriggerEngine.shared.clearPane(paneID)
+        shells[idx].root = shells[idx].root.removing(paneID)
+        TerminalPaneRegistry.shared.terminate(paneID)
+    }
+
+    /// Display label for a pane in Split menus: position + kind.
+    private func paneLabel(_ pane: ShellTab.Pane, index: Int) -> String {
+        switch pane.kind {
+        case .shell(let command):
+            if let command, command.contains("tmux") { return "Pane \(index + 1) (tmux)" }
+            if command != nil { return "Pane \(index + 1) (command)" }
+            return "Pane \(index + 1) (shell)"
+        case .serial(let device, let baud):
+            let short = device.replacingOccurrences(of: "/dev/tty.", with: "")
+            return "Pane \(index + 1) (\(short) @ \(baud))"
+        }
     }
 
     // MARK: - Tab strip
@@ -211,8 +289,12 @@ struct TerminalView: View {
                             }
                         }
                     }
-                    if shellTab.panes.count > 1 {
-                        Button("Unsplit") { unsplitActiveTab() }
+                    if shellTab.root.leafCount > 1 {
+                        Menu("Close Pane") {
+                            ForEach(Array(shellTab.root.allPanes.enumerated()), id: \.element.id) { index, pane in
+                                Button(paneLabel(pane, index: index)) { closePane(pane.id) }
+                            }
+                        }
                     }
                     if shells.count > 1 {
                         Divider()
@@ -291,18 +373,31 @@ struct TerminalView: View {
         return n
     }
 
-    /// Split control for the active tab (iTerm2-style: two independent panes).
+    /// Split control with EXPLICIT pane targets (no invisible focus rules —
+    /// you pick exactly which pane splits or closes). Panes split recursively;
+    /// each is its own independent process, and splitting never kills the
+    /// split pane's process (terminal views are pooled).
     private var splitMenu: some View {
-        let canSplit = activeTabIndex.map { shells[$0].panes.count == 1 } ?? false
-        let canUnsplit = activeTabIndex.map { shells[$0].panes.count > 1 } ?? false
+        let panes = activeTabIndex.map { shells[$0].root.allPanes } ?? []
+        let canClose = panes.count > 1
         return Menu {
-            Button("Split Right") { splitActiveTab(.horizontal) }
-                .disabled(!canSplit)
-            Button("Split Down") { splitActiveTab(.vertical) }
-                .disabled(!canSplit)
+            Menu("Split Right") {
+                ForEach(Array(panes.enumerated()), id: \.element.id) { index, pane in
+                    Button(paneLabel(pane, index: index)) { splitPane(pane.id, axis: .horizontal) }
+                }
+            }
+            Menu("Split Down") {
+                ForEach(Array(panes.enumerated()), id: \.element.id) { index, pane in
+                    Button(paneLabel(pane, index: index)) { splitPane(pane.id, axis: .vertical) }
+                }
+            }
             Divider()
-            Button("Unsplit") { unsplitActiveTab() }
-                .disabled(!canUnsplit)
+            Menu("Close Pane") {
+                ForEach(Array(panes.enumerated()), id: \.element.id) { index, pane in
+                    Button(paneLabel(pane, index: index)) { closePane(pane.id) }
+                }
+            }
+            .disabled(!canClose)
         } label: {
             Text("Split")
                 .font(.caption.monospaced())
@@ -311,7 +406,7 @@ struct TerminalView: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .help("Two independent panes in the active tab (each is its own process)")
+        .help("Split any pane right/down, or close one — each pane is its own process and survives splits")
     }
 
     // MARK: - tmux
@@ -443,8 +538,9 @@ struct TerminalView: View {
 
     private func closeShell(_ id: UUID) {
         guard let index = shells.firstIndex(where: { $0.id == id }) else { return }
-        for pane in shells[index].panes {
+        for pane in shells[index].root.allPanes {
             TerminalTriggerEngine.shared.clearPane(pane.id)
+            TerminalPaneRegistry.shared.terminate(pane.id)
         }
         badgedTabs.remove(id)
         shells.remove(at: index)
