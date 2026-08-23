@@ -83,7 +83,8 @@ echo "Fusing adapters → $FUSED"
 "$PY" -m mlx_lm fuse --model "$MODEL" --adapter-path "$ADAPTERS" --save-path "$FUSED"
 
 echo "Quantizing to 4-bit → $OUT"
-"$PY" -m mlx_lm convert --hf-path "$FUSED" -q --q-bits 4 --out-path "$OUT"
+rm -rf "$OUT"   # mlx_lm convert refuses to overwrite an existing directory
+"$PY" -m mlx_lm convert --hf-path "$FUSED" -q --q-bits 4 --mlx-path "$OUT"
 
 echo ""
 echo "Done. Fine-tuned model at: $OUT"

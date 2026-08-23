@@ -396,11 +396,19 @@ final class ModelCatalog {
     /// The Mechanic agent's bundled model id (Qwen3-4B instruct, tool-verified).
     nonisolated static let mechanicModelID = "swiftmaestro-mechanic-qwen3-4b"
 
-    /// True when the Mechanic's bundled model is on disk under modelsRoot —
-    /// the Mechanic agent defaults to it only then (otherwise the global
-    /// default model serves).
+    /// True when a Mechanic model is on disk under modelsRoot — the fine-tuned
+    /// specialist (SwiftMaestro-Mechanic-4bit) is preferred; the stock
+    /// Qwen3-4B instruct model serves until a fine-tune exists.
     nonisolated static var mechanicModelAvailable: Bool {
-        localIfPresent("swiftmaestro-models/Qwen3-4B-Instruct-2507-4bit") != nil
+        localIfPresent("swiftmaestro-models/SwiftMaestro-Mechanic-4bit") != nil
+            || localIfPresent("swiftmaestro-models/Qwen3-4B-Instruct-2507-4bit") != nil
+    }
+
+    /// Effective local path for the Mechanic model: fine-tuned specialist
+    /// first, stock bundled model second. Nil when neither is installed.
+    nonisolated static var mechanicModelPath: String? {
+        localIfPresent("swiftmaestro-models/SwiftMaestro-Mechanic-4bit")
+            ?? localIfPresent("swiftmaestro-models/Qwen3-4B-Instruct-2507-4bit")
     }
 
     /// Resolve a model's local directory under `modelsRoot` ONLY if it exists on
@@ -435,7 +443,7 @@ final class ModelCatalog {
             displayName: "SwiftMaestro Mechanic (Qwen3 4B)",
             huggingFaceID: "mlx-community/Qwen3-4B-Instruct-2507-4bit",
             isVision: false,
-            localPath: localIfPresent("swiftmaestro-models/Qwen3-4B-Instruct-2507-4bit"),
+            localPath: mechanicModelPath,
             estimatedMemoryGB: 3,
             supportsTools: true,
             toolCallFormat: .xmlFunction,

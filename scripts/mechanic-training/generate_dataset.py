@@ -105,8 +105,28 @@ SCENARIOS = [
 ]
 
 
+# Paraphrase prefixes expand each curated scenario so the model learns the
+# PLAYBOOK, not one phrasing of the question.
+PARAPHRASES = [
+    ("{}", None),
+    ("Help — {}", None),
+    ("Quick question: {}", None),
+    ("Something's wrong. {}", None),
+    ("Can you walk me through this? {}", None),
+    ("{}", "lower"),  # same text, lowercased first letter — casual typing
+]
+
+
 def curated():
-    return [scenario(q, a) for q, a in SCENARIOS]
+    out = []
+    for q, a in SCENARIOS:
+        out.append(scenario(q, a))
+        for template, mode in PARAPHRASES[1:]:
+            variant = template.format(q)
+            if mode == "lower":
+                variant = variant[0].lower() + variant[1:]
+            out.append(scenario(variant, a))
+    return out
 
 
 # ── 2. Guardian log replay ───────────────────────────────────────────────
@@ -201,7 +221,7 @@ def main():
         for item in unique:
             f.write(json.dumps(item) + "\n")
     print(f"Wrote {len(unique)} examples to {OUT}")
-    print(f"  curated scenarios: {len(SCENARIOS)}")
+    print(f"  curated scenarios: {len(curated())} (12 scenarios × paraphrases)")
     print(f"  guardian replay:   {len(guardian_pairs())}")
     print(f"  doc grounding:     {len(unique) - len(SCENARIOS) - len(guardian_pairs())}")
 
