@@ -16,6 +16,9 @@ set -euo pipefail
 
 APP_NAME="SwiftMaestro"
 WHISPER_MODEL_PATH="${WHISPER_MODEL_PATH:-$HOME/Library/Application Support/SwiftMaestro/WhisperKit/models/argmaxinc/whisperkit-coreml/openai_whisper-large-v3}"
+# Mechanic support model (Qwen3-4B) — bundled in the light installer too: it's
+# the only chat-capable model Light users get out of the box.
+MECHANIC_MODEL_PATH="${MECHANIC_MODEL_PATH:-$HOME/Ai-models/models/swiftmaestro-models/Qwen3-4B-Instruct-2507-4bit}"
 TEAM_ID="${TEAM_ID:-3BMZ2ULZ54}"
 SIGN_IDENTITY="${SIGN_IDENTITY:-Developer ID Application}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-SwiftMaestroNotary}"
@@ -57,6 +60,15 @@ WHISPER_DST="$APP_STAGE/Contents/Resources/models/whisperkit/$WHISPER_MODEL_NAME
 mkdir -p "$(dirname "$WHISPER_DST")"
 echo "Embedding Whisper model into app bundle (~3GB)…"
 ditto "$WHISPER_MODEL_PATH" "$WHISPER_DST"
+
+# Embed the Mechanic support model (bundled in full + light).
+if [ -d "$MECHANIC_MODEL_PATH" ]; then
+    MECHANIC_DST="$APP_STAGE/Contents/Resources/models/swiftmaestro-models/$(basename "$MECHANIC_MODEL_PATH")"
+    echo "Embedding Mechanic model into app bundle (~2.5GB)…"
+    ditto "$MECHANIC_MODEL_PATH" "$MECHANIC_DST"
+else
+    echo "WARNING: Mechanic model not found at $MECHANIC_MODEL_PATH — skipping (download it via the Models tab or HF)."
+fi
 
 # Re-sign the app bundle after adding the model.
 echo "Re-signing app bundle with embedded model…"

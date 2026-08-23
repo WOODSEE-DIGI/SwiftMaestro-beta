@@ -336,6 +336,13 @@ struct SwiftMaestroApp: App {
                         openOrFocusPanel(.agentChat(navigator.id))
                     }
                     SystemHealthWatchService.shared.start()
+                    // Ensure the Mechanic support agent exists, and once the bundled
+                    // Qwen3-4B is on disk (DMG install or Models-tab download), default
+                    // the Mechanic to it so help works with no other model configured.
+                    let mechanic = workspace.mechanic
+                    if mechanic.modelID == nil, ModelCatalog.mechanicModelAvailable {
+                        workspace.setModel(ModelCatalog.mechanicModelID, for: mechanic.id)
+                    }
                     // Validate capabilities for every locally-present model so
                     // tool-call format / thinking support are known before any
                     // generation runs. This is fast (JSON reads only).

@@ -11,6 +11,7 @@ import Foundation
 enum AgentKind: String, Codable, Hashable {
     case navigator   // the always-present general/conductor agent
     case project     // a long-lived agent that belongs to a project
+    case mechanic    // the always-present self-repair/support engineer
 }
 
 struct Project: Identifiable, Codable, Hashable {
@@ -107,6 +108,22 @@ final class WorkspaceStore {
         agents.insert(nav, at: 0)
         save()
         return nav
+    }
+
+    /// The always-present self-repair/support agent (created if missing).
+    /// Defaults to the bundled Qwen3-4B mechanic model when it's on disk —
+    /// small enough to coexist with whatever the user is running, so help is
+    /// available even on Light installs with no chat model configured.
+    var mechanic: AgentRecord {
+        if let mech = agents.first(where: { $0.kind == .mechanic }) { return mech }
+        var mech = AgentRecord(name: "Mechanic", kind: .mechanic)
+        if ModelCatalog.mechanicModelAvailable {
+            mech.modelID = ModelCatalog.mechanicModelID
+        }
+        let insertAt = agents.isEmpty ? 0 : 1  // right after the navigator
+        agents.insert(mech, at: min(insertAt, agents.count))
+        save()
+        return mech
     }
 
     /// Projects that should appear in the main sidebar and in Maestro-facing lists.

@@ -393,6 +393,16 @@ final class ModelCatalog {
         return SwiftMaestroPaths.modelsDir.path
     }
 
+    /// The Mechanic agent's bundled model id (Qwen3-4B instruct, tool-verified).
+    nonisolated static let mechanicModelID = "swiftmaestro-mechanic-qwen3-4b"
+
+    /// True when the Mechanic's bundled model is on disk under modelsRoot —
+    /// the Mechanic agent defaults to it only then (otherwise the global
+    /// default model serves).
+    nonisolated static var mechanicModelAvailable: Bool {
+        localIfPresent("swiftmaestro-models/Qwen3-4B-Instruct-2507-4bit") != nil
+    }
+
     /// Resolve a model's local directory under `modelsRoot` ONLY if it exists on
     /// disk; otherwise return nil so the model is pulled from Hugging Face Hub by
     /// its `huggingFaceID` on first use. This is what makes a fresh install work
@@ -415,6 +425,23 @@ final class ModelCatalog {
 
     static let builtInModels: [MaestroModel] = [
         // ── Primary: Verified & Daily-Use ──────────────────────────────────
+
+        // Mechanic support model — small, tool-verified, bundled in every DMG
+        // so in-app help works even on fresh/broken installs with nothing else
+        // configured. The Mechanic agent references it by id; it also appears
+        // in the picker so Light-install users have a tiny bundled chat model.
+        MaestroModel(
+            id: "swiftmaestro-mechanic-qwen3-4b",
+            displayName: "SwiftMaestro Mechanic (Qwen3 4B)",
+            huggingFaceID: "mlx-community/Qwen3-4B-Instruct-2507-4bit",
+            isVision: false,
+            localPath: localIfPresent("swiftmaestro-models/Qwen3-4B-Instruct-2507-4bit"),
+            estimatedMemoryGB: 3,
+            supportsTools: true,
+            toolCallFormat: .xmlFunction,
+            recTemperature: 0.6, recTopP: 0.95, recRepetitionPenalty: 1.05,
+            recContextLength: 32_768
+        ),
 
         // Coding workhorse — MoE, fast inference, XML function calls.
         // 30B-A3B active params, 128K context, ~45 GB.

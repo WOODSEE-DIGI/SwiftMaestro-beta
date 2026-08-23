@@ -40,6 +40,14 @@ extension MaestroTools {
                 name: "self_healing_failures", spec: systemHealthToolSpecs[6],
                 category: ToolCategory.system.rawValue,
                 handler: { call in await selfHealingFailures(call) }),
+            ToolDefinition(
+                name: "settings_backup_now", spec: systemHealthToolSpecs[7],
+                category: ToolCategory.system.rawValue,
+                handler: { _ in await settingsBackupNow() }),
+            ToolDefinition(
+                name: "settings_restore_backup", spec: systemHealthToolSpecs[8],
+                category: ToolCategory.system.rawValue,
+                handler: { _ in await settingsRestoreBackup() }),
         ])
     }
 
@@ -104,6 +112,19 @@ extension MaestroTools {
                     "limit": ["type": "integer", "description": "Max entries (default 15, max 50)."],
                 ],
                 required: []),
+            rawSpec("settings_backup_now",
+                "Snapshot SwiftMaestro's current settings to the known-good backup "
+                + "(~/Library/Application Support/SwiftMaestro/backups/). Run BEFORE "
+                + "changing any setting as part of a fix, so the user can always get "
+                + "back to where they were.",
+                properties: [:], required: []),
+            rawSpec("settings_restore_backup",
+                "Restore SwiftMaestro's settings from the last backup — the 'rebuild "
+                + "to last working condition' action. Tell the user what this does "
+                + "BEFORE calling it: model selection, authorized folders, feature "
+                + "toggles, and tuning revert to the backed-up state; a restart may "
+                + "be needed. Errors if no backup exists.",
+                properties: [:], required: []),
         ]
     }
 
@@ -341,5 +362,20 @@ extension MaestroTools {
         let args = decodeArgs(call, as: FailuresArgs.self)
         let limit = min(args?.limit ?? 15, 50)
         return await ToolCallGuardian.shared.recentFailuresText(limit: limit)
+    }
+
+    private static func settingsBackupNow() async -> String {
+        await MainActor.run { SettingsBackupService.shared.backup() }
+        return "Settings snapshot saved to the known-good backup "
+            + "(~/Library/Application Support/SwiftMaestro/backups/settings-backup.json)."
+    }
+
+    private static func settingsRestoreBackup() async -> String {
+        let restored = await MainActor.run { SettingsBackupService.shared.restoreFromBackup() }
+        return restored
+            ? "Settings restored from the last backup. A restart may be needed for "
+              + "everything (model paths, panels) to take effect."
+            : "No settings backup exists yet — nothing was changed. Run "
+              + "settings_backup_now first next time."
     }
 }

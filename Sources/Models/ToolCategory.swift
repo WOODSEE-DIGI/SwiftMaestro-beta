@@ -388,8 +388,8 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .contacts: return [.contacts]
         case .bus: return [.busMonitor]
         case .file, .server, .index, .memory, .messaging,
-             .system, .mcp, .sqlite, .workspace, .rules, .time, .stocks,
-             .news, .web, .scraping, .bluesky, .patreon, .vault, .blockchain:
+             .system, .mcp, .sqlite, .workspace, .rules, .time,
+             .news, .web, .scraping, .bluesky, .patreon, .vault:
             return []
         }
     }
@@ -411,6 +411,13 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
                 .file, .documents, .books, .shell, .server, .index, .memory, .messaging, .bus, .system, .mcp, .sqlite, .web, .browser, .scraping, .vault,
                 .notes, .kanban, .whiteboard, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky, .patreon, .database, .dam, .blockchain,
                 .overlayBuilder, .calendar, .reminders, .contacts,
+            ]
+        case .mechanic:
+            // The support engineer's surface: diagnostics + repair. No
+            // delegation (navigator-only), no messaging, no Apple-app panels.
+            return [
+                .file, .shell, .server, .index, .memory, .bus, .system, .mcp, .sqlite,
+                .web, .scraping, .documents, .time,
             ]
         }
     }
@@ -439,6 +446,9 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             return Set(allCases).subtracting([.sqlite, .messaging])
         case .project:
             return Set(allCases).subtracting([.workspace])
+        case .mechanic:
+            // Self-repair support: no delegation, no inter-agent messaging.
+            return Set(allCases).subtracting([.workspace, .messaging])
         }
     }
 

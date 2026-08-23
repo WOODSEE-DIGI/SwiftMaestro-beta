@@ -28,6 +28,7 @@ struct AgentsPanelView: View {
             List {
                 Section {
                     agentRow(workspace.navigator, systemImage: "point.3.connected.trianglepath.dotted")
+                    agentRow(workspace.mechanic, systemImage: "wrench.and.screwdriver")
                 } header: {
                     Text("Agents")
                         .font(.system(size: 11, weight: .semibold))
