@@ -546,7 +546,7 @@ final class MLXInferenceEngine {
         // (80% of system RAM by default). Models that fit stay resident together, so
         // switching between them is instant and they can serve agents concurrently.
         let newBytes = Self.bytes(gb: model.estimatedMemoryGB)
-        let evictedBytes = evictResidentToFit(additionalBytes: newBytes, excluding: model.id)
+        var evictedBytes = evictResidentToFit(additionalBytes: newBytes, excluding: model.id)
 
         // System-wide available-memory guard. The residency budget above is a
         // static fraction of physical RAM — it cannot see memory held by OTHER
@@ -561,10 +561,27 @@ final class MLXInferenceEngine {
             // buffers. Evicted models' pages count as reclaimable even though
             // the kernel may not report them as free yet.
             let required = newBytes + newBytes / 4
-            let effectiveAvailable = systemAvailable + evictedBytes
             let reserve = max(
                 Self.bytes(gb: 6),
                 Int(Double(ProcessInfo.processInfo.physicalMemory) * 0.06))
+            var effectiveAvailable = systemAvailable + evictedBytes
+            if required > effectiveAvailable - reserve {
+                // TRY HARDER before refusing: the budget pass above only evicts
+                // when the RESIDENT SET exceeds 80% of RAM — it can't see memory
+                // held outside this process (other apps, another logged-in
+                // session). If SwiftMaestro itself is holding other resident
+                // models, dropping them is the fastest way to make room.
+                // Skipped while a generation is in flight — evicting the model
+                // another agent is streaming from would corrupt that stream;
+                // the refusal stands in that case.
+                if state != .generating {
+                    let extra = evictAllResident(excluding: model.id)
+                    if extra > 0 {
+                        evictedBytes += extra
+                        effectiveAvailable = Self.systemAvailableMemoryBytes() + evictedBytes
+                    }
+                }
+            }
             if required > effectiveAvailable - reserve {
                 let needGB = required / 1_073_741_824
                 let haveGB = max(0, effectiveAvailable - reserve) / 1_073_741_824
@@ -720,6 +737,27 @@ final class MLXInferenceEngine {
             resident.removeValue(forKey: id)
             evictedBytes += info.estimatedBytes
             NSLog("[ENGINE] evicted LRU model \(id) (~\(info.estimatedBytes / 1_073_741_824)GB) to fit \(excluding); budget \(budget / 1_073_741_824)GB")
+        }
+        if evictedBytes > 0 { clearMLXCaches() }
+        return evictedBytes
+    }
+
+    /// Evict EVERY resident model except `excluding` — the last resort before
+    /// refusing a load on system-wide memory grounds. The budget-based pass
+    /// (evictResidentToFit) only fires when the resident set exceeds the 80%
+    /// RAM budget, so memory pressure from OUTSIDE this process (other apps,
+    /// another logged-in session's wired GPU heaps) needs this harder pass.
+    /// Callers must hold off while a generation is in flight (evicting the
+    /// streaming model would corrupt the stream).
+    @discardableResult
+    private func evictAllResident(excluding: String) -> Int {
+        var evictedBytes = 0
+        for (id, info) in resident where id != excluding {
+            modelCache.removeValue(forKey: id)
+            promptCaches = promptCaches.filter { !$0.key.hasSuffix("::" + id) }
+            resident.removeValue(forKey: id)
+            evictedBytes += info.estimatedBytes
+            NSLog("[ENGINE] evicted resident model \(id) (~\(info.estimatedBytes / 1_073_741_824)GB) to fit \(excluding) under system-wide memory pressure")
         }
         if evictedBytes > 0 { clearMLXCaches() }
         return evictedBytes
