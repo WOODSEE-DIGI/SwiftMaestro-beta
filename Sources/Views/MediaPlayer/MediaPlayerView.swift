@@ -102,19 +102,25 @@ struct MediaPlayerView: View {
                     queue.toggleShuffle()
                 } label: {
                     Image(systemName: "shuffle")
-                        .font(.caption)
+                        .font(.body.weight(.medium))
                         .foregroundStyle(queue.shuffleEnabled ? RetroPalette.green : RetroPalette.dim)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .help(queue.shuffleEnabled ? "Shuffle: on" : "Shuffle: off")
 
                 Button {
                     queue.toggleRepeat()
                 } label: {
                     Image(systemName: repeatIcon)
-                        .font(.caption)
+                        .font(.body.weight(.medium))
                         .foregroundStyle(queue.repeatMode != .off ? RetroPalette.green : RetroPalette.dim)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .help(queue.repeatMode == .off ? "Repeat: off" : queue.repeatMode == .one ? "Repeat: one" : "Repeat: all")
 
                 Spacer()
 
@@ -127,10 +133,18 @@ struct MediaPlayerView: View {
                     }
                 } label: {
                     Text("\(engine.rate, specifier: "%.2g")×")
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(RetroPalette.green.opacity(0.7))
+                        .font(.caption.monospaced().weight(.medium))
+                        .foregroundStyle(RetroPalette.green)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 5)
+                                .strokeBorder(RetroPalette.green.opacity(0.4), lineWidth: 1)
+                        )
+                        .contentShape(Rectangle())
                 }
                 .menuStyle(.borderlessButton)
+                .help("Playback speed")
                 .fixedSize()
 
                 Spacer()
@@ -138,11 +152,14 @@ struct MediaPlayerView: View {
                 Button {
                     showFilePicker = true
                 } label: {
-                    Image(systemName: "plus.circle")
-                        .font(.caption)
-                        .foregroundStyle(RetroPalette.green.opacity(0.7))
+                    Image(systemName: "plus.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(RetroPalette.green)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .help("Add files to the playlist")
             }
             .padding(.horizontal, 10)
             .padding(.bottom, 4)
