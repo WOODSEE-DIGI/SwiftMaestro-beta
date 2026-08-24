@@ -17,8 +17,10 @@ skipped (delete an entry to force re-translation).
 """
 
 import argparse
+import concurrent.futures
 import json
 import sys
+import threading
 import time
 import urllib.request
 
@@ -26,12 +28,10 @@ CATALOG = "Sources/Resources/Localizable.xcstrings"
 
 # Never translate these (brand/product tokens).
 GLOSSARY_KEEP = [
-    "WhatsApp", "Discord", "Bluesky", "Patreon", "MCP", "NDI", "WhisperKit",
-    "Whisper", "MaestroDB", "MaestroDAM", "MaestroDocs", "MaestroBooks",
-    "SwiftWeaver", "SwiftBrowser", "SwiftMaestro", "Maestro", "Stocky",
-    "Blocky", "AirPlay", "HomePod", "Keychain", "iCloud", "Obsidian",
-    "Hugging Face", "GitHub", "YouTube", "EDGAR", "Yahoo Finance",
-    "Sparkle", "GRDB", "MLX", "Ollama", "LM Studio",
+    "WhatsApp", "Discord", "MCP", "NDI", "MaestroDB", "MaestroDAM",
+    "MaestroDocs", "MaestroBooks", "SwiftWeaver", "SwiftBrowser",
+    "SwiftMaestro", "Maestro", "Stocky", "Blocky", "AirPlay", "Keychain",
+    "Whisper", "Obsidian",
 ]
 
 LANG_NAMES = {
@@ -46,6 +46,9 @@ LANG_NAMES = {
 }
 
 BATCH = 20  # keys per request
+WORKERS = 6  # user-requested; server advertises 4 contexts, extras queue and fill instantly
+
+save_lock = threading.Lock()
 
 
 def translate_batch(endpoint: str, model: str, lang: str, keys: list[str]) -> dict[str, str]:
@@ -54,13 +57,11 @@ def translate_batch(endpoint: str, model: str, lang: str, keys: list[str]) -> di
     glossary = ", ".join(GLOSSARY_KEEP)
     keys_json = json.dumps(keys, ensure_ascii=False)
     prompt = (
-        f"Translate these macOS app UI strings from English to {lang_name}.\n"
-        f"Rules: output ONLY a JSON object mapping each English key to its translation; "
-        f"keep these brand/product names untranslated: {glossary}; "
-        f"preserve format specifiers exactly (%lld, %@, %1$@), ellipses (…), "
-        f"newlines (\\n), and leading/trailing spaces; "
-        f"use the standard macOS UI vocabulary of {lang_name} (match Apple's own apps); "
-        f"keep translations concise — these are buttons, labels, and short help strings.\n"
+        f"Translate these macOS app UI strings from English to {lang_name}. "
+        f"Output ONLY a JSON object mapping each key to its translation. "
+        f"Never translate these brands: {glossary}. "
+        f"Preserve %lld/%@ specifiers, … and \\n exactly. "
+        f"Use Apple's standard {lang_name} UI vocabulary; stay concise.\n"
         f"Keys: {keys_json}"
     )
     body = json.dumps({
@@ -113,30 +114,45 @@ def main() -> int:
             continue
 
         done = 0
-        for i in range(0, len(missing), BATCH):
-            batch = missing[i:i + BATCH]
+        batches = [missing[i:i + BATCH] for i in range(0, len(missing), BATCH)]
+
+        def work(batch: list[str]) -> dict[str, str]:
             for attempt in range(3):
                 try:
-                    result = translate_batch(args.endpoint, args.model, lang, batch)
-                    break
+                    return translate_batch(args.endpoint, args.model, lang, batch)
                 except Exception as exc:
-                    print(f"  batch {i // BATCH + 1} attempt {attempt + 1} failed: {exc}", file=sys.stderr)
+                    print(f"  batch attempt {attempt + 1} failed: {exc}", file=sys.stderr)
                     if attempt == 2:
                         raise
                     time.sleep(2 * (attempt + 1))
-            for key in batch:
-                if key in result and result[key].strip():
-                    entry = strings[key]
-                    entry.setdefault("localizations", {})[lang] = {
-                        "stringUnit": {"state": "needs_review", "value": result[key].strip()}
-                    }
-                    done += 1
-            print(f"  {done}/{len(missing)}")
+            return {}
 
-            # Save after every batch — resumable on interrupt.
-            with open(args.catalog, "w", encoding="utf-8") as f:
-                json.dump(catalog, f, ensure_ascii=False, indent=2, sort_keys=True)
-                f.write("\n")
+        def save():
+            with save_lock:
+                with open(args.catalog, "w", encoding="utf-8") as f:
+                    json.dump(catalog, f, ensure_ascii=False, indent=2, sort_keys=True)
+                    f.write("\n")
+
+        # The server runs 4 parallel contexts; serial requests waste 3 of them.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as pool:
+            futures = {pool.submit(work, batch): batch for batch in batches}
+            for future in concurrent.futures.as_completed(futures):
+                batch = futures[future]
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    print(f"  batch dropped after retries: {exc}", file=sys.stderr)
+                    continue
+                with save_lock:
+                    for key in batch:
+                        if key in result and result[key].strip():
+                            entry = strings[key]
+                            entry.setdefault("localizations", {})[lang] = {
+                                "stringUnit": {"state": "needs_review", "value": result[key].strip()}
+                            }
+                            done += 1
+                save()
+                print(f"  {done}/{len(missing)}")
 
         print(f"{lang}: wrote {done} entries (state=needs_review)")
 
