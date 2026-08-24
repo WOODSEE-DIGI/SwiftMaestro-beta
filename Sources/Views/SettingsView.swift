@@ -357,9 +357,10 @@ struct AppearanceSettingsTab: View {
         .pomodoro,
     ]
 
-    // Collapsible section state. "Appearance" and "App Panels" open by
+    // Collapsible section state. "Language" and "Appearance" open by
     // default (most commonly touched); the rest start collapsed so the tab
     // fits on one screen instead of requiring a long scroll.
+    @State private var languageExpanded = true
     @State private var appearanceExpanded = true
     @State private var sidebarExpanded = false
     @State private var plansExpanded = false
@@ -368,10 +369,58 @@ struct AppearanceSettingsTab: View {
     @State private var panelsExpanded = true
     @State private var previewExpanded = false
 
+    /// The 10 languages fully translated for v0.4.0.
+    static let supportedLanguages: [(code: String, name: String)] = [
+        ("de", "Deutsch"),
+        ("en", "English"),
+        ("es", "Español"),
+        ("fr", "Français"),
+        ("it", "Italiano"),
+        ("ja", "日本語"),
+        ("ko", "한국어"),
+        ("pt-BR", "Português (Brasil)"),
+        ("ru", "Русский"),
+        ("zh-Hans", "简体中文"),
+        ("zh-Hant", "繁體中文"),
+    ]
+
+    /// Persisted language code. Empty string = system default.
+    @AppStorage("settings.appearance.language") private var selectedLanguage = ""
+
+    private func applyLanguage(_ code: String) {
+        if code.isEmpty {
+            UserDefaults.standard.removeObject(forKey: "AppleLanguages")
+        } else {
+            UserDefaults.standard.set([code], forKey: "AppleLanguages")
+        }
+        // AppleLanguages is read by Bundle.main at launch — a relaunch is needed
+        // for the change to fully take effect across all panels.
+    }
+
     var body: some View {
         @Bindable var theme = theme
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
+                // Language picker — sits above Appearance so it's the first thing
+                // a new user sees when they open the app in a non-English locale.
+                DisclosureGroup("Language", isExpanded: $languageExpanded) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Picker("App language", selection: $selectedLanguage) {
+                            Text("System Default").tag("")
+                            ForEach(Self.supportedLanguages, id: \.code) { lang in
+                                Text("\(lang.name) (\(lang.code))").tag(lang.code)
+                            }
+                        }
+                        .onChange(of: selectedLanguage) { _, new in
+                            applyLanguage(new)
+                        }
+                        Text("Relaunch SwiftMaestro after changing to fully apply all translations.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .padding(.top, 8)
+                }
+                .appearanceSectionStyle()
+
                 // Global appearance: window light/dark plus the accent that tints
                 // buttons, selections, and plan cards across the whole app.
                 DisclosureGroup("Appearance", isExpanded: $appearanceExpanded) {
