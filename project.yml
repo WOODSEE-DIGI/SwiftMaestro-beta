@@ -112,11 +112,11 @@ targets:
         MACOSX_DEPLOYMENT_TARGET: 14.0
         ENABLE_HARDENED_RUNTIME: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks /opt/homebrew/lib"
-        HEADER_SEARCH_PATHS: "$(inherited) /opt/homebrew/include $(SRCROOT)/Sources"
-        LIBRARY_SEARCH_PATHS: "$(inherited) /opt/homebrew/lib"
-        OTHER_SWIFT_FLAGS: "$(inherited) -Xcc -fmodule-map-file=$(SRCROOT)/Modules/LibUSB/module.modulemap -Xcc -I/opt/homebrew/include"
-        OTHER_LDFLAGS: "$(inherited) -L/opt/homebrew/lib -lusb-1.0 -lraw"
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
+        HEADER_SEARCH_PATHS: "$(inherited) $(SRCROOT)/Vendor/libusb/include $(SRCROOT)/Vendor/libraw/include $(SRCROOT)/Vendor/libjpeg/include $(SRCROOT)/Vendor/lcms2/include $(SRCROOT)/Sources"
+        LIBRARY_SEARCH_PATHS: "$(inherited) $(SRCROOT)/Vendor/libusb/lib $(SRCROOT)/Vendor/libraw/lib $(SRCROOT)/Vendor/libjpeg/lib $(SRCROOT)/Vendor/lcms2/lib $(SRCROOT)/Vendor/libomp/lib"
+        OTHER_SWIFT_FLAGS: "$(inherited) -Xcc -fmodule-map-file=$(SRCROOT)/Modules/LibUSB/module.modulemap"
+        OTHER_LDFLAGS: "$(inherited) -lusb-1.0 -lraw -lomp -llcms2 -ljpeg -lz"
         INFOPLIST_FILE: Sources/Resources/Info.plist
         CODE_SIGN_ENTITLEMENTS: Sources/Resources/SwiftMaestro.entitlements
         SWIFT_OBJC_BRIDGING_HEADER: Sources/Resources/SwiftMaestro-Bridging-Header.h
@@ -260,7 +260,7 @@ targets:
       # Match the app target so the Objective-C bridging header's
       # Tethering/DAM imports resolve during test-target module scanning,
       # and C++ interop matches the app's objcxx mode.
-      HEADER_SEARCH_PATHS: "$(inherited) /opt/homebrew/include $(SRCROOT)/Sources"
+      HEADER_SEARCH_PATHS: "$(inherited) $(SRCROOT)/Vendor/libusb/include $(SRCROOT)/Vendor/libraw/include $(SRCROOT)/Vendor/libjpeg/include $(SRCROOT)/Vendor/lcms2/include $(SRCROOT)/Sources"
       SWIFT_OBJC_INTEROP_MODE: objcxx
 
 defaultLanguage: Swift

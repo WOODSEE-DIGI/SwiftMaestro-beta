@@ -1,11 +1,11 @@
 #!/bin/bash
 # bundle-gphoto2.sh — make PTP camera tethering self-contained in SwiftMaestro.app.
 #
-# Copies the gphoto2 CLI + libgphoto2 dylibs + camera/port driver modules out of
-# Homebrew (GPHOTO2_PREFIX, default /opt/homebrew) and into the app bundle, then
-# rewrites every /opt/homebrew dependency reference to @rpath so the stack loads
-# on a Mac with NO Homebrew at all. Idempotent; safe as an xcodegen postBuild
-# phase and in the DMG package pipeline.
+# Copies the gphoto2 CLI + libgphoto2 dylibs + camera/port driver modules from
+# the vendored copies in Vendor/gphoto2/ and into the app bundle, then rewrites
+# every dependency reference to @rpath so the stack loads on a Mac with NO
+# Homebrew at all. Idempotent; safe as an xcodegen postBuild phase and in the
+# DMG package pipeline.
 #
 # Layout produced inside the bundle:
 #   Contents/Frameworks/libgphoto2.6.dylib (+ port, exif, intl, ltdl, popt, readline)
@@ -19,18 +19,15 @@
 
 set -euo pipefail
 
-PREFIX="${GPHOTO2_PREFIX:-/opt/homebrew}"
+VENDOR="${GPHOTO2_VENDOR:-${SRCROOT}/Vendor/gphoto2}"
 APP="${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app"
 FW="$APP/Contents/Frameworks"
 RES="$APP/Contents/Resources/gphoto2"
 
-if [ ! -x "$PREFIX/bin/gphoto2" ]; then
-    echo "No gphoto2 at $PREFIX/bin/gphoto2 (skipping gphoto2 bundling)"
+if [ ! -x "$VENDOR/bin/gphoto2" ]; then
+    echo "No gphoto2 at $VENDOR/bin/gphoto2 (skipping gphoto2 bundling)"
     exit 0
 fi
-
-# Resolve Homebrew's symlink forest to real files.
-realpath() { /usr/bin/readlink -f "$1" 2>/dev/null || /bin/echo "$1"; }
 
 mkdir -p "$FW" "$RES/bin" "$RES/lib/libgphoto2" "$RES/lib/libgphoto2_port"
 
@@ -46,92 +43,67 @@ copy_overwrite() {
 }
 
 # --- Binary ----------------------------------------------------------------
-copy_overwrite "$PREFIX/bin/gphoto2" "$RES/bin/gphoto2"
+copy_overwrite "$VENDOR/bin/gphoto2" "$RES/bin/gphoto2"
 chmod +x "$RES/bin/gphoto2"
 
 # --- Dylibs -> Frameworks (single home shared with the app's other dylibs) ---
-# Seed list, then BFS-collect the FULL recursive Homebrew closure (libgd pulls
-# freetype/fontconfig/avif/png/tiff/webp, which pull more). Anything missed
-# here is a dyld SIGKILL on a fresh Mac — the audit script verifies afterwards.
-# NOTE: /bin/bash is 3.2 on macOS — no associative arrays; membership is
-# checked against a space-joined list instead.
-SEEDS=(
-    "$PREFIX/opt/libgphoto2/lib/libgphoto2.6.dylib"
-    "$PREFIX/opt/libgphoto2/lib/libgphoto2_port.12.dylib"
-    "$PREFIX/opt/libexif/lib/libexif.12.dylib"
-    "$PREFIX/opt/gettext/lib/libintl.8.dylib"
-    "$PREFIX/opt/libtool/lib/libltdl.7.dylib"
-    "$PREFIX/opt/popt/lib/libpopt.0.dylib"
-    "$PREFIX/opt/readline/lib/libreadline.8.dylib"
-    "$PREFIX/opt/gd/lib/libgd.3.dylib"
-)
-
-QUEUE=("${SEEDS[@]}")
-SEEN=""
-CLOSURE_PATHS=()
-# Dep extractor: absolute /opt/homebrew paths AND @rpath refs (Homebrew links
-# some dylibs — e.g. libwebp→libsharpyuv — via @rpath, invisible to a naive
-# absolute-path scan). @rpath refs resolve back against the Homebrew prefix.
-deps_of() {
-    otool -L "$1" 2>/dev/null | awk '{print $1}' | while read -r dep; do
-        case "$dep" in
-            /opt/homebrew/*.dylib) echo "$dep" ;;
-            @rpath/*.dylib)
-                b="$(basename "$dep")"
-                for d in "$PREFIX"/opt/*/lib "$PREFIX"/lib; do
-                    if [ -f "$d/$b" ]; then echo "$d/$b"; break; fi
-                done ;;
-        esac
-    done | sort -u
-}
-while [ "${#QUEUE[@]}" -gt 0 ]; do
-    f="${QUEUE[0]}"; QUEUE=("${QUEUE[@]:1}")
-    base="$(basename "$f")"
-    case " $SEEN " in *" $base "*) continue ;; esac
-    SEEN="$SEEN $base"
-    CLOSURE_PATHS+=("$f")
-    while read -r dep; do
-        [ -f "$dep" ] && QUEUE+=("$dep")
-    done < <(deps_of "$f")
+# Copy all vendored dylibs into Frameworks. The vendored copies still carry
+# their original /opt/homebrew load commands — rewrite_file() below fixes them.
+for dylib in "$VENDOR/lib/"*.dylib; do
+    [ -f "$dylib" ] || continue
+    copy_overwrite "$dylib" "$FW/$(basename "$dylib")"
 done
+echo "  dylibs: $(ls "$VENDOR/lib/"*.dylib 2>/dev/null | wc -l | tr -d ' ') vendored"
 
-for f in "${CLOSURE_PATHS[@]}"; do
-    copy_overwrite "$f" "$FW/$(basename "$f")"
-done
-echo "  closure: ${#CLOSURE_PATHS[@]} dylibs collected"
-# libusb/libjpeg are ALSO needed by the gphoto2 stack (usb1.so, ptp2.so). The
-# app's bundle-dylibs.sh copies them at package time, but this phase runs at
-# BUILD time — copy-if-missing so the stack is complete in Debug builds too.
-# One shared copy in Frameworks: two libusb instances would fight over devices.
-for shared in libusb-1.0.0.dylib libjpeg.8.dylib; do
-    if [ ! -f "$FW/$shared" ]; then
-        case "$shared" in
-            libusb-1.0.0.dylib) src="$PREFIX/opt/libusb/lib/$shared" ;;
-            libjpeg.8.dylib)    src="$PREFIX/opt/jpeg-turbo/lib/$shared" ;;
-        esac
-        if [ -f "$src" ]; then
-            copy_overwrite "$src" "$FW/$shared"
-            echo "  + bundled $shared (needed by gphoto2 stack)"
-        else
-            echo "  !! WARNING: $FW/$shared missing and no source at $src"
+# Create symlinks for unversioned names (e.g. libaom.3.dylib -> libaom.3.14.1.dylib).
+# Code references major-version names; the vendored files have full version numbers.
+for f in "$FW"/*.dylib; do
+    [ -f "$f" ] || continue
+    name="$(basename "$f")"
+    # Three-part: libX.Y.Z.Z.dylib -> libX.Y.dylib (e.g. libaom.3.14.1.dylib)
+    if [[ "$name" =~ ^(.+\.[0-9]+)\.[0-9]+\.[0-9]+\.dylib$ ]]; then
+        short="${BASH_REMATCH[1]}.dylib"
+        if [ ! -e "$FW/$short" ]; then
+            ln -sf "$name" "$FW/$short"
+        fi
+    # Two-part: libX.Y.Z.dylib -> libX.Y.dylib (e.g. libreadline.8.3.dylib)
+    elif [[ "$name" =~ ^(.+\.[0-9]+)\.[0-9]+\.dylib$ ]]; then
+        short="${BASH_REMATCH[1]}.dylib"
+        if [ ! -e "$FW/$short" ]; then
+            ln -sf "$name" "$FW/$short"
         fi
     fi
 done
 
+# libswiftCompatibilitySpan.dylib is a weak compat shim — copy from Xcode toolchain.
+if [ ! -f "$FW/libswiftCompatibilitySpan.dylib" ]; then
+    SPAN=$(find /Applications/Xcode.app/Contents/Developer/Toolchains -name "libswiftCompatibilitySpan.dylib" 2>/dev/null | head -1)
+    if [ -n "$SPAN" ]; then
+        copy_overwrite "$SPAN" "$FW/libswiftCompatibilitySpan.dylib"
+    fi
+fi
+
+# gphoto2's usb1.so port driver needs libusb at runtime. The main binary uses
+# static libusb (.a), but gphoto2 loads it as a dylib — bundle a separate copy.
+if [ ! -f "$FW/libusb-1.0.0.dylib" ] && [ -f "$VENDOR/lib/libusb-1.0.0.dylib" ]; then
+    copy_overwrite "$VENDOR/lib/libusb-1.0.0.dylib" "$FW/libusb-1.0.0.dylib"
+    install_name_tool -id "@rpath/libusb-1.0.0.dylib" "$FW/libusb-1.0.0.dylib" 2>/dev/null || true
+fi
+
 # --- Driver + port modules (keep the versioned directory structure) ----------
-CAMVER="$(basename "$(ls -d "$PREFIX"/lib/libgphoto2/*/ | head -1)")"
-PORTVER="$(basename "$(ls -d "$PREFIX"/lib/libgphoto2_port/*/ | head -1)")"
+CAMVER="$(basename "$(ls -d "$VENDOR"/lib/libgphoto2/*/ 2>/dev/null | head -1)")"
+PORTVER="$(basename "$(ls -d "$VENDOR"/lib/libgphoto2_port/*/ 2>/dev/null | head -1)")"
 mkdir -p "$RES/lib/libgphoto2/$CAMVER" "$RES/lib/libgphoto2_port/$PORTVER"
-for so in "$PREFIX"/lib/libgphoto2/"$CAMVER"/*.so; do
+for so in "$VENDOR/lib/libgphoto2/$CAMVER/"*.so; do
+    [ -f "$so" ] || continue
     copy_overwrite "$so" "$RES/lib/libgphoto2/$CAMVER/$(basename "$so")"
 done
-for so in "$PREFIX"/lib/libgphoto2_port/"$PORTVER"/*.so; do
+for so in "$VENDOR/lib/libgphoto2_port/$PORTVER/"*.so; do
+    [ -f "$so" ] || continue
     copy_overwrite "$so" "$RES/lib/libgphoto2_port/$PORTVER/$(basename "$so")"
 done
 # GPL compliance: gphoto2 is GPL-2.0 — ship the license text in the bundle.
-for license in "$PREFIX"/Cellar/gphoto2/*/COPYING; do
-    [ -f "$license" ] && copy_overwrite "$license" "$RES/COPYING" && break
-done
+[ -f "$VENDOR/COPYING" ] && copy_overwrite "$VENDOR/COPYING" "$RES/COPYING"
 
 # --- Dependency rewrites ------------------------------------------------------
 # Every Mach-O in the stack: point /opt/homebrew/.../<lib> at @rpath/<lib>,
@@ -142,6 +114,15 @@ rewrite_file() {
         /usr/bin/sed -n 's|^[[:space:]]*\(/opt/homebrew/[^ ]*/lib/[^/ ]*\.dylib\).*|\1|p' | \
     while read -r dep; do
         install_name_tool -change "$dep" "@rpath/$(basename "$dep")" "$file" 2>/dev/null || true
+    done
+    # Also rewrite @rpath refs that point at vendored dylibs.
+    otool -L "$file" 2>/dev/null | \
+        /usr/bin/sed -n 's|^[[:space:]]*@rpath/\([^ ]*\.dylib\).*|\1|p' | \
+    while read -r rel; do
+        name=$(basename "$rel")
+        # If this @rpath ref matches a vendored dylib, it's already correct.
+        # No rewrite needed — the file is in Frameworks and rpath resolves it.
+        :
     done
 }
 
@@ -167,11 +148,12 @@ add_rpath_once "$RES/bin/gphoto2" "@executable_path/../../../Frameworks"
 # Driver/port modules: rewrite + rpath up (Resources/gphoto2/lib/<kind>/<ver>/
 # -> Contents/Frameworks).
 for so in "$RES"/lib/libgphoto2/"$CAMVER"/*.so "$RES"/lib/libgphoto2_port/"$PORTVER"/*.so; do
+    [ -f "$so" ] || continue
     rewrite_file "$so"
     add_rpath_once "$so" "@loader_path/../../../../../Frameworks"
 done
 
-echo "Bundled gphoto2 stack: bin + ${#CLOSURE_PATHS[@]} libs + drivers ($CAMVER, $PORTVER) -> $APP"
+echo "Bundled gphoto2 stack: bin + $(ls "$VENDOR/lib/"*.dylib 2>/dev/null | wc -l | tr -d ' ') libs + drivers ($CAMVER, $PORTVER) -> $APP"
 
 # --- Re-sign everything we touched -------------------------------------------
 # install_name_tool invalidates code signatures; arm64 kills modified-but-

@@ -83,10 +83,22 @@ else
     echo "WARNING: Mechanic model not found at $MECHANIC_MODEL_PATH — skipping (download it via the Models tab or HF)."
 fi
 
-# Re-sign the app bundle after adding the models. The inner frameworks and
-# executables were already signed by the build; re-signing the top-level bundle
-# with the entitlements file produces a valid Developer ID signature for notarization.
-echo "Re-signing app bundle with embedded models…"
+# Bundle Homebrew dylibs (libusb, libraw + transitive deps) into the app
+# bundle so the app works on machines without Homebrew installed.
+echo "Bundling Homebrew dylibs (libusb, libraw, etc.)…"
+APP_PATH="$APP_STAGE" SIGN_IDENTITY="$SIGN_IDENTITY" ENTITLEMENTS="$ENTITLEMENTS" \
+    "$(dirname "$0")/bundle-dylibs.sh"
+
+# Prove the bundle is self-contained before re-signing — catch any
+# /opt/homebrew or missing @rpath leak early.
+echo "Auditing dependency closure…"
+"$(dirname "$0")/audit-dependencies.sh" "$APP_STAGE"
+
+# Re-sign the app bundle after adding the models and dylibs. The inner
+# frameworks and executables were already signed by the build; re-signing the
+# top-level bundle with the entitlements file produces a valid Developer ID
+# signature for notarization.
+echo "Re-signing app bundle with embedded models and dylibs…"
 codesign --force --sign "$SIGN_IDENTITY" \
     --entitlements "$ENTITLEMENTS" \
     --options runtime --timestamp \

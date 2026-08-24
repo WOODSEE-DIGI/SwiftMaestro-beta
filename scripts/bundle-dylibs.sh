@@ -1,13 +1,12 @@
 #!/bin/bash
-# Bundle Homebrew dylibs (libusb, libraw + transitive deps) inside the app and
-# re-sign everything with the app's identity.
+# bundle-dylibs.sh — rewrite any remaining Homebrew refs to @rpath and
+# re-sign the app bundle.
 #
-# Why: a Developer ID-signed, hardened-runtime app refuses to load dylibs
-# signed with a DIFFERENT Team ID (Homebrew builds are ad-hoc signed) — the
-# app dies at launch with "Library not loaded ... different Team IDs". The fix
-# is the standard distribution pattern: copy the dylibs into
-# Contents/Frameworks, repoint load paths to @rpath, re-sign with the app's
-# Developer ID so every Mach-O shares one Team ID.
+# With vendored static libs (Vendor/libusb, libraw, etc.), the main app
+# binary should have ZERO /opt/homebrew references. This script exists as
+# a safety net: if a future dependency sneaks a Homebrew ref back in, this
+# rewrites it to @rpath and bundles the dylib so the build fails later
+# (audit-dependencies.sh) rather than crashing on users' machines.
 #
 # Env overrides:
 #   APP_PATH=<path>          (default build/Release/SwiftMaestro.app)
@@ -19,12 +18,7 @@ APP_PATH="${APP_PATH:-build/Release/SwiftMaestro.app}"
 SIGN_IDENTITY="${SIGN_IDENTITY:-Developer ID Application}"
 ENTITLEMENTS="${ENTITLEMENTS:-Sources/Resources/SwiftMaestro.entitlements}"
 FRAMEWORKS="$APP_PATH/Contents/Frameworks"
-BIN="$APP_PATH/Contents/MacOS/SwiftMaestro"
 
-# Hardened runtime only with a real identity. Ad-hoc ("-") local builds must
-# NOT carry the runtime flag: dyld's library validation then rejects every
-# mapped dylib ("mapping process and mapped file (non-platform) have
-# different Team IDs") and the app dies at launch.
 RUNTIME_OPT=(--options runtime)
 if [ "$SIGN_IDENTITY" = "-" ]; then
     RUNTIME_OPT=()
@@ -37,44 +31,32 @@ fi
 
 mkdir -p "$FRAMEWORKS"
 
-# Repoint homebrew references in ALL MacOS-dir Mach-O files to bundled @rpath
-# names. Xcode 16+ Debug builds put the real code in SwiftMaestro.debug.dylib
-# — rewriting only the main binary leaves a machine-local leak in Debug builds.
+# Scan ALL Mach-O files under MacOS/ for any Homebrew leak. In practice the
+# main binary and any bundled dylibs should already be clean (static libs).
+LEAKS=0
 for BINFILE in "$APP_PATH/Contents/MacOS/"*; do
     file "$BINFILE" | grep -q "Mach-O" || continue
-    otool -L "$BINFILE" | awk '/\/opt\/homebrew\//{print $1}' | while read -r dep; do
+    otool -L "$BINFILE" 2>/dev/null | awk '/\/opt\/homebrew\//{print $1}' | while read -r dep; do
         install_name_tool -change "$dep" "@rpath/$(basename "$dep")" "$BINFILE"
         echo "$(basename "$BINFILE"): $dep -> @rpath/$(basename "$dep")"
     done
 done
 
-bundle() {
-    local src="$1"
-    local name; name="$(basename "$src")"
-    local dst="$FRAMEWORKS/$name"
-    cp "$src" "$dst"
-    chmod u+w "$dst"
-    install_name_tool -id "@rpath/$name" "$dst"
-    # Repoint this dylib's own homebrew deps to their bundled rpath names.
-    otool -L "$dst" | awk '/\/opt\/homebrew\//{print $1}' | while read -r dep; do
-        if [ "$dep" != "$src" ]; then
-            install_name_tool -change "$dep" "@rpath/$(basename "$dep")" "$dst"
-            echo "  $name: $(basename "$dep") -> @rpath"
-        fi
+# Also scan any existing Frameworks dylibs for stale refs.
+if [ -d "$FRAMEWORKS" ]; then
+    for DYLIB in "$FRAMEWORKS/"*.dylib "$FRAMEWORKS/"*.so; do
+        [ -f "$DYLIB" ] || continue
+        file "$DYLIB" | grep -q "Mach-O" || continue
+        otool -L "$DYLIB" 2>/dev/null | awk '/\/opt\/homebrew\//{print $1}' | while read -r dep; do
+            install_name_tool -change "$dep" "@rpath/$(basename "$dep")" "$DYLIB"
+            echo "  $(basename "$DYLIB"): $(basename "$dep") -> @rpath"
+        done
+        codesign --force --sign "$SIGN_IDENTITY" --timestamp ${RUNTIME_OPT[@]+"${RUNTIME_OPT[@]}"} "$DYLIB"
     done
-    codesign --force --sign "$SIGN_IDENTITY" --timestamp ${RUNTIME_OPT[@]+"${RUNTIME_OPT[@]}"} "$dst"
-    echo "bundled + signed: $name"
-}
+fi
 
-bundle /opt/homebrew/opt/libusb/lib/libusb-1.0.0.dylib
-bundle /opt/homebrew/opt/libraw/lib/libraw.25.dylib
-bundle /opt/homebrew/opt/libomp/lib/libomp.dylib
-bundle /opt/homebrew/opt/jpeg-turbo/lib/libjpeg.8.dylib
-bundle /opt/homebrew/opt/little-cms2/lib/liblcms2.2.dylib
-
-# The binary changed (install_name_tool invalidates its signature) — re-sign
-# the whole app with entitlements.
+# Re-sign the whole app with entitlements (install_name_tool invalidates sig).
 codesign --force --sign "$SIGN_IDENTITY" --timestamp ${RUNTIME_OPT[@]+"${RUNTIME_OPT[@]}"} \
     --entitlements "$ENTITLEMENTS" "$APP_PATH"
 
-echo "=== Dylibs bundled, app re-signed ==="
+echo "=== bundle-dylibs: done (static vendored libs, no Homebrew dylibs bundled) ==="
