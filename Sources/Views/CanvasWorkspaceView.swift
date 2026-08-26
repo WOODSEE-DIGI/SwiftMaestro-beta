@@ -260,7 +260,7 @@ struct CanvasTileView: View {
     @State private var selectedTabIndex = 0
 
     var body: some View {
-        if let tile = layout.canvasTile(id: tileID) {
+        if let tile = layout.canvasTile(id: tileID), tile.colSpan > 0, tile.rowSpan > 0 {
             let kind = tile.kinds[min(selectedTabIndex, tile.kinds.count - 1)]
             let baseFrame = tile.frame(in: canvasSize)
 
@@ -288,8 +288,10 @@ struct CanvasTileView: View {
                     onHeaderDragEnded: layout.isLocked ? nil : { value in headerDragEnded(value, tile: tile) },
                     canvasTileID: tile.id
                 )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .frame(width: frame.width, height: frame.height)
+            .clipped()
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
@@ -318,7 +320,10 @@ struct CanvasTileView: View {
             .position(x: frame.midX, y: frame.midY)
             .zIndex(isMoving ? 10_000 : Double(tile.z))
             .simultaneousGesture(
-                TapGesture().onEnded { layout.bringTileToFront(tileID) }
+                TapGesture().onEnded {
+                    layout.bringTileToFront(tileID)
+                    layout.focusTile(tileID)
+                }
             )
         }
     }

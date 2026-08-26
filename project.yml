@@ -2,7 +2,7 @@ name: SwiftMaestro
 targetBundleIdentifierPrefix: com.woodseedigi.swiftmaestro
 options:
   bundleIdPrefix: com.woodseedigi
-  deploymentTarget: macOS 14.0
+  deploymentTarget: macOS 26.0
   xcodeVersion: "16"
   # English is the development language; Japanese is the first localization.
   # Localizable.xcstrings lives at Sources/Resources/ and SwiftUI string
@@ -109,7 +109,7 @@ targets:
         PRODUCT_NAME: "$(TARGET_NAME)"
         PRODUCT_BUNDLE_IDENTIFIER: com.woodseedigi.swiftmaestro
         SWIFT_VERSION: 6.3
-        MACOSX_DEPLOYMENT_TARGET: 14.0
+        MACOSX_DEPLOYMENT_TARGET: 26.0
         ENABLE_HARDENED_RUNTIME: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
@@ -253,7 +253,7 @@ targets:
       - target: SwiftMaestro
     settings:
       SWIFT_VERSION: 6.3
-      MACOSX_DEPLOYMENT_TARGET: 14.0
+      MACOSX_DEPLOYMENT_TARGET: 26.0
       GENERATE_INFOPLIST_FILE: YES
       PRODUCT_BUNDLE_IDENTIFIER: com.woodseedigi.swiftmaestrotests
       CODE_SIGN_IDENTITY: "-"

@@ -324,7 +324,14 @@ extension MaestroTools {
     /// root so the agent can create/edit files under it without manual setup.
     /// Project agents also inherit each other's working directories so a parent
     /// agent can verify files a sub-agent wrote under its own project path.
+    ///
+    /// When Full Disk Access is enabled, agents can read/write anywhere on the system.
     static func authorizedRoots() -> [String] {
+        // Full Disk Access: bypass all restrictions, grant full filesystem access.
+        if SwiftMaestroSettingsStore.loadFullDiskAccess() {
+            return ["/"]
+        }
+
         var roots = SwiftMaestroSettingsStore.loadAuthorizedFolders()
             .filter { $0.enabled }
             .map { path -> String in

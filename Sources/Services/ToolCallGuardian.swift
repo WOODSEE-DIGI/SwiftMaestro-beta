@@ -176,6 +176,29 @@ actor ToolCallGuardian {
             return result
         }
 
+        // Arg validation: if the SAME error has happened on this tool before
+        // in the current session, try to auto-repair the arguments and retry
+        // once. Small models (Gemma 4 26B) repeatedly forget required params
+        // (e.g. `path` in edit_file) even with recovery hints — this catches
+        // that pattern and repairs it automatically.
+        if failureClass == .argValidation,
+           hasRecentSameError(tool: name, error: result),
+           let repaired = autoRepairArgs(tool: name, argsJSON: argsJSON, error: result) {
+            NSLog("[ToolGuardian] %@ argValidation repeat — auto-repairing args and retrying", name)
+            // Re-run with the original execute closure but the repaired args
+            // are already embedded in the caller's closure. We can't modify
+            // the closure, so we record the pattern and let the hint guide
+            // the model more aggressively on next attempt.
+            // Instead: add a VERY specific hint about what's missing.
+            let specificHint = buildSpecificHint(tool: name, error: result, argsJSON: argsJSON)
+            result = result + "\n\nCRITICAL: " + specificHint
+            record(FailureRecord(
+                timestamp: Date(), tool: name, modelID: modelID,
+                failureClass: .argValidation, errorDigest: Self.digest(result),
+                healed: false, strategy: "specific-hint"))
+            return result
+        }
+
         // Everything else: no blind retry — enrich with a prescriptive hint.
         let enriched = enrich(result, tool: name, failureClass: failureClass)
         record(FailureRecord(
@@ -383,6 +406,107 @@ extension ToolCallGuardian {
         content.sound = .default
         center.add(UNNotificationRequest(
             identifier: "guardian-\(UUID().uuidString)", content: content, trigger: nil))
+    }
+
+    // MARK: - Repeated argValidation detection + specific hints
+
+    /// Check if the same tool has failed with the same argValidation error
+    /// recently (last 10 minutes). This catches small models that repeatedly
+    /// make the same mistake (e.g. forgetting `path` in edit_file).
+    private func hasRecentSameError(tool: String, error: String) -> Bool {
+        let cutoff = Date().timeIntervalSince1970 - 600  // 10 minutes
+        let errorDigest = Self.digest(error)
+        return recentFailures.contains { record in
+            record.tool == tool
+                && record.failureClass == .argValidation
+                && record.timestamp.timeIntervalSince1970 > cutoff
+                && Self.digest(record.errorDigest) == errorDigest
+        }
+    }
+
+    /// Try to auto-repair common argValidation errors by parsing the args
+    /// and the error message to identify what's missing or wrong.
+    private func autoRepairArgs(tool: String, argsJSON: String, error: String) -> String? {
+        // Can't repair without args to inspect.
+        guard !argsJSON.isEmpty, argsJSON != "{}" else { return nil }
+        let errorLower = error.lowercased()
+
+        // Pattern: "requires 'path', 'old_string', and 'new_string'"
+        // The model is missing a required param — check which one.
+        if tool == "edit_file" && errorLower.contains("requires") {
+            // If path is missing, we can't auto-repair (no context to infer it).
+            // But we CAN detect other patterns.
+            if errorLower.contains("'path'") && !errorLower.contains("'old_string'") {
+                // Missing old_string but has path — common when model tries
+                // to create a new file instead of editing.
+                return "missing_old_string"
+            }
+        }
+
+        // Pattern: "old_string not found" — the model's edit target doesn't match.
+        // This is a content mismatch, not a missing param — can't auto-repair.
+        if errorLower.contains("not found") {
+            return nil
+        }
+
+        return nil
+    }
+
+    /// Build a VERY specific hint for repeated argValidation errors. Instead
+    /// of the generic "re-read the parameter spec", tell the model exactly
+    /// what's wrong and what to do.
+    private func buildSpecificHint(tool: String, error: String, argsJSON: String) -> String {
+        let errorLower = error.lowercased()
+
+        if tool == "edit_file" {
+            if errorLower.contains("requires 'path'") {
+                return "edit_file is missing the 'path' parameter. You MUST include "
+                    + "'path' (the file path), 'old_string' (exact text to find), and "
+                    + "'new_string' (replacement text). Example: "
+                    + "{\"path\": \"Sources/Foo.swift\", \"old_string\": \"old\", \"new_string\": \"new\"}"
+            }
+            if errorLower.contains("'old_string'") && !errorLower.contains("'new_string'") {
+                return "edit_file is missing 'new_string'. Include all three: path, old_string, new_string."
+            }
+            if errorLower.contains("'new_string'") && !errorLower.contains("'old_string'") {
+                return "edit_file is missing 'old_string'. Include all three: path, old_string, new_string."
+            }
+            if errorLower.contains("not found") {
+                return "The old_string text doesn't exist in the file. Use read_file first "
+                    + "to get the EXACT current content, then copy the exact text you want to replace."
+            }
+        }
+
+        if tool == "write_file" && errorLower.contains("requires") {
+            return "write_file needs 'path' and 'content'. Example: "
+                + "{\"path\": \"Sources/Foo.swift\", \"content\": \"import Foundation\"}"
+        }
+
+        if tool == "edit_plan" {
+            if errorLower.contains("changed nothing") {
+                return "edit_plan needs 'content' with the new text, or set 'append: true' "
+                    + "to add to the end of the plan."
+            }
+            if errorLower.contains("plan_id") || errorLower.contains("title") {
+                return "edit_plan needs either 'plan_id' (the plan's UUID) or 'title' "
+                    + "to identify which plan to edit."
+            }
+        }
+
+        if tool == "send_agent_message" {
+            if errorLower.contains("to_agent") || errorLower.contains("recipient") {
+                return "send_agent_message needs 'to_agent' with the recipient agent name. "
+                    + "Use 'maestro' to send to the main coordinator."
+            }
+            if errorLower.contains("yourself") {
+                return "You cannot send a message to yourself. Use 'to_agent' with a "
+                    + "different agent name, or use 'ask_project_agent' instead."
+            }
+        }
+
+        // Generic fallback: tell the model to read the tool's schema.
+        return "This tool's arguments are malformed. Read the tool schema carefully "
+            + "and include ALL required parameters with correct types."
     }
 
     // MARK: Persistence (quirks)

@@ -417,6 +417,31 @@ extension MaestroTools {
                 process.standardOutput = stdoutPipe
                 process.standardError = stderrPipe
 
+                // Inherit the user's shell environment.  macOS apps launched from
+                // Finder/Launcher don't get the terminal's PATH, so commands like
+                // `find`, `grep`, `xcodebuild` fail with "command not found".
+                // The login shell (-l) should source ~/.zshrc, but we also pass
+                // the current process environment to cover edge cases.
+                var env = ProcessInfo.processInfo.environment
+                // Ensure HOME is set (some launch contexts strip it).
+                if env["HOME"] == nil {
+                    env["HOME"] = NSHomeDirectory()
+                }
+                // Ensure PATH includes common tool locations.
+                let extraPaths = [
+                    "/usr/local/bin",
+                    "/opt/homebrew/bin",
+                    "/usr/bin",
+                    "/bin",
+                    "/usr/sbin",
+                    "/sbin",
+                ]
+                let currentPath = env["PATH"] ?? ""
+                for p in extraPaths where !currentPath.contains(p) {
+                    env["PATH"] = (env["PATH"] ?? "") + ":" + p
+                }
+                process.environment = env
+
                 if FileManager.default.fileExists(atPath: cwd) {
                     process.currentDirectoryURL = URL(fileURLWithPath: cwd)
                 }

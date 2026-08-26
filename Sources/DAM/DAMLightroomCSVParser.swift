@@ -39,10 +39,11 @@ enum LightroomCSVParser {
                             inQuotes = false
                             if next == "," {
                                 endField()
-                            } else if next == "\n" {
+                            // NB: "\r\n" is a SINGLE Character (grapheme
+                            // cluster) — it never matches "\r" or "\n"
+                            // separately and must be handled as one case.
+                            } else if next == "\r\n" || next == "\n" || next == "\r" {
                                 endRow()
-                            } else if next == "\r" {
-                                // handled by the following \n
                             } else {
                                 field.append(next)
                             }
@@ -57,8 +58,11 @@ enum LightroomCSVParser {
                 switch char {
                 case "\"": inQuotes = true
                 case ",": endField()
-                case "\r": break  // normalized by the \n that follows
-                case "\n": endRow()
+                // NB: "\r\n" is a SINGLE Character (grapheme cluster) — it
+                // never matches "\r" or "\n" separately; it must be its own
+                // case or CRLF files parse as one giant row. Lone "\r"
+                // covers legacy Mac line endings.
+                case "\r\n", "\n", "\r": endRow()
                 default: field.append(char)
                 }
             }

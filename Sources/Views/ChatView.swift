@@ -427,14 +427,26 @@ struct ChatView: View {
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .fill(compactToolMode ? theme.accent.opacity(0.12) : Color.clear)
                 )
+                .overlay(
+                    // Context usage glow: a neon border that thickens and
+                    // brightens as the conversation approaches compaction.
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(
+                            contextGlowColor,
+                            style: StrokeStyle(
+                                lineWidth: contextGlowWidth,
+                                lineCap: .round, lineJoin: .round))
+                        .opacity(contextGlowOpacity)
+                        .animation(.easeInOut(duration: 0.5), value: vm.contextProgress)
+                )
+                .shadow(color: contextGlowColor.opacity(contextGlowOpacity * 0.6),
+                        radius: contextGlowRadius, x: 0, y: 0)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help(
-                "Compact Tool Mode: \(compactToolMode ? "on" : "off"). When on, "
-                + "the enabled categories above (except Workspace/Memory/Rules/Time) are "
-                + "hidden from the prompt and reachable instead via search_tools/call_tool "
-                + "— saves prompt tokens once several categories are enabled."
+                "Compact Tool Mode: \(compactToolMode ? "on" : "off"). Context \(Int(vm.contextProgress * 100))% full."
+                + (compactToolMode ? " When on, categories hidden from prompt — reachable via search_tools/call_tool." : "")
             )
         }
         .padding(.horizontal, 6)
@@ -444,6 +456,47 @@ struct ChatView: View {
     /// Whether Compact Tool Mode is on for this agent.
     private var compactToolMode: Bool {
         workspace.compactToolMode(for: vm.agent.id)
+    }
+
+    // MARK: - Context glow properties
+
+    /// Neon glow color: shifts from subtle blue → warning orange → hot red
+    /// as context fills. At low usage it's barely visible; at 80%+ it pulses.
+    private var contextGlowColor: Color {
+        let p = vm.contextProgress
+        if p < 0.5 {
+            // Subtle cyan at low usage — just a hint of presence.
+            return Color.cyan.opacity(0.4)
+        } else if p < 0.75 {
+            // Warm up through orange as context fills.
+            let t = (p - 0.5) / 0.25  // 0→1 across this band
+            return Color.lerp(.cyan, .orange, t)
+        } else {
+            // Red zone — approaching compaction.
+            let t = (p - 0.75) / 0.25  // 0→1 across this band
+            return Color.lerp(.orange, .red, t)
+        }
+    }
+
+    /// Border width: starts invisible (0), reaches ~2pt at full.
+    private var contextGlowWidth: CGFloat {
+        let p = vm.contextProgress
+        if p < 0.1 { return 0 }  // invisible when barely started
+        return CGFloat(p) * 2.5
+    }
+
+    /// Glow opacity: fades in as context fills, full visibility at 50%+.
+    private var contextGlowOpacity: Double {
+        let p = vm.contextProgress
+        if p < 0.1 { return 0 }
+        return min(1.0, p * 1.5)
+    }
+
+    /// Shadow radius for the neon glow effect.
+    private var contextGlowRadius: CGFloat {
+        let p = vm.contextProgress
+        if p < 0.3 { return 0 }
+        return CGFloat(p) * 6
     }
 
     /// Whether panel-driven tool categories (Auto) is on for this agent.
@@ -1194,5 +1247,22 @@ struct PanelDropDelegate: DropDelegate {
 
     func dropUpdated(info: DropInfo, proposal: DropProposal) -> DropProposal? {
         DropProposal(operation: .move)
+    }
+}
+
+// MARK: - Color interpolation
+
+private extension Color {
+    /// Linearly interpolate between two colors. `t` ranges 0.0 → 1.0.
+    static func lerp(_ a: Color, _ b: Color, _ t: Double) -> Color {
+        let t = Float(min(1, max(0, t)))
+        var env = EnvironmentValues()
+        let r1 = a.resolve(in: env)
+        let r2 = b.resolve(in: env)
+        let r = r1.red   + (r2.red   - r1.red)   * t
+        let g = r1.green + (r2.green - r1.green) * t
+        let bl = r1.blue  + (r2.blue  - r1.blue)  * t
+        let al = r1.opacity + (r2.opacity - r1.opacity) * t
+        return Color(.sRGB, red: Double(r), green: Double(g), blue: Double(bl), opacity: Double(al))
     }
 }

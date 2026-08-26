@@ -44,6 +44,43 @@ enum CanvasGrid {
     }
 }
 
+// MARK: - Layout Algorithms
+
+/// Hyprland-inspired layout algorithms for automatic tile arrangement.
+/// Each algorithm computes new `col/row/colSpan/rowSpan` values for every tile
+/// on the canvas. `freeform` preserves the current manual placement.
+enum WorkspaceLayoutAlgorithm: String, Codable, CaseIterable, Sendable {
+    /// Current behavior — manual drag-and-drop placement.
+    case freeform
+    /// First tile (lowest z) occupies the left ~60% as the "master" panel;
+    /// remaining tiles stack vertically in the right ~40%.
+    case masterStack
+    /// Focused tile (highest z) fills the entire canvas (12×8); all other
+    /// tiles are hidden behind it. Clicking a tile raises it to focus.
+    case monocle
+    /// Tiles are arranged in a balanced grid, distributing them evenly across
+    /// the canvas — like pseudo-tiling for floating windows.
+    case grid
+
+    var displayName: String {
+        switch self {
+        case .freeform: return "Freeform"
+        case .masterStack: return "Master Stack"
+        case .monocle: return "Monocle"
+        case .grid: return "Grid"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .freeform: return "rectangle.split.2x2"
+        case .masterStack: return "rectangle.righthalf.filled"
+        case .monocle: return "rectangle.expand.vertical"
+        case .grid: return "square.grid.3x3"
+        }
+    }
+}
+
 // MARK: - Canvas Tile Model
 
 /// One tile on the workspace canvas grid. `kinds` holds a tab stack (dropping
@@ -763,6 +800,23 @@ final class WorkspaceLayoutState {
     /// or dropped. The lock toggle lives in the main toolbar.
     var isLocked = false
 
+    /// The active layout algorithm for the workspace. When changed, the canvas
+    /// tiles are rearranged according to the selected algorithm.
+    var layoutAlgorithm: WorkspaceLayoutAlgorithm = .freeform {
+        didSet {
+            guard layoutAlgorithm != oldValue, !isLoading else { return }
+            applyLayoutAlgorithm(layoutAlgorithm)
+            save()
+        }
+    }
+
+    /// Suppresses layout algorithm side effects during load.
+    private var isLoading = false
+
+    /// The currently focused tile in monocle mode. When set, the focused tile
+    /// fills the canvas and all others are hidden.
+    private(set) var focusedTileID: UUID?
+
     /// Persisted split ratio per split node — legacy tree state, unused by the
     /// canvas. Retained so a pre-cutover install's data round-trips harmlessly.
     private var splitRatios: [String: Double] = [:]
@@ -1158,23 +1212,55 @@ final class WorkspaceLayoutState {
     /// grid is genuinely full, gives up — the caller floats the new panel
     /// instead of overlapping. ("Bump-to-move": new panels push existing ones
     /// smaller, never on top of each other.)
+    ///
+    /// Agent chat tiles are shrunk preferentially — they're the "master" that
+    /// should make room for new panels, rather than shrinking sidebar chrome
+    /// (Agents, Apps) that the user expects to stay stable.
     private func makeRoomIfNeeded(minColSpan: Int, minRowSpan: Int, canvasID: UUID) {
         guard largestFreeRect(minColSpan: minColSpan, minRowSpan: minRowSpan, canvasID: canvasID) == nil else { return }
 
         for _ in 0..<(CanvasGrid.cols * 2) {
             var bestIdx: Int?
             var bestArea = 0
+
+            // Prefer shrinking agent chat tiles — they're the flexible "master"
+            // area that should give way for new panels. Shrink by the needed
+            // amount in one shot rather than 1-col-at-a-time.
+            let neededCols = minColSpan
             for idx in canvasTiles.indices where canvasTiles[idx].canvasID == canvasID {
                 let tile = canvasTiles[idx]
-                let area = tile.colSpan * tile.rowSpan
-                if (tile.colSpan > tile.minColSpan || tile.rowSpan > tile.minRowSpan) && area > bestArea {
+                let isAgentChat = tile.kinds.contains(where: {
+                    if case .agentChat = $0 { return true } else { return false }
+                })
+                if isAgentChat, tile.colSpan - neededCols >= tile.minColSpan {
                     bestIdx = idx
-                    bestArea = area
+                    bestArea = Int.max
+                    break
                 }
             }
+
+            // Fallback: shrink the largest tile by area.
+            if bestIdx == nil {
+                for idx in canvasTiles.indices where canvasTiles[idx].canvasID == canvasID {
+                    let tile = canvasTiles[idx]
+                    let area = tile.colSpan * tile.rowSpan
+                    if (tile.colSpan > tile.minColSpan || tile.rowSpan > tile.minRowSpan) && area > bestArea {
+                        bestIdx = idx
+                        bestArea = area
+                    }
+                }
+            }
+
             guard let idx = bestIdx else { break }
 
-            if canvasTiles[idx].colSpan > canvasTiles[idx].minColSpan {
+            // Shrink the agent chat by the full needed amount in one step;
+            // other tiles shrink 1 col/row at a time.
+            let isAgentChat = canvasTiles[idx].kinds.contains(where: {
+                if case .agentChat = $0 { return true } else { return false }
+            })
+            if isAgentChat, canvasTiles[idx].colSpan - neededCols >= canvasTiles[idx].minColSpan {
+                canvasTiles[idx].colSpan -= neededCols
+            } else if canvasTiles[idx].colSpan > canvasTiles[idx].minColSpan {
                 canvasTiles[idx].colSpan -= 1
             } else if canvasTiles[idx].rowSpan > canvasTiles[idx].minRowSpan {
                 canvasTiles[idx].rowSpan -= 1
@@ -1393,6 +1479,159 @@ final class WorkspaceLayoutState {
         save()
     }
 
+    /// Restore a layout preset: replace the current canvas tiles and floating
+    /// panels with the snapshot stored in the preset. Used by
+    /// `WorkspaceLayoutPresetStore.recall()`. The snapshot is run through the
+    /// overlap repair so a preset captured in a corrupt era can never
+    /// reintroduce overlapping tiles.
+    func restorePreset(_ preset: WorkspaceLayoutPreset) {
+        canvasTiles = preset.canvasTiles
+        floatingPanels.removeAll()
+        for kind in preset.floatingPanels {
+            floatingPanels.insert(kind)
+        }
+        isLocked = preset.isLocked
+        let repair = repairOverlaps()
+        floatingPanels.formUnion(repair.floated)
+        save()
+    }
+
+    // MARK: - Layout Algorithms
+
+    /// Cycle to the next layout algorithm and apply it.
+    func cycleLayoutAlgorithm() {
+        let all = WorkspaceLayoutAlgorithm.allCases
+        guard let idx = all.firstIndex(of: layoutAlgorithm) else { return }
+        layoutAlgorithm = all[(idx + 1) % all.count]
+    }
+
+    /// Focus a tile in monocle mode — raise it to fill the canvas.
+    func focusTile(_ tileID: UUID) {
+        guard layoutAlgorithm == .monocle else { return }
+        focusedTileID = tileID
+        // Raise the focused tile's z-order above all others.
+        if let idx = canvasTiles.firstIndex(where: { $0.id == tileID }) {
+            let maxZ = canvasTiles.map(\.z).max() ?? 0
+            canvasTiles[idx].z = maxZ + 1
+            canvasTiles[idx].col = 0
+            canvasTiles[idx].row = 0
+            canvasTiles[idx].colSpan = CanvasGrid.cols
+            canvasTiles[idx].rowSpan = CanvasGrid.rows
+            // Hide all others.
+            for i in canvasTiles.indices where canvasTiles[i].id != tileID && canvasTiles[i].canvasID == CanvasTile.mainCanvasID {
+                canvasTiles[i].colSpan = 0
+                canvasTiles[i].rowSpan = 0
+            }
+        }
+        save()
+    }
+
+    /// Apply the given layout algorithm to all tiles on the main canvas.
+    private func applyLayoutAlgorithm(_ algorithm: WorkspaceLayoutAlgorithm) {
+        switch algorithm {
+        case .freeform:
+            // No-op — preserve current manual positions.
+            focusedTileID = nil
+        case .masterStack:
+            focusedTileID = nil
+            arrangeAsMasterStack()
+        case .monocle:
+            // Focus the highest-z tile (most recently used).
+            let mainTiles = canvasTiles.filter { $0.canvasID == CanvasTile.mainCanvasID }
+            focusedTileID = mainTiles.max(by: { $0.z < $1.z })?.id
+            arrangeAsMonocle()
+        case .grid:
+            focusedTileID = nil
+            arrangeAsGrid()
+        }
+    }
+
+    /// Master-stack: the tile with the lowest z-order (most behind) becomes the
+    /// "master" and occupies the left ~60% of the canvas. All other tiles stack
+    /// vertically in the right ~40%.
+    private func arrangeAsMasterStack() {
+        var tiles = canvasTiles.filter { $0.canvasID == CanvasTile.mainCanvasID }
+            .sorted { $0.z < $1.z }
+        guard !tiles.isEmpty else { return }
+
+        let masterCols = 7   // ~58% of 12 columns
+        let stackCols = 5    // ~42%
+        let stackX = masterCols
+
+        // Master tile gets the full left side.
+        if let idx = canvasTiles.firstIndex(where: { $0.id == tiles[0].id }) {
+            canvasTiles[idx].col = 0
+            canvasTiles[idx].row = 0
+            canvasTiles[idx].colSpan = masterCols
+            canvasTiles[idx].rowSpan = CanvasGrid.rows
+        }
+
+        // Stack remaining tiles vertically on the right.
+        let stackTiles = Array(tiles.dropFirst())
+        let rowsPerTile = max(CanvasGrid.rows / max(1, stackTiles.count), 2)
+
+        for (i, tile) in stackTiles.enumerated() {
+            guard let idx = canvasTiles.firstIndex(where: { $0.id == tile.id }) else { continue }
+            let row = i * rowsPerTile
+            let remaining = CanvasGrid.rows - row
+            canvasTiles[idx].col = stackX
+            canvasTiles[idx].row = row
+            canvasTiles[idx].colSpan = stackCols
+            canvasTiles[idx].rowSpan = min(rowsPerTile, remaining)
+        }
+    }
+
+    /// Monocle: the focused tile (highest z-order) fills the entire canvas.
+    /// All other tiles are hidden (set to 0 span) — they remain in the array
+    /// so they can be restored when switching back to another layout.
+    private func arrangeAsMonocle() {
+        var tiles = canvasTiles.filter { $0.canvasID == CanvasTile.mainCanvasID }
+            .sorted { $0.z > $1.z }
+        guard !tiles.isEmpty else { return }
+
+        // Focused tile gets full canvas.
+        if let idx = canvasTiles.firstIndex(where: { $0.id == tiles[0].id }) {
+            canvasTiles[idx].col = 0
+            canvasTiles[idx].row = 0
+            canvasTiles[idx].colSpan = CanvasGrid.cols
+            canvasTiles[idx].rowSpan = CanvasGrid.rows
+        }
+
+        // Hide all other tiles (0 span = invisible but preserved).
+        for tile in tiles.dropFirst() {
+            guard let idx = canvasTiles.firstIndex(where: { $0.id == tile.id }) else { continue }
+            canvasTiles[idx].colSpan = 0
+            canvasTiles[idx].rowSpan = 0
+        }
+    }
+
+    /// Grid: distribute tiles evenly across the canvas in a balanced grid.
+    /// Computes rows × cols that best fits the tile count, then assigns each
+    /// tile an equal-sized cell.
+    private func arrangeAsGrid() {
+        let tiles = canvasTiles.filter { $0.canvasID == CanvasTile.mainCanvasID }
+            .sorted { $0.z < $1.z }
+        guard !tiles.isEmpty else { return }
+
+        let n = tiles.count
+        // Find the most square grid that fits n tiles.
+        let gridCols = Int(ceil(sqrt(Double(n))))
+        let gridRows = Int(ceil(Double(n) / Double(gridCols)))
+
+        let cellColSpan = CanvasGrid.cols / gridCols
+        let cellRowSpan = CanvasGrid.rows / gridRows
+
+        for (i, tile) in tiles.enumerated() {
+            guard let idx = canvasTiles.firstIndex(where: { $0.id == tile.id }) else { continue }
+            let col = (i % gridCols) * cellColSpan
+            let row = (i / gridCols) * cellRowSpan
+            canvasTiles[idx].col = col
+            canvasTiles[idx].row = row
+            canvasTiles[idx].colSpan = cellColSpan
+            canvasTiles[idx].rowSpan = cellRowSpan
+        }
+    }
+
     /// Records a canvas window's measured size (grid is size-independent —
     /// tiles keep their cell spans and re-flow proportionally).
     func clampTilesToCanvas(_ size: CGSize, canvasID: UUID = CanvasTile.mainCanvasID) {
@@ -1400,36 +1639,100 @@ final class WorkspaceLayoutState {
     }
 
     /// Enforce the grid invariant after decoding/migration: clamp spans into
-    /// bounds, then resolve every overlap by moving the lower-z (less recently
-    /// used) tile to the nearest free cell. Pixel-era saved data can decode
-    /// into intersecting spans; grid-era data is already clean.
-    private func repairOverlaps() {
+    /// bounds, then resolve every overlap. Escalation per tile, in order:
+    /// 1. MOVE to the nearest free cell at the current span.
+    /// 2. SHRINK toward the grid minimum until a free spot exists (the grid
+    ///    can be over-committed — e.g. a full-height sidebar plus a
+    ///    full-width chat leave zero free cells, so moving alone can never
+    ///    resolve the overlap; this was the fossil-overlap bug).
+    /// 3. FLOAT the panel — docked tiles never overlap (hard rule).
+    /// Front-most tiles (highest z) claim their cells first.
+    ///
+    /// Returns the panel kinds that had to be floated plus whether any tile
+    /// changed, so callers can merge floats into `floatingPanels` and persist
+    /// the repaired state. (Pixel-era saved data can decode into intersecting
+    /// spans; grid-era data is normally already clean.)
+    @discardableResult
+    private func repairOverlaps() -> (floated: [WorkspacePanelKind], changed: Bool) {
+        var floated: [WorkspacePanelKind] = []
+        var changed = false
         let canvasIDs = Set(canvasTiles.map(\.canvasID))
         for canvasID in canvasIDs {
             // Front-most tiles claim their cells first.
             var placed: [(col: Int, row: Int, colSpan: Int, rowSpan: Int)] = []
-            for tile in canvasTiles.filter({ $0.canvasID == canvasID }).sorted(by: { $0.z > $1.z }) {
+            let ordered = canvasTiles.filter { $0.canvasID == canvasID }.sorted(by: { $0.z > $1.z })
+            for tile in ordered {
                 guard let idx = canvasTiles.firstIndex(where: { $0.id == tile.id }) else { continue }
+
+                // Zero-span tiles are intentionally hidden by the monocle
+                // layout — leave them untouched. In any other layout a zero
+                // span is corrupt, so it falls through to the clamp (min 2)
+                // and the tile becomes visible again.
+                let isZeroSpan = canvasTiles[idx].colSpan <= 0 || canvasTiles[idx].rowSpan <= 0
+                if isZeroSpan && layoutAlgorithm == .monocle { continue }
+
                 // Clamp into grid bounds first.
+                let before = canvasTiles[idx].cellSpan
                 canvasTiles[idx].colSpan = min(max(2, canvasTiles[idx].colSpan), CanvasGrid.cols)
                 canvasTiles[idx].rowSpan = min(max(2, canvasTiles[idx].rowSpan), CanvasGrid.rows)
                 canvasTiles[idx].col = min(max(0, canvasTiles[idx].col), CanvasGrid.cols - canvasTiles[idx].colSpan)
                 canvasTiles[idx].row = min(max(0, canvasTiles[idx].row), CanvasGrid.rows - canvasTiles[idx].rowSpan)
+                if canvasTiles[idx].cellSpan != before { changed = true }
 
                 let span = canvasTiles[idx].cellSpan
-                if placed.contains(where: { CanvasGrid.spansIntersect($0, span) }) {
-                    // Find nearest free spot among already-placed tiles.
-                    if let spot = nearestFreeCellExcluding(span: (span.colSpan, span.rowSpan),
+                guard placed.contains(where: { CanvasGrid.spansIntersect($0, span) }) else {
+                    placed.append(span)
+                    continue
+                }
+
+                // 1) MOVE: find the nearest free spot among already-placed tiles.
+                if let spot = nearestFreeCellExcluding(span: (span.colSpan, span.rowSpan),
+                                                       canvasID: canvasID,
+                                                       placed: placed,
+                                                       preferring: (span.col, span.row)) {
+                    canvasTiles[idx].col = spot.col
+                    canvasTiles[idx].row = spot.row
+                    placed.append(canvasTiles[idx].cellSpan)
+                    changed = true
+                    continue
+                }
+
+                // 2) SHRINK: no free cell exists at the current span (grid is
+                // over-committed). Reduce the span — largest dimension first —
+                // until it fits somewhere. A cramped docked panel beats an
+                // overlapping one; the user can resize or reset after.
+                var resolved = false
+                var candidate = (colSpan: span.colSpan, rowSpan: span.rowSpan)
+                shrinkLoop: while candidate.colSpan > 2 || candidate.rowSpan > 2 {
+                    if candidate.colSpan >= candidate.rowSpan, candidate.colSpan > 2 {
+                        candidate.colSpan -= 1
+                    } else {
+                        candidate.rowSpan -= 1
+                    }
+                    if let spot = nearestFreeCellExcluding(span: candidate,
                                                            canvasID: canvasID,
                                                            placed: placed,
                                                            preferring: (span.col, span.row)) {
                         canvasTiles[idx].col = spot.col
                         canvasTiles[idx].row = spot.row
+                        canvasTiles[idx].colSpan = candidate.colSpan
+                        canvasTiles[idx].rowSpan = candidate.rowSpan
+                        placed.append(canvasTiles[idx].cellSpan)
+                        changed = true
+                        resolved = true
+                        break shrinkLoop
                     }
                 }
-                placed.append(canvasTiles[idx].cellSpan)
+                if resolved { continue }
+
+                // 3) FLOAT: absolutely no room, even at minimum size — pop the
+                // panel out into a floating window instead of overlapping.
+                floated.append(contentsOf: canvasTiles[idx].kinds)
+                canvasTiles.remove(at: idx)
+                changed = true
             }
         }
+        return (floated, changed)
     }
 
     /// Nearest free cell given an explicit already-placed list (repair pass),
@@ -1488,20 +1791,38 @@ final class WorkspaceLayoutState {
         let floatingData = try? JSONEncoder().encode(Array(floatingPanels))
         UserDefaults.standard.set(floatingData, forKey: defaultsKey + ".floatingPanels")
         UserDefaults.standard.set(isLocked, forKey: defaultsKey + ".isLocked")
+        UserDefaults.standard.set(layoutAlgorithm.rawValue, forKey: defaultsKey + ".layoutAlgorithm")
         // Note: the legacy tree blob (".root", ".splitRatios") is left in place
         // untouched — backup-before-destructive; nothing reads it anymore.
     }
 
     private func load() {
+        isLoading = true
+        defer { isLoading = false }
         if let tilesData = UserDefaults.standard.data(forKey: defaultsKey + ".canvasTiles"),
            let decoded = try? JSONDecoder().decode([CanvasTile].self, from: tilesData) {
             canvasTiles = decoded
         } else {
             migrateTreeToCanvas()
         }
+        // Decode the layout algorithm BEFORE repairing: repairOverlaps treats
+        // zero-span tiles as intentionally hidden only in monocle mode, so it
+        // needs the persisted algorithm in place first. (The didSet side
+        // effects are suppressed by isLoading.)
+        if let algoRaw = UserDefaults.standard.string(forKey: defaultsKey + ".layoutAlgorithm"),
+           let algo = WorkspaceLayoutAlgorithm(rawValue: algoRaw) {
+            layoutAlgorithm = algo
+        }
         // Enforce the grid invariant: migrations from the pixel-era model can
-        // decode into intersecting spans. De-overlap deterministically.
-        repairOverlaps()
+        // decode into intersecting spans. De-overlap deterministically. Panels
+        // that can't fit even at minimum size are floated — merged into
+        // floatingPanels after its decode below (the decode would otherwise
+        // overwrite the repair's floats).
+        let repair = repairOverlaps()
+        // One-time migration: replace the old hardcoded canvas-ID UUID that was
+        // mistakenly used as an agent ID in .agentChat() tiles with the real
+        // navigator agent UUID.
+        migrateAgentUUIDs()
         // One-time canonical layout for installs landing on the grid with a
         // legacy (pixel or tree) layout: Agents over Apps left, chat(s)
         // center, everything else right. The flag makes it happen exactly once.
@@ -1521,7 +1842,30 @@ final class WorkspaceLayoutState {
            let decoded = try? JSONDecoder().decode([WorkspacePanelKind].self, from: floatingData) {
             floatingPanels = Set(decoded)
         }
+        floatingPanels.formUnion(repair.floated)
         isLocked = UserDefaults.standard.bool(forKey: defaultsKey + ".isLocked")
+        // Persist the repaired layout so the corrupt state doesn't come back
+        // on the next launch.
+        if repair.changed { save() }
+    }
+
+    /// One-time migration: replace the old hardcoded canvas-ID UUID that was
+    /// mistakenly used as an agent ID in .agentChat() tiles with the real
+    /// navigator agent UUID. Runs on every load — idempotent.
+    private func migrateAgentUUIDs() {
+        let badID = CanvasTile.mainCanvasID  // 00000000-0000-0000-0000-000000000001
+        let navigatorID = WorkspaceStore().navigator.id
+        guard navigatorID != badID else { return }
+        var changed = false
+        for idx in canvasTiles.indices {
+            for kindIdx in canvasTiles[idx].kinds.indices {
+                if case .agentChat(let id) = canvasTiles[idx].kinds[kindIdx], id == badID {
+                    canvasTiles[idx].kinds[kindIdx] = .agentChat(navigatorID)
+                    changed = true
+                }
+            }
+        }
+        if changed { save() }
     }
 
     /// One-time migration: flatten the legacy binary tree into canvas tiles,

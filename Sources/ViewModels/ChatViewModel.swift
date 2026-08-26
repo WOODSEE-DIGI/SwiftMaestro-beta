@@ -44,6 +44,10 @@ class ChatViewModel: ObservableObject {
     /// regenerating the system prompt so the model-capacity guidance matches
     /// the actual model instead of defaulting to the small-model fallback.
     @Published var currentModelHuggingFaceID: String? = nil
+    /// Context usage progress (0.0–1.0) for the compaction ring indicator.
+    /// Updated after each message is added; drives the animated circle in the
+    /// toolbar that fills up as the context approaches the compaction threshold.
+    @Published var contextProgress: Double = 0.0
 
     let agent: AgentRecord
     let projectName: String?
@@ -79,6 +83,9 @@ class ChatViewModel: ObservableObject {
     /// history on every turn when the context is still over budget.
     private var lastCompactionMessageCount: Int = 0
     private var lastCompactionTime: Date?
+    /// Last inference engine used for generation. Retained weakly so memory
+    /// pressure compaction can trigger a summary without a circular reference.
+    private weak var lastEngine: MLXInferenceEngine?
 
     init(agent: AgentRecord, projectName: String?, visionProxyService: VisionProxyService) {
         self.agent = agent
@@ -98,6 +105,21 @@ class ChatViewModel: ObservableObject {
             self.messages = [Self.systemMessage(
                 for: agent, projectName: projectName, workingDirectory: wd,
                 modelID: modelID)]
+        }
+
+        // SELF-HEALING: Listen for memory pressure notifications from the
+        // inference engine and trigger aggressive compaction.
+        NotificationCenter.default.addObserver(
+            forName: .memoryPressureCompactionNeeded,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self else { return }
+            guard let modelID = notification.userInfo?["modelID"] as? String,
+                  modelID == self.agent.modelID else { return }
+            Task { @MainActor in
+                self.handleMemoryPressureCompaction()
+            }
         }
     }
 
@@ -158,6 +180,8 @@ class ChatViewModel: ObservableObject {
 
     func send(engine: MLXInferenceEngine, catalog: ModelCatalog, model: MaestroModel?) {
         guard !isStreaming else { return }
+        // Retain engine reference for memory pressure compaction.
+        lastEngine = engine
         // Merge typed images with any local image paths found in the text
         // (e.g. a pasted screenshot path), stripping the path from the prompt.
         let (cleanedText, pathImages, extractedPaths) = Self.extractImages(from: inputText)
@@ -188,6 +212,8 @@ class ChatViewModel: ObservableObject {
             modelName: currentModelDisplayName))
         isStreaming = true
         AIBroadcastService.broadcastGenerationStarted(modelName: currentModelDisplayName ?? "unknown")
+        // Update the compaction progress ring immediately.
+        updateContextProgress()
 
         // Manual compaction command: bypass the model and compact history immediately.
         if isCompactionRequest, !model.isRemote {
@@ -412,6 +438,8 @@ class ChatViewModel: ObservableObject {
             currentActivity = nil
             steerInbox = nil
             saveHistory()
+            // Update the compaction progress ring after response is finalized.
+            updateContextProgress()
         }
     }
 
@@ -2107,6 +2135,52 @@ class ChatViewModel: ObservableObject {
         return commands.contains { lower.contains($0) }
     }
 
+    /// SELF-HEALING: Triggered by the inference engine when system memory is
+    /// critically low. Forces an immediate compaction regardless of the normal
+    /// token-budget threshold, freeing KV cache memory before generation can
+    /// overflow Metal's ~80GB single-buffer limit.
+    private func handleMemoryPressureCompaction() {
+        // Don't compact if already compacting, if the conversation is too short,
+        // or if we don't have a reference to the engine.
+        guard !isStreaming, messages.count > 10, let engine = lastEngine else { return }
+        // Respect the one-compaction-per-minute guard.
+        if let last = lastCompactionTime, Date().timeIntervalSince(last) < 60 { return }
+
+        let catalog = ModelCatalog()
+        guard let model = catalog.effectiveModel(for: agent) else { return }
+        guard !model.isRemote else { return }
+
+        NSLog("[ChatViewModel] memory pressure compaction triggered for model=%@", model.id)
+        currentActivity = "Compacting history to free memory…"
+        generateTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let summaryModel = Self.pickSummaryModel(active: model, catalog: catalog)
+            let nonSystemMessages = self.messages.filter { $0.role != .system }
+            if let compacted = await ChatCompaction.compactIfNeeded(
+                messages: nonSystemMessages,
+                model: model,
+                engine: engine,
+                contextLength: model.tunedContextLength,
+                outputTokens: model.tunedMaxTokens,
+                agentID: self.agent.id.uuidString,
+                agentName: self.agent.name,
+                summaryModel: summaryModel) {
+                let systemMsg = self.messages.first { $0.role == .system }
+                var newMessages: [Message] = []
+                if let systemMsg { newMessages.append(systemMsg) }
+                newMessages.append(compacted.checkpoint)
+                newMessages.append(contentsOf: compacted.recentMessages)
+                self.messages = newMessages
+                self.lastCompactionMessageCount = nonSystemMessages.count
+                self.lastCompactionTime = Date()
+                NSLog("[ChatViewModel] memory pressure compaction complete: freed %d messages", nonSystemMessages.count - compacted.recentMessages.count)
+                // Reset the progress ring — compaction freed context.
+                self.updateContextProgress()
+            }
+            self.currentActivity = nil
+        }
+    }
+
     /// Handle a manual compaction request by summarizing the head and saving the
     /// checkpoint to AI-Context memory. The visible chat history is left intact.
     private func handleManualCompaction(
@@ -2187,5 +2261,25 @@ class ChatViewModel: ObservableObject {
             result.append(line)
         }
         return result.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Update the context usage progress (0.0–1.0) based on current messages
+    /// and the active model's compaction threshold. Called after messages change
+    /// and after compaction completes.
+    func updateContextProgress() {
+        let catalog = ModelCatalog()
+        guard let model = catalog.effectiveModel(for: agent) else {
+            contextProgress = 0.0
+            return
+        }
+        let nonSystemMessages = messages.filter { $0.role != .system }
+        let totalTokens = ChatCompaction.estimateTokens(
+            for: nonSystemMessages.map { ChatCompaction.serialize($0) })
+        let threshold = model.effectiveCompactionThreshold
+        guard threshold > 0 else {
+            contextProgress = 0.0
+            return
+        }
+        contextProgress = min(1.0, Double(totalTokens) / Double(threshold))
     }
 }

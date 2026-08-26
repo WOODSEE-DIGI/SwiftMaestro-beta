@@ -21,6 +21,9 @@ final class DAMTaggingViewModel {
     private(set) var untaggedPool: [DAMAsset] = []
     /// Tag names on the primary selection (tag tree, not userKeywords).
     private(set) var primaryTags: [String] = []
+    /// Tags grouped by source on the primary selection.
+    private(set) var primaryUserTags: [String] = []
+    private(set) var primaryAITags: [String] = []
     /// OCR text of the primary selection (from the asset row).
     private(set) var primaryOCR: String?
 
@@ -75,6 +78,8 @@ final class DAMTaggingViewModel {
     func loadPrimaryDetails(_ asset: DAMAsset?) async {
         guard let asset, let assetId = asset.id else {
             primaryTags = []
+            primaryUserTags = []
+            primaryAITags = []
             primaryOCR = nil
             return
         }
@@ -82,6 +87,11 @@ final class DAMTaggingViewModel {
         primaryTags = (try? await Task.detached(priority: .userInitiated) { [database] in
             try database.tagNames(forAssetId: assetId)
         }.value) ?? []
+        let tagged = (try? await Task.detached(priority: .userInitiated) { [database] in
+            try database.tagNamesWithSource(forAssetId: assetId)
+        }.value) ?? []
+        primaryUserTags = tagged.filter { $0.source == .user }.map(\.name)
+        primaryAITags = tagged.filter { $0.source == .ai }.map(\.name)
     }
 
     // MARK: - Indexing

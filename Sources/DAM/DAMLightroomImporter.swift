@@ -191,7 +191,11 @@ actor DAMLightroomImporter {
 
             do {
                 if isNew {
-                    try working.insert(db)
+                    // inserted() (not insert()) — the plain insert resolves to
+                    // the non-mutating PersistableRecord overload whose
+                    // didInsert never fires, leaving working.id nil so every
+                    // tag/collection link below is skipped.
+                    working = try working.inserted(db)
                     result.inserted += 1
                 } else if changed {
                     try working.update(db)

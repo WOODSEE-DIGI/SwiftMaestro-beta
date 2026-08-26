@@ -189,10 +189,23 @@ struct TaggingWorkspaceView: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    if !tagging.primaryTags.isEmpty {
+                    // User tags (accent color chips)
+                    if !tagging.primaryUserTags.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Tags").font(.subheadline.weight(.semibold))
-                            FlowTags(tags: tagging.primaryTags)
+                            FlowTagChips(tags: tagging.primaryUserTags.map { (name: $0, source: .user) })
+                        }
+                    }
+                    // AI classification tags (purple chips with sparkles icon)
+                    if !tagging.primaryAITags.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "sparkles")
+                                    .font(.caption)
+                                    .foregroundStyle(.purple)
+                                Text("AI Tags").font(.subheadline.weight(.semibold))
+                            }
+                            FlowTagChips(tags: tagging.primaryAITags.map { (name: $0, source: .ai) })
                         }
                     }
                     if let ocr = tagging.primaryOCR, !ocr.isEmpty {

@@ -150,8 +150,13 @@ actor DAMTaggingService {
     /// punctuation-stripped, stop words removed, min length 3, capped at 400
     /// unique tokens so long documents don't blow up the Jaccard math.
     static func ocrTokens(from text: String) -> Set<String> {
+        // Collapse thousands separators inside numbers so amounts survive as
+        // whole tokens ("$1,234.00" → "1234", not "1" + "234"). One pass of
+        // the lookahead pattern handles chained groups ("1,234,567").
+        let normalized = text.replacingOccurrences(
+            of: #"(?<=\d)[,.](?=\d{3}\b)"#, with: "", options: .regularExpression)
         var tokens = Set<String>()
-        for raw in text.lowercased()
+        for raw in normalized.lowercased()
             .components(separatedBy: CharacterSet.alphanumerics.inverted) {
             let token = raw.trimmingCharacters(in: .whitespaces)
             guard token.count >= 3, !stopTokens.contains(token) else { continue }
@@ -193,13 +198,29 @@ actor DAMTaggingService {
 
     // MARK: - Image decoding
 
-    /// Decode an image for AI work at a bounded pixel size. ImageIO's
-    /// thumbnail path handles JPEG/PNG/HEIC/TIFF AND camera RAW natively
-    /// (it powers Finder previews), applies EXIF orientation, and never
-    /// decodes the full image into memory. Falls back to the QuickLook-based
-    /// ThumbnailService for formats ImageIO can't crack (exotic RAW).
+    /// Decode an image for AI work at a bounded pixel size. Camera RAW and
+    /// exotic formats go straight to ThumbnailService (LibRaw-backed) to
+    /// avoid Apple's decoder error spam (`-50` per file). Standard images
+    /// (JPEG/HEIC/PNG/TIFF/WebP) use ImageIO directly — fast, in-process,
+    /// no XPC overhead. Falls back to ThumbnailService for anything else.
     static func loadCGImage(path: String, maxPixel: Int) async -> CGImage? {
         let url = URL(fileURLWithPath: path)
+
+        // Camera RAW + LibRaw-only formats: skip ImageIO entirely.
+        // Apple's decoder spams CGImageSourceCreateThumbnailAtIndex [-50]
+        // errors on many RAW variants (NEF/RA30/RA02/RA04/IIQ/PEF).
+        // ThumbnailService routes these through LibRaw which handles them
+        // uniformly and quietly.
+        if DAMFileKind.isCameraRAW(url) || DAMFileKind.isLibRAWOnly(url) {
+            if let nsImage = try? await ThumbnailService.shared.thumbnail(
+                for: url, pixelSize: CGFloat(maxPixel)) {
+                var rect = CGRect(origin: .zero, size: nsImage.size)
+                return nsImage.cgImage(forProposedRect: &rect, context: nil, hints: nil)
+            }
+            return nil
+        }
+
+        // Standard images (JPEG/HEIC/PNG/TIFF/WebP/GIF): ImageIO direct.
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceThumbnailMaxPixelSize: maxPixel,
@@ -210,7 +231,7 @@ actor DAMTaggingService {
            let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
             return image
         }
-        // QuickLook fallback (LibRaw-backed for RAW in this app).
+        // ThumbnailService fallback (QuickLook-backed for documents, etc.).
         if let nsImage = try? await ThumbnailService.shared.thumbnail(
             for: url, pixelSize: CGFloat(maxPixel)) {
             var rect = CGRect(origin: .zero, size: nsImage.size)

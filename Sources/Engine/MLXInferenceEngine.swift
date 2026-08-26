@@ -19,6 +19,13 @@ enum EngineState: Equatable {
     case error(String)
 }
 
+extension Notification.Name {
+    /// Posted when the inference engine detects insufficient memory for a
+    /// generation and requests the ChatViewModel to compact the context.
+    static let memoryPressureCompactionNeeded = Notification.Name(
+        "com.woodseedigi.swiftmaestro.memoryPressureCompactionNeeded")
+}
+
 enum EngineError: LocalizedError {
     /// The model's local directory is missing one or more weight shards
     /// declared in its `model.safetensors.index.json` (an interrupted or
@@ -821,6 +828,7 @@ final class MLXInferenceEngine {
             ?? model.recRepetitionPenalty.map { Float($0) }
             ?? 1.05
         let parameters = GenerateParameters(
+            maxKVSize: model.maxKVSize,
             temperature: resolvedTemp,
             topP: resolvedTopP,
             repetitionPenalty: resolvedRepPenalty,
@@ -1104,12 +1112,36 @@ final class MLXInferenceEngine {
         }
         let container = try await loadModel(model)
         ModelActivitySampler.shared.register(model, state: .idle)
+
+        // SELF-HEALING: Check memory pressure before generation.
+        // If system memory is critically low, trigger compaction to free KV cache
+        // before it can overflow Metal's ~80GB single-buffer limit.
+        let availableBytes = Self.systemAvailableMemoryBytes()
+        let modelBytes = UInt64(model.estimatedMemoryGB) * 1_073_741_824
+        let kvReserveBytes: UInt64 = 8_589_934_592  // 8 GB reserve for KV cache growth
+        if availableBytes < modelBytes + kvReserveBytes {
+            let availableGB = Double(availableBytes) / 1_073_741_824
+            let neededGB = Double(modelBytes + kvReserveBytes) / 1_073_741_824
+            NSLog("[ENGINE] MEMORY PRESSURE: available=%.1fGB < needed=%.1fGB — triggering compaction before generation", availableGB, neededGB)
+            // Signal the chat view model to compact. This is a best-effort attempt;
+            // if it fails, we proceed anyway (the KV cache RotatingKVCache will
+            // handle overflow via eviction).
+            NotificationCenter.default.post(
+                name: .memoryPressureCompactionNeeded,
+                object: nil,
+                userInfo: ["modelID": model.id, "availableBytes": availableBytes]
+            )
+            // Brief pause to let compaction start (non-blocking — it runs async).
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+
         // mlx-swift-lm #258 (Gemma 4 broadcast crash with repPen) is fixed in the
         // vendored RepetitionContext (rank-normalized gather), so the penalty
         // applies uniformly across model families.
         let repPen: Float? = Float(model.tunedRepetitionPenalty)
         let parameters = GenerateParameters(
             maxTokens: maxTokens,
+            maxKVSize: model.maxKVSize,
             temperature: Float(temperature), topP: Float(topP), repetitionPenalty: repPen,
             // 256-token window: the library default of 20 barely covers a phrase,
             // so section-level repetition slipped past the penalty entirely.
@@ -1291,6 +1323,7 @@ final class MLXInferenceEngine {
         let repPen: Float? = Float(model.tunedRepetitionPenalty)
         let parameters = GenerateParameters(
             maxTokens: maxTokens,
+            maxKVSize: model.maxKVSize,
             temperature: Float(temperature), topP: Float(topP), repetitionPenalty: repPen,
             // 256-token window: the library default of 20 barely covers a phrase,
             // so section-level repetition slipped past the penalty entirely.
@@ -1550,6 +1583,7 @@ final class MLXInferenceEngine {
 
         let parameters = GenerateParameters(
             maxTokens: maxTokens,
+            maxKVSize: proxyModel.maxKVSize,
             temperature: 0.3,
             topP: 0.9,
             repetitionPenalty: 1.0,

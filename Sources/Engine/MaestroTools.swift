@@ -65,6 +65,10 @@ enum MaestroTools {
     /// Returns the calling agent's authorized roots (global Settings + working
     /// directory) so delegation can pass them to the child.
     static func authorizedRootsForParent() -> [String] {
+        // Full Disk Access: bypass all restrictions.
+        if SwiftMaestroSettingsStore.loadFullDiskAccess() {
+            return ["/"]
+        }
         var roots = SwiftMaestroSettingsStore.loadAuthorizedFolders()
             .filter { $0.enabled }
             .map { URL(fileURLWithPath: unescapeShellPath(($0.path as NSString).expandingTildeInPath)).standardizedFileURL.path }

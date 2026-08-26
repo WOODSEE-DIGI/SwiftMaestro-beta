@@ -12,6 +12,7 @@ enum SwiftMaestroSettingsStore {
     static let mcpBundledPresetVersionKey = "settings.mcp.preset.bundledVersion"
     static let agentRulesKey = "settings.rules.agentRules"
     static let collapseCompactionSummariesKey = "settings.compaction.collapseSummariesByDefault"
+    static let fullDiskAccessKey = "settings.context.fullDiskAccess"
 
     static func loadAllowedModels() -> [String] {
         UserDefaults.standard.stringArray(forKey: allowedModelsKey) ?? []
@@ -62,6 +63,14 @@ enum SwiftMaestroSettingsStore {
 
     static func saveFilesInMemory(_ count: Int) {
         UserDefaults.standard.set(count, forKey: filesInMemoryKey)
+    }
+
+    static func loadFullDiskAccess() -> Bool {
+        UserDefaults.standard.bool(forKey: fullDiskAccessKey)
+    }
+
+    static func saveFullDiskAccess(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: fullDiskAccessKey)
     }
 
     static func loadLastImportDate() -> String {
@@ -2073,11 +2082,66 @@ struct ContextSettingsTab: View {
     @State private var filesInMemory: Int = 0
     @State private var lastImportDate: String = ""
     @State private var collapseCompactionSummaries: Bool = false
+    @State private var fullDiskAccess: Bool = false
+    /// The real macOS TCC Full Disk Access grant (kTCCServiceSystemPolicyAllFiles)
+    /// — probed live from the system, completely separate from the in-app
+    /// toggle above it (which only bypasses the Authorized Folders list).
+    @State private var macOSFullDiskAccess: Bool = false
     @State private var saveMessage: String?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                GroupBox("Full Disk Access") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Toggle(
+                            "Unrestricted agent file access (bypasses Authorized Folders)",
+                            isOn: $fullDiskAccess)
+                        Text("When enabled, agents can read and write files anywhere on the system, just like a terminal with Full Disk Access. This bypasses the Authorized Folders restrictions below.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if fullDiskAccess {
+                            Label("Unrestricted access is ON — agents have unrestricted file system access", systemImage: "checkmark.shield.fill")
+                                .font(.caption)
+                                .foregroundStyle(.green)
+                        }
+
+                        Divider()
+
+                        // The REAL macOS grant (TCC). Only the user can grant
+                        // it in System Settings — the app can only detect it
+                        // and deep-link to the pane. Applies at process launch.
+                        HStack {
+                            Label(
+                                macOSFullDiskAccess
+                                    ? "macOS Full Disk Access: granted"
+                                    : "macOS Full Disk Access: not granted",
+                                systemImage: macOSFullDiskAccess
+                                    ? "checkmark.shield.fill"
+                                    : "exclamationmark.shield.fill"
+                            )
+                            .font(.caption)
+                            .foregroundStyle(macOSFullDiskAccess ? .green : .orange)
+                            Spacer()
+                            Button("Recheck") {
+                                macOSFullDiskAccess = FullDiskAccessService.isGranted()
+                            }
+                            .controlSize(.small)
+                            Button("Open Settings…") {
+                                FullDiskAccessService.openSystemSettings()
+                            }
+                            .controlSize(.small)
+                        }
+                        if !macOSFullDiskAccess {
+                            Text("Required for Mail, Messages, Safari and other macOS-protected data. Turn SwiftMaestro ON in System Settings → Privacy & Security → Full Disk Access, then relaunch the app — macOS applies the grant at launch.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .padding(8)
+                }
                 GroupBox("Authorized Folders") {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
@@ -2169,6 +2233,7 @@ struct ContextSettingsTab: View {
                         SwiftMaestroSettingsStore.saveFilesInMemory(filesInMemory)
                         SwiftMaestroSettingsStore.saveLastImportDate(lastImportDate)
                         SwiftMaestroSettingsStore.saveCollapseCompactionSummaries(collapseCompactionSummaries)
+                        SwiftMaestroSettingsStore.saveFullDiskAccess(fullDiskAccess)
                         saveMessage = "Saved"
                     }
                 }
@@ -2180,6 +2245,8 @@ struct ContextSettingsTab: View {
             authorizedFolders = SwiftMaestroSettingsStore.loadAuthorizedFolders()
             filesInMemory = SwiftMaestroSettingsStore.loadFilesInMemory()
             lastImportDate = SwiftMaestroSettingsStore.loadLastImportDate()
+            fullDiskAccess = SwiftMaestroSettingsStore.loadFullDiskAccess()
+            macOSFullDiskAccess = FullDiskAccessService.isGranted()
             SwiftMaestroSettingsStore.saveCollapseCompactionSummaries(collapseCompactionSummaries)
         }
     }

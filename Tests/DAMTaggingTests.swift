@@ -119,7 +119,10 @@ struct DAMTaggingTests {
         try db.applyTag(name: "Kids", to: taggedId, source: .user)
 
         let exemplars = try db.taggedExemplars()
-        #expect(exemplars.count == 1)
+        // #require (not #expect) so a data-layer regression fails the test
+        // gracefully — a bare subscript on an empty array crashes the whole
+        // test host process and aborts every remaining suite.
+        try #require(exemplars.count == 1)
         #expect(exemplars[0].tags == ["Kids"])
 
         let untagged = try db.untaggedAssets(requireFeatures: false, limit: 100, offset: 0)

@@ -244,6 +244,14 @@ final class DAMDatabase: Sendable {
                           on: "tagSuggestion", columns: ["assetId"])
         }
 
+        // v7: Content auto-tagging — VNClassifyImageRequest labels stored
+        // per-asset and auto-applied as tags during indexing.
+        migrator.registerMigration("v7-content-classification") { db in
+            try db.alter(table: "assetFeature") { t in
+                t.add(column: "classificationTags", .text)
+            }
+        }
+
         return migrator
     }()
 

@@ -25,38 +25,41 @@ struct AgentsPanelView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
 
-            List {
-                Section {
-                    agentRow(workspace.navigator, systemImage: "point.3.connected.trianglepath.dotted")
-                    agentRow(workspace.mechanic, systemImage: "wrench.and.screwdriver")
-                } header: {
-                    Text("Agents")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(theme.sidebarText.opacity(0.7))
-                }
-                ForEach(workspace.projectAgentsByCategory(), id: \.category) { group in
+            GeometryReader { proxy in
+                List {
                     Section {
-                        ForEach(group.agents) { agent in
-                            agentRow(
-                                agent,
-                                subtitle: workspace.projectName(for: agent),
-                                systemImage: workspace.resolvedCategory(for: agent).systemImage
-                            )
-                        }
+                        agentRow(workspace.navigator, systemImage: "point.3.connected.trianglepath.dotted")
+                        agentRow(workspace.mechanic, systemImage: "wrench.and.screwdriver")
                     } header: {
-                        HStack(spacing: 4) {
-                            Image(systemName: group.category.systemImage)
-                                .font(.system(size: 10))
-                            Text(group.category.displayName)
+                        Text("Agents")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(theme.sidebarText.opacity(0.7))
+                    }
+                    ForEach(workspace.projectAgentsByCategory(), id: \.category) { group in
+                        Section {
+                            ForEach(group.agents) { agent in
+                                agentRow(
+                                    agent,
+                                    subtitle: workspace.projectName(for: agent),
+                                    systemImage: workspace.resolvedCategory(for: agent).systemImage
+                                )
+                            }
+                        } header: {
+                            HStack(spacing: 4) {
+                                Image(systemName: group.category.systemImage)
+                                    .font(.system(size: 10))
+                                Text(group.category.displayName)
+                            }
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(theme.sidebarText.opacity(0.7))
                         }
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(theme.sidebarText.opacity(0.7))
                     }
                 }
+                .listStyle(.sidebar)
+                .scrollContentBackground(.hidden)
+                .background(theme.sidebarBackground)
+                .frame(width: proxy.size.width, height: proxy.size.height)
             }
-            .listStyle(.sidebar)
-            .scrollContentBackground(.hidden)
-            .background(theme.sidebarBackground)
 
             VStack(alignment: .leading, spacing: 8) {
                 EngineStatusBar()

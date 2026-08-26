@@ -88,32 +88,51 @@ extension DAMTaggingService {
         textRequest.usesLanguageCorrection = true
         textRequest.automaticallyDetectsLanguage = true
         let handler = VNImageRequestHandler(cgImage: image, options: [:])
+
+        // 2. Feature print — visual similarity fingerprint.
+        let printRequest = VNGenerateImageFeaturePrintRequest()
+
+        // 3. Content classification (v7) — scene/object labels.
+        let classifyRequest = VNClassifyImageRequest()
+
+        // Run all three Vision requests in a single perform() call. This is
+        // dramatically faster than three sequential calls because Vision
+        // shares the image decode across requests and avoids redundant work.
+        // Note: handler.perform() is synchronous and blocking — acceptable
+        // here because the actor serializes indexing and 2048px images
+        // decode in well under a second on Apple Silicon.
         do {
-            try handler.perform([textRequest])
-            let lines = (textRequest.results ?? [])
-                .compactMap { $0.topCandidates(1).first?.string }
-            ocrText = lines.joined(separator: "\n")
+            try handler.perform([textRequest, printRequest, classifyRequest])
         } catch {
-            NSLog("[DAMTagging] OCR failed for %@: %@", asset.path, "\(error)")
+            NSLog("[DAMTagging] Vision batch failed for %@: %@", asset.path, "\(error)")
+            return false
         }
 
-        // 2. Feature print.
+        // Extract OCR results.
+        let lines = (textRequest.results ?? [])
+            .compactMap { $0.topCandidates(1).first?.string }
+        ocrText = lines.joined(separator: "\n")
+
+        // Extract feature print.
         var printData: Data?
-        let printRequest = VNGenerateImageFeaturePrintRequest()
-        do {
-            try handler.perform([printRequest])
-            if let observation = printRequest.results?.first {
-                printData = Self.archive(observation)
-            }
-        } catch {
-            NSLog("[DAMTagging] Feature print failed for %@: %@", asset.path, "\(error)")
+        if let observation = printRequest.results?.first {
+            printData = Self.archive(observation)
+        }
+
+        // Extract classification labels (≥ 0.5 confidence).
+        var classificationLabels: [String] = []
+        if let results = classifyRequest.results {
+            classificationLabels = results
+                .filter { $0.confidence >= 0.5 }
+                .map { $0.identifier.lowercased() }
         }
 
         let tokens = Self.ocrTokens(from: ocrText)
 
-        // 3. Persist: feature row + (changed) ocrText on the asset, audited.
+        // 4. Persist: feature row + (changed) ocrText on the asset, audited.
         try database.saveFeature(
-            assetId: assetId, featurePrint: printData, ocrTokens: Array(tokens))
+            assetId: assetId, featurePrint: printData, ocrTokens: Array(tokens),
+            classificationTags: classificationLabels)
         let finalOCRText = ocrText  // immutable copy for the @Sendable closure
         if !finalOCRText.isEmpty, finalOCRText != asset.ocrText {
             try await database.dbQueue.write { db in
@@ -125,6 +144,14 @@ extension DAMTaggingService {
                     db, assetId: assetId, field: "ocrText",
                     oldValue: old?.isEmpty == false ? "(previous OCR text)" : nil,
                     newValue: "(\(finalOCRText.count) chars)", source: "ocr")
+            }
+        }
+        // 5. Auto-apply classification labels as tags (source: ai). These
+        //    become new exemplars, so visually similar untagged images will
+        //    also get these labels suggested via the existing propagation.
+        if !classificationLabels.isEmpty {
+            for label in classificationLabels {
+                _ = try database.applyTag(name: label, to: assetId, source: .ai)
             }
         }
         return true

@@ -73,10 +73,34 @@ struct DAMBrowserView: View {
                 Button { viewModel.importLightroomCSVWithPanel() } label: {
                     Label("Import Lightroom CSV…", systemImage: "tablecells")
                 }
+                Button { viewModel.importLrcatWithPanel() } label: {
+                    Label("Import Lightroom Catalog (.lrcat)…", systemImage: "doc.text")
+                }
             } label: {
                 Label("Import…", systemImage: "square.and.arrow.down")
             }
-            .disabled(viewModel.isImporting || viewModel.isImportingLightroom)
+            .disabled(viewModel.isImporting || viewModel.isImportingLightroom
+                       || viewModel.isImportingLrcat)
+
+            if viewModel.isImportingLrcat {
+                Button {
+                    viewModel.cancelLrcatImport()
+                } label: {
+                    Label("Cancel", systemImage: "xmark.circle")
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.red)
+
+                Text(viewModel.lrcatProgress)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            } else if let summary = viewModel.lrcatSummary {
+                Text(summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
 
             if viewModel.isImportingLightroom {
                 Button {

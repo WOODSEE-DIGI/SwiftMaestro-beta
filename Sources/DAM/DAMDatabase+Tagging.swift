@@ -14,12 +14,16 @@ extension DAMDatabase {
     // MARK: Feature storage
 
     /// Store (insert-or-replace) the computed AI features for one asset.
-    func saveFeature(assetId: Int64, featurePrint: Data?, ocrTokens: [String]) throws {
+    func saveFeature(assetId: Int64, featurePrint: Data?, ocrTokens: [String],
+                     classificationTags: [String]) throws {
         let tokensJSON = String(data: try JSONEncoder().encode(ocrTokens), encoding: .utf8)
+        let tagsJSON = classificationTags.isEmpty ? nil :
+            String(data: try JSONEncoder().encode(classificationTags), encoding: .utf8)
         try dbQueue.write { db in
             try DAMAssetFeature(
                 assetId: assetId, featurePrint: featurePrint,
-                ocrTokens: tokensJSON, computedAt: Date()
+                ocrTokens: tokensJSON, classificationTags: tagsJSON,
+                computedAt: Date()
             ).save(db)
         }
     }
@@ -45,14 +49,16 @@ extension DAMDatabase {
          OR a.uti LIKE 'com.pentax.%' OR a.uti LIKE 'com.panasonic.%')
         """
 
-    /// Page of assets missing AI features (feature print and/or OCR tokens)
-    /// — the indexing backlog. Ordered by id for a stable scan cursor.
+    /// Page of assets missing AI features (feature print, OCR tokens, or
+    /// classification tags) — the indexing backlog. Ordered by id for a stable
+    /// scan cursor.
     func featureBacklog(limit: Int, offset: Int) throws -> [DAMAsset] {
         try dbQueue.read { db in
             try DAMAsset.fetchAll(db, sql: """
                 SELECT a.* FROM asset a
                 LEFT JOIN assetFeature f ON f.assetId = a.id
-                WHERE (f.assetId IS NULL OR f.featurePrint IS NULL OR f.ocrTokens IS NULL)
+                WHERE (f.assetId IS NULL OR f.featurePrint IS NULL
+                       OR f.ocrTokens IS NULL OR f.classificationTags IS NULL)
                   AND \(Self.aiIndexableUTIFilter)
                 ORDER BY a.id LIMIT ? OFFSET ?
                 """, arguments: [limit, offset])
@@ -65,7 +71,8 @@ extension DAMDatabase {
             try Int.fetchOne(db, sql: """
                 SELECT COUNT(*) FROM asset a
                 LEFT JOIN assetFeature f ON f.assetId = a.id
-                WHERE (f.assetId IS NULL OR f.featurePrint IS NULL OR f.ocrTokens IS NULL)
+                WHERE (f.assetId IS NULL OR f.featurePrint IS NULL
+                       OR f.ocrTokens IS NULL OR f.classificationTags IS NULL)
                   AND \(Self.aiIndexableUTIFilter)
                 """) ?? 0
         }
@@ -103,6 +110,20 @@ extension DAMDatabase {
                 JOIN assetTag at ON at.tagId = t.id
                 WHERE at.assetId = ? ORDER BY t.name
                 """, arguments: [assetId])
+        }
+    }
+
+    /// Tag names and their sources for one asset, ordered by source then name.
+    func tagNamesWithSource(forAssetId assetId: Int64) throws -> [(name: String, source: DAMTagSource)] {
+        try dbQueue.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT t.name, t.source FROM tag t
+                JOIN assetTag at ON at.tagId = t.id
+                WHERE at.assetId = ? ORDER BY t.source, t.name
+                """, arguments: [assetId]).map { row in
+                let source = DAMTagSource(rawValue: row["source"] as? String ?? "") ?? .user
+                return (name: row["name"] as! String, source: source)
+            }
         }
     }
 
@@ -146,8 +167,13 @@ extension DAMDatabase {
                 .filter(DAMTag.Columns.name == name)
                 .fetchOne(db)
             if tag == nil {
-                tag = DAMTag(id: nil, name: name, parentId: nil, source: source)
-                try tag?.insert(db)
+                // NB: inserted() routes through the mutating insert so
+                // didInsert fires and the row id is written back. A plain
+                // insert(db) on a concrete PersistableRecord resolves to the
+                // non-mutating overload whose didInsert never fires, leaving
+                // id nil — and the guard below would silently bail without
+                // linking the tag (this was the failing-DAMTaggingTests bug).
+                tag = try DAMTag(id: nil, name: name, parentId: nil, source: source).inserted(db)
             }
             guard let tagId = tag?.id else { return false }
 

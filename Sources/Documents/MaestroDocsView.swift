@@ -1353,6 +1353,17 @@ struct MaestroDocsView: View {
                         let value = colIndex < row.count ? row[colIndex] : ""
                         let isSelected = viewModel.selectedCell?.row == rowIndex
                             && viewModel.selectedCell?.col == colIndex
+                        let bgColor: Color = {
+                            if isSelected {
+                                return Color.accentColor.opacity(0.2)
+                            } else if rowIndex == 0 {
+                                return Color(nsColor: .controlBackgroundColor)
+                            } else if rowIndex % 2 == 0 {
+                                return Color(nsColor: .alternatingContentBackgroundColors[1])
+                            } else {
+                                return Color.clear
+                            }
+                        }()
                         Text(value)
                             .font(rowIndex == 0 ? .caption.weight(.semibold) : .caption)
                             .lineLimit(1)
@@ -1360,14 +1371,7 @@ struct MaestroDocsView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 4)
-                            .background(
-                                isSelected
-                                    ? Color.accentColor.opacity(0.2)
-                                    : rowIndex == 0
-                                        ? Color(nsColor: .controlBackgroundColor)
-                                        : (rowIndex % 2 == 0
-                                            ? Color(nsColor: .alternatingContentBackgroundColors[1])
-                                            : Color.clear))
+                            .background(bgColor)
                             .overlay(
                                 Rectangle()
                                     .frame(height: 0.5)

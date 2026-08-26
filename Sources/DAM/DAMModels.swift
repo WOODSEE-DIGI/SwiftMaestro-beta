@@ -226,6 +226,8 @@ struct DAMAssetFeature: Codable, FetchableRecord, PersistableRecord, TableRecord
     var featurePrint: Data?
     /// JSON array of lowercased, punctuation-stripped OCR word tokens.
     var ocrTokens: String?
+    /// JSON array of VNClassifyImageRequest label strings (v7).
+    var classificationTags: String?
     var computedAt: Date?
 
     enum Columns {

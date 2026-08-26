@@ -628,6 +628,58 @@ final class DAMViewModel {
         lightroomTask?.cancel()
     }
 
+    // MARK: - Direct .lrcat import
+
+    private(set) var isImportingLrcat = false
+    private(set) var lrcatProgress = ""
+    private(set) var lrcatSummary: String?
+    private var lrcatTask: Task<Void, Never>?
+
+    /// Pick a .lrcat file and import it directly (no CSV export needed).
+    func importLrcatWithPanel() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.init(filenameExtension: "lrcat")!]
+        panel.message = "Choose a Lightroom catalog (.lrcat) file"
+        guard panel.runModal() == .OK, let lrcatURL = panel.url else { return }
+
+        isImportingLrcat = true
+        lrcatProgress = "Reading catalog…"
+        lrcatSummary = nil
+        lrcatTask = Task {
+            do {
+                let result = try await DAMLrcatReader.shared.importLrcat(
+                    at: lrcatURL) { scanned, total in
+                        Task { @MainActor [weak self] in
+                            self?.lrcatProgress = "Importing \(scanned)/\(total)…"
+                        }
+                    }
+                lrcatSummary = "Lightroom catalog: \(result.scanned) images — "
+                    + "\(result.inserted) new assets, \(result.updated) updated, "
+                    + "\(result.keywordsApplied) keywords applied, "
+                    + "\(result.collectionsCreated) collections created."
+                    + (result.missingOnDisk > 0
+                       ? " \(result.missingOnDisk) files not on disk (cataloged offline)."
+                       : "")
+                errorMessage = nil
+            } catch is CancellationError {
+                lrcatSummary = "Lightroom catalog import cancelled."
+            } catch {
+                errorMessage = "Lightroom catalog import failed: \(error.localizedDescription)"
+            }
+            isImportingLrcat = false
+            lrcatProgress = ""
+            await reload()
+            await refreshFolderTree()
+        }
+    }
+
+    func cancelLrcatImport() {
+        lrcatTask?.cancel()
+    }
+
     // MARK: - Rating edits
 
     /// Set rating (0–5) for every selected asset and persist.

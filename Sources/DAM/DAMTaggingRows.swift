@@ -110,3 +110,32 @@ struct FlowTags: View {
         }
     }
 }
+
+/// Source-aware tag chips: user tags get accent color, AI tags get purple.
+struct FlowTagChips: View {
+    let tags: [(name: String, source: DAMTagSource)]
+
+    var body: some View {
+        LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: 70), spacing: 6)],
+            alignment: .leading, spacing: 6
+        ) {
+            ForEach(tags, id: \.name) { tag in
+                HStack(spacing: 3) {
+                    if tag.source == .ai {
+                        Image(systemName: "sparkles")
+                            .font(.caption2)
+                    }
+                    Text(tag.name)
+                        .font(.caption)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Capsule().fill(tag.source == .ai
+                    ? Color.purple.opacity(0.18)
+                    : Color.accentColor.opacity(0.18)))
+                .lineLimit(1)
+            }
+        }
+    }
+}

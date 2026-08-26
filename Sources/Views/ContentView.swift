@@ -24,6 +24,8 @@ struct ContentView: View {
     @State private var newProjectName = ""
     @State private var newAgentName = ""
     @State private var newAgentCategory: AgentCategory = .general
+    @State private var newPresetName = ""
+    @State private var newPresetSlot = 1
     /// First-run welcome: shown once, only when no models are present on disk.
     @AppStorage("onboarding.seenV1") private var onboardingSeen = false
     /// Welcome screen: shown once before onboarding on first launch.
@@ -53,6 +55,7 @@ struct ContentView: View {
         case notesOnboarding
         case agentCategory(AgentRecord)
         case diagnosticReport(description: String, mediaPath: String)
+        case savePreset
 
         var id: Int {
             switch self {
@@ -64,6 +67,7 @@ struct ContentView: View {
             case .notesOnboarding: return 4
             case .agentCategory(let agent): return 5 + agent.id.hashValue
             case .diagnosticReport: return 7
+            case .savePreset: return 8
             }
         }
     }
@@ -73,6 +77,9 @@ struct ContentView: View {
 
         CanvasWorkspaceView(canvasID: CanvasTile.mainCanvasID)
         .toolbar {
+            ToolbarItem(placement: .navigation) {
+                WorkspaceSwitcherView()
+            }
             ToolbarItem(placement: .automatic) {
                 HStack(spacing: 4) {
                     Image(systemName: "square.stack.3d.up").foregroundStyle(.secondary)
@@ -133,12 +140,40 @@ struct ContentView: View {
                 .help("New project agent")
             }
             ToolbarItem(placement: .primaryAction) {
-                Button {
-                    workspaceLayout.resetToDefaultLayout()
+                Menu {
+                    // Saved presets
+                    let presetStore = WorkspaceLayoutPresetStore.shared
+                    ForEach(presetStore.presets) { preset in
+                        Button {
+                            presetStore.recall(preset.id)
+                        } label: {
+                            HStack {
+                                Text(preset.name)
+                                if presetStore.activePresetID == preset.id {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                    Divider()
+                    Button("Save Current Layout…") {
+                        activeSheet = .savePreset
+                    }
+                    Button("Reset to Default") {
+                        workspaceLayout.resetToDefaultLayout()
+                    }
                 } label: {
                     Image(systemName: "rectangle.grid.2x2")
                 }
-                .help("Reset to default layout — Agents/Apps left, chats center, everything else right")
+                .help("Workspace layouts — save, recall, or reset")
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    workspaceLayout.cycleLayoutAlgorithm()
+                } label: {
+                    Image(systemName: workspaceLayout.layoutAlgorithm.icon)
+                }
+                .help("Layout: \(workspaceLayout.layoutAlgorithm.displayName) — click to cycle")
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -200,6 +235,8 @@ struct ContentView: View {
                 NotesOnboardingSheet(onDone: { activeSheet = nil })
             case .agentCategory(let agent):
                 agentCategorySheet(for: agent)
+            case .savePreset:
+                savePresetSheet
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .openWorkspacePanel)) { notification in
@@ -467,6 +504,37 @@ struct ContentView: View {
         newAgentName = ""
         newAgentCategory = .general
         activeSheet = nil
+    }
+
+    private var savePresetSheet: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Save Workspace Layout").font(.title3.bold())
+            Text("Assign this layout to a numbered slot in the workspace switcher.")
+                .font(.caption).foregroundStyle(.secondary)
+            Form {
+                TextField("Layout name", text: $newPresetName)
+                Picker("Slot", selection: $newPresetSlot) {
+                    ForEach(1...10, id: \.self) { slot in
+                        let existing = WorkspaceLayoutPresetStore.shared.preset(forSlot: slot)
+                        Text("\(slot == 10 ? "0" : "\(slot)")\(existing.map { " — \($0.name)" } ?? "")")
+                            .tag(slot)
+                    }
+                }
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { newPresetName = ""; activeSheet = nil }
+                Button("Save") {
+                    WorkspaceLayoutPresetStore.shared.saveToSlot(newPresetSlot, name: newPresetName)
+                    newPresetName = ""
+                    activeSheet = nil
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(newPresetName.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding()
+        .frame(width: 420)
     }
 
     private func removeAgent(_ agent: AgentRecord) {
