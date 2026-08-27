@@ -46,7 +46,7 @@ LANG_NAMES = {
 }
 
 BATCH = 20  # keys per request
-WORKERS = 6  # user-requested; server advertises 4 contexts, extras queue and fill instantly
+WORKERS = 5  # 5+5 across two instances; deep server queues were tripping the 300s timeout
 
 save_lock = threading.Lock()
 
@@ -74,7 +74,7 @@ def translate_batch(endpoint: str, model: str, lang: str, keys: list[str]) -> di
         data=body,
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=300) as resp:
+    with urllib.request.urlopen(req, timeout=600) as resp:
         payload = json.loads(resp.read())
     text = payload["choices"][0]["message"]["content"].strip()
     # Strip code fences if the model wraps the JSON.
@@ -84,6 +84,23 @@ def translate_batch(endpoint: str, model: str, lang: str, keys: list[str]) -> di
             text = text[4:]
     result = json.loads(text)
     return {str(k): str(v) for k, v in result.items()}
+
+
+def translate_batch_resilient(endpoint: str, model: str, lang: str,
+                              keys: list[str], failures: list[str]) -> dict[str, str]:
+    """translate_batch, but a malformed-JSON response splits the batch in half
+    recursively instead of dropping 20 keys because one translation carried an
+    unescaped quote. Single keys that still fail land in `failures`."""
+    try:
+        return translate_batch(endpoint, model, lang, keys)
+    except json.JSONDecodeError:
+        if len(keys) == 1:
+            failures.append(f"{lang}: {keys[0][:120]}")
+            return {}
+        mid = len(keys) // 2
+        left = translate_batch_resilient(endpoint, model, lang, keys[:mid], failures)
+        right = translate_batch_resilient(endpoint, model, lang, keys[mid:], failures)
+        return {**left, **right}
 
 
 def main() -> int:
@@ -114,12 +131,13 @@ def main() -> int:
             continue
 
         done = 0
+        failures: list[str] = []
         batches = [missing[i:i + BATCH] for i in range(0, len(missing), BATCH)]
 
         def work(batch: list[str]) -> dict[str, str]:
             for attempt in range(3):
                 try:
-                    return translate_batch(args.endpoint, args.model, lang, batch)
+                    return translate_batch_resilient(args.endpoint, args.model, lang, batch, failures)
                 except Exception as exc:
                     print(f"  batch attempt {attempt + 1} failed: {exc}", file=sys.stderr)
                     if attempt == 2:
@@ -155,6 +173,12 @@ def main() -> int:
                 print(f"  {done}/{len(missing)}")
 
         print(f"{lang}: wrote {done} entries (state=needs_review)")
+        if failures:
+            fail_path = f"logs/translate-failures-{lang}.json"
+            with open(fail_path, "a", encoding="utf-8") as f:
+                for line in failures:
+                    f.write(line + "\n")
+            print(f"{lang}: {len(failures)} keys failed permanently → {fail_path}")
 
     return 0
 
