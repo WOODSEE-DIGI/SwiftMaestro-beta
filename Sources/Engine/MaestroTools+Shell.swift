@@ -596,31 +596,78 @@ extension MaestroTools {
             }
         }
 
+        // Surface the run in the Terminal panel's Agent Log (foreground
+        // commands already log via runShellCommand; background spawns were
+        // invisible — "I wrote and ran a file but saw nothing run").
+        let entryID = await MainActor.run { ShellLogStore.shared.addEntry(command: command, cwd: effectiveCwd) }
+
         let message: String
+        let completedQuickly: Bool
+        var stdoutTail = ""
+        var stderrTail = ""
         if isRunning {
             message = "Background process \(pid) started. Use list_background_processes to monitor."
+            completedQuickly = false
+            // Long-running (server/watcher): leave the Agent Log entry spinning
+            // (completed=false), which is honest — it IS still running.
         } else {
-            let errTail = (try? String(contentsOfFile: errPath, encoding: .utf8))?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .components(separatedBy: .newlines)
-                .prefix(3)
-                .joined(separator: "\n") ?? ""
-            if errTail.isEmpty {
-                message = "Process exited immediately. Check logs at \(logPath)"
+            stderrTail = Self.fileTail(errPath, maxLines: 20, maxChars: 2048)
+            stdoutTail = Self.fileTail(logPath, maxLines: 40, maxChars: 4096)
+            await MainActor.run {
+                // Quick exit — record output now so the Agent Log shows what ran
+                // and what it produced (Python's "Hello, World!" was invisible before).
+                ShellLogStore.shared.completeEntry(
+                    id: entryID,
+                    stdout: stdoutTail,
+                    stderr: stderrTail,
+                    exitCode: stderrTail.isEmpty ? 0 : 1,
+                    durationMs: 500,
+                    timedOut: false
+                )
+            }
+            if !stderrTail.isEmpty {
+                // Genuine failure: something wrote to stderr before dying.
+                completedQuickly = false
+                var msg = "Process exited immediately. Error:\n\(stderrTail)"
+                if !stdoutTail.isEmpty { msg += "\nOutput:\n\(stdoutTail)" }
+                message = msg
             } else {
-                message = "Process exited immediately. Error:\n\(errTail)"
+                // Anything that exits in <0.5s with NO stderr is a completed
+                // quick command (e.g. `python3 script.py`), not a failure —
+                // surface its output so the model doesn't tell the user the
+                // command "exited with an error" when it actually succeeded.
+                // For quick one-offs the model should prefer FOREGROUND
+                // execution (start_background: false), which returns the
+                // output directly instead of racing the health check.
+                completedQuickly = true
+                message = stdoutTail.isEmpty
+                    ? "Process finished quickly with no output. If you expected it to keep running (server/watcher), it has stopped — check \(logPath). For short one-off commands use start_background: false to get output directly."
+                    : "Process finished quickly (normal for short commands). Output:\n\(stdoutTail)\nFor short one-off commands use start_background: false to get output directly."
             }
         }
 
         return encodeJSON(BackgroundProcessResult(
-            success: isRunning,
+            success: isRunning || completedQuickly,
             process_id: pid,
             command: command,
             cwd: effectiveCwd,
             log_path: logPath,
             err_path: errPath,
-            message: message
+            message: message,
+            completed_quickly: completedQuickly,
+            stdout_tail: stdoutTail,
+            stderr_tail: stderrTail
         ))
+    }
+
+    /// Read the trailing lines of a log file, capped. Returns "" when the
+    /// file is missing or empty (never an error marker by itself).
+    private static func fileTail(_ path: String, maxLines: Int, maxChars: Int) -> String {
+        guard let content = try? String(contentsOfFile: path, encoding: .utf8) else { return "" }
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        let lines = trimmed.components(separatedBy: .newlines).suffix(maxLines)
+        return String(lines.joined(separator: "\n").suffix(maxChars))
     }
 
     /// If `command` starts with `cd /path && ...` or `cd /path; ...`, return the
@@ -760,6 +807,12 @@ private struct BackgroundProcessResult: Encodable {
     let log_path: String
     let err_path: String
     let message: String
+    /// True when the process exited within the health-check window with no
+    /// stderr — a completed quick command, not a failure. Its stdout is in
+    /// `stdout_tail` so the model gets the output it expected.
+    let completed_quickly: Bool
+    let stdout_tail: String
+    let stderr_tail: String
 }
 
 private struct BackgroundProcessList: Encodable {

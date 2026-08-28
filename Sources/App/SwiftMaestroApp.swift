@@ -343,6 +343,14 @@ struct SwiftMaestroApp: App {
                     if mechanic.modelID == nil, ModelCatalog.mechanicModelAvailable {
                         workspace.setModel(ModelCatalog.mechanicModelID, for: mechanic.id)
                     }
+                    // Ensure the bundled coding agent exists, and once the bundled
+                    // DeepSeek Coder V2 Lite is on disk (DMG install or Models-tab
+                    // download), default the Coder to it so coding help works out
+                    // of the box.
+                    let coder = workspace.coder
+                    if coder.modelID == nil, ModelCatalog.coderModelAvailable {
+                        workspace.setModel(ModelCatalog.coderModelID, for: coder.id)
+                    }
                     // Developer machines: give the Mechanic the SwiftMaestro repo as
                     // its working directory so git history + docs/ are authorized
                     // tool scope (it can consult known-good committed state when

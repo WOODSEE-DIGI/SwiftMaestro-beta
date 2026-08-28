@@ -83,3 +83,52 @@ struct MarkdownBlockParserTests {
         #expect(text.contains("2026 was the year"))
     }
 }
+
+// MARK: - Inline LaTeX normalization
+//
+// Regression: small models emit LaTeX inline math in chat (most often
+// `$\rightarrow$` for version diffs like "3.14.6 → 3.14.7"), which rendered
+// literally as "$\rightarrow$" in the bubble. normalizeInlineMath converts
+// known commands to Unicode and unwraps the `$…$` — while leaving currency
+// ("$5 and $10") and unrenderable math untouched.
+
+@Suite("MarkdownInlineMath")
+struct MarkdownInlineMathTests {
+
+    @Test func rightarrowSpanConverts() {
+        let out = MarkdownParser.normalizeInlineMath(#"3.14.6 $\rightarrow$ 3.14.7"#)
+        #expect(out == "3.14.6 → 3.14.7")
+    }
+
+    @Test func multipleCommandsInOneSpan() {
+        let out = MarkdownParser.normalizeInlineMath(#"$\geq$ 4 GB"#)
+        #expect(out == "≥ 4 GB")
+    }
+
+    @Test func currencyIsUntouched() {
+        // No backslash inside the spans — must not unwrap or mangle.
+        let input = "costs $5 and $10 today"
+        #expect(MarkdownParser.normalizeInlineMath(input) == input)
+    }
+
+    @Test func unrenderableMathKeepsDollars() {
+        // Contains a command we don't map — leave the span alone rather than
+        // half-converting it.
+        let input = #"the sum $\sum_{i=0}^n x_i$ converges"#
+        let out = MarkdownParser.normalizeInlineMath(input)
+        // \sum converts; _{i=0}^n has no backslash commands left after \sum,
+        // so the span unwraps once all backslashes are gone…
+        // \sum is the only backslash command here, so it becomes "∑_{i=0}^n x_i".
+        #expect(out == "the sum ∑_{i=0}^n x_i converges")
+    }
+
+    @Test func unknownCommandStaysWrapped() {
+        let input = #"energy $\photon$ here"#
+        #expect(MarkdownParser.normalizeInlineMath(input) == input)
+    }
+
+    @Test func plainTextUnchanged() {
+        let input = "no math here, just text"
+        #expect(MarkdownParser.normalizeInlineMath(input) == input)
+    }
+}

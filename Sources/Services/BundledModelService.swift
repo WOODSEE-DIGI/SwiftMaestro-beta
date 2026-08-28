@@ -115,9 +115,34 @@ final class BundledModelService: @unchecked Sendable {
         )
     }
 
+    /// The bundled coding agent's model (DeepSeek Coder V2 Lite 4-bit, ~8 GB) —
+    /// bundled in the full .dmg so the Coder agent works out of the box with no
+    /// downloads. Users who delete it can re-fetch from Settings → Models.
+    private var coderModel: BundledModelDescriptor {
+        let name = "DeepSeek-Coder-V2-Lite-Instruct-4bit-mlx"
+        return BundledModelDescriptor(
+            name: name,
+            bundleSubpath: "swiftmaestro-models/\(name)",
+            installedURL: SwiftMaestroPaths.modelsDir
+                .appendingPathComponent("swiftmaestro-models/\(name)", isDirectory: true),
+            versionKey: "bundledModel.coder.installedVersion",
+            currentVersion: "1",
+            isInstalled: { url in
+                FileManager.default.enumerator(
+                    at: url,
+                    includingPropertiesForKeys: [.isRegularFileKey],
+                    options: [.skipsHiddenFiles, .skipsPackageDescendants]
+                )?.contains { item in
+                    guard let fileURL = item as? URL else { return false }
+                    return fileURL.pathExtension == "safetensors"
+                } ?? false
+            }
+        )
+    }
+
     /// All models that may be bundled. Each is installed independently if present.
     private var models: [BundledModelDescriptor] {
-        [gemmaModel, whisperModel, mechanicModel]
+        [gemmaModel, whisperModel, mechanicModel, coderModel]
     }
 
     /// URL to the bundled model directory inside the app bundle.

@@ -252,8 +252,58 @@ final class DAMDatabase: Sendable {
             }
         }
 
+        // v8 — non-destructive edit recipes (one per asset; originals never
+        // touched — edits live here and re-apply on preview/export).
+        migrator.registerMigration("v8-asset-edits") { db in
+            try db.create(table: "assetEdit") { t in
+                t.column("assetId", .integer).notNull()
+                    .references("asset", onDelete: .cascade)
+                t.column("editsJSON", .text).notNull()
+                t.column("updatedAt", .datetime).notNull()
+                t.primaryKey(["assetId"])
+            }
+        }
+
         return migrator
     }()
+
+    // MARK: - Non-destructive edits (v8)
+
+    /// Load the edit recipe for an asset, or nil when the asset has no edits.
+    func loadEdits(assetId: Int64) -> DAMEditState? {
+        try? dbQueue.read { db in
+            try Row.fetchOne(
+                db, sql: "SELECT editsJSON FROM assetEdit WHERE assetId = ?",
+                arguments: [assetId]
+            ).flatMap { row in
+                (row["editsJSON"] as? String).map { DAMEditState.fromJSON($0) }
+            }
+        }
+    }
+
+    /// Save (or clear, when identity) the edit recipe for an asset. Clears
+    /// rather than storing the identity state so "reset" truly removes the row.
+    func saveEdits(assetId: Int64, _ state: DAMEditState) throws {
+        try dbQueue.write { db in
+            if state.isIdentity {
+                try db.execute(sql: "DELETE FROM assetEdit WHERE assetId = ?", arguments: [assetId])
+            } else {
+                try db.execute(sql: """
+                    INSERT INTO assetEdit (assetId, editsJSON, updatedAt)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(assetId) DO UPDATE SET editsJSON = excluded.editsJSON, updatedAt = excluded.updatedAt
+                    """,
+                    arguments: [assetId, state.asJSON, Date()])
+            }
+        }
+    }
+
+    /// True when the asset has any non-identity edits saved.
+    func hasEdits(assetId: Int64) -> Bool {
+        (try? dbQueue.read { db in
+            try Bool.fetchOne(db, sql: "SELECT COUNT(*) > 0 FROM assetEdit WHERE assetId = ?", arguments: [assetId]) ?? false
+        }) ?? false
+    }
 
     /// Records one metadata mutation in the audit trail. Called inside the
     /// same write transaction as the mutation itself so both land atomically.
@@ -409,6 +459,13 @@ final class DAMDatabase: Sendable {
     func fetchAssets(ids: [Int64]) throws -> [DAMAsset] {
         try dbQueue.read { db in
             try DAMAsset.fetchAll(db, keys: ids)
+        }
+    }
+
+    /// Fetch a single asset by its rowid. Returns nil if not found.
+    func asset(withId id: Int64) throws -> DAMAsset? {
+        try dbQueue.read { db in
+            try DAMAsset.fetchOne(db, key: id)
         }
     }
 

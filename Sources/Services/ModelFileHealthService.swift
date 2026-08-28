@@ -365,6 +365,29 @@ enum ModelFileHealthService {
         }
     }
 
+    /// Install a tools-enabled chat template overlay for curated models whose
+    /// stock template has no `tools` block (e.g. DeepSeek-Coder-V2-Lite —
+    /// tool-call trained, but its 459-char stock template is pure
+    /// User:/Assistant: turns, so tool schemas were silently dropped from the
+    /// prompt). swift-transformers prefers a `chat_template.jinja` file over
+    /// the config-embedded template, so writing the file is all it takes.
+    ///
+    /// Only installs when the file is missing — a user-edited or newer
+    /// upstream template is never overwritten.
+    static func repairChatTemplateIfNeeded(for model: MaestroModel) {
+        guard let overlay = ChatTemplateOverlays.overlay(forModelID: model.id),
+              let localPath = model.localPath else { return }
+        let dest = URL(fileURLWithPath: localPath)
+            .appendingPathComponent("chat_template.jinja")
+        guard !FileManager.default.fileExists(atPath: dest.path) else { return }
+        do {
+            try overlay.write(to: dest, atomically: true, encoding: .utf8)
+            NSLog("[ModelFileHealthService] installed tools-enabled chat template for \(model.id)")
+        } catch {
+            NSLog("[ModelFileHealthService] chat template install failed for \(model.id): \(error)")
+        }
+    }
+
     // MARK: - Helpers
 
     private static func fileExists(_ filename: String, in directory: URL) -> Bool {

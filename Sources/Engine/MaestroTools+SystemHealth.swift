@@ -65,6 +65,10 @@ extension MaestroTools {
                 name: "send_diagnostic_report", spec: systemHealthToolSpecs[12],
                 category: ToolCategory.system.rawValue,
                 handler: { call in await sendDiagnosticReport(call) }),
+            ToolDefinition(
+                name: "submit_bug_report", spec: systemHealthToolSpecs[13],
+                category: ToolCategory.system.rawValue,
+                handler: { call in await submitBugReport(call) }),
         ])
     }
 
@@ -184,6 +188,23 @@ extension MaestroTools {
                     "media_path": ["type": "string", "description": "Optional path of a media file to include a diagnosis for."],
                 ],
                 required: ["description"]),
+            rawSpec("submit_bug_report",
+                "File a bug report as a GitHub issue on the SwiftMaestro repo "
+                + "when the diagnosis says the problem is a CODE bug (not "
+                + "something a settings/config change can fix). The issue body "
+                + "is redacted (home paths → ~, secrets stripped) and gets an "
+                + "auto-collected environment block (app version, macOS, chip) "
+                + "plus recent crash names and tool-failure stats. On machines "
+                + "with an authenticated GitHub CLI the issue is created "
+                + "directly and the URL is returned; otherwise a pre-filled "
+                + "GitHub issue form opens in the browser and the user presses "
+                + "Submit — say which happened.",
+                properties: [
+                    "title": ["type": "string", "description": "Short issue title, e.g. 'Chat: agent refused to run shell command despite shell enabled'."],
+                    "body": ["type": "string", "description": "Markdown issue body: what happened, expected vs actual, steps to reproduce, and the key evidence (errors, log lines, top crash frames). Plain language."],
+                    "include_diagnostics": ["type": "boolean", "description": "Append auto-collected environment + recent crash names + guardian failure stats (default true)."],
+                ],
+                required: ["title", "body"]),
 
         ]
     }
@@ -564,5 +585,161 @@ extension MaestroTools {
             NotificationCenter.default.post(name: .openDiagnosticReport, object: nil, userInfo: info)
         }
         return "Diagnostic report sheet opened for the user with your description pre-filled. They will review the exact redacted payload and decide whether to send it — only the user can press Send."
+    }
+
+    // MARK: - Bug report (GitHub Issues)
+
+    /// The public repo that receives bug reports.
+    private static let bugReportRepo = "WOODSEE-DIGI/SwiftMaestro"
+
+    private struct BugReportArgs: Codable {
+        let title: String?
+        let body: String?
+        let include_diagnostics: Bool?
+    }
+
+    private static func submitBugReport(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: BugReportArgs.self),
+              let rawTitle = args.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawTitle.isEmpty,
+              let rawBody = args.body?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawBody.isEmpty else {
+            return "Error: title and body are required."
+        }
+
+        let title = DiagnosticReportService.redact(rawTitle)
+        var body = DiagnosticReportService.redact(rawBody)
+
+        if args.include_diagnostics ?? true {
+            body += "\n\n---\n### Environment\n"
+            body += "- App: \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?") "
+                + "(\(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"))\n"
+            body += "- macOS: \(ProcessInfo.processInfo.operatingSystemVersionString)\n"
+            let guardianStats = await ToolCallGuardian.shared.statsSummary()
+            if !guardianStats.isEmpty {
+                body += "\n### Tool-failure stats\n\(DiagnosticReportService.redact(guardianStats))\n"
+            }
+            let crashes = recentCrashNames()
+            if !crashes.isEmpty {
+                body += "\n### Recent crash reports (7d)\n"
+                    + crashes.map { "- \($0)" }.joined(separator: "\n") + "\n"
+            }
+        }
+        body = DiagnosticReportService.redact(body)
+
+        // Path 1: authenticated GitHub CLI (dev machines) — create directly.
+        if let gh = ghExecutable(), ghIsAuthenticated(gh) {
+            do {
+                let url = try createIssueViaGH(gh, title: title, body: body)
+                return "Bug report filed: \(url)"
+            } catch {
+                // Fall through to the browser path with the error noted.
+                return "GitHub CLI failed (\(error.localizedDescription)). "
+                    + openIssueInBrowser(title: title, body: body)
+            }
+        }
+
+        // Path 2: pre-filled browser form — the user presses Submit.
+        return openIssueInBrowser(title: title, body: body)
+    }
+
+    /// Newest SwiftMaestro crash report names (date+process only — no paths).
+    private static func recentCrashNames() -> [String] {
+        let dir = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Logs/DiagnosticReports")
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: [.contentModificationDateKey],
+            options: .skipsHiddenFiles) else { return [] }
+        let cutoff = Date().addingTimeInterval(-7 * 24 * 3600)
+        return files
+            .filter { $0.lastPathComponent.hasPrefix("SwiftMaestro") && $0.pathExtension == "ips" }
+            .compactMap { url -> (String, Date)? in
+                guard let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
+                      date > cutoff else { return nil }
+                return ("SwiftMaestro-\(ISO8601DateFormatter().string(from: date)).ips", date)
+            }
+            .sorted { $0.1 > $1.1 }
+            .prefix(3)
+            .map(\.0)
+    }
+
+    /// Locate the GitHub CLI in the usual install locations.
+    private static func ghExecutable() -> String? {
+        for path in ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"] {
+            if FileManager.default.isExecutableFile(atPath: path) { return path }
+        }
+        return nil
+    }
+
+    /// `gh auth status` — exit 0 means a usable token exists.
+    private static func ghIsAuthenticated(_ gh: String) -> Bool {
+        let (status, _, _) = runProcessCapturing(gh, arguments: ["auth", "status"], timeoutSeconds: 10)
+        return status == 0
+    }
+
+    /// `gh issue create` — returns the new issue URL from stdout.
+    private static func createIssueViaGH(_ gh: String, title: String, body: String) throws -> String {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sm-issue-\(UUID().uuidString).md")
+        try body.write(to: tmp, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let (status, stdout, stderr) = runProcessCapturing(gh, arguments: [
+            "issue", "create",
+            "--repo", bugReportRepo,
+            "--title", title,
+            "--body-file", tmp.path,
+        ], timeoutSeconds: 30)
+        guard status == 0 else {
+            throw NSError(domain: "BugReport", code: Int(status),
+                          userInfo: [NSLocalizedDescriptionKey: stderr.trimmingCharacters(in: .whitespacesAndNewlines)])
+        }
+        // gh prints the new issue URL on the last stdout line.
+        let url = stdout.split(separator: "\n").last.map(String.init) ?? ""
+        guard url.hasPrefix("http") else {
+            throw NSError(domain: "BugReport", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "no issue URL in gh output"])
+        }
+        return url
+    }
+
+    /// Open a pre-filled GitHub issue form in the browser (no token needed —
+    /// the user submits with their own GitHub account). GitHub caps the
+    /// query string, so the body is truncated to stay well under it.
+    private static func openIssueInBrowser(title: String, body: String) -> String {
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "github.com"
+        components.path = "/\(bugReportRepo)/issues/new"
+        components.queryItems = [
+            URLQueryItem(name: "title", value: String(title.prefix(200))),
+            URLQueryItem(name: "body", value: String(body.prefix(6000))),
+        ]
+        guard let url = components.url else {
+            return "Error: could not build the GitHub issue URL."
+        }
+        Task { @MainActor in NSWorkspace.shared.open(url) }
+        return "Opened a pre-filled GitHub issue in the browser at github.com/\(bugReportRepo) — the user reviews it and presses Submit."
+    }
+
+    /// runProcess variant that also captures the exit status and stderr —
+    /// needed for CLI success/failure checks (gh).
+    private static func runProcessCapturing(
+        _ executable: String, arguments: [String], timeoutSeconds: Int
+    ) -> (status: Int32, stdout: String, stderr: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = errPipe
+        do { try process.run() } catch { return (-1, "", "\(error.localizedDescription)") }
+        let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
+        while process.isRunning && Date() < deadline { usleep(50_000) }
+        if process.isRunning { process.terminate() }
+        process.waitUntilExit()
+        let out = String(decoding: outPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        let err = String(decoding: errPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        return (process.terminationStatus, out, err)
     }
 }

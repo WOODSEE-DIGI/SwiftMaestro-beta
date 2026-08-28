@@ -165,11 +165,56 @@ enum MarkdownParser {
         return segments
     }
 
+    /// LaTeX commands small models emit inside `$…$` spans (most often arrows in
+    /// version diffs: `$\rightarrow$`). Mapped to plain Unicode so chat renders
+    /// "3.14.6 → 3.14.7" instead of leaking raw markup.
+    private static let inlineMathSymbols: [(command: String, symbol: String)] = [
+        // Longest first so prefix commands don't shadow longer ones.
+        ("\\longrightarrow", "⟶"), ("\\longleftarrow", "⟵"),
+        ("\\rightarrow", "→"), ("\\leftarrow", "←"),
+        ("\\Rightarrow", "⇒"), ("\\Leftarrow", "⇐"),
+        ("\\mapsto", "↦"), ("\\to", "→"),
+        ("\\geq", "≥"), ("\\leq", "≤"), ("\\neq", "≠"),
+        ("\\approx", "≈"), ("\\equiv", "≡"), ("\\pm", "±"),
+        ("\\times", "×"), ("\\div", "÷"), ("\\cdot", "·"),
+        ("\\infty", "∞"), ("\\degree", "°"), ("\\alpha", "α"),
+        ("\\beta", "β"), ("\\gamma", "γ"), ("\\delta", "δ"),
+        ("\\lambda", "λ"), ("\\mu", "μ"), ("\\pi", "π"),
+        ("\\sigma", "σ"), ("\\omega", "ω"), ("\\sum", "∑"),
+        ("\\prod", "∏"), ("\\sqrt", "√"), ("\\in", "∈"),
+    ]
+
+    /// Normalize inline LaTeX math that models emit (`$\rightarrow$`,
+    /// `$\geq$`, …) into plain Unicode so it renders instead of leaking raw
+    /// markup into chat. Only touches `$…$` spans that actually contain a
+    /// backslash command, and only unwraps when every command inside
+    /// converted cleanly — currency ("$5 and $10") and unrenderable math are
+    /// left untouched.
+    static func normalizeInlineMath(_ text: String) -> String {
+        guard text.contains("$"), text.contains("\\") else { return text }
+        guard let regex = try? NSRegularExpression(pattern: #"\$([^$]+?)\$"#) else { return text }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        var result = text
+        // Right-to-left so replacements don't shift the ranges of earlier matches.
+        for match in regex.matches(in: text, range: range).reversed() {
+            guard let full = Range(match.range, in: result),
+                  let innerRange = Range(match.range(at: 1), in: result) else { continue }
+            let inner = String(result[innerRange])
+            guard inner.contains("\\") else { continue }  // not LaTeX (maybe currency)
+            var replaced = inner
+            for (command, symbol) in inlineMathSymbols {
+                replaced = replaced.replacingOccurrences(of: command, with: symbol)
+            }
+            guard !replaced.contains("\\") else { continue }  // real math we can't render
+            result.replaceSubrange(full, with: replaced.trimmingCharacters(in: .whitespaces))
+        }
+        return result
+    }
+
     /// Convert plain http/https URLs in text segments into markdown link syntax so
     /// SwiftUI's Text renderer makes them clickable. Skips URLs that already appear
     /// inside markdown link syntax `[text](url)` or angle brackets `<url>`.
-    static func autoLinkURLs(_ text: String) -> String {
-        // Use a greedy path so the whole URL (including trailing paths like
+    static func autoLinkURLs(_ text: String) -> String {        // Use a greedy path so the whole URL (including trailing paths like
         // /timeline_single_file.html) is captured as one link.
         let pattern = #"(?<![\]\(<"'])https?://[\w\-\.]+(:\d+)?(/[\w\-\.~%!$&'()*+,;=:@/]*)?(\?[\w\-\.~%!$&'()*+,;=:@/?#]*)?"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else { return text }
@@ -249,7 +294,8 @@ struct TextSegmentView: View {
     var baseURL: URL? = nil
 
     private var blocks: [MarkdownBlock] {
-        MarkdownBlockParser.parse(MarkdownParser.autoLinkURLs(content))
+        MarkdownBlockParser.parse(
+            MarkdownParser.autoLinkURLs(MarkdownParser.normalizeInlineMath(content)))
     }
 
     var body: some View {

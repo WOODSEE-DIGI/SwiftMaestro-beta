@@ -49,6 +49,32 @@ final class DAMTaggingViewModel {
 
     // MARK: - Loading
 
+    /// Pending suggestions for ONE asset, highest confidence first — the
+    /// Metadata panel's AI Tagging section shows per-selection suggestions
+    /// rather than the global review queue.
+    func suggestions(forAssetId assetId: Int64) async -> [DAMTagSuggestion] {
+        (try? await Task.detached(priority: .userInitiated) { [database] in
+            try database.pendingSuggestions(forAssetId: assetId)
+        }.value) ?? []
+    }
+
+    /// Lightweight counters refresh (no 500-row queue fetch) — the Metadata
+    /// panel's compact AI section only needs the backlog/pending numbers.
+    func refreshCounts() async {
+        do {
+            async let backlogTask = Task.detached(priority: .userInitiated) { [database] in
+                try database.featureBacklogCount()
+            }.value
+            async let pendingTask = Task.detached(priority: .userInitiated) { [database] in
+                try database.pendingSuggestionCount(minConfidence: 0)
+            }.value
+            backlogCount = try await backlogTask
+            pendingCount = try await pendingTask
+        } catch {
+            statusMessage = "Failed to load tagging counts: \(error.localizedDescription)"
+        }
+    }
+
     /// Full refresh of the queue, strip, and counters.
     func reload() async {
         let minConfidence = thresholds.suggest
@@ -120,7 +146,7 @@ final class DAMTaggingViewModel {
             }
             isIndexing = false
             indexProgress = ""
-            await reload()
+            await refreshCounts()
         }
     }
 
@@ -215,7 +241,7 @@ final class DAMTaggingViewModel {
             statusMessage = "Relearn failed: \(error.localizedDescription)"
         }
         isPropagating = false
-        await reload()
+        await refreshCounts()
     }
 
     // MARK: - Presentation helpers

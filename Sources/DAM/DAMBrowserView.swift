@@ -4,12 +4,16 @@ import UniformTypeIdentifiers
 
 // MARK: - MaestroDAM Browser View
 //
-// Workspace tabs under the toolbar:
-//   Home      — Folders tree | thumbnail grid | Preview + File Properties
-//   Filmstrip — Folders tree | big preview over filmstrip
-//   Metadata  — Folders+Metadata column | sortable list
-//   Libraries — Folders tree | preview-over-grid | properties panel
-//   Output / Edit — see DAMOutputWorkflow.swift
+// Workspace tabs under the toolbar (order: Home, Metadata, Edit, Output):
+//   Home     — Folders tree | thumbnail grid | Preview + File Properties
+//   Metadata — Folders+Metadata column | sortable list; two persisted view
+//              modes: full-page list, or a large selection preview above the
+//              list (AI tagging lives in the metadata panel)
+//   Edit / Output — see DAMOutputWorkflow.swift
+//
+// Every page shows the persistent FilmstripBar browser strip at the bottom
+// (mounted below, outside the workspace switch, so it keeps its identity
+// across tab switches).
 //
 // Side panels are user-resizable via PanelResizeHandle (widths persisted in
 // @AppStorage); the preview image scales with the panel width using the
@@ -24,6 +28,14 @@ struct DAMBrowserView: View {
     @AppStorage("dam.treeWidth") private var treeWidth: Double = 240
     @AppStorage("dam.previewWidth") private var previewWidth: Double = 300
     @AppStorage("dam.metaSideWidth") private var metaSideWidth: Double = 320
+    /// Metadata workspace viewing option: full-page list, or a large preview
+    /// of the selected image above the list (persisted across launches).
+    @AppStorage("dam.metadataViewMode") private var metadataViewMode: MetadataViewMode = .list
+
+    /// Metadata workspace viewing options.
+    private enum MetadataViewMode: String {
+        case list, preview
+    }
 
     private let columns = [GridItem(.adaptive(minimum: 140), spacing: 12)]
 
@@ -34,6 +46,15 @@ struct DAMBrowserView: View {
             WorkspaceTabBar(viewModel: viewModel)
             Divider()
             workspaceContent
+            // Lightroom/Capture One-style persistent browser strip: the same
+            // loaded page with the same selection highlighted on every tool
+            // page. Mounted OUTSIDE the workspace switch so it keeps its
+            // identity across tab switches — no thumbnail reloads, scroll
+            // position preserved, and the auto-scroll-to-selection task
+            // re-centres the selected thumb whenever the selection moves.
+            Divider()
+            FilmstripBar(viewModel: viewModel, assets: viewModel.assets)
+                .frame(height: 128)
         }
         .task {
             await viewModel.reload()
@@ -46,12 +67,9 @@ struct DAMBrowserView: View {
     private var workspaceContent: some View {
         switch viewModel.workspace {
         case .home: homeBody
-        case .filmstrip: filmstripBody
         case .metadata: metadataBody
-        case .libraries: librariesBody
-        case .output: OutputWorkspaceView(viewModel: viewModel)
         case .edit: EditWorkspaceView(viewModel: viewModel)
-        case .tagging: TaggingWorkspaceView(viewModel: viewModel)
+        case .output: OutputWorkspaceView(viewModel: viewModel)
         }
     }
 
@@ -419,31 +437,12 @@ struct DAMBrowserView: View {
         }
     }
 
-    // MARK: - Filmstrip: tree | (big preview / filmstrip)
-
-    private var filmstripBody: some View {
-        HStack(spacing: 0) {
-            if showFolderTree {
-                folderTreePanel
-                    .frame(width: treeWidth)
-                PanelResizeHandle(width: $treeWidth, minWidth: 170, maxWidth: 400)
-            }
-            VStack(spacing: 0) {
-                breadcrumbBar
-                Divider()
-                DAMBigPreview(asset: viewModel.primaryAsset)
-                    .frame(minHeight: 260)
-                Divider()
-                FilmstripBar(viewModel: viewModel, assets: viewModel.assets)
-                    .frame(height: 150)
-                Divider()
-                statusBar
-            }
-        }
-    }
-
     // MARK: - Metadata: (tree + metadata panel) | list
 
+    /// The Metadata workspace has two viewing options (persisted): the plain
+    /// full-page list, and Preview + List — a large preview of the selected
+    /// image above the rows so the user can see detail while scanning
+    /// metadata.
     private var metadataBody: some View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
@@ -457,8 +456,13 @@ struct DAMBrowserView: View {
             .frame(width: metaSideWidth)
             PanelResizeHandle(width: $metaSideWidth, minWidth: 260, maxWidth: 480)
             VStack(spacing: 0) {
-                breadcrumbBar
+                metadataHeader
                 Divider()
+                if metadataViewMode == .preview {
+                    MetadataPreviewPane(asset: viewModel.primaryAsset)
+                        .frame(minHeight: 240, idealHeight: 420, maxHeight: 560)
+                    Divider()
+                }
                 ListWorkspaceView(viewModel: viewModel)
                 Divider()
                 statusBar
@@ -466,35 +470,21 @@ struct DAMBrowserView: View {
         }
     }
 
-    // MARK: - Libraries: tree | (preview over grid) | properties
-
-    private var librariesBody: some View {
+    /// Breadcrumb trail + the Metadata view-mode picker (trailing).
+    private var metadataHeader: some View {
         HStack(spacing: 0) {
-            if showFolderTree {
-                folderTreePanel
-                    .frame(width: treeWidth)
-                PanelResizeHandle(width: $treeWidth, minWidth: 170, maxWidth: 400)
+            breadcrumbBar
+            Spacer()
+            Picker("Metadata view", selection: $metadataViewMode) {
+                Label("List", systemImage: "list.bullet").tag(MetadataViewMode.list)
+                Label("Preview", systemImage: "photo").tag(MetadataViewMode.preview)
             }
-            VStack(spacing: 0) {
-                breadcrumbBar
-                Divider()
-                // Plain VStack equal-split — NOT VSplitView: macOS VSplitView
-                // + ScrollView + infinitely-flexible preview inside a
-                // floating panel enters a layout feedback loop
-                // (AttributeGraph cycle → runaway layout → app killed).
-                DAMBigPreview(asset: viewModel.primaryAsset)
-                    .frame(maxHeight: .infinity)
-                Divider()
-                gridContent
-                    .frame(maxHeight: .infinity)
-                Divider()
-                statusBar
-            }
-            if showPreviewPanel {
-                PanelResizeHandle(width: $previewWidth, minWidth: 240, maxWidth: 640, invert: true)
-                propertiesPanel
-                    .frame(width: previewWidth)
-            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .controlSize(.small)
+            .frame(width: 150)
+            .padding(.trailing, 10)
+            .help("List only, or a large preview of the selection above the list")
         }
     }
 
@@ -544,39 +534,6 @@ struct DAMBrowserView: View {
                         "No Selection",
                         systemImage: "photo",
                         description: Text("Select an asset to preview it and edit its rating.")
-                    )
-                    Spacer()
-                }
-                Spacer()
-            }
-        }
-        .padding(12)
-    }
-
-    /// Properties-only right panel (Libraries — the big preview sits center).
-    private var propertiesPanel: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if let asset = viewModel.primaryAsset {
-                Text(asset.filename)
-                    .font(.headline)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-
-                DAMRatingStars(rating: asset.rating) { stars in
-                    Task { await viewModel.setRating(stars, for: viewModel.selection) }
-                }
-
-                Divider()
-
-                propertiesScroll(asset)
-            } else {
-                Spacer()
-                HStack {
-                    Spacer()
-                    ContentUnavailableView(
-                        "No Selection",
-                        systemImage: "photo",
-                        description: Text("Select an asset to inspect it.")
                     )
                     Spacer()
                 }
@@ -738,6 +695,71 @@ private struct DAMPreviewImage: View {
                 image = try await ThumbnailService.shared.thumbnail(
                     for: URL(fileURLWithPath: asset.path), pixelSize: 1024)
             } catch {
+                guard !Task.isCancelled else { return }
+                loadFailed = true
+            }
+        }
+    }
+}
+
+// MARK: - Metadata Preview Pane
+
+/// Large aspect-fit preview for the Metadata workspace's Preview + List
+/// mode. Unlike DAMPreviewImage (which derives height from the side panel's
+/// width), this lives above the full-width list, so the HEIGHT is bounded
+/// by the caller and the image fits inside it. Debounced, cancellation-
+/// aware, decoded at 1600px for visible detail.
+private struct MetadataPreviewPane: View {
+    let asset: DAMAsset?
+
+    @State private var image: NSImage?
+    @State private var loadFailed = false
+
+    var body: some View {
+        ZStack {
+            Color(nsColor: .controlBackgroundColor)
+            if let asset {
+                if let image {
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .padding(8)
+                } else if loadFailed {
+                    ContentUnavailableView(
+                        "No Preview",
+                        systemImage: "doc",
+                        description: Text(asset.filename)
+                    )
+                } else {
+                    ProgressView()
+                        .controlSize(.large)
+                }
+            } else {
+                ContentUnavailableView(
+                    "No Selection",
+                    systemImage: "photo",
+                    description: Text("Select an asset to preview it.")
+                )
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task(id: asset?.id ?? -1) {
+            guard let asset else {
+                image = nil
+                loadFailed = false
+                return
+            }
+            image = nil
+            loadFailed = false
+            // Debounce: rapid selection churn restarts this task — don't pay
+            // for a large decode until the selection settles for a beat.
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled else { return }
+            do {
+                image = try await ThumbnailService.shared.thumbnail(
+                    for: URL(fileURLWithPath: asset.path), pixelSize: 1600)
+            } catch {
+                // Cancellation is not a failure — don't flash the doc icon.
                 guard !Task.isCancelled else { return }
                 loadFailed = true
             }

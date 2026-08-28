@@ -4,19 +4,23 @@ import UniformTypeIdentifiers
 
 // MARK: - MaestroDAM Workspace Layouts
 //
-// Bridge-style workspace tabs and the shared building blocks behind
-// them: Filmstrip (big preview + thumbnail strip), Metadata (sortable list
-// + metadata/keywords panel), Libraries (preview-over-grid + properties),
-// plus the resizable-panel drag handle and the unified context menu used by
-// every workspace. Output/Edit live in `DAMOutputWorkflow.swift`.
+// Workspace tabs and the shared building blocks behind them: Home (tree +
+// grid + preview), Metadata (sortable list + metadata/keywords/AI-tagging
+// panel), Edit and Output (in `DAMOutputWorkflow.swift`), plus the
+// resizable-panel drag handle and the unified context menu used by every
+// workspace. Every page shows the persistent FilmstripBar browser strip
+// mounted at the bottom of `DAMBrowserView`.
 
 // MARK: - Workspace enum
 
-/// Bridge-style workspace layouts. Persisted via `DAMViewModel.workspace`.
+/// Workspace layouts. Persisted via `DAMViewModel.workspace`.
+/// CaseIterable order IS the tab order: Home, Metadata, Edit, Output.
 /// Tab names are deliberately generic (Home/Edit, not Essentials/Workflow)
-/// to avoid any Adobe look-and-feel entanglement.
+/// to avoid any Adobe look-and-feel entanglement. Removed tabs (Filmstrip,
+/// Libraries, Tagging) leave legacy persisted rawValues that fall through
+/// to the .home default.
 enum DAMWorkspace: String, CaseIterable, Identifiable, Sendable {
-    case home, filmstrip, metadata, libraries, output, edit, tagging
+    case home, metadata, edit, output
 
     var id: String { rawValue }
 
@@ -25,24 +29,18 @@ enum DAMWorkspace: String, CaseIterable, Identifiable, Sendable {
     var icon: String {
         switch self {
         case .home: return "house"
-        case .filmstrip: return "film"
         case .metadata: return "list.bullet.rectangle"
-        case .libraries: return "books.vertical"
-        case .output: return "square.and.arrow.up"
         case .edit: return "square.and.pencil"
-        case .tagging: return "wand.and.stars"
+        case .output: return "square.and.arrow.up"
         }
     }
 
     var help: String {
         switch self {
         case .home: return "Folders, thumbnail grid, and Preview + File Properties"
-        case .filmstrip: return "Large preview with a scrolling filmstrip of thumbnails"
-        case .metadata: return "Sortable list view with full metadata and keyword editing"
-        case .libraries: return "Preview over grid with a properties panel"
+        case .metadata: return "Sortable list view with full metadata, keyword editing, and AI tagging"
+        case .edit: return "Non-destructive editor for one asset; batch rating/keywords for many"
         case .output: return "Export the selection (JPEG render or copy originals)"
-        case .edit: return "Batch operations on the selection (rating, keywords)"
-        case .tagging: return "AI-assisted tagging — tag a few images, review suggestions for similar ones"
         }
     }
 }
@@ -114,74 +112,12 @@ struct PanelResizeHandle: View {
     }
 }
 
-// MARK: - Big preview (Filmstrip / Libraries)
-
-/// Large aspect-fit preview of the primary selection, rendered through the
-/// same ThumbnailService pipeline (QL/LibRaw) at 1600pt.
-struct DAMBigPreview: View {
-    let asset: DAMAsset?
-
-    @State private var image: NSImage?
-    @State private var loadFailed = false
-
-    var body: some View {
-        ZStack {
-            Color(nsColor: .controlBackgroundColor)
-            if let asset {
-                if let image {
-                    Image(nsImage: image)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .padding(8)
-                } else if loadFailed {
-                    ContentUnavailableView(
-                        "No Preview",
-                        systemImage: "doc",
-                        description: Text(asset.filename)
-                    )
-                } else {
-                    ProgressView()
-                        .controlSize(.large)
-                }
-            } else {
-                ContentUnavailableView(
-                    "No Selection",
-                    systemImage: "photo",
-                    description: Text("Select an asset to preview it.")
-                )
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .task(id: asset?.id ?? -1) {
-            guard let asset else {
-                image = nil
-                loadFailed = false
-                return
-            }
-            image = nil
-            loadFailed = false
-            // Debounce: rapid selection churn (arrow-key browsing, layout
-            // re-renders) restarts this task — don't pay for a large decode
-            // until the selection settles for a beat.
-            try? await Task.sleep(for: .milliseconds(120))
-            guard !Task.isCancelled else { return }
-            do {
-                image = try await ThumbnailService.shared.thumbnail(
-                    for: URL(fileURLWithPath: asset.path), pixelSize: 1600)
-            } catch {
-                // Cancellation is not a failure — don't flash the doc icon.
-                guard !Task.isCancelled else { return }
-                loadFailed = true
-            }
-        }
-    }
-}
-
 // MARK: - Filmstrip bar
 
-/// Horizontal scrolling thumbnail strip synced to the selection. Used by the
-/// Filmstrip workspace (whole loaded page) and by Output/Edit (selection
-/// only). ⌘-click toggles multi-selection, like the grid.
+/// Horizontal scrolling thumbnail strip synced to the selection. Mounted
+/// once at the bottom of DAMBrowserView (the persistent Lightroom/Capture
+/// One-style browser strip showing the loaded page on every tool page).
+/// ⌘-click toggles multi-selection, like the grid.
 struct FilmstripBar: View {
     var viewModel: DAMViewModel
     /// Assets to show — caller decides (loaded page vs selection-only).
@@ -357,11 +293,16 @@ struct ListWorkspaceView: View {
 
 /// Full metadata + user-keyword editing for the primary selection.
 /// Keyword writes go through `DAMViewModel.applyUserKeywords` (audited).
+/// Also hosts AI tagging (the retired Tagging workspace's home): catalog
+/// indexing controls plus accept/reject of pending suggestions for the
+/// current selection — backed by `DAMTaggingViewModel`/`DAMTaggingService`.
 struct MetadataPanelView: View {
     var viewModel: DAMViewModel
 
     @State private var keywordDraft = ""
     @State private var keywordMode: DAMViewModel.KeywordApplyMode = .add
+    @State private var tagging = DAMTaggingViewModel()
+    @State private var assetSuggestions: [DAMTagSuggestion] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -380,6 +321,7 @@ struct MetadataPanelView: View {
                     VStack(alignment: .leading, spacing: 14) {
                         fileProperties(asset)
                         keywordEditor(asset)
+                        aiTagging(asset)
                         additionalText(asset)
                         iptcPlaceholder
                     }
@@ -397,7 +339,19 @@ struct MetadataPanelView: View {
         // times per frame" when the selection churns within one render pass.
         .task(id: viewModel.primaryAsset?.id ?? -1) {
             keywordDraft = viewModel.primaryAsset?.userKeywords ?? ""
+            await refreshSuggestions()
         }
+        // Once per panel appearance: the catalog-wide indexing counters.
+        .task { await tagging.refreshCounts() }
+    }
+
+    /// Reload the pending AI suggestions for the current primary selection.
+    private func refreshSuggestions() async {
+        guard let id = viewModel.primaryAsset?.id else {
+            assetSuggestions = []
+            return
+        }
+        assetSuggestions = await tagging.suggestions(forAssetId: id)
     }
 
     @ViewBuilder
@@ -469,6 +423,96 @@ struct MetadataPanelView: View {
             }
             .disabled(viewModel.selection.isEmpty)
             .controlSize(.small)
+        }
+    }
+
+    /// AI tagging, living on the Metadata page (its proper home): indexing
+    /// controls for the catalog-wide analysis pass, and accept/reject of the
+    /// pending suggestions for the CURRENT selection. Accepted suggestions
+    /// become real tags (mirrored to userKeywords) and new exemplars — the
+    /// engine learns as you confirm.
+    @ViewBuilder
+    private func aiTagging(_ asset: DAMAsset) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("AI Tagging")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                if tagging.isIndexing {
+                    Button(role: .cancel) { tagging.cancelIndexing() } label: {
+                        Label("Stop", systemImage: "xmark.circle")
+                    }
+                    .controlSize(.small)
+                } else {
+                    Button { tagging.startIndexing() } label: {
+                        Label("Index", systemImage: "sparkles.rectangle.stack")
+                    }
+                    .controlSize(.small)
+                    .help("Analyze the catalog (OCR + visual fingerprints) "
+                          + "so tags can be suggested for similar images")
+                }
+            }
+
+            if tagging.isIndexing {
+                Text(tagging.indexProgress.isEmpty ? "Indexing…" : tagging.indexProgress)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else if tagging.backlogCount > 0 {
+                Text("\(tagging.backlogCount) assets waiting to be indexed")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let status = tagging.statusMessage {
+                Text(status)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            if assetSuggestions.isEmpty {
+                Text("No suggestions for this asset — tag a few similar images, "
+                     + "then run Index so matches can be found.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            } else {
+                ForEach(assetSuggestions) { suggestion in
+                    HStack(spacing: 6) {
+                        Image(systemName: DAMTaggingViewModel.basisIcon(suggestion.basis))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .help(DAMTaggingViewModel.basisLabel(suggestion.basis))
+                        Text(suggestion.tagName)
+                            .font(.caption)
+                            .lineLimit(1)
+                        Spacer()
+                        Text("\(Int((suggestion.confidence * 100).rounded()))%")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                        Button {
+                            Task {
+                                await tagging.accept(suggestion)
+                                await refreshSuggestions()
+                            }
+                        } label: {
+                            Image(systemName: "checkmark.circle")
+                        }
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(.green)
+                        .help("Accept “\(suggestion.tagName)”")
+                        Button {
+                            Task {
+                                await tagging.reject(suggestion)
+                                await refreshSuggestions()
+                            }
+                        } label: {
+                            Image(systemName: "xmark.circle")
+                        }
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(.red)
+                        .help("Reject “\(suggestion.tagName)”")
+                    }
+                }
+            }
         }
     }
 

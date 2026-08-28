@@ -12,6 +12,7 @@ enum AgentKind: String, Codable, Hashable {
     case navigator   // the always-present general/conductor agent
     case project     // a long-lived agent that belongs to a project
     case mechanic    // the always-present self-repair/support engineer
+    case coder       // the always-present bundled coding agent (DeepSeek Coder V2 Lite)
 }
 
 struct Project: Identifiable, Codable, Hashable {
@@ -115,8 +116,34 @@ final class WorkspaceStore {
     /// small enough to coexist with whatever the user is running, so help is
     /// available even on Light installs with no chat model configured.
     var mechanic: AgentRecord {
-        if let mech = agents.first(where: { $0.kind == .mechanic }) { return mech }
+        if var mech = agents.first(where: { $0.kind == .mechanic }) {
+            var mechChanged = false
+            // The Mechanic's diagnostic role requires its full toolset (shell,
+            // system health, files) regardless of which panels are open —
+            // Auto tool mode would strip .shell whenever the Terminal panel is
+            // closed, breaking Maestro→Mechanic delegation. Pin it off.
+            if mech.autoToolCategories ?? true {
+                mech.autoToolCategories = false
+                mechChanged = true
+            }
+            // One-time: drop any saved tool-category customization so the
+            // Mechanic re-defaults to the curated support set (the previously
+            // saved full menu + MCP flood produced a 252-tool/40K-token prompt
+            // that crashed the 4B model). Users can re-customize afterwards.
+            let resetKey = "mechanic.curatedToolset.v1"
+            if !UserDefaults.standard.bool(forKey: resetKey), mech.enabledToolCategories != nil {
+                mech.enabledToolCategories = nil
+                mechChanged = true
+            }
+            UserDefaults.standard.set(true, forKey: resetKey)
+            if mechChanged, let idx = agents.firstIndex(where: { $0.id == mech.id }) {
+                agents[idx] = mech
+                save()
+            }
+            return mech
+        }
         var mech = AgentRecord(name: "Mechanic", kind: .mechanic)
+        mech.autoToolCategories = false
         if ModelCatalog.mechanicModelAvailable {
             mech.modelID = ModelCatalog.mechanicModelID
         }
@@ -124,6 +151,50 @@ final class WorkspaceStore {
         agents.insert(mech, at: min(insertAt, agents.count))
         save()
         return mech
+    }
+
+    /// The always-present coding agent (created if missing). Defaults to the
+    /// bundled DeepSeek Coder V2 Lite model when it's on disk — an 8 GB coding
+    /// specialist bundled in the DMG so coding help works out of the box with
+    /// no downloads. Its toolset is pinned (Auto tool mode off) so panel state
+    /// can never strip the file/shell tools the role depends on.
+    var coder: AgentRecord {
+        if var c = agents.first(where: { $0.kind == .coder }) {
+            var coderChanged = false
+            if c.autoToolCategories ?? true {
+                c.autoToolCategories = false
+                coderChanged = true
+            }
+            // One-time: drop the explicit category set by the initial
+            // implementation — the category baseline (.coding includes .mcp)
+            // overrode the curated kind-level toolset and flooded this small
+            // model with 170+ MCP tools. Sidebar grouping still infers
+            // .coding from the agent name.
+            let categoryResetKey = "coder.noCategoryBaseline.v1"
+            if !UserDefaults.standard.bool(forKey: categoryResetKey), c.category != nil {
+                c.category = nil
+                coderChanged = true
+            }
+            UserDefaults.standard.set(true, forKey: categoryResetKey)
+            if coderChanged, let idx = agents.firstIndex(where: { $0.id == c.id }) {
+                agents[idx] = c
+                save()
+            }
+            return c
+        }
+        var c = AgentRecord(name: "Coder", kind: .coder)
+        c.autoToolCategories = false
+        // Deliberately NO explicit category: the category baseline (.coding
+        // includes .mcp → all MCP server tools) would override the curated
+        // kind-level set and flood this 2.4B-active-param model's prompt.
+        // Sidebar grouping still infers .coding from the name.
+        if ModelCatalog.coderModelAvailable {
+            c.modelID = ModelCatalog.coderModelID
+        }
+        let insertAt = agents.isEmpty ? 0 : min(2, agents.count)  // after navigator + mechanic
+        agents.insert(c, at: insertAt)
+        save()
+        return c
     }
 
     /// Projects that should appear in the main sidebar and in Maestro-facing lists.
@@ -417,8 +488,13 @@ final class WorkspaceStore {
             }
             projects = uniqueProjects
             agents = ws.agents.filter { a in
-                // Keep navigator and agents whose project still exists
-                a.kind == .navigator || projects.contains { $0.id == a.projectId }
+                // Keep always-present agents (navigator/mechanic/coder) and
+                // agents whose project still exists. Without the explicit
+                // always-present kinds, the Mechanic was silently dropped on
+                // every load and re-created with a fresh UUID on next access —
+                // orphaning its settings and chat history each launch.
+                a.kind == .navigator || a.kind == .mechanic || a.kind == .coder
+                    || projects.contains { $0.id == a.projectId }
             }
             if uniqueProjects.count != ws.projects.count { save() }
         }

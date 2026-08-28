@@ -102,6 +102,10 @@ public enum ToolCallFormat: String, Sendable, Codable, CaseIterable {
     /// Example: `<|python_tag|>{ "name": "func", "parameters": {...} }`
     case llama3
 
+    /// DeepSeek special-token format (DeepSeek-Coder-V2-Lite, DeepSeek-V3).
+    /// Example: `<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>name\n```json\n{...}\n```<｜tool▁call▁end｜><｜tool▁calls▁end｜>`
+    case deepseek
+
     // MARK: - Factory Methods
 
     /// Create the appropriate parser for this format.
@@ -132,6 +136,8 @@ public enum ToolCallFormat: String, Sendable, Codable, CaseIterable {
             return MistralToolCallParser()
         case .llama3:
             return Llama3ToolCallParser()
+        case .deepseek:
+            return DeepSeekToolCallParser()
         }
     }
 
@@ -207,6 +213,11 @@ public enum ToolCallFormat: String, Sendable, Codable, CaseIterable {
         // Mistral3 family (mistral3, mistral3_text, etc.)
         if type.hasPrefix("mistral3") {
             return .mistral
+        }
+
+        // DeepSeek family (deepseek_v2, deepseek_v3, deepseek_v3_2, etc.)
+        if type.hasPrefix("deepseek") {
+            return .deepseek
         }
 
         return nil

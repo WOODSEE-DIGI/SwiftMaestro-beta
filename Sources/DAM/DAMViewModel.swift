@@ -97,10 +97,17 @@ final class DAMViewModel {
     }
 
     /// The primary selected asset regardless of selection count — drives the
-    /// big preview in Filmstrip/Libraries and the preview panel header.
+    /// Edit page, the Metadata panel, and the preview panel header.
+    /// Resolves against the loaded page first (always the freshest row), then
+    /// falls back to the catalog: sort/rating/type/tag/flag/search reloads
+    /// replace the page WITHOUT clearing the selection, and page-only
+    /// resolution made previews vanish — and the Edit tab fall back to the
+    /// batch tools — for a selection the status bar still showed. A PK
+    /// lookup is microseconds and only fires while the id is off-page.
     var primaryAsset: DAMAsset? {
         guard let id = primarySelectedID else { return nil }
-        return assets.first { $0.id == id }
+        if let inPage = assets.first(where: { $0.id == id }) { return inPage }
+        return try? database.asset(withId: id)
     }
 
     /// Single-select (plain click). Idempotent — @Observable notifies on
@@ -780,35 +787,72 @@ final class DAMViewModel {
         }.value) ?? []
     }
 
+    // MARK: - Export
+
+    /// One row in the export processing queue.
+    struct ExportQueueItem: Identifiable, Equatable, Sendable {
+        let id = UUID()
+        let filename: String
+        var state: DAMExportService.ItemState
+    }
+
     private(set) var isExporting = false
     private(set) var exportProgressDone = 0
     private(set) var exportProgressTotal = 0
     private(set) var exportCurrentFile = ""
     private(set) var lastExportResult: DAMExportService.ExportResult?
+    /// The live processing queue shown in the Output workspace while an
+    /// export runs — one row per selected asset, updated per item.
+    private(set) var exportQueue: [ExportQueueItem] = []
+    private var exportTask: Task<Void, Never>?
 
-    /// Export the current selection. The heavy decode/copy work runs in
-    /// `DAMExportService` (nonisolated); progress hops back to MainActor.
-    func exportSelection(
-        preset: DAMExportService.ExportPreset,
-        destination: URL
-    ) async {
+    /// Export the current selection with a full preset (format, sizing,
+    /// quality, metadata policy, watermark, destination all bundled). The
+    /// heavy decode/copy work runs in `DAMExportService` (nonisolated);
+    /// progress + per-item states hop back to MainActor.
+    func exportSelection(preset: DAMExportPreset) {
         guard !isExporting, !selection.isEmpty else { return }
         isExporting = true
         exportProgressDone = 0
         exportCurrentFile = ""
         lastExportResult = nil
-        let assets = await assets(for: selection)
-        exportProgressTotal = assets.count
-        let result = await DAMExportService.export(
-            assets: assets, preset: preset, destination: destination
-        ) { [weak self] done, total, name in
-            Task { @MainActor [weak self] in
-                self?.exportProgressDone = done
-                self?.exportProgressTotal = total
-                self?.exportCurrentFile = name
+        let destination = URL(fileURLWithPath: preset.destinationPath, isDirectory: true)
+
+        exportTask = Task {
+            let assets = await assets(for: selection)
+            exportProgressTotal = assets.count
+            exportQueue = assets.map { ExportQueueItem(filename: $0.filename, state: .pending) }
+            let result = await DAMExportService.export(
+                assets: assets, preset: preset, destination: destination,
+                progress: { [weak self] done, total, name in
+                    Task { @MainActor [weak self] in
+                        self?.exportProgressDone = done
+                        self?.exportProgressTotal = total
+                        self?.exportCurrentFile = name
+                    }
+                },
+                itemState: { [weak self] index, state in
+                    Task { @MainActor [weak self] in
+                        guard let self, self.exportQueue.indices.contains(index) else { return }
+                        self.exportQueue[index].state = state
+                    }
+                })
+            // On cancellation, everything still pending/processing reads as
+            // skipped so the queue doesn't lie about what made it to disk.
+            if result.cancelled {
+                for index in exportQueue.indices
+                where exportQueue[index].state == .pending
+                    || exportQueue[index].state == .processing {
+                    exportQueue[index].state = .skipped("Cancelled")
+                }
             }
+            lastExportResult = result
+            isExporting = false
         }
-        lastExportResult = result
-        isExporting = false
+    }
+
+    /// Cancel the running export — the service loop stops between items.
+    func cancelExport() {
+        exportTask?.cancel()
     }
 }

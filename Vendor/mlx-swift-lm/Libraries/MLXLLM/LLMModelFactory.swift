@@ -45,6 +45,10 @@ public enum LLMTypeRegistry {
         "cohere": create(CohereConfiguration.self, CohereModel.init),
         "openelm": create(OpenElmConfiguration.self, OpenELMModel.init),
         "internlm2": create(InternLM2Configuration.self, InternLM2Model.init),
+        // DeepSeek-V2 (incl. Coder-V2-Lite) shares V3's MLA + MoE architecture;
+        // the config's scoring_func/topk_method/optional q_lora_rank select the
+        // V2 behaviors inside the shared implementation.
+        "deepseek_v2": create(DeepseekV3Configuration.self, DeepseekV3Model.init),
         "deepseek_v3": create(DeepseekV3Configuration.self, DeepseekV3Model.init),
         "granite": create(GraniteConfiguration.self, GraniteModel.init),
         "granitemoehybrid": create(

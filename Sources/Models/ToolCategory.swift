@@ -425,9 +425,26 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .mechanic:
             // The support engineer's surface: diagnostics + repair. No
             // delegation (navigator-only), no messaging, no Apple-app panels.
+            // Deliberately EXCLUDES .mcp (the full MCP server menu — playwright,
+            // firecrawl, etc. — is 130+ tools that flood a 4B model's context;
+            // a 252-tool/40K-token prompt crashed Qwen3-4B in MLX), and the
+            // content-library/web-scraping categories the support role never
+            // uses. Context memory lives in ~/.ai-context — reachable via the
+            // file tools.
             return [
-                .file, .shell, .server, .index, .memory, .bus, .system, .mcp, .sqlite,
-                .web, .scraping, .documents, .time,
+                .file, .shell, .memory, .bus, .system, .sqlite,
+                .web, .time,
+            ]
+        case .coder:
+            // The coding agent's surface: edit files, run builds/tests, search
+            // the codebase, recall prior decisions. Deliberately lean — the
+            // bundled DeepSeek Coder V2 Lite has only 2.4B active params, and
+            // oversized tool menus both flood its prompt and confuse it. No
+            // delegation, no messaging, no Apple-app/social panels, no MCP
+            // flood.
+            return [
+                .file, .shell, .index, .memory, .sqlite,
+                .web, .time,
             ]
         }
     }
@@ -458,6 +475,9 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             return Set(allCases).subtracting([.workspace])
         case .mechanic:
             // Self-repair support: no delegation, no inter-agent messaging.
+            return Set(allCases).subtracting([.workspace, .messaging])
+        case .coder:
+            // Coding agent: no delegation (navigator-only), no inter-agent messaging.
             return Set(allCases).subtracting([.workspace, .messaging])
         }
     }

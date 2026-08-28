@@ -377,23 +377,32 @@ public struct RepetitionContext: LogitProcessor {
 
     public func process(logits: MLXArray) -> MLXArray {
         guard let indices = ring.validTokens?.asType(.uint32) else { return logits }
-        // Normalize to the current token's 1-D [vocab] vector regardless of how
-        // the model path shaped its output. convertToToken's three-component
-        // slice assumes [batch, seq, vocab]; model families whose LMOutput is
-        // [seq, vocab] or already-squeezed [vocab] (Gemma 4's VLM path — issue
-        // #258) made `logits[0..., indices]` gather a (ring-size,)-shaped result
-        // against a (seq-len,)-shaped target and crash in a broadcast. The
-        // penalty only affects the token being sampled, so reducing to the last
-        // position is semantically exact.
-        var current = logits
-        if current.ndim >= 3 { current = current[0..., -1, 0...] }   // [batch, seq, vocab] → [batch, vocab]
-        if current.ndim == 2 { current = current[-1, 0...] }          // [batch|seq, vocab] → [vocab]
-        var selected = current[indices]
+        // LogitProcessor contract: return the SAME shape received. The
+        // sampler's output rank depends on the logits rank it is given
+        // (categorical drops the sampled axis), so squeezing [batch, vocab]
+        // down to [vocab] turns the sampled token from [1] into a 0-D scalar —
+        // and TokenIterator's next step then feeds `token[.newAxis]` = [1]
+        // (1-D, no batch axis) to the model, corrupting every subsequent
+        // forward pass (seen as the Mechanic producing 0 tokens: the second
+        // forward degenerates and the stream guard discards the first, valid
+        // token as it ends the round).
+        //
+        // Normalize internally to a 2-D [rows, vocab] view for the
+        // gather/scatter — this covers every caller rank, including the Gemma 4
+        // VLM paths that hand in [seq, vocab] or [vocab] (issue #258) — then
+        // restore the original shape so the sampler sees exactly what it would
+        // have seen unprocessed.
+        guard logits.ndim > 0 else { return logits }
+        let originalShape = logits.shape
+        let vocabSize = logits.dim(-1)
+        guard vocabSize > 0 else { return logits }
+        var rows = logits.reshaped(-1, vocabSize)
+        var selected = rows[0..., indices]
         selected = MLX.where(
             selected .< 0, selected * repetitionPenalty,
             selected / repetitionPenalty)
-        current[indices] = selected
-        return current
+        rows[0..., indices] = selected
+        return rows.reshaped(originalShape)
     }
 
     mutating public func didSample(token: MLXArray) {
@@ -504,6 +513,40 @@ public protocol TokenIteratorProtocol: Sequence, IteratorProtocol where Element 
     var maxTokens: Int? { get }
     var tokenCount: Int { get }
     var promptPrefillTime: TimeInterval { get }
+}
+
+/// Reduce model output logits of any rank to the current token's
+/// `[batch, vocab]` slice for processing/sampling. Model families differ:
+/// LLMs return `[batch, seq, vocab]`; some VLM paths return `[seq, vocab]`
+/// or fully-squeezed `[vocab]` (Gemma 4 — issue #258). The sampler's output
+/// rank follows its input rank (categorical drops the sampled axis), so
+/// normalizing here keeps the sampled token stable at `[1]` — which the next
+/// iterator step relies on (`token[.newAxis]` must be `[1, 1]` to satisfy the
+/// model's `[batch, seq]` input contract). Returns nil for truly degenerate
+/// (empty) tensors; callers treat that as end-of-stream.
+func lastPositionLogits(_ logits: MLXArray, label: String) -> MLXArray? {
+    var current = logits
+    if current.ndim >= 3 {
+        guard current.dim(1) > 0 else {
+            NSLog("[MLX] \(label): degenerate logits shape \(logits.shape) (empty sequence axis) — ending stream")
+            return nil
+        }
+        current = current[0..., -1, 0...]
+    } else if current.ndim == 2 {
+        // [seq, vocab] (batch elided): take the last sequence position.
+        guard current.dim(0) > 0 else {
+            NSLog("[MLX] \(label): degenerate logits shape \(logits.shape) (empty tensor) — ending stream")
+            return nil
+        }
+        current = current[-1, 0...][.newAxis, 0...]
+    } else if current.ndim == 1 {
+        // [vocab] (fully squeezed): add the batch axis.
+        current = current[.newAxis, 0...]
+    } else {
+        NSLog("[MLX] \(label): degenerate logits shape \(logits.shape) (rank 0) — ending stream")
+        return nil
+    }
+    return current
 }
 
 /// Generator of tokens.
@@ -666,12 +709,23 @@ public struct TokenIterator: TokenIteratorProtocol {
     }
 
     mutating func convertToToken(logits: MLXArray) -> MLXArray {
+        // Normalize to the current token's [batch, vocab] slice (see
+        // lastPositionLogits). A nil result means the model produced truly
+        // degenerate logits — return an empty token and let
+        // TokenIterator.next() end the stream on it.
+        guard var processed = lastPositionLogits(logits, label: "convertToToken") else {
+            return MLXArray.zeros([0], type: Int32.self)
+        }
+
         // process the logits (one hot array of possible tokens)
-        var logits = logits[0..., -1, 0...]
-        logits = processor?.process(logits: logits) ?? logits
+        processed = processor?.process(logits: processed) ?? processed
+        // Defensive: a processor that changes rank (violating the
+        // LogitProcessor contract) is re-normalized so the sampler always
+        // sees [batch, vocab] and the sampled token stays [1].
+        if processed.ndim == 1 { processed = processed[.newAxis, 0...] }
 
         // transform logits back to a token
-        let y = sampler.sample(logits: logits)
+        let y = sampler.sample(logits: processed)
 
         processor?.didSample(token: y)
 
@@ -709,6 +763,11 @@ public struct TokenIterator: TokenIteratorProtocol {
         asyncEval(token)
 
         tokenCount += 1
+
+        // SwiftMaestro guard: convertToToken returns an empty array when the
+        // model produced degenerate logits — end the stream gracefully rather
+        // than trapping on .item() of an empty array.
+        if token.size == 0 { return nil }
 
         return previousY.tokens.item(Int.self)
     }
@@ -825,9 +884,16 @@ public struct SpeculativeTokenIterator: TokenIteratorProtocol {
         case .tokens(let tokens):
             y = tokens
         case .logits(let result):
-            var logits = result.logits[0..., -1, 0...]
+            // Normalize to [batch, vocab] before processing/sampling;
+            // degenerate (empty) logits yield an empty token that ends the
+            // stream rather than trapping in MLXArray indexing.
+            var logits = lastPositionLogits(result.logits, label: "Speculative.prepare")
+                ?? MLXArray.zeros([0], type: Float32.self)
             logits = processor?.process(logits: logits) ?? logits
-            let token = sampler.sample(logits: logits)
+            if logits.ndim == 1 { logits = logits[.newAxis, 0...] }
+            let token = logits.size > 0
+                ? sampler.sample(logits: logits)
+                : MLXArray.zeros([0], type: Int32.self)
             processor?.didSample(token: token)
             y = .init(tokens: token)
             mainState = result.state
@@ -838,9 +904,13 @@ public struct SpeculativeTokenIterator: TokenIteratorProtocol {
         case .tokens(let tokens):
             draftY = tokens
         case .logits(let result):
-            var logits = result.logits[0..., -1, 0...]
+            var logits = lastPositionLogits(result.logits, label: "Speculative.prepareDraft")
+                ?? MLXArray.zeros([0], type: Float32.self)
             logits = processor?.process(logits: logits) ?? logits
-            let token = sampler.sample(logits: logits)
+            if logits.ndim == 1 { logits = logits[.newAxis, 0...] }
+            let token = logits.size > 0
+                ? sampler.sample(logits: logits)
+                : MLXArray.zeros([0], type: Int32.self)
             draftY = .init(tokens: token)
             asyncEval(draftY.tokens)
         }
@@ -862,8 +932,11 @@ public struct SpeculativeTokenIterator: TokenIteratorProtocol {
             let draftResult = draftModel(
                 draftY[text: .newAxis], cache: draftCache, state: draftState)
             draftState = draftResult.state
-            var draftLogits = draftResult.logits[0..., -1, 0...]
+            guard var draftLogits = lastPositionLogits(
+                draftResult.logits, label: "Speculative.draft")
+            else { return }  // degenerate draft logits — stop proposing
             draftLogits = draftProcessor?.process(logits: draftLogits) ?? draftLogits
+            if draftLogits.ndim == 1 { draftLogits = draftLogits[.newAxis, 0...] }
             let draftToken = sampler.sample(logits: draftLogits)
             draftProcessor?.didSample(token: draftToken)
             asyncEval(draftToken)
@@ -1721,6 +1794,12 @@ private func generateLoopTask<Handler: TokenLoopHandler>(
 
                 // Check for end-of-sequence tokens
                 if token == tokenizer.unknownTokenId || stopTokenIds.contains(token) {
+                    // SwiftMaestro diagnostics: a stop token as the VERY FIRST
+                    // token (gen=0 after a long prefill) is a classic symptom of
+                    // a malformed prompt — log it loudly so it is never silent.
+                    if tokenCount == 0 {
+                        NSLog("[MLX] generation ended on FIRST token: id=\(token) matched stop/unknown set (stopTokens=\(stopTokenIds.sorted())) — the prompt likely renders malformed for this model")
+                    }
                     if includeStopToken {
                         tokenCount += 1
                         if !handler.onStopToken(token, emit: continuation.yield) {
@@ -1737,6 +1816,13 @@ private func generateLoopTask<Handler: TokenLoopHandler>(
                     stopReason = .cancelled
                     break
                 }
+            }
+
+            // SwiftMaestro diagnostics: gen=0 with no stop token means the
+            // iterator itself ended immediately (degenerate logits guard or
+            // maxTokens=0) — log the iterator state so the cause is visible.
+            if tokenCount == 0 && stopReason == nil {
+                NSLog("[MLX] generation produced 0 tokens: iterator ended without a stop token (iterTokenCount=\(iterator.tokenCount), maxTokens=\(String(describing: iterator.maxTokens))) — see earlier [MLX] convertToToken lines for degenerate shapes")
             }
 
             if stopReason == nil {

@@ -295,6 +295,21 @@ extension DAMDatabase {
         }
     }
 
+    /// Pending suggestions for ONE asset, highest confidence first — the
+    /// Metadata panel's AI Tagging section shows per-selection suggestions
+    /// rather than the global review queue.
+    func pendingSuggestions(forAssetId assetId: Int64, minConfidence: Double = 0) throws
+        -> [DAMTagSuggestion] {
+        try dbQueue.read { db in
+            try DAMTagSuggestion
+                .filter(Column("assetId") == assetId
+                        && Column("state") == DAMSuggestionState.pending.rawValue
+                        && Column("confidence") >= minConfidence)
+                .order(Column("confidence").desc, Column("id").asc)
+                .fetchAll(db)
+        }
+    }
+
     /// Mark a pending suggestion accepted and return its (assetId, tagName).
     /// The CALLER applies the tag first (see DAMTaggingService.acceptSuggestion)
     /// — this helper only flips state, and only from pending.

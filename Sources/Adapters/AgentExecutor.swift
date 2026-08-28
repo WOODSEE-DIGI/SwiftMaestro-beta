@@ -511,15 +511,28 @@ final class AgentExecutor: Sendable {
                             // Future-tense narration ("I'll delegate", "Now I'll mark it",
                             // "I will now:", "Step 1: ...") should ALWAYS trigger a nudge —
                             // the model is announcing intent it never followed through on.
-                            let futureNarration = !specsThisRound.isEmpty
+                            // …but ONLY while no real work has happened this run. Once a
+                            // mutating/delegating tool has run, a "would you like me to
+                            // also …" follow-up offer is a legitimate closer, not a stall —
+                            // nudging it re-generates the same summary repeatedly (and each
+                            // regeneration appended into the same chat bubble).
+                            let futureNarration = !usedMutator
+                                && !specsThisRound.isEmpty
                                 && Self.claimsFutureAction(cleanContent)
                             // A displayed shell command the user is expected to run manually
                             // is a tool-use failure — the model should execute it itself.
-                            let unexecutedShell = !specsThisRound.isEmpty
+                            // …but only while no tools have run this turn: after real work,
+                            // a shown command is a PREVIEW of what was executed, not a dodge.
+                            let unexecutedShell = !usedMutator
+                                && !specsThisRound.isEmpty
                                 && Self.containsUnexecutedShellCommand(cleanContent)
                             // A displayed HTML/CSS/JS/JSON code block that the model is
                             // writing is a tool-use failure — it should use write_file.
-                            let unexecutedFileWrite = !specsThisRound.isEmpty
+                            // …but only while nothing has been written yet: a shown python
+                            // block AFTER write_file succeeded is the model quoting the file
+                            // it just created, which is legitimate, not a tool-use failure.
+                            let unexecutedFileWrite = !usedMutator
+                                && !specsThisRound.isEmpty
                                 && Self.containsUnexecutedFileWrite(cleanContent)
                             // A message asking the USER for something (folder
                             // authorization, permission, credentials, install)
@@ -537,6 +550,12 @@ final class AgentExecutor: Sendable {
                                 else if unexecutedFileWrite { reason = "unexecutedFileWrite" }
                                 else { reason = falseClaim ? "falseClaim" : "futureNarration" }
                                 NSLog("[AGENT] auto-nudge \(autoNudges): \(reason)")
+                                // Close the current bubble before regenerating —
+                                // without a turn break the re-generated answer
+                                // concatenates onto the superseded text in the SAME
+                                // bubble (seen as duplicated summaries with no space
+                                // at the seams: "…dependencies.Would you like me…").
+                                continuation.yield(.turnBreak)
                                 convo.append(["role": "assistant", "content": cleanContent])
                                 // The correction is a USER-role message: a mid-conversation
                                 // SYSTEM message breaks the Qwen Jinja chat template
@@ -1627,6 +1646,11 @@ final class AgentExecutor: Sendable {
     private static let nonInjectedMutators: Set<String> = [
         "create_project_agent", "archive_project_agent",
         "ask_project_agent", "ask_project_agents",
+        // ask_mechanic delegates real work — without this the post-delegation
+        // summary (results + a "would you like me to…" follow-up offer) was
+        // misread as future-tense narration and nudged into regenerating the
+        // same answer repeatedly (each copy streaming into the same bubble).
+        "ask_mechanic",
     ]
 
     /// Verb-prefix classification for "this tool changes something" — used by
@@ -1645,6 +1669,11 @@ final class AgentExecutor: Sendable {
             "create", "add", "update", "edit", "write", "delete",
             "move", "set", "start", "stop", "archive", "upload",
             "mark", "follow", "unfollow", "publish", "run",
+            // Running a shell command IS doing the work — without this, a model
+            // that just executed a command and then shows it as a preview block
+            // was nudged for "unexecuted shell" (execute_command didn't set
+            // usedMutator), forcing a redundant regeneration round.
+            "execute",
         ]
         let lower = name.lowercased()
         return verbs.contains { lower == $0 || lower.hasPrefix("\($0)_") }
@@ -1719,6 +1748,9 @@ final class AgentExecutor: Sendable {
         }
         if tc.name == "ask_project_agents" {
             return await delegateMany(argumentsJSON: tc.arguments, mcp: mcp, workingDirectory: workingDirectory)
+        }
+        if tc.name == "ask_mechanic" {
+            return await delegateToMechanic(argumentsJSON: tc.arguments, mcp: mcp, workingDirectory: workingDirectory)
         }
         if tc.name == "task" {
             return await taskDelegate(argumentsJSON: tc.arguments, mcp: mcp, workingDirectory: workingDirectory)
@@ -2293,6 +2325,66 @@ final class AgentExecutor: Sendable {
             ChatHistoryStore.save(msgs, agentId: target.id)
         }
         return DelegateResult(project: proj, agent: target.name, answer: answer, error: nil)
+    }
+
+    /// `ask_mechanic` — delegate a support/diagnostics/repair task to the
+    /// built-in Mechanic agent. The Mechanic lives outside the project-agent
+    /// list (delegateOne only resolves `kind == .project`), so it needs this
+    /// dedicated path; the actual run reuses delegateOneResolved unchanged.
+    private func delegateToMechanic(argumentsJSON: String, mcp: MCPClientService?, workingDirectory: String? = nil) async -> String {
+        // Repair + sanitize BEFORE parsing: small models (Gemma 4) frequently
+        // emit literal newlines inside JSON strings or mangled keys, and a bare
+        // parse failure makes the model blind-retry the identical broken call
+        // until the tool budget kills the run. Accept the usual alias keys too
+        // (same convention as normalizeRequestItem for ask_project_agent).
+        let repaired = Self.sanitizeArgumentsJSON(ToolArgumentRepair.repair(argumentsJSON))
+        guard
+            let data = repaired.data(using: .utf8),
+            let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let task = Self.firstString(
+                in: raw, keys: ["task", "question", "prompt", "message", "request", "text"]),
+            !task.trimmingCharacters(in: .whitespaces).isEmpty
+        else {
+            NSLog("[DELEGATE] ask_mechanic arg parse failed; raw=\(argumentsJSON.prefix(500))")
+            return MaestroTools.errorJSON(
+                "ask_mechanic could not parse its arguments. Retry with EXACTLY this JSON "
+                + "shape on one line: {\"task\": \"<what the Mechanic should do>\"}. "
+                + "Escape quotes inside the task; do not break the JSON across lines.")
+        }
+
+        // Resolve the Mechanic (auto-created if missing) and build its prompt
+        // on the MainActor, same as delegateOne does for project agents.
+        let prep: (AgentRecord, [Message], String?)? = await MainActor.run {
+            guard let ws = MaestroTools.workspace else { return nil }
+            let mech = ws.mechanic
+            let targetWD = mech.workingDirectory
+                ?? UserDefaults.standard.string(forKey: "workingDir.\(mech.id.uuidString)")
+                ?? workingDirectory
+            if let targetWD, !targetWD.isEmpty,
+               !MaestroTools.delegatedAgentWorkingDirectories.contains(targetWD) {
+                MaestroTools.delegatedAgentWorkingDirectories.append(targetWD)
+            }
+            let targetModel = self.catalog?.effectiveModel(for: mech)
+            let targetModelDesc = targetModel.map { "\($0.displayName) (model id \($0.huggingFaceID)), served via in-process Apple MLX" }
+            var msgs = ChatHistoryStore.load(agentId: mech.id)
+                ?? [ChatViewModel.systemMessage(
+                    for: mech, projectName: nil,
+                    workingDirectory: targetWD,
+                    modelDescription: targetModelDesc,
+                    modelID: targetModel?.huggingFaceID)]
+            msgs.append(Message(role: .user, content: task, timestamp: Date()))
+            return (mech, msgs, targetWD)
+        }
+        guard let (mech, messages, effectiveWD) = prep else {
+            return MaestroTools.errorJSON("workspace unavailable — cannot reach the Mechanic")
+        }
+
+        NSLog("[DELEGATE] -> Mechanic (ask_mechanic)")
+        let r = await delegateOneResolved(
+            target: mech, proj: "", messages: messages, task: task,
+            mcp: mcp, workingDirectory: effectiveWD)
+        if let err = r.error { return MaestroTools.errorJSON(err) }
+        return Self.json(["agent": "Mechanic", "answer": r.answer ?? ""])
     }
 
     /// `ask_project_agent` — delegate a single task and return its answer.

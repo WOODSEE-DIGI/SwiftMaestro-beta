@@ -24,6 +24,11 @@ struct MaestroModel: Identifiable, Hashable {
     /// mlx-swift-lm inferring it from config.json's `model_type`. `nil` = let
     /// mlx infer (its default is the JSON/Hermes format).
     var toolCallFormat: ToolCallFormat? = nil
+    /// Extra stop sequences (as literal token strings) for models whose tool
+    /// dialect has trained end markers the base config doesn't declare as EOS
+    /// — e.g. DeepSeek-Coder-V2 stops after `<｜tool▁calls▁end｜>` so it can't
+    /// hallucinate the tool's output block. Converted to ids at load time.
+    var extraEOSTokens: Set<String> = []
     /// Per-model recommended sampling, used unless the user overrides via the
     /// Tuning tab. Avoids running every model at one global temperature.
     var recTemperature: Double? = nil
@@ -417,6 +422,15 @@ final class ModelCatalog {
             ?? localIfPresent(["swiftmaestro-models/Qwen3-4B-Instruct-2507-4bit", "mlx-community/Qwen3-4B-Instruct-2507-4bit"])
     }
 
+    /// The Coder agent's bundled model id (DeepSeek Coder V2 Lite, bundled in
+    /// the DMG so coding help works out of the box).
+    nonisolated static let coderModelID = "local-deepseek-coder-v2-lite"
+
+    /// True when the Coder model is on disk under modelsRoot.
+    nonisolated static var coderModelAvailable: Bool {
+        localIfPresent(["swiftmaestro-models/DeepSeek-Coder-V2-Lite-Instruct-4bit-mlx", "mlx-community/DeepSeek-Coder-V2-Lite-Instruct-4bit-mlx"]) != nil
+    }
+
     /// Resolve a model's local directory under `modelsRoot` ONLY if it exists on
     /// disk; otherwise return nil so the model is pulled from Hugging Face Hub by
     /// its `huggingFaceID` on first use. This is what makes a fresh install work
@@ -452,7 +466,13 @@ final class ModelCatalog {
             localPath: mechanicModelPath,
             estimatedMemoryGB: 3,
             supportsTools: true,
-            toolCallFormat: .xmlFunction,
+            // Qwen3 Instruct models natively emit JSON inside <tool_call> tags
+            // (`<tool_call>{"name": ..., "arguments": {...}}</tool_call>`) — the
+            // `.json` format. The `<function=…>` XML dialect (.xmlFunction) is
+            // for Qwen3 Coder / Qwen3.5 / Nemotron only; labeling this model
+            // xmlFunction made the stream parser reject every tool call it
+            // emitted (content got stripped as raw XML, 0 calls recorded).
+            toolCallFormat: .json,
             recTemperature: 0.6, recTopP: 0.95, recRepetitionPenalty: 1.05,
             recContextLength: 32_768
         ),
@@ -531,7 +551,15 @@ final class ModelCatalog {
             localPath: localIfPresent(["swiftmaestro-models/DeepSeek-Coder-V2-Lite-Instruct-4bit-mlx", "mlx-community/DeepSeek-Coder-V2-Lite-Instruct-4bit-mlx"]),
             estimatedMemoryGB: 8,
             supportsTools: true,
-            toolCallFormat: .xmlFunction,
+            // DeepSeek dialect: <｜tool▁calls▁begin｜>…<｜tool▁calls▁end｜> with
+            // ```json arguments — the model is tool-call trained in exactly
+            // this format (it falls back to it even when prompted otherwise).
+            // A tools-enabled chat_template.jinja overlay is installed at load
+            // (stock template has no tools block). The extra stop tokens end
+            // generation after the call block so the model can't hallucinate
+            // the tool's <｜tool▁outputs▁begin｜> response.
+            toolCallFormat: .deepseek,
+            extraEOSTokens: ["<｜tool▁calls▁end｜>", "<｜tool▁outputs▁begin｜>"],
             recTemperature: 0.6, recTopP: 0.95, recRepetitionPenalty: 1.05,
             recContextLength: 128_000,
             activeParamsB: 2

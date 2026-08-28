@@ -25,6 +25,33 @@ actor DAMLrcatReader {
 
     static let shared = DAMLrcatReader()
 
+    /// Brand-prefix table used to split an older Lightroom catalog's packed
+    /// camera `value` into make + model ("Apple iPhone 11 Pro Max",
+    /// "ILCE-7RM5", "NIKON D850"). First match wins; the full original string
+    /// is always kept as the model (display clarity), the brand is only the
+    /// filter dimension.
+    private static let cameraBrands: [(prefix: String, brand: String)] = [
+        ("Apple", "Apple"), ("Canon", "Canon"), ("EOS", "Canon"),
+        ("NIKON", "Nikon"), ("SONY", "Sony"), ("ILCE", "Sony"), ("DSC", "Sony"),
+        ("SAMSUNG", "Samsung"), ("FUJIFILM", "Fujifilm"), ("OLYMPUS", "Olympus"),
+        ("OM System", "OM System"), ("DJI", "DJI"), ("GoPro", "GoPro"),
+        ("HERO", "GoPro"), ("Leica", "Leica"), ("Panasonic", "Panasonic"),
+        ("LUMIX", "Panasonic"), ("PENTAX", "Pentax"), ("RICOH", "Ricoh"),
+        ("Hasselblad", "Hasselblad"), ("Motorola", "Motorola"),
+        ("Google", "Google"), ("Pixel", "Google"),
+    ]
+
+    /// Splits a packed camera value into (make, model). Camera-only codes
+    /// ("6120c", "AC003") return a nil make and the raw value as the model.
+    static func splitCameraValue(_ value: String) -> (make: String?, model: String?) {
+        let trimmed = value.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return (nil, nil) }
+        for (prefix, brand) in cameraBrands where trimmed.hasPrefix(prefix) {
+            return (brand, trimmed)
+        }
+        return (nil, trimmed)
+    }
+
     struct ImportResult: Sendable {
         var scanned = 0
         var inserted = 0
@@ -198,6 +225,33 @@ actor DAMLrcatReader {
             let alfCols = try Set(db.columns(in: "AgLibraryFolder").map(\.name))
             let arfCols = try Set(db.columns(in: "AgLibraryRootFolder").map(\.name))
 
+            // EXIF schema discovery — the single biggest cross-version break
+            // (the 2026-08-27 flood of 'no such column' failures per image):
+            //   - GPS columns are `latitude`/`longitude` on modern catalogs but
+            //     `gpsLatitude`/`gpsLongitude` on older ones.
+            //   - AgInternedExifCameraModel has separate `make`/`model` columns
+            //     on modern catalogs but only a packed `value` ("ILCE-7RM5",
+            //     "Apple iPhone 11 Pro Max") on older ones (same for
+            //     AgInternedExifLens: `model` vs `value`).
+            // Adaptive selects mean zero failing queries — and far less SQL.
+            let exifTableExists = try db.tableExists("AgHarvestedExifMetadata")
+            let ehCols: Set<String> = exifTableExists
+                ? try Set(db.columns(in: "AgHarvestedExifMetadata").map(\.name)) : []
+            let camTableExists = try db.tableExists("AgInternedExifCameraModel")
+            let camCols: Set<String> = camTableExists
+                ? try Set(db.columns(in: "AgInternedExifCameraModel").map(\.name)) : []
+            let lensTableExists = try db.tableExists("AgInternedExifLens")
+            let lensCols: Set<String> = lensTableExists
+                ? try Set(db.columns(in: "AgInternedExifLens").map(\.name)) : []
+            let gpsLatExpr: String? = ehCols.contains("latitude") ? "eh.latitude"
+                : ehCols.contains("gpsLatitude") ? "eh.gpsLatitude" : nil
+            let gpsLonExpr: String? = ehCols.contains("longitude") ? "eh.longitude"
+                : ehCols.contains("gpsLongitude") ? "eh.gpsLongitude" : nil
+            let camHasMakeModel = camCols.contains("make") && camCols.contains("model")
+            let camHasValue = camCols.contains("value")
+            let lensHasModel = lensCols.contains("model")
+            let lensHasValue = lensCols.contains("value")
+
             // --- Path resolution: figure out the join chain from rootFolder → file ---
             //
             // LR6/early:  Adobe_images.rootFile → AgLibraryFile.id_local
@@ -342,41 +396,73 @@ actor DAMLrcatReader {
                 var gpsLat: Double?
                 var gpsLon: Double?
 
-                if let exifRow = try? Row.fetchOne(db, sql: """
-                    SELECT eh.isoSpeedRating AS iso,
-                           eh.aperture AS aperture,
-                           eh.shutterSpeed AS shutterSpeed,
-                           eh.focalLength AS focalLength,
-                           eh.latitude AS gpsLat,
-                           eh.longitude AS gpsLon
-                    FROM AgHarvestedExifMetadata eh
-                    WHERE eh.image = ?
-                    """, arguments: [imageId]) {
-                    iso = exifRow["iso"] as? Int
-                    aperture = exifRow["aperture"] as? Double
-                    if let rawShutter = exifRow["shutterSpeed"] as? Double {
-                        let divisor = pow(2.0, rawShutter)
-                        shutterSpeed = "1/\(Int(divisor.rounded()))"
-                    } else if let shutterStr = exifRow["shutterSpeed"] as? String,
-                              !shutterStr.isEmpty {
-                        shutterSpeed = shutterStr
+                if exifTableExists, !ehCols.isEmpty {
+                    // Only select columns that actually exist in this LR build.
+                    var exifCols: [String] = []
+                    if ehCols.contains("isoSpeedRating") { exifCols.append("eh.isoSpeedRating AS iso") }
+                    if ehCols.contains("aperture") { exifCols.append("eh.aperture AS aperture") }
+                    if ehCols.contains("shutterSpeed") { exifCols.append("eh.shutterSpeed AS shutterSpeed") }
+                    if ehCols.contains("focalLength") { exifCols.append("eh.focalLength AS focalLength") }
+                    if let gpsLatExpr { exifCols.append("\(gpsLatExpr) AS gpsLat") }
+                    if let gpsLonExpr { exifCols.append("\(gpsLonExpr) AS gpsLon") }
+                    if !exifCols.isEmpty,
+                       let exifRow = try? Row.fetchOne(db, sql: """
+                        SELECT \(exifCols.joined(separator: ",\n       "))
+                        FROM AgHarvestedExifMetadata eh
+                        WHERE eh.image = ?
+                        """, arguments: [imageId]) {
+                        iso = exifRow["iso"] as? Int
+                        aperture = exifRow["aperture"] as? Double
+                        if let rawShutter = exifRow["shutterSpeed"] as? Double {
+                            let divisor = pow(2.0, rawShutter)
+                            shutterSpeed = "1/\(Int(divisor.rounded()))"
+                        } else if let shutterStr = exifRow["shutterSpeed"] as? String,
+                                  !shutterStr.isEmpty {
+                            shutterSpeed = shutterStr
+                        }
+                        focalLength = exifRow["focalLength"] as? Double
+                        gpsLat = exifRow["gpsLat"] as? Double
+                        gpsLon = exifRow["gpsLon"] as? Double
                     }
-                    focalLength = exifRow["focalLength"] as? Double
-                    gpsLat = exifRow["gpsLat"] as? Double
-                    gpsLon = exifRow["gpsLon"] as? Double
                 }
 
-                if let camRow = try? Row.fetchOne(db, sql: """
-                    SELECT eap.make AS cameraMake, eap.model AS cameraModel,
-                           el.model AS lensModel
+                // Camera/lens: separate make/model columns on modern catalogs
+                // vs a single packed `value` on older ones.
+                var camSelects: [String] = []
+                var joinClauses: [String] = []
+                if camTableExists {
+                    if camHasMakeModel {
+                        camSelects.append("eap.make AS cameraMake")
+                        camSelects.append("eap.model AS cameraModel")
+                    } else if camHasValue {
+                        camSelects.append("eap.value AS cameraValue")
+                    }
+                    if camHasMakeModel || camHasValue {
+                        joinClauses.append("LEFT JOIN AgInternedExifCameraModel eap ON eap.id_local = eh.cameraModelRef")
+                    }
+                }
+                if lensTableExists {
+                    if lensHasModel { camSelects.append("el.model AS lensModel") }
+                    else if lensHasValue { camSelects.append("el.value AS lensModel") }
+                    if lensHasModel || lensHasValue {
+                        joinClauses.append("LEFT JOIN AgInternedExifLens el ON el.id_local = eh.lensRef")
+                    }
+                }
+                if exifTableExists, !camSelects.isEmpty,
+                   let camRow = try? Row.fetchOne(db, sql: """
+                    SELECT \(camSelects.joined(separator: ",\n       "))
                     FROM AgHarvestedExifMetadata eh
-                    LEFT JOIN AgInternedExifCameraModel eap ON eap.id_local = eh.cameraModelRef
-                    LEFT JOIN AgInternedExifLens el ON el.id_local = eh.lensRef
+                    \(joinClauses.joined(separator: "\n"))
                     WHERE eh.image = ?
                     """, arguments: [imageId]) {
                     cameraMake = camRow["cameraMake"] as? String
                     cameraModel = camRow["cameraModel"] as? String
                     lensModel = camRow["lensModel"] as? String
+                    if cameraModel == nil, let packed = camRow["cameraValue"] as? String {
+                        let (make, model) = Self.splitCameraValue(packed)
+                        cameraMake = cameraMake ?? make
+                        cameraModel = model
+                    }
                 }
 
                 // Collections

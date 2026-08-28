@@ -793,6 +793,13 @@ class ChatViewModel: ObservableObject {
             if inReasoning { appendReasoning(stripped) } else { appendAnswer(stripped) }
             streamBuffer = ""
         }
+        // Stamp the finalized assistant bubble with its completion time. The
+        // streaming placeholder is created with the user prompt's timestamp
+        // and was never updated, so answers displayed the prompt's send time
+        // instead of when the response actually finished.
+        if let idx = messages.lastIndex(where: { $0.role == .assistant }) {
+            messages[idx].timestamp = Date()
+        }
         guard let idx = messages.lastIndex(where: { $0.role == .assistant }),
               messages[idx].content.isEmpty,
               let reasoning = messages[idx].reasoning, !reasoning.isEmpty else { return }
@@ -1467,6 +1474,41 @@ class ChatViewModel: ObservableObject {
     /// A scoped runbook identity: internal diagnostics, MCP configuration help,
     /// and restore-to-last-known-good via the settings backup. Kept separate
     /// from the giant navigator/project prompts so support stays focused.
+    /// The bundled coding agent's system prompt. Kept tight — DeepSeek Coder
+    /// V2 Lite has 2.4B active params, so instructions stay short, concrete,
+    /// and tool-first.
+    static func coderSystemPrompt(agentName: String, workingDirectory: String?) -> String {
+        let wdLine = workingDirectory.map {
+            "The user's working directory is \($0). Prefer paths inside it."
+        } ?? "Ask the user for the project path before touching files if none is set."
+        return """
+        You are \(agentName), SwiftMaestro's built-in coding agent. You read, write, and \
+        edit real files and run real builds/tests with your tools. You are NOT a chat-only \
+        advisor — when the user asks for code changes, you make them on disk.
+
+        \(wdLine)
+
+        ═══ EXECUTION RULES ═══
+        1. When the user asks you to read, write, analyze, or modify code, your FIRST \
+        response MUST contain the actual tool calls (read_file, list_dir, write_file, \
+        edit_file, execute_command). Do NOT introduce the task with a plan or explanation.
+        2. If you say "Let me read…" or "I will check…", the VERY NEXT tokens must be a \
+        tool call, not more text.
+        3. For any file larger than a paragraph, use write_file/edit_file. NEVER paste \
+        file contents into the chat as a code block — the user wants the file on disk.
+        4. After editing code, verify: build or run the smallest check that proves it \
+        (execute_command with the project's build/test command).
+        5. If a path fails, fix it yourself: list_dir the parent, check spelling, then \
+        retry. Never ask the user to correct paths you can verify.
+
+        ═══ TOOL-CALL FORMAT ═══
+        Emit exactly one tool call block per action and then STOP — wait for the tool \
+        result. Never invent a tool result; the system returns it to you.
+
+        LANGUAGE RULE: respond in English only.
+        """
+    }
+
     static func mechanicSystemPrompt(agentName: String) -> String {
         """
         You are \(agentName), SwiftMaestro's built-in support engineer. Your one job: keep \
@@ -1526,6 +1568,16 @@ class ChatViewModel: ObservableObject {
         6. NEVER: delete user data, reset settings wholesale, or run destructive commands \
         without explicit user approval. Offer the fix; wait for yes. If you're unsure, say \
         so and explain what you'd need to check next.
+        7. CODE BUGS — escalate to the repo: when the evidence says the problem is in \
+        SwiftMaestro's own code (a crash in our symbols, a tool that errors no matter \
+        the arguments, UI that misbehaves with a correct configuration), call \
+        submit_bug_report with a clear title and a markdown body: what happened, \
+        expected vs actual, steps to reproduce, and the key evidence (errors, log \
+        lines, top crash frames). This files a GitHub issue on the SwiftMaestro repo \
+        (or opens a pre-filled issue form in the user's browser when no GitHub CLI is \
+        available). Tell the user you filed it and share the issue URL if you got one. \
+        Only do this AFTER you've ruled out configuration — never file a report for \
+        something a settings change would fix.
 
         ═══ GIT-REFERENCED RESET (when the repo exists) ═══
         On developer machines your working directory IS the SwiftMaestro git repo — use it \
@@ -1613,12 +1665,24 @@ class ChatViewModel: ObservableObject {
                 call ask_project_agent with the question/task instead of guessing.
 
                 TOOLS:
-                - execute_command: Your terminal. Run ANY shell command immediately. \
-                For long-running processes, use start_background: true.
-                - start_server: Built-in HTTP server. start_server(path:, port:). \
-                stop_server(port:) to shut down.
-                - list_dir, read_file: Quick file discovery (delegate bulk work).
+                - ask_mechanic: YOUR HANDS. The Mechanic is the built-in support \
+                engineer with the tools you don't have: shell commands, file edits, \
+                crash/console diagnostics, settings backup/restore, and bug-report \
+                filing. When the user asks you to run, update, install, fix, \
+                diagnose, or check ANYTHING concrete ("update brew", "why is X slow", \
+                "fix my settings"), call ask_mechanic IMMEDIATELY with the full task \
+                and all context. NEVER answer "I can't run commands" — the Mechanic \
+                can. Report back what the Mechanic did.
+                - ask_project_agent / ask_project_agents: Delegate project work to \
+                project agents (research, writing, code). For system/app/support \
+                tasks, prefer ask_mechanic.
                 - list_workspace: See all projects and agents if unsure.
+
+                DIRECT MECHANIC COMMAND:
+                - If the user says "run ...", "update ...", "install ...", "fix ...", \
+                "diagnose ...", "check why ...", or asks for anything that needs shell \
+                access or system changes, you MUST call ask_mechanic IMMEDIATELY. \
+                Do NOT write "I will ask..." or a plan first — just emit the tool call.
 
                 LANGUAGE RULE: Respond in English only. All tool arguments in English.
 
@@ -1637,6 +1701,8 @@ class ChatViewModel: ObservableObject {
                 """
         } else if agent.kind == .mechanic {
             base = Self.mechanicSystemPrompt(agentName: agent.name)
+        } else if agent.kind == .coder {
+            base = Self.coderSystemPrompt(agentName: agent.name, workingDirectory: workingDirectory)
         } else {
             let proj = projectName ?? "this project"
             base = """
@@ -1759,6 +1825,23 @@ class ChatViewModel: ObservableObject {
             if !opencodeSections.isEmpty {
                 content += "\n\n" + ProjectOpenCodeService.shared.renderSections(opencodeSections)
             }
+        }
+
+        // Path-authorization guidance: the file tools hard-deny paths outside
+        // the authorized set, so the model must KNOW the set up front — without
+        // this it guesses a location (e.g. /tmp before it was authorized), gets
+        // 'access denied — outside the authorized folders', then hallucinates
+        // an excuse instead of writing somewhere valid.
+        let roots = MaestroTools.authorizedRoots()
+        if roots == ["/"] {
+            content += "\n\nFILE ACCESS: Full Disk Access is enabled — you may read and write anywhere on the system."
+        } else if !roots.isEmpty {
+            content += "\n\nAUTHORIZED FOLDERS — you may ONLY read and write files under these paths:\n"
+                + roots.map { "- \($0)" }.joined(separator: "\n")
+                + "\nAnywhere else returns 'access denied — outside the authorized folders'. "
+                + "If the user asks for a location not listed, do NOT attempt it and do NOT invent an excuse: "
+                + "say it isn't authorized, name a listed folder that works (use /tmp for scratch files), "
+                + "and mention they can add new locations in Settings → Context."
         }
 
         let applicable = SwiftMaestroSettingsStore.loadRules().filter { rule in

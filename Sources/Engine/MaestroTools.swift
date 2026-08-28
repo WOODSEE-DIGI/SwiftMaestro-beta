@@ -517,6 +517,12 @@ enum MaestroTools {
                 name: "close_panel", spec: navigatorToolSpecs[9],
                 category: ToolCategory.workspace.rawValue,
                 handler: { call in await closePanelTool(call) }),
+            ToolDefinition(
+                name: "ask_mechanic", spec: navigatorToolSpecs[10],
+                category: ToolCategory.workspace.rawValue,
+                handler: { _ in
+                    errorJSON("ask_mechanic must be intercepted by AgentExecutor, not dispatched directly.")
+                }),
         ])
     }
 
@@ -673,6 +679,23 @@ enum MaestroTools {
                     "panel": ["type": "string", "description": "Name of the open panel to close (e.g. 'database', 'dam', 'MaestroDAM', 'browser') or an agent name."],
                 ],
                 required: ["panel"]
+            ),
+            functionSpec(
+                name: "ask_mechanic",
+                description:
+                    "Ask the Mechanic — SwiftMaestro's built-in support engineer — to "
+                    + "diagnose or fix a problem. The Mechanic has the tools you don't: "
+                    + "shell commands (execute_command), crash/console diagnostics, settings "
+                    + "backup/restore, and bug-report filing. USE THIS whenever the user asks "
+                    + "you to run a command (brew, defaults, git, scripts), change a system or "
+                    + "app setting, diagnose a crash/hang/slowdown, or fix something that isn't "
+                    + "working. NEVER tell the user you 'can't run commands' — hand the task to "
+                    + "the Mechanic instead. Write the task as clear instructions with full "
+                    + "context; the Mechanic reports back what it did.",
+                properties: [
+                    "task": ["type": "string", "description": "What the Mechanic should do, with all needed context (e.g. 'Run brew update and brew upgrade, then report what was upgraded')."],
+                ],
+                required: ["task"]
             ),
         ]
     }

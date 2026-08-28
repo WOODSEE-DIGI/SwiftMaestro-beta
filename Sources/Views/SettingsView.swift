@@ -29,6 +29,9 @@ enum SwiftMaestroSettingsStore {
             AuthorizedFolder(path: home + "/.ai-context", enabled: true),
             AuthorizedFolder(path: home + "/Documents", enabled: true),
             AuthorizedFolder(path: home + "/Obsidian", enabled: true),
+            // Scratch space for agent build/test artifacts (e.g. "create a file in
+            // /tmp"). World-writable but standard practice for throwaway work.
+            AuthorizedFolder(path: "/tmp", enabled: true),
         ]
 
         guard
@@ -38,14 +41,23 @@ enum SwiftMaestroSettingsStore {
             return defaults
         }
 
-        // Merge saved folders with the SwiftMaestro app-support directory. The app
-        // must always be able to read its own logs/data/backups, so this entry is
-        // added automatically if the user removed it or created the list before it
-        // was a default.
+        // Merge must-always-be-authorized folders into the saved list. The app
+        // must always be able to read its own logs/data/backups, and agents
+        // always need a scratch directory (/tmp) for build/test artifacts —
+        // both are added automatically if the user removed them or created the
+        // list before they were defaults.
         var merged = savedFolders
+        var didChange = false
         let appSupportPath = SwiftMaestroPaths.appSupportDir.path
         if !merged.contains(where: { $0.path == appSupportPath }) {
             merged.insert(AuthorizedFolder(path: appSupportPath, enabled: true), at: 0)
+            didChange = true
+        }
+        if !merged.contains(where: { $0.path == "/tmp" }) {
+            merged.append(AuthorizedFolder(path: "/tmp", enabled: true))
+            didChange = true
+        }
+        if didChange {
             saveAuthorizedFolders(merged)
         }
         return merged

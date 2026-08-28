@@ -19,7 +19,10 @@ public struct DeepseekV3Configuration: Codable, Sendable {
     var nRoutedExperts: Int?
     var routedScalingFactor: Float
     var kvLoraRank: Int
-    var qLoraRank: Int
+    /// Optional: DeepSeek-V2-Lite has `q_lora_rank: null` (its "lite" variant
+    /// drops the Q LoRA) — the attention module already has the nil path
+    /// (plain q_proj) for exactly this case.
+    var qLoraRank: Int?
     var qkRopeHeadDim: Int
     var vHeadDim: Int
     var qkNopeHeadDim: Int
@@ -34,6 +37,12 @@ public struct DeepseekV3Configuration: Codable, Sendable {
     var ropeTheta: Float
     var ropeScaling: [String: StringOrNumber]?
     var attentionBias: Bool
+    /// MoE gate scoring: "sigmoid" (V3) or "softmax" (V2 family). Optional so
+    /// existing V3 configs decode unchanged.
+    var scoringFunc: String? = nil
+    /// MoE top-k method: "greedy" (plain top-k, V2-Lite) vs V3's grouped
+    /// noaux_tc. Optional; nil = V3 behavior.
+    var topkMethod: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case vocabSize = "vocab_size"
@@ -62,6 +71,8 @@ public struct DeepseekV3Configuration: Codable, Sendable {
         case ropeTheta = "rope_theta"
         case ropeScaling = "rope_scaling"
         case attentionBias = "attention_bias"
+        case scoringFunc = "scoring_func"
+        case topkMethod = "topk_method"
     }
 }
 
@@ -195,21 +206,17 @@ class DeepseekV3Attention: Module {
         kv = kv.reshaped(B, L, self.numHeads, -1).transposed(0, 2, 1, 3)
         let splitKv = split(kv, indices: [self.qkNopeHeadDim], axis: -1)
 
-        var (kNope, values) = (splitKv[0], splitKv[1])
+        let (kNope, values) = (splitKv[0], splitKv[1])
 
         let offset = cache?.ropeOffset
         qPe = applyRotaryPosition(rope, to: qPe, offset: offset)
         kPe = applyRotaryPosition(rope, to: kPe, offset: offset)
         kPe = repeated(kPe, count: numHeads, axis: 1)
 
-        var keys: MLXArray
-        if let cache = cache {
-            (keys, values) = cache.update(
-                keys: concatenated([kNope, kPe], axis: -1), values: values)
-        } else {
-            keys = concatenated([kNope, kPe], axis: -1)
-        }
-
+        // NOTE: cache.update happens INSIDE attentionWithCacheUpdate — doing it
+        // here too (as a previous edit did) double-appends every step's
+        // keys/values whenever a real cache exists.
+        let keys = concatenated([kNope, kPe], axis: -1)
         let queries = concatenated([qNope, qPe], axis: -1)
 
         let output = attentionWithCacheUpdate(
@@ -277,7 +284,31 @@ class MoEGate: Module {
         let (bsz, seqLen, _) = (x.dim(0), x.dim(1), x.dim(2))
 
         let hiddenStates = x.matmul(weight.T)
-        var scores = sigmoid(hiddenStates)
+        var scores: MLXArray
+        if config.scoringFunc == "softmax" {
+            // DeepSeek-V2 family: softmax-scored routing.
+            scores = softmax(hiddenStates, axis: -1)
+        } else {
+            scores = sigmoid(hiddenStates)
+        }
+
+        // DeepSeek-V2's greedy top-k: no bias correction, no group limiting.
+        // (V2-Lite sets topk_method="greedy" with n_group=1; the bias term is
+        // zero-initialized and never loaded for V2 checkpoints, so the V3 path
+        // below is unchanged for actual V3 models.)
+        if config.topkMethod == "greedy" {
+            let k = topK ?? 1
+            let inds = argPartition(-scores, kth: k - 1, axis: -1)[.ellipsis, ..<k]
+            scores = takeAlong(scores, inds, axis: -1)
+            if k > 1, normTopkProb {
+                let denominator = scores.sum(axis: -1, keepDims: true) + 1e-20
+                scores = scores / denominator
+            }
+            // V2 applies the routed scaling factor unconditionally.
+            scores = scores * routedScalingFactor
+            return (inds, scores)
+        }
+
         let scoresForChoice = scores + e_score_correction_bias
         let groupScores = scoresForChoice.reshaped(bsz, seqLen, self.nGroup, -1)
         let topKGroup = top(groupScores, k: 2, axis: -1).sum(axis: -1, keepDims: true)
@@ -415,7 +446,11 @@ public class DeepseekV3ModelInner: Module {
 }
 
 public class DeepseekV3Model: Module, LLMModel, KVCacheDimensionProvider, LoRAModel {
-    public var kvHeads: [Int] = []
+    /// Sized per layer — KVCacheDimensionProvider.newCache creates one cache
+    /// per entry. Left empty, generation ran CACHELESS: each step forwarded
+    /// only the single new token with zero context, producing degenerate
+    /// context-free output ("search search search…") from token 2 on.
+    public var kvHeads: [Int]
 
     var args: DeepseekV3Configuration
     public var model: DeepseekV3ModelInner
@@ -423,6 +458,7 @@ public class DeepseekV3Model: Module, LLMModel, KVCacheDimensionProvider, LoRAMo
 
     init(_ args: DeepseekV3Configuration) {
         self.args = args
+        self.kvHeads = Array(repeating: args.numKeyValueHeads, count: args.numHiddenLayers)
         self.model = DeepseekV3ModelInner(config: args)
         self._lmHead.wrappedValue = Linear(args.hiddenSize, args.vocabSize, bias: false)
     }
@@ -471,6 +507,19 @@ public class DeepseekV3Model: Module, LLMModel, KVCacheDimensionProvider, LoRAMo
                         newWeights["\(prefix).mlp.switch_mlp.\(projName).\(key)"] = stacked(joined)
                     }
                 }
+            }
+        }
+
+        // DeepSeek-V2 checkpoints have no gate bias (that's V3's noaux_tc
+        // addition); the shared MoEGate declares it as a stored parameter, so
+        // synthesize zeros for MoE layers rather than failing the weight
+        // application with a missing-key error. Adding a zero bias is a
+        // numerical no-op.
+        for l in 0 ..< args.numHiddenLayers {
+            let gateWeightKey = "model.layers.\(l).mlp.gate.weight"
+            let biasKey = "model.layers.\(l).mlp.gate.e_score_correction_bias"
+            if weights[gateWeightKey] != nil && newWeights[biasKey] == nil {
+                newWeights[biasKey] = MLXArray.zeros([args.nRoutedExperts ?? 1])
             }
         }
 
