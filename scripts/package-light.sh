@@ -1,12 +1,16 @@
 #!/bin/bash
-# Package a "light" SwiftMaestro .dmg that includes the WhisperKit model but not
-# the Gemma 4 MLX model — the variant for Macs under 32 GB unified memory, where
-# chat runs on online models or a networked LM Studio host instead of a bundled
-# local model. The app is expected to already be built at build/Release/SwiftMaestro.app.
+# Package a "light" SwiftMaestro .dmg — EVERYTHING except the Gemma 4 MLX
+# model: the app, WhisperKit speech-to-text, the Mechanic support model, and
+# the Coder agent model. The variant for Macs under 32 GB unified memory,
+# where heavy chat runs on online models or a networked LM Studio host while
+# in-app help and coding assistance still work locally out of the box.
+# The app is expected to already be built at build/Release/SwiftMaestro.app.
 #
 # Env overrides:
 #   VERSION=<x.y.z>          (default reads from app Info.plist)
 #   WHISPER_MODEL_PATH=<path> (default ~/Library/Application Support/SwiftMaestro/WhisperKit/models/argmaxinc/whisperkit-coreml/openai_whisper-large-v3)
+#   MECHANIC_MODEL_PATH=<path> (default: SwiftMaestro-Mechanic-4bit, falling back to Qwen3-4B-Instruct-2507-4bit)
+#   CODER_MODEL_PATH=<path>  (default ~/Ai-models/models/swiftmaestro-models/DeepSeek-Coder-V2-Lite-Instruct-4bit-mlx)
 #   TEAM_ID=<team>           (default 3BMZ2ULZ54)
 #   SIGN_IDENTITY=<name>     (default "Developer ID Application")
 #   NOTARY_PROFILE=<name>    (default SwiftMaestroNotary)
@@ -16,9 +20,20 @@ set -euo pipefail
 
 APP_NAME="SwiftMaestro"
 WHISPER_MODEL_PATH="${WHISPER_MODEL_PATH:-$HOME/Library/Application Support/SwiftMaestro/WhisperKit/models/argmaxinc/whisperkit-coreml/openai_whisper-large-v3}"
-# Mechanic support model (Qwen3-4B) — bundled in the light installer too: it's
-# the only chat-capable model Light users get out of the box.
-MECHANIC_MODEL_PATH="${MECHANIC_MODEL_PATH:-$HOME/Ai-models/models/swiftmaestro-models/SwiftMaestro-Mechanic-4bit}"
+# Mechanic support model (Qwen3-4B) — bundled in BOTH installers so in-app
+# help works on fresh/broken installs. Prefers the fine-tuned specialist,
+# falls back to the stock Qwen3-4B instruct model the catalog also accepts.
+MECHANIC_MODEL_PATH="${MECHANIC_MODEL_PATH:-}"
+if [ -z "$MECHANIC_MODEL_PATH" ]; then
+    for candidate in \
+        "$HOME/Ai-models/models/swiftmaestro-models/SwiftMaestro-Mechanic-4bit" \
+        "$HOME/Ai-models/models/swiftmaestro-models/Qwen3-4B-Instruct-2507-4bit"; do
+        if [ -d "$candidate" ]; then MECHANIC_MODEL_PATH="$candidate"; break; fi
+    done
+fi
+# Coder agent model (DeepSeek Coder V2 Lite 4-bit, ~8GB) — bundled in the
+# light installer too (everything except Gemma 4).
+CODER_MODEL_PATH="${CODER_MODEL_PATH:-$HOME/Ai-models/models/swiftmaestro-models/DeepSeek-Coder-V2-Lite-Instruct-4bit-mlx}"
 TEAM_ID="${TEAM_ID:-3BMZ2ULZ54}"
 SIGN_IDENTITY="${SIGN_IDENTITY:-Developer ID Application}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-SwiftMaestroNotary}"
@@ -47,7 +62,7 @@ fi
 
 WHISPER_MODEL_NAME="$(basename "$WHISPER_MODEL_PATH")"
 
-echo "=== Packaging light $DMG (bundled: $WHISPER_MODEL_NAME) ==="
+echo "=== Packaging light $DMG (bundled: $WHISPER_MODEL_NAME + Mechanic + Coder — everything except Gemma 4) ==="
 
 STAGE="$(mktemp -d)"
 APP_STAGE="$STAGE/${APP_NAME}.app"
@@ -62,12 +77,22 @@ echo "Embedding Whisper model into app bundle (~3GB)…"
 ditto "$WHISPER_MODEL_PATH" "$WHISPER_DST"
 
 # Embed the Mechanic support model (bundled in full + light).
-if [ -d "$MECHANIC_MODEL_PATH" ]; then
+if [ -n "$MECHANIC_MODEL_PATH" ] && [ -d "$MECHANIC_MODEL_PATH" ]; then
     MECHANIC_DST="$APP_STAGE/Contents/Resources/models/swiftmaestro-models/$(basename "$MECHANIC_MODEL_PATH")"
     echo "Embedding Mechanic model into app bundle (~2.5GB)…"
     ditto "$MECHANIC_MODEL_PATH" "$MECHANIC_DST"
 else
-    echo "WARNING: Mechanic model not found at $MECHANIC_MODEL_PATH — skipping (download it via the Models tab or HF)."
+    echo "WARNING: Mechanic model not found — skipping (download it via the Models tab or HF)."
+fi
+
+# Embed the Coder agent model (bundled in full + light — everything except
+# Gemma 4 ships in the light installer).
+if [ -d "$CODER_MODEL_PATH" ]; then
+    CODER_DST="$APP_STAGE/Contents/Resources/models/swiftmaestro-models/$(basename "$CODER_MODEL_PATH")"
+    echo "Embedding Coder model into app bundle (~8GB)…"
+    ditto "$CODER_MODEL_PATH" "$CODER_DST"
+else
+    echo "WARNING: Coder model not found at $CODER_MODEL_PATH — skipping (download it via the Models tab or HF)."
 fi
 
 # Bundle Homebrew dylibs (libusb, libraw + transitive deps) into the app
@@ -101,12 +126,13 @@ SwiftMaestro ${VERSION} (Light Installer)
 
 Drag SwiftMaestro.app to /Applications.
 
-This light installer includes the WhisperKit speech-to-text model and is the
-recommended download for Macs with less than 32 GB of unified memory. Instead
-of a bundled chat model, use online model providers or connect to an LM Studio
-server (including one running on another Mac on your network) in
-Settings → Models. Any local MLX model can still be downloaded later from the
-Models tab if memory allows.
+This light installer includes everything except the Gemma 4 chat model:
+WhisperKit speech-to-text, the Mechanic in-app help model, and the Coder
+agent model all work locally out of the box. It's the recommended download
+for Macs with less than 32 GB of unified memory. For general chat, use
+online model providers or connect to an LM Studio server (including one
+running on another Mac on your network) in Settings → Models. Any local MLX
+model can still be downloaded later from the Models tab if memory allows.
 
 Links:
 - Website:    https://swiftmaestro.com
