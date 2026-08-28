@@ -14,7 +14,7 @@
 #   TEAM_ID=<team>           (default 3BMZ2ULZ54)
 #   SIGN_IDENTITY=<name>     (default "Developer ID Application")
 #   NOTARY_PROFILE=<name>    (default SwiftMaestroNotary)
-#   SKIP_NOTARIZE=1          (build + sign the dmg only; no upload)
+#   NOTARIZE=1               (opt in to notarization — skipped by default)
 #   ENTITLEMENTS=<path>      (default Sources/Resources/SwiftMaestro.entitlements)
 set -euo pipefail
 
@@ -155,8 +155,8 @@ rm -rf "$STAGE"
 echo "Signing the disk image…"
 codesign --force --sign "$SIGN_IDENTITY" --timestamp "$DMG"
 
-if [ "${SKIP_NOTARIZE:-0}" = "1" ]; then
-    echo "SKIP_NOTARIZE=1 — built and signed $DMG without notarizing."
+if [ "${NOTARIZE:-0}" != "1" ]; then
+    echo "Notarization skipped (default; NOTARIZE=1 to opt in) — built and signed $DMG."
     exit 0
 fi
 

@@ -3,13 +3,13 @@
 #
 # Builds a Developer ID-signed Release app and produces the full .dmg:
 #   - SwiftMaestro-<VERSION>-full.dmg  (app + Gemma 4 + WhisperKit)
-# signs it, notarizes it (unless SKIP_NOTARIZE=1), generates the Sparkle
+# signs it, and generates the Sparkle appcast. Notarization is OFF by default (NOTARIZE=1 opts in).
 # appcast, and stages everything in dist/ for upload.
 #
 # Env overrides:
 #   VERSION=<x.y.z>            (default reads from app Info.plist)
 #   DOWNLOAD_URL_PREFIX=<url>  (default https://s3.ap-southeast-2.onidel.cloud/swiftmaestro-releases/)
-#   SKIP_NOTARIZE=1            (build + sign only; no notarization)
+#   NOTARIZE=1                 (opt in to notarization — skipped by default)
 #   UPLOAD=1                   (upload: DMGs + appcast → Onidel; appcast → 1984 same-origin)
 #   ONIDEL_UPLOAD / DEPLOY_SCRIPT  (override upload helper paths)
 #   SM_SFTP_USER / SM_SFTP_HOST / SM_SFTP_PORT  (1984 hosting SFTP — REQUIRED for that step,
