@@ -418,7 +418,8 @@ struct SwiftMaestroApp: App {
                 },
                 openPanels: Set(workspaceLayout.allOpenPanels),
                 canvasWindows: workspaceLayout.canvasWindows,
-                openCanvasWindowIDs: workspaceLayout.openCanvasWindowIDs
+                openCanvasWindowIDs: workspaceLayout.openCanvasWindowIDs,
+                panelLayout: PanelLayoutState.shared
             )
         }
 
@@ -616,6 +617,7 @@ private struct PanelCommands: Commands {
     /// screen right now — drives the Canvas Windows reopen section.
     let canvasWindows: [CanvasWindowInfo]
     let openCanvasWindowIDs: Set<UUID>
+    let panelLayout: PanelLayoutState
 
     @Environment(\.openWindow) private var openWindow
 
@@ -631,6 +633,7 @@ private struct PanelCommands: Commands {
 
             agentChatsMenu
             panelsMenu
+            agentSubPanelsMenu
 
             // Canvas windows: closing one used to strand its tiles invisibly
             // until the next app restart. Reopen (or focus) from here — and
@@ -732,6 +735,34 @@ private struct PanelCommands: Commands {
                         panelButton(.plugin(manifest.id), title: manifest.name, icon: manifest.icon)
                     }
                 }
+            }
+        }
+    }
+
+    // MARK: Agent sub-panels (Plans / Tasks)
+
+    /// Toggle visibility of Plans and Tasks sub-panels inside agent chats.
+    /// These are per-chat side panels managed by PanelLayoutState.
+    @ViewBuilder
+    private var agentSubPanelsMenu: some View {
+        Section("Agent Panels") {
+            Button {
+                withAnimation { panelLayout.toggleVisibility(.plans) }
+            } label: {
+                Label(
+                    panelLayout.hiddenPanels.contains(.plans) ? "Show Plans" : "Hide Plans",
+                    systemImage: panelLayout.hiddenPanels.contains(.plans)
+                        ? "list.bullet.rectangle" : "list.bullet.rectangle.fill"
+                )
+            }
+            Button {
+                withAnimation { panelLayout.toggleVisibility(.tasks) }
+            } label: {
+                Label(
+                    panelLayout.hiddenPanels.contains(.tasks) ? "Show Tasks" : "Hide Tasks",
+                    systemImage: panelLayout.hiddenPanels.contains(.tasks)
+                        ? "checklist" : "checklist.checked"
+                )
             }
         }
     }

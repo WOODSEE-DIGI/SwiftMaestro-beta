@@ -1339,10 +1339,11 @@ class ChatViewModel: ObservableObject {
         message was sent unless you actually called the tool and got a result back.
 
         CALENDAR:
-        - Before creating a calendar event, ALWAYS call get_current_time first to \
-        get the current date and timezone. This ensures you can correctly resolve \
-        relative dates like "tomorrow", "next Tuesday", or "in 2 hours" to absolute \
-        ISO-8601 timestamps.
+        - The CURRENT DATE & TIME (with timezone) is at the top of this prompt. \
+        Resolve relative dates like "tomorrow", "next Tuesday", or "in 2 hours" \
+        against it to absolute ISO-8601 timestamps. Call get_current_time first \
+        ONLY if the task has already been running for many minutes before the \
+        event is created (the injected value is turn-fresh).
         - Pass the ISO-8601 start time (e.g. 2026-06-15T14:00:00Z) to \
         create_calendar_event. Do NOT pass natural language dates.
 
@@ -1506,6 +1507,12 @@ class ChatViewModel: ObservableObject {
         result. Never invent a tool result; the system returns it to you.
 
         LANGUAGE RULE: respond in English only.
+
+        MEMORY vs NOTES — DO NOT CONFUSE:
+        - "AI context" / "context" = context_read, memory_read, memory_search, memory_list \
+        (shared AI context at ~/.ai-context/). Use these when the user says "ai context".
+        - "notes" / "vault" = list_notes, read_note, search_notes (Obsidian vault). \
+        Use these ONLY for vault-specific requests. They are NOT the same as AI context.
         """
     }
 
@@ -1678,6 +1685,18 @@ class ChatViewModel: ObservableObject {
                 tasks, prefer ask_mechanic.
                 - list_workspace: See all projects and agents if unsure.
 
+                MEMORY & CONTEXT TOOLS (use these — NOT list_notes for AI context):
+                - context_read: Read structured context for an agent, project, or session. \
+                Use this when the user says "ai context", "check context", "read context", \
+                or asks about shared AI context (~/.ai-context/).
+                - memory_read / memory_search / memory_list: Read, search, or list the \
+                shared memory store (~/.ai-context/memory/). Use for knowledge, facts, \
+                conversations, and learned patterns.
+                - fact_remember / fact_query: Durable facts and entity graph.
+                - list_notes / read_note / search_notes: These are for the Obsidian \
+                vault (Notes.md) ONLY — NOT for AI context. Do NOT use these when the \
+                user says "ai context" or "context".
+
                 DIRECT MECHANIC COMMAND:
                 - If the user says "run ...", "update ...", "install ...", "fix ...", \
                 "diagnose ...", "check why ...", or asks for anything that needs shell \
@@ -1761,17 +1780,25 @@ class ChatViewModel: ObservableObject {
         }
         var content = base + "\n\n" + Self.planContextPrompt(for: agent, projectName: projectName)
 
-        // Today's date, front and centre — small models hallucinate dates
-        // (Gemma 4 stamped monitoring rows "2025-05-22" in August 2026) because
-        // they have no clock. Give them the real one.
+        // Today's date AND time, front and centre — small models hallucinate
+        // dates (Gemma 4 stamped monitoring rows "2025-05-22" in August 2026)
+        // because they have no clock. Give them the real one. Including the
+        // time + timezone also removes the habitual get_current_time round
+        // trip before any date-sensitive planning.
+        let now = Date()
         let dateFmt = DateFormatter()
         dateFmt.dateFormat = "yyyy-MM-dd"
         let dayFmt = DateFormatter()
         dayFmt.dateFormat = "EEEE"
-        let todayStamp = "\(dateFmt.string(from: Date())) (\(dayFmt.string(from: Date())))"
-        content = "TODAY'S DATE: \(todayStamp). Use this exact date (yyyy-MM-dd) for "
-            + "ANY date you record — Date Monitored, Date Found, created/updated dates, logs. "
-            + "NEVER invent, guess, or estimate a date.\n\n" + content
+        let timeFmt = DateFormatter()
+        timeFmt.dateFormat = "HH:mm:ss a"
+        let todayStamp = "\(dateFmt.string(from: now)) (\(dayFmt.string(from: now))) "
+            + "\(timeFmt.string(from: now)) \(TimeZone.current.identifier)"
+        content = "CURRENT DATE & TIME: \(todayStamp). Fresh as of this turn — you do "
+            + "NOT need get_current_time just to learn the date or time. Use this exact "
+            + "date (yyyy-MM-dd) for ANY date you record — Date Monitored, Date Found, "
+            + "created/updated dates, logs. NEVER invent, guess, or estimate a date.\n\n"
+            + content
 
         // Add a category-specific prompt section (coding, research, design, etc.).
         let categorySection = Self.categoryPrompt(for: agent, model: model, modelID: modelID)

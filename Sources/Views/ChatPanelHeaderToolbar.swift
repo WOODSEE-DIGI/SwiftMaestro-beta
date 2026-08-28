@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// Header toolbar for an agent chat panel: Open in Window, Inbox, Clear Chat.
-/// Lives in the panel header (not the window title bar) so it stays visible when
-/// the chat is docked in the workspace grid.
+/// Header toolbar for an agent chat panel: Plans, Todo, Open in Window,
+/// Inbox, Clear Chat. Lives in the panel header (not the window title bar)
+/// so it stays visible when the chat is docked in the workspace grid.
 struct ChatPanelHeaderToolbar: View {
     let agentID: UUID
 
@@ -10,11 +10,36 @@ struct ChatPanelHeaderToolbar: View {
     @Environment(AgentMessageStore.self) private var messageStore
     @Environment(\.openWindow) private var openWindow
     @State private var layout = WorkspaceLayoutState.shared
+    @State private var panelLayout = PanelLayoutState.shared
     @State private var showingMessages = false
     @State private var showingClearChatConfirm = false
 
     var body: some View {
         HStack(spacing: 6) {
+            // Plans toggle — show/hide the Plans side panel
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    panelLayout.toggleVisibility(.plans)
+                }
+            } label: {
+                Image(systemName: panelLayout.hiddenPanels.contains(.plans)
+                    ? "list.bullet.rectangle" : "list.bullet.rectangle.fill")
+            }
+            .help(panelLayout.hiddenPanels.contains(.plans)
+                ? "Show Plans panel" : "Hide Plans panel")
+
+            // Tasks/Todo toggle — show/hide the Tasks side panel
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    panelLayout.toggleVisibility(.tasks)
+                }
+            } label: {
+                Image(systemName: panelLayout.hiddenPanels.contains(.tasks)
+                    ? "checklist" : "checklist.checked")
+            }
+            .help(panelLayout.hiddenPanels.contains(.tasks)
+                ? "Show Tasks panel" : "Hide Tasks panel")
+
             Button {
                 floatOrFocus()
             } label: {

@@ -105,14 +105,17 @@ enum MaestroTools {
     /// Shared bus worker service. Set at app launch.
     @MainActor static weak var busWorker: BusWorker?
 
-    /// Returns the real local date/time. Unambiguously verifiable: the model
-    /// cannot know the true current time without calling this, so a correct
-    /// answer proves the tool round-trip actually fired.
+    /// Returns the real local date/time. The current date/time (with
+    /// timezone) is already injected at the top of the system prompt, so the
+    /// description steers the model away from habitual calls — this tool is
+    /// for a FRESH reading after a long-running task, not for planning.
     static let getCurrentTime = Tool<NoToolArgs, CurrentTimeResult>(
         name: "get_current_time",
         description:
-            "Get the current local date and time. Call this whenever the user asks "
-            + "what the current time or date is.",
+            "Get the current local date and time. The current date and time are already "
+            + "provided at the top of your system prompt — call this ONLY when you need a "
+            + "fresh, precise reading mid-task (e.g. measuring elapsed time), never just "
+            + "to learn the date.",
         parameters: []
     ) { _ in
         let formatter = ISO8601DateFormatter()

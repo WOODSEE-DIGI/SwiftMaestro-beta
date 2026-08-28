@@ -1236,7 +1236,16 @@ struct ModelsSettingsTab: View {
                         } else {
                             ForEach(list) { item in
                                 HStack {
+                                    let activity = sampler.models[item.id]
+                                    Circle()
+                                        .fill(activity.map { activityStateColor($0.state) } ?? .green)
+                                        .frame(width: 6, height: 6)
                                     Text(item.name).font(.caption)
+                                    if let activity, activity.state == .generating {
+                                        Text(String(format: "%.1f tok/s", activity.currentTokensPerSecond))
+                                            .font(.caption.monospacedDigit())
+                                            .foregroundStyle(.secondary)
+                                    }
                                     Spacer()
                                     Text("~\(item.gb) GB").font(.caption).foregroundStyle(.secondary)
                                 }
@@ -1419,15 +1428,11 @@ struct ModelsSettingsTab: View {
                         .foregroundStyle(.secondary)
                 }
             }
-        } else if loadingModelID == model.id {
-            HStack(spacing: 6) {
-                ProgressView()
-                    .frame(width: 16)
-                Text("Loading…")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
         } else if isResident, let activity = sampler.models[model.id] {
+            // Resident check BEFORE loading check: if the model is already
+            // loaded (e.g. started up, auto-loaded by another agent), show
+            // the real activity state — don't let a stale loadingModelID
+            // from a previous Load-button click mask the truth.
             HStack(spacing: 6) {
                 Circle()
                     .fill(activityStateColor(activity.state))
@@ -1449,6 +1454,33 @@ struct ModelsSettingsTab: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
                 .help("Unload \(model.displayName) from memory")
+            }
+        } else if isResident {
+            // Model is resident but sampler hasn't registered it yet —
+            // show a generic loaded state instead of "Loading…".
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(.green)
+                    .frame(width: 6, height: 6)
+                Text("Ready")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button {
+                    engine.unloadModel(model.id)
+                } label: {
+                    Image(systemName: "eject")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Unload \(model.displayName) from memory")
+            }
+        } else if loadingModelID == model.id {
+            HStack(spacing: 6) {
+                ProgressView()
+                    .frame(width: 16)
+                Text("Loading…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         } else if model.hasLocalWeights, !model.hasCompleteLocalWeights {
             // Weights are present but at least one shard from

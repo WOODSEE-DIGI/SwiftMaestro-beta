@@ -156,6 +156,12 @@ final class AgentExecutor: Sendable {
                     var round = 0
                     let hardMaxRounds = 100
                     var usedMutator = false      // a mutating tool ran this turn (verb-classified)
+                    /// A mutating tool that is NOT plan/todo scaffolding ran
+                    /// this turn. The futureNarration gate reads THIS flag:
+                    /// a plan-only turn hasn't started the task, so "I am now
+                    /// opening X to begin step 1" is intent to nudge, not a
+                    /// post-work closer.
+                    var usedProductiveMutator = false
                     var lastRoundContent = ""    // previous round's cleaned text (anti-repeat guard)
                     var ditherRounds = 0         // CONSECUTIVE hesitation-only rounds ("Wait, I'll check…")
                     var autoNudges = 0           // CONSECUTIVE unproductive nudges
@@ -511,12 +517,16 @@ final class AgentExecutor: Sendable {
                             // Future-tense narration ("I'll delegate", "Now I'll mark it",
                             // "I will now:", "Step 1: ...") should ALWAYS trigger a nudge —
                             // the model is announcing intent it never followed through on.
-                            // …but ONLY while no real work has happened this run. Once a
-                            // mutating/delegating tool has run, a "would you like me to
-                            // also …" follow-up offer is a legitimate closer, not a stall —
+                            // …but ONLY while no PRODUCTIVE work has happened this run.
+                            // Plan/todo scaffolding (create_plan, create_todo_list…) is
+                            // task SETUP, not work product: a turn that ends after only
+                            // scaffolding with "I am now opening X to begin step 1" is a
+                            // parked turn, and must be nudged into the actual work. Once a
+                            // productive mutator has run, a "would you like me to also …"
+                            // follow-up offer is a legitimate closer, not a stall —
                             // nudging it re-generates the same summary repeatedly (and each
                             // regeneration appended into the same chat bubble).
-                            let futureNarration = !usedMutator
+                            let futureNarration = !usedProductiveMutator
                                 && !specsThisRound.isEmpty
                                 && Self.claimsFutureAction(cleanContent)
                             // A displayed shell command the user is expected to run manually
@@ -600,6 +610,14 @@ final class AgentExecutor: Sendable {
                                 || Self.isMutatorToolName($0.name)
                         }) {
                             usedMutator = true
+                            if effectiveToolCalls.contains(where: {
+                                (Self.agentScopedTools.contains($0.name)
+                                    || Self.nonInjectedMutators.contains($0.name)
+                                    || Self.isMutatorToolName($0.name))
+                                    && !Self.isScaffoldingToolName($0.name)
+                            }) {
+                                usedProductiveMutator = true
+                            }
                         }
 
                         // Record the assistant turn that requested the tools.
@@ -1272,6 +1290,15 @@ final class AgentExecutor: Sendable {
             "would you like me to", "do you want me to",
             "let me know if you'd like", "let me know when",
             "let me know if you would like"]
+
+        // "I am now <verb-ing>…" — the generic gerund form ("I am now opening
+        // MaestroDB to begin Step 1", the 14:25 plan-then-park). The existing
+        // literal list only covered "i am now proceeding"; any -ing verb is a
+        // promise of work. Word-bounded; terminal phrasing ("I am now done",
+        // "I am now ready to answer") doesn't end in -ing and can't match.
+        if t.range(of: #"\bi(?:'m| am) now \w+ing\b"#, options: .regularExpression) != nil {
+            return true
+        }
         return intents.contains { t.contains($0) }
     }
 
@@ -1652,6 +1679,24 @@ final class AgentExecutor: Sendable {
         // same answer repeatedly (each copy streaming into the same bubble).
         "ask_mechanic",
     ]
+
+    /// Planning/tracking tools organize the turn but produce no user-visible
+    /// change — a turn whose only "mutations" are these has NOT started the
+    /// task, so future-tense intent narration after them ("I am now opening
+    /// MaestroDB to begin step 1") must still nudge the model into the work.
+    /// Used ONLY by the futureNarration gate (via usedProductiveMutator):
+    /// usedMutator/falseClaim keep counting these as real mutations so a
+    /// truthful "I've created the plan" is never called a false claim.
+    /// Internal (not private) so tests can pin the classification.
+    private static let scaffoldingToolNames: Set<String> = [
+        "create_plan", "edit_plan", "read_plans", "read_plan",
+        "create_todo_list", "add_todos", "update_todo_status", "read_todos",
+        "add_todo",   // ai-context-bridge todo namespace
+    ]
+
+    static func isScaffoldingToolName(_ name: String) -> Bool {
+        scaffoldingToolNames.contains(name.lowercased())
+    }
 
     /// Verb-prefix classification for "this tool changes something" — used by
     /// the falseClaim nudge to know a claimed mutation really happened. The

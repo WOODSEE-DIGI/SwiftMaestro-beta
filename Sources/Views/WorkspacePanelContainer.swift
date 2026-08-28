@@ -31,6 +31,7 @@ struct WorkspacePanelContainer<Content: View>: View {
     var canvasTileID: UUID? = nil
 
     @State private var layout = WorkspaceLayoutState.shared
+    @State private var panelLayout = PanelLayoutState.shared
     @Environment(ThemeStore.self) private var theme
     @Environment(\.openWindow) private var openWindow
 
@@ -88,6 +89,24 @@ struct WorkspacePanelContainer<Content: View>: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+
+            // Plans quick-toggle: left side near agent name for easy access
+            if case .agentChat = kind {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        panelLayout.toggleVisibility(.plans)
+                    }
+                } label: {
+                    Image(systemName: panelLayout.hiddenPanels.contains(.plans)
+                        ? "list.bullet.rectangle" : "list.bullet.rectangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(panelLayout.hiddenPanels.contains(.plans)
+                            ? .secondary : Color.accentColor)
+                }
+                .buttonStyle(.plain)
+                .help(panelLayout.hiddenPanels.contains(.plans)
+                    ? "Show Plans panel" : "Hide Plans panel")
+            }
 
             Spacer()
 
