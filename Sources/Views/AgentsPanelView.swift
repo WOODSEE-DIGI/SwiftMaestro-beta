@@ -1,9 +1,11 @@
 import SwiftUI
 
-/// The agent navigator list (Maestro + project agents, grouped by category),
-/// rendered as a normal tiling panel so it can dock/float/move like every other
-/// panel instead of living in a fixed left sidebar. Tapping an agent opens or
-/// focuses its chat panel via the shared `openWorkspacePanel` notification.
+/// The agent navigator list (Maestro + built-in agents + project agents,
+/// grouped by category), rendered as a normal tiling panel so it can
+/// dock/float/move like every other panel instead of living in a fixed left
+/// sidebar. Tapping an agent opens or focuses its chat panel via the shared
+/// `openWorkspacePanel` notification. Hovering shows a tooltip describing
+/// what the agent does in plain language.
 struct AgentsPanelView: View {
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(AgentMessageStore.self) private var messageStore
@@ -28,9 +30,26 @@ struct AgentsPanelView: View {
             GeometryReader { proxy in
                 List {
                     Section {
-                        agentRow(workspace.navigator, systemImage: "point.3.connected.trianglepath.dotted")
-                        agentRow(workspace.mechanic, systemImage: "wrench.and.screwdriver")
-                        agentRow(workspace.coder, systemImage: "chevron.left.forwardslash.chevron.right")
+                        agentRow(
+                            workspace.navigator,
+                            systemImage: "point.3.connected.trianglepath.dotted",
+                            tooltip: "Your main assistant. Answers questions, writes text, and delegates to specialist agents when needed."
+                        )
+                        agentRow(
+                            workspace.swiftHelper,
+                            systemImage: "wrench.and.screwdriver",
+                            tooltip: "SwiftMaestro's own support agent. Diagnoses crashes, fixes settings, manages MCP servers, and repairs the app when something breaks."
+                        )
+                        agentRow(
+                            workspace.coder,
+                            systemImage: "chevron.left.forwardslash.chevron.right",
+                            tooltip: "Reads, edits, and writes code. Builds and tests projects. Works inside your codebase like an in-process coding assistant."
+                        )
+                        agentRow(
+                            workspace.searcher,
+                            systemImage: "magnifyingglass",
+                            tooltip: "Finds information fast — from the web, Google Maps, local files, network drives, or your Obsidian vault."
+                        )
                     } header: {
                         Text("Agents")
                             .font(.system(size: 11, weight: .semibold))
@@ -42,7 +61,8 @@ struct AgentsPanelView: View {
                                 agentRow(
                                     agent,
                                     subtitle: workspace.projectName(for: agent),
-                                    systemImage: workspace.resolvedCategory(for: agent).systemImage
+                                    systemImage: workspace.resolvedCategory(for: agent).systemImage,
+                                    tooltip: workspace.resolvedCategory(for: agent).displayName
                                 )
                             }
                         } header: {
@@ -72,7 +92,12 @@ struct AgentsPanelView: View {
     }
 
     @ViewBuilder
-    private func agentRow(_ agent: AgentRecord, subtitle: String? = nil, systemImage: String? = nil) -> some View {
+    private func agentRow(
+        _ agent: AgentRecord,
+        subtitle: String? = nil,
+        systemImage: String? = nil,
+        tooltip: String? = nil
+    ) -> some View {
         let isOpen = layout.isOpen(.agentChat(agent.id))
         let unread = (messageStore.inboxes[agent.id] ?? []).filter { !$0.read }.count
         HStack {
@@ -106,6 +131,7 @@ struct AgentsPanelView: View {
             }
         }
         .contentShape(Rectangle())
+        .help(tooltip ?? agent.name)
         .onTapGesture {
             NotificationCenter.default.post(
                 name: .openWorkspacePanel, object: WorkspacePanelKind.agentChat(agent.id))

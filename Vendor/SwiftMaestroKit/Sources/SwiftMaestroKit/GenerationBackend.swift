@@ -18,7 +18,7 @@ import MLXLMCommon
 /// Streamed output from a generation round / the agentic loop.
 public enum AgentOutput: Sendable {
     case token(String)
-    case toolCall(name: String)
+    case toolCall(name: String, arguments: String)
     case info(tokensPerSecond: Double)
     /// A mid-run user steer was injected at a round boundary: the UI should
     /// finalize the current assistant bubble and open a fresh one for the steered

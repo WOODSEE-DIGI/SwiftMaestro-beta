@@ -106,7 +106,10 @@ extension MaestroTools {
                     "longitude": ["type": "number", "description": "Longitude."],
                 ], required: ["latitude", "longitude"]),
             rawSpec("search_poi",
-                "Search for points of interest near a location using Apple MapKit. Omit coordinates to search globally.",
+                "Search for physical places (cafés, restaurants, shops, gyms, hotels) near a "
+                + "location using Apple MapKit. For service businesses (plumbers, electricians, "
+                + "HVAC), use web_search instead — it returns better results. "
+                + "After calling this, call search_maps_panel to show results in the app.",
                 properties: [
                     "query": ["type": "string", "description": "Natural language query, e.g. 'coffee shop'."],
                     "near_latitude": ["type": "number", "description": "Optional latitude to bias search."],

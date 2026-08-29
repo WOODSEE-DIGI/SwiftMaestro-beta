@@ -287,6 +287,8 @@ struct MediaPlayerView: View {
                 AudioDeviceManager.shared.removeDevicesChangedHandler(deviceListenerToken)
                 self.deviceListenerToken = nil
             }
+            // Pause playback so audio doesn't continue after the panel is closed.
+            engine.pause()
         }
         // Player keyboard shortcuts (macOS 14+ .onKeyPress; panel scope).
         .focusable()

@@ -78,7 +78,6 @@ final class AppleMapsService {
     ) async throws -> [AppleMapsPOI] {
         let request = MKLocalSearch.Request()
         request.naturalLanguageQuery = query
-        request.resultTypes = .pointOfInterest
 
         if let lat = nearLatitude, let lon = nearLongitude {
             let center = CLLocationCoordinate2D(latitude: lat, longitude: lon)

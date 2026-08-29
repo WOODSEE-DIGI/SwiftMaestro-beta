@@ -526,6 +526,12 @@ enum MaestroTools {
                 handler: { _ in
                     errorJSON("ask_mechanic must be intercepted by AgentExecutor, not dispatched directly.")
                 }),
+            ToolDefinition(
+                name: "ask_search", spec: navigatorToolSpecs[11],
+                category: ToolCategory.workspace.rawValue,
+                handler: { _ in
+                    errorJSON("ask_search must be intercepted by AgentExecutor, not dispatched directly.")
+                }),
         ])
     }
 
@@ -686,17 +692,33 @@ enum MaestroTools {
             functionSpec(
                 name: "ask_mechanic",
                 description:
-                    "Ask the Mechanic — SwiftMaestro's built-in support engineer — to "
-                    + "diagnose or fix a problem. The Mechanic has the tools you don't: "
+                    "Ask SwiftHelper — SwiftMaestro's built-in support agent — to "
+                    + "diagnose or fix a problem. SwiftHelper has the tools you don't: "
                     + "shell commands (execute_command), crash/console diagnostics, settings "
                     + "backup/restore, and bug-report filing. USE THIS whenever the user asks "
                     + "you to run a command (brew, defaults, git, scripts), change a system or "
                     + "app setting, diagnose a crash/hang/slowdown, or fix something that isn't "
                     + "working. NEVER tell the user you 'can't run commands' — hand the task to "
-                    + "the Mechanic instead. Write the task as clear instructions with full "
-                    + "context; the Mechanic reports back what it did.",
+                    + "SwiftHelper instead. Write the task as clear instructions with full "
+                    + "context; SwiftHelper reports back what it did.",
                 properties: [
-                    "task": ["type": "string", "description": "What the Mechanic should do, with all needed context (e.g. 'Run brew update and brew upgrade, then report what was upgraded')."],
+                    "task": ["type": "string", "description": "What SwiftHelper should do, with all needed context (e.g. 'Run brew update and brew upgrade, then report what was upgraded')."],
+                ],
+                required: ["task"]
+            ),
+            functionSpec(
+                name: "ask_search",
+                description:
+                    "Ask the Searcher — SwiftMaestro's built-in search agent — to find "
+                    + "information FAST from any source: web, local files, network drives, "
+                    + "Maps, or Obsidian vaults. The Searcher is FASTER than manual Google "
+                    + "search because it searches multiple sources simultaneously. USE THIS "
+                    + "whenever the user asks you to search, find, look up, or research "
+                    + "anything. The Searcher knows when it has enough info to search and "
+                    + "when to ask for clarification. Write the task as a clear search query "
+                    + "with location/context when relevant.",
+                properties: [
+                    "task": ["type": "string", "description": "What to search for, with all needed context (e.g. 'Find HVAC installers in Sydney 2010 with phone numbers')."],
                 ],
                 required: ["task"]
             ),

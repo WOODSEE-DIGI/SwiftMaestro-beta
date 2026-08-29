@@ -60,7 +60,7 @@ enum EngineError: LocalizedError {
 enum GenerationOutput: Sendable {
     case token(String)
     case info(tokensPerSecond: Double)
-    case toolCall(name: String)
+    case toolCall(name: String, arguments: String)
 }
 
 // MARK: - Tokenizer Loader
@@ -921,7 +921,7 @@ final class MLXInferenceEngine {
             toolSchemas = nil
         }
 
-        return AsyncStream<GenerationOutput> { continuation in
+        return AsyncStream<GenerationOutput> { (continuation: AsyncStream<GenerationOutput>.Continuation) in
             self.generateTask = Task {
                 // Agentic loop: generate -> if the model calls tools, execute them,
                 // feed results back as tool messages, and re-generate until the
@@ -1046,7 +1046,15 @@ final class MLXInferenceEngine {
                         // Native tools take precedence; otherwise route to MCP.
                         for call in pendingCalls {
                             let name = call.function.name
-                            continuation.yield(.toolCall(name: name))
+                            let argsJSON: String = {
+                                let dict = call.function.arguments.mapValues { $0.anyValue }
+                                if let data = try? JSONSerialization.data(withJSONObject: dict),
+                                   let str = String(data: data, encoding: .utf8) {
+                                    return str
+                                }
+                                return "{}"
+                            }()
+                            continuation.yield(.toolCall(name: name, arguments: argsJSON))
                             let result: String
                             if await MaestroTools.handles(name) {
                                 result = await MaestroTools.execute(call)

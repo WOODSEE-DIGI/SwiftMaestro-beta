@@ -68,17 +68,24 @@ struct MessageBubble: View {
                 if let steps = message.toolSteps, !steps.isEmpty, !isUser {
                     DisclosureGroup {
                         VStack(alignment: .leading, spacing: 2) {
-                            ForEach(Array(groupedSteps.enumerated()), id: \.offset) { _, group in
-                                Text(group.count > 1 ? "\(group.name) \u{00d7}\(group.count)" : group.name)
-                                    .font(.caption.monospaced())
-                                    .foregroundStyle(theme.chatSecondaryText)
+                            ForEach(Array(groupedSteps.enumerated()), id: \.offset) { idx, group in
+                                HStack(spacing: 4) {
+                                    Text(group.count > 1 ? "\(group.name) \u{00d7}\(group.count)" : group.name)
+                                        .font(.caption.monospaced())
+                                        .foregroundStyle(theme.chatSecondaryText)
+                                    if let query = group.query, !query.isEmpty {
+                                        Text("\u{2192} \(query)")
+                                            .font(.caption)
+                                            .foregroundStyle(theme.chatSecondaryText.opacity(0.7))
+                                            .lineLimit(1)
+                                    }
+                                }
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.top, 2)
                     } label: {
-                        Label("\(steps.count) tool step\(steps.count == 1 ? "" : "s")",
-                              systemImage: "wrench.and.screwdriver")
+                        Label(toolStepsSummary, systemImage: "wrench.and.screwdriver")
                             .font(.caption)
                             .foregroundStyle(theme.chatSecondaryText)
                     }
@@ -222,18 +229,49 @@ struct MessageBubble: View {
 
     /// Collapse consecutive identical tool names into name + count for a compact
     /// activity list (e.g. `read_note ×7`).
-    private var groupedSteps: [(name: String, count: Int)] {
+    private var groupedSteps: [(name: String, count: Int, query: String?)] {
         guard let steps = message.toolSteps else { return [] }
-        var result: [(name: String, count: Int)] = []
-        for step in steps {
+        var result: [(name: String, count: Int, query: String?)] = []
+        for (idx, step) in steps.enumerated() {
+            let query = message.toolStepDetails?[idx].flatMap { Self.extractQuery(from: $0) }
             if var last = result.last, last.name == step {
                 last.count += 1
                 result[result.count - 1] = last
             } else {
-                result.append((name: step, count: 1))
+                result.append((name: step, count: 1, query: query))
             }
         }
         return result
+    }
+
+    /// Compact summary for the disclosure label, e.g. "3 tool steps — Searching: HVAC".
+    private var toolStepsSummary: String {
+        guard let steps = message.toolSteps else { return "" }
+        let count = steps.count
+        // Find the most recent search query if available
+        var lastQuery: String?
+        if let details = message.toolStepDetails {
+            for idx in details.keys.sorted().reversed() {
+                if idx < steps.count,
+                   let args = details[idx],
+                   let q = Self.extractQuery(from: args), !q.isEmpty {
+                    lastQuery = q
+                    break
+                }
+            }
+        }
+        let base = "\(count) tool step\(count == 1 ? "" : "s")"
+        if let q = lastQuery {
+            return "\(base) — \(q)"
+        }
+        return base
+    }
+
+    /// Extract a human-readable query string from tool call arguments JSON.
+    private static func extractQuery(from args: String) -> String? {
+        guard let data = args.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return (json["query"] as? String) ?? (json["q"] as? String) ?? (json["text"] as? String)
     }
 
     private var roleLabel: String {

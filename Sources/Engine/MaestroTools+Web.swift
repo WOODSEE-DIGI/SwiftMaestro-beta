@@ -29,6 +29,14 @@ extension MaestroTools {
                 category: ToolCategory.web.rawValue,
                 handler: { call in await webSearch(call) }),
             ToolDefinition(
+                name: "search_businesses", spec: webToolSpecs[2],
+                category: ToolCategory.web.rawValue,
+                handler: { call in await searchBusinesses(call) }),
+            ToolDefinition(
+                name: "google_maps_search", spec: webToolSpecs[3],
+                category: ToolCategory.web.rawValue,
+                handler: { call in await googleMapsSearch(call) }),
+            ToolDefinition(
                 name: "fetch_url", spec: webToolSpecs[1],
                 category: ToolCategory.web.rawValue,
                 handler: { call in await fetchURL(call) }),
@@ -38,13 +46,18 @@ extension MaestroTools {
     static var webToolSpecs: [ToolSpec] {
         [
             rawSpec("web_search",
-                "Search the web using Bing and return results with titles, URLs, and snippets. "
-                + "Use this to find current information, documentation, news, or any online content. "
-                + "Do NOT call this tool more than 3 times for the same question. If the first "
-                + "search does not return useful results, rephrase once, then answer with what you found. "
-                + "IMPORTANT: After getting search results, to read full page content use browser_open(url) "
-                + "on the most relevant result URL — NOT web_search again. web_search is for DISCOVERING "
-                + "URLs; browser_open + browser_read is for READING their content.",
+                "Search the web AND read the top results. Returns titles, URLs, snippets, "
+                + "AND full page content (up to 3000 chars each). "
+                + "Use this for ALL web research — you do NOT need to call browser_open or "
+                + "browser_read after web_search; the content is already included. "
+                + "QUERY RULES: "
+                + "- Keep queries SHORT (3-8 words). Bad: 'air conditioning installation services "
+                + "Sydney NSW contact phone number reviews'. Good: 'HVAC installer Sydney'. "
+                + "- Do NOT include noise words: 'contact', 'phone', 'reviews', 'services', "
+                + "'company', 'top rated' — they degrade quality. "
+                + "- Include location if relevant: 'plumber Melbourne CBD'. "
+                + "- MAX 2 searches total. After 2, STOP and use what you got. "
+                + "If results are poor, say so honestly instead of making things up.",
                 properties: [
                     "query": ["type": "string", "description": "Search query string"],
                     "max_results": ["type": "integer", "description": "Max results to return (default 5, max 10)"],
@@ -58,6 +71,29 @@ extension MaestroTools {
                     "format": ["type": "string", "description": "Output format: 'markdown' (default) or 'text'"],
                 ],
                 required: ["url"]),
+            rawSpec("search_businesses",
+                "ONE-SHOT local business search. Searches the web for businesses near a location, "
+                + "opens the results in the in-app Maps panel, and returns structured results with "
+                + "name, address, phone, and website. Use this INSTEAD of calling web_search + "
+                + "search_maps_panel separately — it does both in one call. "
+                + "The model should present the results directly from the tool output.",
+                properties: [
+                    "query": ["type": "string", "description": "Search query, e.g. 'HVAC installer Sydney' or 'café Melbourne CBD'"],
+                    "location": ["type": "string", "description": "Location context for the search, e.g. 'Sydney 2010'"],
+                    "max_results": ["type": "integer", "description": "Max results (default 3, max 5)"],
+                ],
+                required: ["query"]),
+            rawSpec("google_maps_search",
+                "Search Google Maps for local businesses. Returns real business data with names, "
+                + "addresses, phone numbers, websites, and ratings from Google Maps — the best "
+                + "source for local business information. Use this for ANY local business search "
+                + "(restaurants, services, shops, professionals). Opens the Maps panel automatically.",
+                properties: [
+                    "query": ["type": "string", "description": "What to search for, e.g. 'HVAC installer' or 'pizza restaurant'"],
+                    "location": ["type": "string", "description": "Location, e.g. 'Sydney 2010' or 'Melbourne CBD'"],
+                    "max_results": ["type": "integer", "description": "Max results (default 5, max 10)"],
+                ],
+                required: ["query"]),
         ]
     }
 
@@ -73,7 +109,19 @@ extension MaestroTools {
         let format: String?
     }
 
-    // MARK: - Web Search (Bing HTML)
+    private struct SearchBusinessesArgs: Decodable {
+        let query: String?
+        let location: String?
+        let max_results: LenientInt?
+    }
+
+    private struct GoogleMapsSearchArgs: Decodable {
+        let query: String?
+        let location: String?
+        let max_results: LenientInt?
+    }
+
+    // MARK: - Web Search (Firecrawl first, Bing HTML fallback)
 
     private static func webSearch(_ call: ToolCall) async -> String {
         let decodedArgs = decodeArgs(call, as: WebSearchArgs.self)
@@ -85,41 +133,392 @@ extension MaestroTools {
         }
         let maxResults = min(max(decodedArgs?.max_results?.value ?? 5, 1), 10)
 
-        guard let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let searchURL = URL(string: "https://www.bing.com/search?q=\(encoded)") else {
-            return errorJSON("Invalid search query.")
+        // --- Stage 1: Firecrawl search API (primary — clean structured results) ---
+        var results: [SearchResult] = []
+        let firecrawl = FirecrawlService.shared
+        if await firecrawl.reachableCached() {
+            if let fcResults = try? await firecrawl.search(query: query, limit: maxResults) {
+                results = fcResults.map { SearchResult(title: $0.title, url: $0.url, snippet: $0.snippet) }
+            }
         }
 
-        var request = URLRequest(url: searchURL)
+        // --- Stage 2: Bing HTML fallback (when Firecrawl is down or returns nothing) ---
+        if results.isEmpty {
+            var bingBlocked = false
+            if let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+               let searchURL = URL(string: "https://www.bing.com/search?q=\(encoded)") {
+                var request = URLRequest(url: searchURL)
+                request.setValue(
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+                    forHTTPHeaderField: "User-Agent"
+                )
+                request.timeoutInterval = 15
+
+                if let (data, response) = try? await URLSession.shared.data(for: request),
+                   let httpResponse = response as? HTTPURLResponse,
+                   (200..<300).contains(httpResponse.statusCode) {
+                    let html = String(data: data, encoding: .utf8) ?? ""
+                    let lower = html.lowercased()
+                    if lower.contains("captcha") || lower.contains("are you a robot")
+                        || lower.contains("unusual traffic") || lower.contains("verify you are human") {
+                        bingBlocked = true
+                    } else {
+                        results = parseBingResults(html, maxResults: maxResults)
+                    }
+                }
+            }
+
+            if results.isEmpty && bingBlocked {
+                return #"{"query": "\#(query)", "results": [], "message": "Search was blocked by CAPTCHA. Try rephrasing the query or using browser_open on a specific site."}"#
+            }
+        }
+
+        if results.isEmpty {
+            return #"{"query": "\#(query)", "results": [], "message": "No results found."}"#
+        }
+
+        // --- Stage 3: Auto-fetch full page content for top results ---
+        // The model often stops at snippets and fabricates details. Fetching full
+        // page content gives it real data (phone numbers, addresses, prices) so it
+        // doesn't need to call browser_open/browser_read separately.
+        let fetchLimit = min(results.count, 3)
+        var enrichedResults: [String] = []
+        await withTaskGroup(of: (Int, String?).self) { group in
+            for i in 0..<fetchLimit {
+                let url = results[i].url
+                group.addTask { await (i, fetchPageContent(url: url)) }
+            }
+            var fetched = [Int: String]()
+            for await (idx, content) in group {
+                fetched[idx] = content
+            }
+            for i in 0..<results.count {
+                let r = results[i]
+                var entry = #"{"title": "\#(jsonEscape(r.title))", "url": "\#(jsonEscape(r.url))", "snippet": \#(jsonEscape(r.snippet))"#
+                if i < fetchLimit, let content = fetched[i], !content.isEmpty {
+                    entry += #", "content": "\#(jsonEscape(content))""#
+                }
+                enrichedResults.append(entry + "}")
+            }
+        }
+
+        var output = #"{"query": "\#(query)", "results": ["#
+        output += enrichedResults.joined(separator: ",")
+        output += "]}"
+        return output
+    }
+
+    /// Fetch a URL and extract readable text content (lightweight — no JS, just HTML text extraction).
+    /// Returns truncated content (max ~3000 chars) to keep tool results manageable.
+    private static func fetchPageContent(url: String) async -> String? {
+        guard let fetchURL = URL(string: url) else { return nil }
+        var request = URLRequest(url: fetchURL)
         request.setValue(
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
             forHTTPHeaderField: "User-Agent"
         )
-        request.timeoutInterval = 15
+        request.timeoutInterval = 10
 
-        do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard let httpResponse = response as? HTTPURLResponse,
-                  (200..<300).contains(httpResponse.statusCode) else {
-                return errorJSON("Search request failed with status \((response as? HTTPURLResponse)?.statusCode ?? -1).")
-            }
-            let html = String(data: data, encoding: .utf8) ?? ""
-            let results = parseBingResults(html, maxResults: maxResults)
-
-            if results.isEmpty {
-                return #"{"query": "\#(query)", "results": [], "message": "No results found."}"#
-            }
-
-            var output = #"{"query": "\#(query)", "results": ["#
-            for (i, result) in results.enumerated() {
-                if i > 0 { output += "," }
-                output += #"{"title": "\#(jsonEscape(result.title))", "url": "\#(jsonEscape(result.url))", "snippet": "\#(jsonEscape(result.snippet))"}"#
-            }
-            output += "]}"
-            return output
-        } catch {
-            return errorJSON("Search failed: \(error.localizedDescription)")
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let httpResponse = response as? HTTPURLResponse,
+              (200..<300).contains(httpResponse.statusCode) else {
+            return nil
         }
+
+        let html = String(data: data, encoding: .utf8) ?? ""
+        // Quick HTML-to-text: strip tags, collapse whitespace
+        let text = html
+            .replacingOccurrences(of: "<script[^>]*>[\\s\\S]*?</script>", with: "",
+                                  options: .regularExpression)
+            .replacingOccurrences(of: "<style[^>]*>[\\s\\S]*?</style>", with: "",
+                                  options: .regularExpression)
+            .replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "&[a-zA-Z]+;", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Truncate to keep tool result manageable
+        if text.count > 3000 {
+            return String(text.prefix(3000)) + "..."
+        }
+        return text.isEmpty ? nil : text
+    }
+
+    // MARK: - One-shot Business Search
+
+    /// Searches for businesses via web search, returns structured results with
+    /// name/address/phone/website, and opens the Maps panel.
+    private static func searchBusinesses(_ call: ToolCall) async -> String {
+        let decodedArgs = decodeArgs(call, as: SearchBusinessesArgs.self)
+        let rawQuery = decodedArgs?.query
+            ?? call.function.arguments["query"]?.stringValue
+        let query = rawQuery?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let query, !query.isEmpty else {
+            return errorJSON("search_businesses requires 'query'")
+        }
+        let location = decodedArgs?.location?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let maxResults = min(max(decodedArgs?.max_results?.value ?? 3, 1), 5)
+
+        // Build search query — keep it SHORT for better results
+        let searchQuery = [query, location].compactMap { $0?.isEmpty == false ? $0 : nil }
+            .joined(separator: " ")
+
+        // 1. Web search (Firecrawl first, Bing fallback)
+        var results: [SearchResult] = []
+        let firecrawl = FirecrawlService.shared
+        if await firecrawl.reachableCached() {
+            if let fcResults = try? await firecrawl.search(query: searchQuery, limit: maxResults + 2) {
+                results = fcResults.map { SearchResult(title: $0.title, url: $0.url, snippet: $0.snippet) }
+            }
+        }
+        if results.isEmpty {
+            if let encoded = searchQuery.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+               let searchURL = URL(string: "https://www.bing.com/search?q=\(encoded)") {
+                var request = URLRequest(url: searchURL)
+                request.setValue(
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+                    forHTTPHeaderField: "User-Agent"
+                )
+                request.timeoutInterval = 15
+                if let (data, response) = try? await URLSession.shared.data(for: request),
+                   let httpResponse = response as? HTTPURLResponse,
+                   (200..<300).contains(httpResponse.statusCode) {
+                    let html = String(data: data, encoding: .utf8) ?? ""
+                    if !html.lowercased().contains("captcha") {
+                        results = parseBingResults(html, maxResults: maxResults + 2)
+                    }
+                }
+            }
+        }
+
+        // 2. Auto-fetch full page content for each result (parallel)
+        var enrichedResults: [[String: Any]] = []
+        let fetchLimit = min(results.count, maxResults + 2)
+        let resultURLs = results.map(\.url)
+        
+        await withTaskGroup(of: (Int, String?).self) { group in
+            for i in 0..<fetchLimit {
+                let url = resultURLs[i]
+                group.addTask { await (i, fetchPageContent(url: url)) }
+            }
+            for await (idx, content) in group {
+                let r = results[idx]
+                var entry: [String: Any] = [
+                    "title": r.title,
+                    "url": r.url,
+                    "snippet": r.snippet,
+                ]
+                if let content, !content.isEmpty {
+                    entry["content"] = content
+                }
+                enrichedResults.append(entry)
+            }
+        }
+
+        guard !enrichedResults.isEmpty else {
+            return #"{"query": "\#(jsonEscape(searchQuery))", "results": [], "message": "No results found."}"#
+        }
+
+        // 3. Open Maps panel with the search query
+        await MainActor.run {
+            WorkspaceLayoutState.shared.open(.maps)
+            NotificationCenter.default.post(
+                name: .openWorkspacePanel,
+                object: WorkspacePanelKind.maps
+            )
+            AppleMapsService.shared.panelSearchQuery = searchQuery
+            AppleMapsService.shared.panelSearchMode = "Places"
+            AppleMapsService.shared.panelSearchTrigger = UUID()
+        }
+
+        // 4. Return results as JSON
+        let resultsData = try? JSONSerialization.data(withJSONObject: enrichedResults)
+        let resultsString = resultsData.flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        return #"{"query": "\#(jsonEscape(searchQuery))", "count": \#(enrichedResults.count), "results": \#(resultsString)}"#
+    }
+
+    // MARK: - Google Maps Business Search
+
+    /// Searches Google Maps for local businesses via Firecrawl, returns structured
+    /// results with name/address/phone/website/rating, and opens the Maps panel.
+    private static func googleMapsSearch(_ call: ToolCall) async -> String {
+        let decodedArgs = decodeArgs(call, as: GoogleMapsSearchArgs.self)
+        let rawQuery = decodedArgs?.query
+            ?? call.function.arguments["query"]?.stringValue
+        let query = rawQuery?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let query, !query.isEmpty else {
+            return errorJSON("google_maps_search requires 'query'")
+        }
+        let location = decodedArgs?.location?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let maxResults = min(max(decodedArgs?.max_results?.value ?? 5, 1), 10)
+
+        // Build Google Maps-specific search query
+        let mapQuery = [query, location].compactMap { $0?.isEmpty == false ? $0 : nil }
+            .joined(separator: " ")
+
+        // Try Google Maps URL via Firecrawl scrape first
+        var businesses: [[String: Any]] = []
+
+        let firecrawl = FirecrawlService.shared
+        if await firecrawl.reachableCached() {
+            // Encode for Google Maps search URL
+            if let encoded = mapQuery.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+               let mapsURL = URL(string: "https://www.google.com/maps/search/\(encoded)") {
+                if let result = try? await firecrawl.scrape(url: mapsURL.absoluteString),
+                   !result.markdown.isEmpty {
+                    // Parse Google Maps business listings from markdown
+                    businesses = parseGoogleMapsResults(result.markdown, maxResults: maxResults)
+                }
+            }
+
+            // Fallback: Firecrawl web search for "site:google.com/maps" + query
+            if businesses.isEmpty {
+                if let fcResults = try? await firecrawl.search(query: "\(mapQuery) site:google.com/maps", limit: maxResults + 3) {
+                    for fc in fcResults where !fc.title.isEmpty {
+                        businesses.append([
+                            "name": fc.title,
+                            "url": fc.url,
+                            "snippet": fc.snippet,
+                        ])
+                    }
+                }
+            }
+
+            // Final fallback: general web search for the business query
+            if businesses.isEmpty {
+                if let fcResults = try? await firecrawl.search(query: mapQuery, limit: maxResults + 3) {
+                    for fc in fcResults where !fc.title.isEmpty {
+                        businesses.append([
+                            "name": fc.title,
+                            "url": fc.url,
+                            "snippet": fc.snippet,
+                        ])
+                    }
+                }
+            }
+        }
+
+        // Bing fallback if Firecrawl is down
+        if businesses.isEmpty {
+            if let encoded = mapQuery.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+               let searchURL = URL(string: "https://www.bing.com/search?q=\(encoded)+google+maps") {
+                var request = URLRequest(url: searchURL)
+                request.setValue(
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+                    forHTTPHeaderField: "User-Agent"
+                )
+                request.timeoutInterval = 15
+                if let (data, response) = try? await URLSession.shared.data(for: request),
+                   let httpResponse = response as? HTTPURLResponse,
+                   (200..<300).contains(httpResponse.statusCode) {
+                    let html = String(data: data, encoding: .utf8) ?? ""
+                    let bingResults = parseBingResults(html, maxResults: maxResults + 3)
+                    for br in bingResults {
+                        businesses.append([
+                            "name": br.title,
+                            "url": br.url,
+                            "snippet": br.snippet,
+                        ])
+                    }
+                }
+            }
+        }
+
+        guard !businesses.isEmpty else {
+            return #"{"query": "\#(jsonEscape(mapQuery))", "results": [], "message": "No Google Maps results found."}"#
+        }
+
+        // 2. Open Maps panel with the search query
+        await MainActor.run {
+            WorkspaceLayoutState.shared.open(.maps)
+            NotificationCenter.default.post(
+                name: .openWorkspacePanel,
+                object: WorkspacePanelKind.maps
+            )
+            AppleMapsService.shared.panelSearchQuery = mapQuery
+            AppleMapsService.shared.panelSearchMode = "Places"
+            AppleMapsService.shared.panelSearchTrigger = UUID()
+        }
+
+        // 3. Return results as JSON
+        let limited = Array(businesses.prefix(maxResults))
+        let resultsData = try? JSONSerialization.data(withJSONObject: limited)
+        let resultsString = resultsData.flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        return #"{"query": "\#(jsonEscape(mapQuery))", "count": \#(limited.count), "results": \#(resultsString)}"#
+    }
+
+    /// Parse Google Maps markdown output into structured business data.
+    private static func parseGoogleMapsResults(_ markdown: String, maxResults: Int) -> [[String: Any]] {
+        var results: [[String: Any]] = []
+        let lines = markdown.components(separatedBy: "\n")
+
+        var currentName: String?
+        var currentAddress: String?
+        var currentPhone: String?
+        var currentWebsite: String?
+        var currentRating: String?
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.starts(with: "#") || trimmed.starts(with: "!") { continue }
+
+            // Rating pattern: "4.5 (123)" or "4.5/5"
+            if let ratingMatch = trimmed.range(of: #"(\d+\.?\d*)\s*[\(/]"#, options: .regularExpression) {
+                currentRating = String(trimmed[ratingMatch]).replacingOccurrences(of: "(", with: "").replacingOccurrences(of: "/", with: " ")
+                continue
+            }
+
+            // Phone pattern: contains digits with formatting
+            if trimmed.range(of: #"[\d\-\(\)\+\s]{7,}"#, options: .regularExpression) != nil
+               && trimmed.range(of: #"[a-zA-Z]"#, options: .regularExpression) == nil {
+                currentPhone = trimmed
+                continue
+            }
+
+            // Website pattern
+            if trimmed.lowercased().contains("http") || trimmed.lowercased().contains("www.") {
+                currentWebsite = trimmed
+                continue
+            }
+
+            // Address-like: contains street/suburb/road/etc.
+            if trimmed.range(of: #"(street|road|avenue|lane|drive|place|court|sq|blvd|st\b|rd\b|ln\b|dr\b|ct\b|pl\b|ave\b| Way\b|close\b)"#, options: .regularExpression) != nil {
+                currentAddress = trimmed
+                continue
+            }
+
+            // If we have a previous business, save it
+            if let name = currentName {
+                var entry: [String: Any] = ["name": name]
+                if let addr = currentAddress { entry["address"] = addr }
+                if let phone = currentPhone { entry["phone"] = phone }
+                if let website = currentWebsite { entry["website"] = website }
+                if let rating = currentRating { entry["rating"] = rating }
+                results.append(entry)
+                if results.count >= maxResults { break }
+            }
+
+            // This line is likely the business name (non-empty, doesn't match other patterns)
+            currentName = trimmed
+            currentAddress = nil
+            currentPhone = nil
+            currentWebsite = nil
+            currentRating = nil
+        }
+
+        // Don't forget the last entry
+        if results.count < maxResults, let name = currentName {
+            var entry: [String: Any] = ["name": name]
+            if let addr = currentAddress { entry["address"] = addr }
+            if let phone = currentPhone { entry["phone"] = phone }
+            if let website = currentWebsite { entry["website"] = website }
+            if let rating = currentRating { entry["rating"] = rating }
+            results.append(entry)
+        }
+
+        return results
     }
 
     /// Parsed search result.

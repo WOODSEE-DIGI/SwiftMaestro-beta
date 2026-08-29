@@ -446,6 +446,16 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
                 .file, .shell, .index, .memory, .sqlite,
                 .web, .time,
             ]
+        case .search:
+            // The search agent's surface: web search, local file search,
+            // network drive search, Maps, clipping. Deliberately focused —
+            // this agent answers questions fast by finding information
+            // anywhere (local, network, web). No delegation, no messaging,
+            // no social panels, no MCP flood.
+            return [
+                .file, .index, .memory, .maps,
+                .web, .browser, .scraping, .vault,
+            ]
         }
     }
 
@@ -478,6 +488,9 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             return Set(allCases).subtracting([.workspace, .messaging])
         case .coder:
             // Coding agent: no delegation (navigator-only), no inter-agent messaging.
+            return Set(allCases).subtracting([.workspace, .messaging])
+        case .search:
+            // Search agent: no delegation (navigator-only), no inter-agent messaging.
             return Set(allCases).subtracting([.workspace, .messaging])
         }
     }

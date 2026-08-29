@@ -394,7 +394,7 @@ class ChatViewModel: ObservableObject {
                     guard !Task.isCancelled else { break }
                     switch output {
                     case .token(let token): consumeStreamChunk(token)
-                    case .toolCall(let name): recordToolStep(name)
+                    case .toolCall(let name, let args): recordToolStep(name, arguments: args)
                     case .info(let tps): engine.reportExternalTokensPerSecond(tps)
                     case .turnBreak: beginSteeredTurn()
                     case .delegateStart(let agentID, let modelID):
@@ -827,7 +827,7 @@ class ChatViewModel: ObservableObject {
     /// line — instead of dumping a marker into the chat transcript. A tool call
     /// also marks a round boundary, so fold this round's post-`</think>`
     /// narration into `reasoning` first.
-    private func recordToolStep(_ name: String) {
+    private func recordToolStep(_ name: String, arguments: String = "") {
         foldNarrationIntoReasoning()
         // Sanitize tool name: strip any trailing XML fragments that the
         // parser may have included (e.g. "execute_command<parameter" → "execute_command").
@@ -839,10 +839,32 @@ class ChatViewModel: ObservableObject {
         }
         if let idx = messages.lastIndex(where: { $0.role == .assistant }) {
             var steps = messages[idx].toolSteps ?? []
+            let stepIndex = steps.count
             steps.append(cleanName)
             messages[idx].toolSteps = steps
+            // Store arguments for search-related tools so UI can show the query
+            let searchTools: Set<String> = ["web_search", "search_businesses", "google_maps_search", "search_maps_panel"]
+            if searchTools.contains(cleanName), !arguments.isEmpty {
+                var details = messages[idx].toolStepDetails ?? [:]
+                details[stepIndex] = arguments
+                messages[idx].toolStepDetails = details
+            }
         }
-        currentActivity = "Running \(cleanName)…"
+        // For search-related tools, show a human-readable summary of the query
+        let searchTools: Set<String> = ["web_search", "search_businesses", "google_maps_search", "search_maps_panel"]
+        if searchTools.contains(cleanName),
+           let data = arguments.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            // Try common argument keys: query, q, text
+            let query = (json["query"] as? String) ?? (json["q"] as? String) ?? (json["text"] as? String)
+            if let query, !query.isEmpty {
+                currentActivity = "Searching: \(query)"
+            } else {
+                currentActivity = "Running \(cleanName)…"
+            }
+        } else {
+            currentActivity = "Running \(cleanName)…"
+        }
     }
 
     private func saveHistory() {
@@ -938,281 +960,44 @@ class ChatViewModel: ObservableObject {
     private static func toolDiscipline(maxRounds: Int) -> String {
         """
         TOOL USE — STRICT RULES:
-        - Tools are REAL and execute on the user's system. NEVER simulate tool calls \
-        as text or code blocks.
-        - When the user asks you to run a command, execute it IMMEDIATELY with \
-        execute_command. Do NOT show code blocks for manual execution.
-        - NEVER invent, guess, or pre-write tool results. Only report what a tool \
-        ACTUALLY returned after calling it.
-        - BATCH file reads: call read_file on all needed files in one turn.
-        - If a tool returns empty or errors, say so IMMEDIATELY. Do NOT fabricate \
-        fake results, file paths, or data.
-        - NEVER claim you wrote, saved, or created a file unless write_file returned \
-        success. NEVER claim you read a file unless read_file returned content.
+        - Tools are REAL and execute on the user's system. NEVER simulate tool calls as text.
+        - NEVER invent, guess, or pre-write tool results. Only report what a tool ACTUALLY returned.
+        - If a tool returns empty or errors, say so IMMEDIATELY. Do NOT fabricate fake results.
+        - NEVER fabricate business names, addresses, phone numbers, prices, or any data.
         - STOP GATHERING after \(maxRounds) tool rounds. Start writing your answer NOW.
-        - Respect per-tool call limits. If a tool description says a maximum number of calls, \
-        do NOT exceed it. When the cap is reached, use the results you already have and answer.
-        - Do NOT narrate future tool calls ("Let me read..."). Just call the tool.
-        - read_file handles ANY file type including .docx, .pdf, images, binary.
-        - For large documents, use index_document/search_chunks/read_chunk.
-        - Send images via ocr_image (not list_dir).
-        - For creating or overwriting files, use write_file. NEVER paste the file contents \
-        in chat as a code block — the tool writes the file; the chat is only for reasoning.
-        - For file operations, use copy_file, move_file, delete_file, and create_directory. \
-        move_file can rename a file by changing the last path component.
-        - For finding files by pattern, use glob_files (e.g. 'Sources/**/*.swift').
-        - For searching file contents, use grep_code with a regular expression.
-        - For surgical edits, use edit_file with exact old_string/new_string. Prefer it over \
-        write_file for small changes.
-        - For git operations, use git_status, git_diff, git_log, and git_branch. \
-        Do NOT run git directly in execute_command unless those tools are insufficient.
-        - For one-off specialist work, use task (creates a temporary subagent, returns a result).
-        - If a project contains a .opencode/permissions.json or .ai-context/permissions.json file,
-          some tools or paths may require user approval. If a tool returns a permission error, stop
-          and ask the user for approval before retrying.
-        - MAX 5 tool calls per message. If you need more, tell the user what you'd do next.
+        - MAX 5 tool calls per message. Do NOT narrate future tool calls — just call the tool.
+        - For creating/overwriting files, use write_file. NEVER paste file contents in chat.
+        - For surgical edits, use edit_file with old_string/new_string.
+        - For finding files, use glob_files. For searching contents, use grep_code.
+        - For git, use git_status/git_diff/git_log/git_branch.
 
-        SHELL COMMAND RULES:
-        - The `command` parameter of execute_command MUST contain ONLY a valid shell command.
-        - NEVER put thinking tags, reasoning markers, or XML inside the command value.
-        - If the command would be `<channel>`, `</channel>`, `<channel|>`, `>`, ` thought`,
-        or any other marker, STOP and emit the real command instead.
-        - The shell runs /bin/zsh -lic. Standard zsh syntax, pipes, and redirections work.
+        SEARCH RULES:
+        - Local businesses (plumbers, HVAC, electricians, cafés, restaurants): \
+        call search_businesses with query and location. It searches the web, \
+        opens results in the Maps panel, and returns structured results. ONE call.
+        - General web research: use web_search. It returns full page content.
+        - After 2 searches MAX, STOP and present what you got. Format results \
+        with name, address, phone, website — each on its own line.
 
-        RELEASE UPLOAD RULES:
-        - To publish a SwiftMaestro release DMG to swiftmaestro.com, use upload_release.
-        - Pass the absolute path to the DMG as `dmg_path`. The tool reads the SFTP password
-        from the macOS Keychain automatically; do NOT put the password in the tool call.
-        - If the user asks you to "upload the beta", "publish the release", or "put the DMG
-        on the site", call upload_release with the correct DMG path.
-        - After uploading, ensure download.html links to the exact filename that was uploaded
-        (e.g. download/SwiftMaestro-Beta-YYYYMMDD.dmg). Fix the link with write_file if needed.
+        RESPONSE FORMATTING:
+        When listing items, format clearly:
+        1. Name
+           Address: ...
+           Phone: ...
+           Website: ...
 
-        CRITICAL HONESTY RULES:
-        - If you lack a tool for a task, say "I don't have a tool for that" NOW.
-        - If a tool errors, report it: "Tool X failed: [error]". Do NOT retry silently.
-        - NEVER claim a tool is broken, failing, or "returning no results" when it \
-        returned data. A successful result you did not expect is the TRUTH — \
-        report what it actually shows; if you expected something else, say so \
-        honestly (e.g. "the folder contains X, not the Y I expected").
-        - If results are empty, say "No results found". Do NOT invent fake data.
-        - After 2 FAILED attempts on the same task, STOP and report what went wrong.
-        - NEVER fill silence with "Let me think..." — either call a tool or say you can't.
-        - NEVER narrate hesitation or second-guessing: no "Wait", "Actually", \
-        "Hmm", "let me re-check", "let me verify again", or "on second thought". \
-        Decide and commit — call the tool NOW or give the final answer. Do NOT \
-        re-verify things you already checked (files read, outputs received, \
-        schemas seen): act on the information you have.
-        - NEVER claim a write succeeded from memory or intent. Only claim what the \
-        tool's success result proves (a row id, a verified count, a file path). \
-        'created' with warnings is NOT full success — it is a partial failure \
-        you must fix and report.
+        SHELL: command param = valid shell command only. Runs /bin/zsh -lic.
 
-        AUTO-SAVE:
-        - After every 5 file reads, call write_file to save progress to disk.
+        HONESTY:
+        - If a tool fails, say "Tool X failed: [error]". Quote the exact error.
+        - After 2 FAILED attempts on the task, STOP and report what went wrong.
+        - NEVER fill silence with "Let me think..." — call a tool or say you can't.
 
-        DIRECTORY INDEXING:
-        - For directory exploration, use index_directory (recursive, Spotlight metadata). \
-        Only use list_dir for single-directory-level checks.
+        SPEED: Do NOT over-explain before acting. Work until done. If a tool fails, \
+        change approach — do NOT stop and ask the user.
 
-        RESEARCH CAPTURE — COMPOSITE TOOLS FIRST:
-        When the user asks you to research a topic AND save/keep/archive what you \
-        find ("research X and save", "find prices and keep them", "clip this", \
-        "capture that page", "archive this article", "save what you find"), use \
-        the composite capture tools — do NOT hand-choreograph browser_open + \
-        browser_read + browser_clip:
-        - research_topic(query, max_sources?, template?) — searches the web, \
-        captures the top sources as formatted notes (images + snapshot + \
-        reader.html) into the Notes vault AND queryable rows in MaestroDB's \
-        Web Clips base, and returns a report of what landed where. ONE call does \
-        the whole loop. Template: "Research" (default) or "Forensics" (adds \
-        timestamps, HTTP headers, TLS cert, RDAP domain record — for \
-        investigative provenance).
-        - clip_url(url, template?, destination?) — captures ONE specific page \
-        end-to-end (extract, template render, assets, save to vault + MaestroDB). \
-        Use this when the user gives you the URL.
-        - After research_topic/clip_url, answer from the captured notes — do NOT \
-        re-browse the same pages. The notes are in the vault (Clippings/…) and \
-        the rows are queryable with db_list_rows on the Web Clips base.
-        - The clip templates live in Settings > Clipper; clip_template_list shows \
-        what's available.
-
-        WEB RESEARCH — BROWSER FIRST (interactive/watched browsing):
-        When the user wants to WATCH you browse live (or the task needs clicking, \
-        forms, login, scrolling — interactive work that capture tools can't do), \
-        open the internal browser FIRST. The user should see \
-        the SwiftBrowser panel open and watch you work.
-        - Step 1: browser_open with the URL — this opens a new tab AND navigates \
-        to it in one step. Returns a tab_id.
-        - Step 2: browser_read with the tab_id to extract page content as markdown.
-        - For multiple sites: call browser_open for EACH site (each opens its own \
-        tab), then browser_read on each tab to get content.
-        - browser_navigate is ONLY for back/forward/reload/stop within an already- \
-        open tab — do NOT use it to open new URLs.
-        - Use web_search ONLY for quick single-fact lookups (e.g. "what's the \
-        population of Tokyo") — NOT for multi-site research or price comparison.
-        - After web_search returns results, to read a result's full content, use \
-        browser_open(url) on the result URL — do NOT call web_search again.
-        - Use fetch_url ONLY when you already have a specific URL and just need \
-        its text content without showing the browser.
-        - NEVER delegate web research to a sub-agent — do it in the main chat so \
-        the user sees the browser panels open in real time.
-        - CRITICAL: If the SwiftBrowser panel is already open, you MUST use it. \
-        Do NOT open the browser panel and then use web_search instead. The whole \
-        point is that the user watches you browse.
-        - NEVER call web_search more than 2 times in a row. After 2 searches, \
-        you MUST switch to browser_open + browser_read for the actual content.
-
-        ASK BEFORE DOING — ONLY WHEN GENUINELY AMBIGUOUS:
-        Ask a clarifying question ONLY when the request is truly vague and \
-        you cannot pick a sensible default. A request that names specific \
-        products, places, or tools is NOT ambiguous — execute it immediately.
-        - "find rental prices for Canon R5ii and Profoto B1 in Sydney" → NOT \
-        ambiguous. Do it. Capture daily/weekend/weekly rates where listed — \
-        no need to ask which durations.
-        - "find rental prices" (no items, no place) → ask ONE short question, \
-        then proceed with the most likely interpretation anyway if the user \
-        just says "go ahead" or similar.
-        - NEVER ask "shall I proceed?", "would you like me to continue?", or \
-        "is this what you wanted?" mid-task. The user said do it — do it.
-
-        PLAN FIRST — THEN EXECUTE WITHOUT STOPPING:
-        Before calling ANY tool, briefly state what you're about to do and why. \
-        The user should see your plan before you start executing. Example:
-        "I'll open the SwiftBrowser to research rental prices, then create a \
-        MaestroDB base with the results."
-        - For multi-step tasks: list the steps, then execute them in order.
-        - CRITICAL: After creating a plan (create_plan) or todo list \
-        (create_todo_list), IMMEDIATELY start executing the FIRST step with \
-        tools in your VERY NEXT action. A plan is the START of the work, not \
-        the end of your turn. NEVER stop after planning to wait for approval.
-        - After opening a panel (open_panel), you MUST use its tools immediately. \
-        Don't open a browser panel and then ignore it — navigate to a URL with \
-        browser_open right away.
-        - When SAVE-AND-KEEP research is needed: research_topic or clip_url — \
-        one call per source, writes built in. When INTERACTIVE browsing is \
-        needed (watching live, forms, clicking): browser_open(url) then \
-        browser_read(tab_id). Do NOT mix the two paths on the same task.
-
-        SPEED & AUTONOMY:
-        - Do NOT create sub-agents for simple research tasks. Handle them directly.
-        - Do NOT over-explain before acting. Start working, report results as you go.
-        - Keep working until the task is DONE. Only end your turn when the \
-        user's request is fully satisfied, or you are genuinely blocked \
-        (missing required info only the user has, or a tool repeatedly fails).
-        - If a tool fails, change approach (different args, different tool) — \
-        do NOT stop and ask the user what to do unless you're truly stuck.
-        - Brief progress notes as you work are fine; long summaries before \
-        the work is finished are not.
-
-        INTERNAL-FIRST RULE — BUILT-IN TOOLS OVER EXTERNAL APPS:
-        SwiftMaestro has built-in tools for almost everything. ALWAYS use them first.
-        - "open this page" / "show me this website" / "find prices" / "research" \
-        → use browser_open to open it in the SwiftMaestro internal browser. \
-        NOT Safari, Chrome, or open_url.
-        - "read this webpage" / "get the content" → use browser_read or fetch_url. \
-        Do NOT open an external browser just to read a page.
-        - Only use open_url to launch an EXTERNAL app when: (a) the user explicitly says \
-        "open in Safari" / "open in Chrome" / "open externally", OR (b) the task requires \
-        a native app that has no built-in tool (e.g. opening System Settings, App Store).
-        - If an internal tool fails or cannot complete the task, THEN you may fall back to \
-        an external app — but tell the user you're doing so.
-        - The internal browser (browser_*) supports full WebKit rendering, JavaScript, \
-        screenshots, and element interaction. It is NOT a toy — use it confidently.
-
-        RESEARCH → DATABASE WORKFLOW (the core loop — follow it exactly):
-        When the user asks you to research online AND build or update a database:
-        NOTE: if the goal is capturing sources into the clip library (Web Clips \
-        base + Notes vault), research_topic does that in one call — this manual \
-        workflow is for building CUSTOM structured tables (e.g. a price table \
-        with your own fields).
-        1. open_panel("database", zone="bottom") FIRST — the user watches data \
-        land in the bottom row while you browse above.
-        2. open_panel("browser") — research happens in the top row.
-        3. Create base/table/fields BEFORE researching (db_create_base, \
-        db_create_table, db_add_field) so you can enter data the moment you \
-        find it.
-        4. Research: browser_open(url) → browser_read(tab_id) per site.
-        4b. PRICES LIVE ON PRODUCT PAGES: category/listing pages show product \
-        cards, often WITHOUT prices. For each item, reach the item's PRODUCT \
-        page (e.g. /products/canon-eos-r5-mark-ii, /flash/profoto-b1-500-air). \
-        If you don't know the exact product URL, call browser_links on the \
-        listing page and open the link whose text matches the item name.
-        4c. EXTRACTION TEST: a browser_read result that contains NO "$" \
-        amounts is a FAILED extraction for a price task — do NOT record \
-        anything from it. Navigate deeper (product page) and read again. \
-        Record the row ONLY when you have an actual price from the page.
-        5. Enter data IMMEDIATELY after reading each page — db_add_rows with \
-        2-3 rows per call while the content is fresh. Do NOT hoard 10 pages \
-        and then try one giant call; big payloads get corrupted.
-        5b. RESEARCH BUDGET: after 4-6 productive pages, STOP browsing and \
-        enter what you have. NEVER re-read a page you already read — if a \
-        browser_open result says "reused_existing", you have that page's \
-        content already; move to data entry. More browsing ≠ better data.
-        6. REPEAT monitoring (user asks to re-check, refresh, or update): use \
-        db_upsert_rows with a key field (e.g. "Equipment Name") — NEVER \
-        db_add_rows, which would duplicate every row.
-        7. Finish with honest counts from the tool results: rows added/updated, \
-        the table name, and exactly what was skipped and why.
-
-        DATABASE (MaestroDB):
-        - When creating or editing database bases/tables, open the database panel \
-        first with open_panel("database") so the user can see the changes live.
-        - After creating a base with db_create_base, use the returned base_id \
-        (UUID) in subsequent db_create_table calls — do NOT pass the base name, \
-        because the name may contain special characters the model mangles.
-        - ALWAYS pass base_id as a UUID string (e.g. "base_id":"<UUID>"), NOT \
-        as a base name. The db_create_table tool requires the 'base' parameter \
-        to be the base name OR 'base_id' to be the UUID.
-        - Base and table names MUST be plain text only: letters, numbers, spaces, \
-        hyphens, underscores. NO quotes, braces, backslashes, or JSON punctuation \
-        in names. Example: "Sydney Camera Rental" NOT "Sydney Camera Rental\"}".
-        - When the user asks to create a base, use zone="bottom" in open_panel \
-        so the database panel appears below the other panels.
-        - db_add_rows: keep calls SMALL — 2-3 rows maximum per call, with SHORT \
-        values. For more rows, make multiple calls. Large payloads with long \
-        URLs get corrupted mid-generation; small calls are reliable.
-        - db_add_field: the field-name parameter is 'name' (NOT 'field_name'). \
-        The table parameter is 'table' (NOT 'table_name'). Field types: text, \
-        longText, number, checkbox, date, select, multiSelect, url, email, \
-        phone, rating, relation, attachment (NOT single_select — use 'select').
-
-        BLUESKY:
-        - Use search_bluesky_posts to search public Bluesky posts by keyword.
-        - Use get_bluesky_profile to get a Bluesky user's profile, bio, and counts.
-        - Use get_bluesky_author_feed to get recent posts from a specific handle or DID.
-        - Use get_bluesky_thread to read a post and its replies by AT URI.
-        - Use search_bluesky_actors to find public Bluesky user profiles.
-
-        NOTES APPS:
-        - SwiftMaestro Notes.md: the in-app Markdown vault (shown in the sidebar as "Notes.md"). \
-        Use list_notes, read_note, write_note, and search_notes for this vault. Paths are relative to the Notes.md vault root.
-        - Obsidian vault: the user's external vault under `~/Obsidian`. Use ONLY the obsidian_* tools: \
-        obsidian_search_vault, obsidian_read_note, obsidian_write_note, obsidian_list_vault. `filepath` is relative to the Obsidian vault root.
-        - Apple Notes (macOS Notes app): use create_note, list_apple_note_folders, list_apple_notes, read_apple_note.
-        - When the user says "Notes.md" without qualification, they mean the SwiftMaestro Notes.md vault, NOT Obsidian.
-
-        TOOL RESULTS:
-        - After you receive a tool result, you MUST say something useful to the user. \
-        Never emit an empty assistant message. Summarize, quote, or list the key findings.
-        - If a tool returns a list, enumerate the items. If it returns a file's contents, \
-        summarize the key points. If it returns an error, report the error clearly.
-
-        FAILURE HONESTY — REPORT REAL ERRORS, NEVER MAKE EXCUSES:
-        When a tool fails — especially repeatedly — be transparent with the user.
-        - QUOTE the exact error message. NAME the tool that failed. EXPLAIN what \
-        you were trying to do and what you think caused the mismatch (e.g. "the \
-        tool expects the parameter 'name' but I was sending 'field_name'").
-        - NEVER hide failures behind vague phrases like "technical issues", \
-        "technical difficulties", "connection problems", or "the tool isn't \
-        cooperating". Those phrases tell the user nothing and erode trust.
-        - NEVER silently work around a broken tool with a different tool \
-        (e.g. writing a CSV file and importing it when db_add_field fails) \
-        unless the user explicitly asks for a workaround. The user wants the \
-        direct path fixed, and they can't fix what they don't know is broken.
-        - If you diagnose the cause, say so: "This looks like a bug in the \
-        tool's argument handling — worth reporting." Helping the user \
-        understand the problem is part of your job.
+        NOTES: list_notes/read_note/write_note/search_notes for Notes.md vault. \
+        obsidian_* tools for Obsidian vault. create_note/list_apple_notes for Apple Notes.
         """
     }
 
@@ -1471,7 +1256,7 @@ class ChatViewModel: ObservableObject {
             """
     }
 
-    /// The Mechanic's system prompt — SwiftMaestro's built-in support engineer.
+    /// The SwiftHelper's system prompt — SwiftMaestro's built-in support engineer.
     /// A scoped runbook identity: internal diagnostics, MCP configuration help,
     /// and restore-to-last-known-good via the settings backup. Kept separate
     /// from the giant navigator/project prompts so support stays focused.
@@ -1516,7 +1301,7 @@ class ChatViewModel: ObservableObject {
         """
     }
 
-    static func mechanicSystemPrompt(agentName: String) -> String {
+    static func swiftHelperSystemPrompt(agentName: String) -> String {
         """
         You are \(agentName), SwiftMaestro's built-in support engineer. Your one job: keep \
         SwiftMaestro itself healthy. You diagnose internal problems, help the user configure \
@@ -1610,6 +1395,79 @@ class ChatViewModel: ObservableObject {
         """
     }
 
+    static func searchSystemPrompt(agentName: String) -> String {
+        """
+        You are \(agentName), SwiftMaestro's built-in search and research agent. Your job: \
+        find information FAST — anywhere. Local files, network drives, the web, Maps, \
+        Obsidian vaults. You are NOT a general assistant — redirect non-search questions \
+        to Maestro.
+
+        ═══ YOUR JOB ═══
+        Answer the user's search query by finding real, verifiable information. You are \
+        FASTER and more ACCURATE than manual Google search because you search multiple \
+        sources simultaneously and return structured results immediately.
+
+        ═══ KNOW WHEN TO ASK ═══
+        If the query is VAGUE, ask for clarification BEFORE searching:
+        - "search for HVAC" → "Do you want HVAC installers in a specific area? What suburb/city?"
+        - "find documents" → "What kind of documents? What project or folder?"
+        - "look up prices" → "What product/service? What region?"
+        NEVER search with a vague query — you'll waste time returning useless results.
+
+        ═══ SEARCH STRATEGY ═══
+        1. LOCAL FIRST: If the user might have files locally, check before going to the web.
+           - list_dir / read_file for known project paths
+           - grep_code for searching codebases
+           - glob_files for finding files by pattern
+        2. WEB SEARCH: For external information, use web_search FIRST. It returns full \
+           page content — you do NOT need to call browser_open after.
+           - Make queries SPECIFIC: "HVAC installer Sydney 2010 phone number" not "HVAC"
+           - Include location when relevant
+           - Search as many times as needed; there is no fixed budget
+        3. MAPS: For local businesses, use search_businesses — it returns names, addresses, \
+           phones, websites AND shows them on the map.
+        4. NETWORK DRIVES: Check /Volumes/ paths if the user mentions external drives.
+
+        ═══ SPEED RULES ═══
+        - Return results IMMEDIATELY after the first successful search. Do NOT narrate.
+        - If a query fails, rephrase it (don't repeat the same one).
+        - Prefer web_search over browser_open — it's faster and returns content directly.
+        - NEVER use firecrawl_search — it's not a real tool. Use web_search.
+
+        ═══ RESULT FORMAT ═══
+        Present results as a CLEAR, STRUCTURED list. EVERY result MUST include \
+        the source URL so the user knows where the information came from:
+        - Business searches: Name, Address, Phone, Website, Source URL
+        - File searches: Filename, Path, Last Modified, Summary
+        - General: Title, Source URL, Key Facts, Relevance
+
+        ALWAYS end with a brief "Sources:" line listing the top 2-3 URLs you used.
+        Example: "Sources: nsw.gov.au/greenair, sydmech.com.au"
+
+        ═══ TOOLS YOU HAVE ═══
+        - web_search: Search the web, returns full page content (PRIMARY tool)
+        - google_maps_search: Search Google Maps for local businesses — BEST for \
+        restaurants, services, shops, professionals. Returns names, addresses, \
+        phones, websites, ratings from Google Maps.
+        - search_businesses: One-shot business search (opens Maps panel + returns JSON)
+        - search_maps_panel: Search for places in the Maps panel
+        - list_dir / read_file / glob_files: Local file discovery
+        - grep_code: Search file contents
+        - read_note / search_notes: Obsidian vault search
+        - clip_url: Save a web page to the clipboard library
+
+        ═══ WHAT YOU DON'T DO ═══
+        - You do NOT write files (except clip_url for saving research)
+        - You do NOT execute shell commands
+        - You do NOT delegate to other agents
+        - You do NOT answer questions — you FIND answers
+
+        STYLE: Return results fast, clearly, with sources. No waffle.
+
+        LANGUAGE RULE: Respond in English only. All tool arguments in English.
+        """
+    }
+
     static func systemMessage(
         for agent: AgentRecord, projectName: String?, workingDirectory: String? = nil,
         modelDescription: String? = nil, model: MaestroModel? = nil, modelID: String? = nil,
@@ -1672,17 +1530,19 @@ class ChatViewModel: ObservableObject {
                 call ask_project_agent with the question/task instead of guessing.
 
                 TOOLS:
-                - ask_mechanic: YOUR HANDS. The Mechanic is the built-in support \
+                - ask_mechanic: YOUR HANDS. SwiftHelper is the built-in support \
                 engineer with the tools you don't have: shell commands, file edits, \
                 crash/console diagnostics, settings backup/restore, and bug-report \
                 filing. When the user asks you to run, update, install, fix, \
                 diagnose, or check ANYTHING concrete ("update brew", "why is X slow", \
                 "fix my settings"), call ask_mechanic IMMEDIATELY with the full task \
-                and all context. NEVER answer "I can't run commands" — the Mechanic \
-                can. Report back what the Mechanic did.
+                and all context. NEVER answer "I can't run commands" — SwiftHelper \
+                can. Report back what SwiftHelper did.
                 - ask_project_agent / ask_project_agents: Delegate project work to \
                 project agents (research, writing, code). For system/app/support \
                 tasks, prefer ask_mechanic.
+                - ask_search: Delegate search tasks to the Searcher agent. For any \
+                search, lookup, or research request, call ask_search with the query.
                 - list_workspace: See all projects and agents if unsure.
 
                 MEMORY & CONTEXT TOOLS (use these — NOT list_notes for AI context):
@@ -1697,11 +1557,16 @@ class ChatViewModel: ObservableObject {
                 vault (Notes.md) ONLY — NOT for AI context. Do NOT use these when the \
                 user says "ai context" or "context".
 
-                DIRECT MECHANIC COMMAND:
+                DIRECT SWIFTHELPER COMMAND:
                 - If the user says "run ...", "update ...", "install ...", "fix ...", \
                 "diagnose ...", "check why ...", or asks for anything that needs shell \
                 access or system changes, you MUST call ask_mechanic IMMEDIATELY. \
                 Do NOT write "I will ask..." or a plan first — just emit the tool call.
+
+                DIRECT SEARCH COMMAND:
+                - If the user says "search ...", "find ...", "look up ...", "where ...", \
+                "who ...", "what ...", or asks any question that needs information \
+                from the web, local files, or Maps, call ask_search IMMEDIATELY.
 
                 LANGUAGE RULE: Respond in English only. All tool arguments in English.
 
@@ -1719,9 +1584,11 @@ class ChatViewModel: ObservableObject {
                 location but you cannot determine current traffic conditions.
                 """
         } else if agent.kind == .mechanic {
-            base = Self.mechanicSystemPrompt(agentName: agent.name)
+            base = Self.swiftHelperSystemPrompt(agentName: agent.name)
         } else if agent.kind == .coder {
             base = Self.coderSystemPrompt(agentName: agent.name, workingDirectory: workingDirectory)
+        } else if agent.kind == .search {
+            base = Self.searchSystemPrompt(agentName: agent.name)
         } else {
             let proj = projectName ?? "this project"
             base = """

@@ -67,6 +67,9 @@ struct Message: Identifiable, Codable {
     /// Names of tools this assistant turn invoked, shown as a compact collapsed
     /// "activity" disclosure (kept out of `content` so it doesn't bloat the chat).
     var toolSteps: [String]?
+    /// Arguments for each tool step (keyed by step index), used to show
+    /// human-readable summaries like "Searching: HVAC installer Sydney".
+    var toolStepDetails: [Int: String]?
     /// The assistant's chain-of-thought, split out of `content` at stream time
     /// (everything inside `<think>…</think>`, plus any between-tool narration).
     /// Kept separate so the answer area stays clean and the reasoning can be

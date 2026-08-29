@@ -367,6 +367,72 @@ extension MaestroTools {
         return false
     }
 
+    /// JavaScript that detects CAPTCHA / bot-detection pages. Google, Bing,
+    /// Cloudflare, and many other sites serve these when they detect automated
+    /// browsers. Returns `{ blocked: Bool }` by scanning the page text for
+    /// common CAPTCHA markers.
+    private static let captchaDetectScript = #"""
+    (function() {
+        var parts = [];
+        function collect(node, depth) {
+            if (!node || depth > 40) { return; }
+            if (node.shadowRoot) { collect(node.shadowRoot, depth + 1); }
+            var children = node.childNodes;
+            for (var i = 0; i < children.length; i++) {
+                var c = children[i];
+                if (c.nodeType === 3) { parts.push(c.textContent); }
+                else if (c.nodeType === 1) {
+                    var tag = c.tagName ? c.tagName.toLowerCase() : '';
+                    if (tag === 'script' || tag === 'style' || tag === 'noscript') { continue; }
+                    collect(c, depth + 1);
+                }
+            }
+        }
+        if (document.body) { collect(document.body, 0); }
+        var text = ((document.title || '') + ' ' + parts.join(' ')).toLowerCase();
+        var markers = [
+            "are you a robot", "i'm not a robot", "not a robot",
+            "unusual traffic", "automated traffic", "unusual requests",
+            "verify you are human", "please verify", "confirm you",
+            "captcha", "recaptcha", "hcaptcha", "turnstile",
+            "blocked", "access denied", "forbidden",
+            "detected unusual", "suspicious activity",
+            "checking your browser", "just a moment"
+        ];
+        for (var i = 0; i < markers.length; i++) {
+            if (text.indexOf(markers[i]) !== -1) { return { blocked: true }; }
+        }
+        return { blocked: false };
+    })()
+    """#
+
+    /// Whether the tab is showing a CAPTCHA / bot-detection wall. Checks a few
+    /// times over a short window because CAPTCHA pages may render their block
+    /// message via JS after the initial load event (same pattern as soft-404).
+    @MainActor
+    private static func tabIsCaptchaBlocked(_ tab: BrowserTab) async -> Bool {
+        guard tab.engineType == .webKit else { return false }
+        let deadline = Date().addingTimeInterval(3)
+        var settledReads = 0
+        while Date() < deadline {
+            if let data = try? await tab.evaluateJavaScript(captchaDetectScript),
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                if (obj["blocked"] as? Bool) == true { return true }
+                // If we got real content (>500 chars) with no CAPTCHA marker, it's clean.
+                if let length = obj["textLength"] as? Int, length > 500 {
+                    settledReads += 1
+                    if settledReads >= 2 { return false }
+                } else {
+                    // Page might still be loading the CAPTCHA — keep polling.
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                    continue
+                }
+            }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
+        return false
+    }
+
     /// Wait until the page has rendered some visible text. SPA pages (Apple
     /// Developer etc.) render their DOM via JS *after* the load event, so reading
     /// `outerHTML`/links/innerText immediately after `waitUntilLoaded` can return an
@@ -527,6 +593,17 @@ extension MaestroTools {
             let reason = tab.isDeadLink ? "HTTP \(tab.lastHTTPStatus ?? 0)" : "page shows a 'not found' message"
             result["warning"] = "This page is a DEAD LINK (\(reason)). Do NOT treat it as loaded — "
                 + "call browser_links on a real page and open one of its real hrefs instead of guessing."
+        }
+        // CAPTCHA / bot-detection detection. Google, Bing, and many sites serve
+        // "I'm not a robot" or "unusual traffic" pages when they detect automated
+        // browsers. The model must know it's blocked so it doesn't treat the
+        // CAPTCHA page as real content or hallucinate results.
+        let captchaBlocked = await tabIsCaptchaBlocked(tab)
+        if captchaBlocked {
+            result["captcha_blocked"] = true
+            result["warning"] = "This page is a CAPTCHA / bot-detection wall. "
+                + "The site has blocked automated access. Do NOT try to solve it or treat the page as content. "
+                + "Instead: use web_search (which uses a different backend) or try a different site."
         }
         return jsonString(result)
     }

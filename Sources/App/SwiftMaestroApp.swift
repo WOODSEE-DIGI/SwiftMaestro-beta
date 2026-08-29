@@ -336,12 +336,12 @@ struct SwiftMaestroApp: App {
                         openOrFocusPanel(.agentChat(navigator.id))
                     }
                     SystemHealthWatchService.shared.start()
-                    // Ensure the Mechanic support agent exists, and once the bundled
+                    // Ensure the SwiftHelper support agent exists, and once the bundled
                     // Qwen3-4B is on disk (DMG install or Models-tab download), default
-                    // the Mechanic to it so help works with no other model configured.
-                    let mechanic = workspace.mechanic
-                    if mechanic.modelID == nil, ModelCatalog.mechanicModelAvailable {
-                        workspace.setModel(ModelCatalog.mechanicModelID, for: mechanic.id)
+                    // the SwiftHelper to it so help works with no other model configured.
+                    let swiftHelper = workspace.swiftHelper
+                    if swiftHelper.modelID == nil, ModelCatalog.mechanicModelAvailable {
+                        workspace.setModel(ModelCatalog.mechanicModelID, for: swiftHelper.id)
                     }
                     // Ensure the bundled coding agent exists, and once the bundled
                     // DeepSeek Coder V2 Lite is on disk (DMG install or Models-tab
@@ -351,15 +351,17 @@ struct SwiftMaestroApp: App {
                     if coder.modelID == nil, ModelCatalog.coderModelAvailable {
                         workspace.setModel(ModelCatalog.coderModelID, for: coder.id)
                     }
-                    // Developer machines: give the Mechanic the SwiftMaestro repo as
+                    // Ensure the built-in Searcher agent exists for fast search.
+                    let searcher = workspace.searcher
+                    // Developer machines: give the SwiftHelper the SwiftMaestro repo as
                     // its working directory so git history + docs/ are authorized
                     // tool scope (it can consult known-good committed state when
                     // diagnosing). End users have no repo — they keep the default
                     // app-support root, which is always authorized.
-                    if mechanic.workingDirectory == nil {
+                    if swiftHelper.workingDirectory == nil {
                         let repo = NSHomeDirectory() + "/GitHub/FUSV/SwiftMaestro"
                         if FileManager.default.fileExists(atPath: repo + "/.git") {
-                            workspace.setWorkingDirectory(repo, for: mechanic.id)
+                            workspace.setWorkingDirectory(repo, for: swiftHelper.id)
                         }
                     }
                     // Validate capabilities for every locally-present model so

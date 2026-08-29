@@ -184,6 +184,9 @@ final class AgentExecutor: Sendable {
                     for name in Self.highVolumeMutationTools where effectivePerToolBudget[name] == nil {
                         effectivePerToolBudget[name] = Self.highVolumeMutationToolCap
                     }
+                    for name in Self.lowBudgetTools where effectivePerToolBudget[name] == nil {
+                        effectivePerToolBudget[name] = Self.lowBudgetCap
+                    }
                     let defaultPerToolCap = 5
                     for spec in toolSpecs {
                         if let name = MaestroTools.toolName(from: spec),
@@ -629,7 +632,7 @@ final class AgentExecutor: Sendable {
 
                         // Execute each tool and feed the result back.
                         for tc in effectiveToolCalls {
-                            continuation.yield(.toolCall(name: tc.name))
+                            continuation.yield(.toolCall(name: tc.name, arguments: tc.arguments))
                             // Reset empty-args counter when the model provides args.
                             if tc.arguments.trimmingCharacters(in: .whitespacesAndNewlines) != "{}" {
                                 emptyArgsCounts[tc.name] = 0
@@ -1762,6 +1765,15 @@ final class AgentExecutor: Sendable {
         "create_calendar_event", "create_reminder",
     ]
 
+    /// Tools that should have a very low per-turn budget. Small models burn
+    /// through web_search with verbose, keyword-stuffed queries and never open
+    /// the actual result pages. Capping at 2 forces: search once, rephrase
+    /// once max, then use what you got.
+    private static let lowBudgetTools: Set<String> = [
+        "web_search",
+    ]
+    private static let lowBudgetCap = 2
+
     /// Tools whose first argument should be the calling agent's project, injected
     /// automatically when the model didn't already supply one. These are the
     /// project-scoped ai-context-bridge memory/session tools.
@@ -1796,6 +1808,9 @@ final class AgentExecutor: Sendable {
         }
         if tc.name == "ask_mechanic" {
             return await delegateToMechanic(argumentsJSON: tc.arguments, mcp: mcp, workingDirectory: workingDirectory)
+        }
+        if tc.name == "ask_search" {
+            return await delegateToSearcher(argumentsJSON: tc.arguments, mcp: mcp, workingDirectory: workingDirectory)
         }
         if tc.name == "task" {
             return await taskDelegate(argumentsJSON: tc.arguments, mcp: mcp, workingDirectory: workingDirectory)
@@ -2373,7 +2388,7 @@ final class AgentExecutor: Sendable {
     }
 
     /// `ask_mechanic` — delegate a support/diagnostics/repair task to the
-    /// built-in Mechanic agent. The Mechanic lives outside the project-agent
+    /// built-in SwiftHelper agent. SwiftHelper lives outside the project-agent
     /// list (delegateOne only resolves `kind == .project`), so it needs this
     /// dedicated path; the actual run reuses delegateOneResolved unchanged.
     private func delegateToMechanic(argumentsJSON: String, mcp: MCPClientService?, workingDirectory: String? = nil) async -> String {
@@ -2397,11 +2412,11 @@ final class AgentExecutor: Sendable {
                 + "Escape quotes inside the task; do not break the JSON across lines.")
         }
 
-        // Resolve the Mechanic (auto-created if missing) and build its prompt
+        // Resolve the SwiftHelper (auto-created if missing) and build its prompt
         // on the MainActor, same as delegateOne does for project agents.
         let prep: (AgentRecord, [Message], String?)? = await MainActor.run {
             guard let ws = MaestroTools.workspace else { return nil }
-            let mech = ws.mechanic
+            let mech = ws.swiftHelper
             let targetWD = mech.workingDirectory
                 ?? UserDefaults.standard.string(forKey: "workingDir.\(mech.id.uuidString)")
                 ?? workingDirectory
@@ -2421,15 +2436,72 @@ final class AgentExecutor: Sendable {
             return (mech, msgs, targetWD)
         }
         guard let (mech, messages, effectiveWD) = prep else {
-            return MaestroTools.errorJSON("workspace unavailable — cannot reach the Mechanic")
+            return MaestroTools.errorJSON("workspace unavailable — cannot reach SwiftHelper")
         }
 
-        NSLog("[DELEGATE] -> Mechanic (ask_mechanic)")
+        NSLog("[DELEGATE] -> SwiftHelper (ask_mechanic)")
         let r = await delegateOneResolved(
             target: mech, proj: "", messages: messages, task: task,
             mcp: mcp, workingDirectory: effectiveWD)
         if let err = r.error { return MaestroTools.errorJSON(err) }
-        return Self.json(["agent": "Mechanic", "answer": r.answer ?? ""])
+        return Self.json(["agent": "SwiftHelper", "answer": r.answer ?? ""])
+    }
+
+    /// `ask_search` — delegate a search/research task to the built-in
+    /// Searcher agent. The Searcher lives outside the project-agent list
+    /// (delegateOne only resolves `kind == .project`), so it needs this
+    /// dedicated path; the actual run reuses delegateOneResolved unchanged.
+    private func delegateToSearcher(argumentsJSON: String, mcp: MCPClientService?, workingDirectory: String? = nil) async -> String {
+        // Repair + sanitize BEFORE parsing: small models (Gemma 4) frequently
+        // emit literal newlines inside JSON strings or mangled keys.
+        let repaired = Self.sanitizeArgumentsJSON(ToolArgumentRepair.repair(argumentsJSON))
+        guard
+            let data = repaired.data(using: .utf8),
+            let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let task = Self.firstString(
+                in: raw, keys: ["task", "question", "prompt", "message", "request", "text", "query"]),
+            !task.trimmingCharacters(in: .whitespaces).isEmpty
+        else {
+            NSLog("[DELEGATE] ask_search arg parse failed; raw=\(argumentsJSON.prefix(500))")
+            return MaestroTools.errorJSON(
+                "ask_search could not parse its arguments. Retry with EXACTLY this JSON "
+                + "shape on one line: {\"task\": \"<what to search for>\"}. "
+                + "Escape quotes inside the task; do not break the JSON across lines.")
+        }
+
+        // Resolve the Searcher (auto-created if missing) and build its prompt
+        // on the MainActor, same as delegateOne does for project agents.
+        let prep: (AgentRecord, [Message], String?)? = await MainActor.run {
+            guard let ws = MaestroTools.workspace else { return nil }
+            let searcher = ws.searcher
+            let targetWD = searcher.workingDirectory
+                ?? UserDefaults.standard.string(forKey: "workingDir.\(searcher.id.uuidString)")
+                ?? workingDirectory
+            if let targetWD, !targetWD.isEmpty,
+               !MaestroTools.delegatedAgentWorkingDirectories.contains(targetWD) {
+                MaestroTools.delegatedAgentWorkingDirectories.append(targetWD)
+            }
+            let targetModel = self.catalog?.effectiveModel(for: searcher)
+            let targetModelDesc = targetModel.map { "\($0.displayName) (model id \($0.huggingFaceID)), served via in-process Apple MLX" }
+            var msgs = ChatHistoryStore.load(agentId: searcher.id)
+                ?? [ChatViewModel.systemMessage(
+                    for: searcher, projectName: nil,
+                    workingDirectory: targetWD,
+                    modelDescription: targetModelDesc,
+                    modelID: targetModel?.huggingFaceID)]
+            msgs.append(Message(role: .user, content: task, timestamp: Date()))
+            return (searcher, msgs, targetWD)
+        }
+        guard let (searcher, messages, effectiveWD) = prep else {
+            return MaestroTools.errorJSON("workspace unavailable — cannot reach the Searcher")
+        }
+
+        NSLog("[DELEGATE] -> Searcher (ask_search)")
+        let r = await delegateOneResolved(
+            target: searcher, proj: "", messages: messages, task: task,
+            mcp: mcp, workingDirectory: effectiveWD)
+        if let err = r.error { return MaestroTools.errorJSON(err) }
+        return Self.json(["agent": "Searcher", "answer": r.answer ?? ""])
     }
 
     /// `ask_project_agent` — delegate a single task and return its answer.

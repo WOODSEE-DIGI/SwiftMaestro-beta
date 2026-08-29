@@ -13,6 +13,7 @@ enum AgentKind: String, Codable, Hashable {
     case project     // a long-lived agent that belongs to a project
     case mechanic    // the always-present self-repair/support engineer
     case coder       // the always-present bundled coding agent (DeepSeek Coder V2 Lite)
+    case search      // the always-present search/research agent (web, local, network)
 }
 
 struct Project: Identifiable, Codable, Hashable {
@@ -115,19 +116,19 @@ final class WorkspaceStore {
     /// Defaults to the bundled Qwen3-4B mechanic model when it's on disk —
     /// small enough to coexist with whatever the user is running, so help is
     /// available even on Light installs with no chat model configured.
-    var mechanic: AgentRecord {
+    var swiftHelper: AgentRecord {
         if var mech = agents.first(where: { $0.kind == .mechanic }) {
             var mechChanged = false
-            // The Mechanic's diagnostic role requires its full toolset (shell,
+            // The SwiftHelper's diagnostic role requires its full toolset (shell,
             // system health, files) regardless of which panels are open —
             // Auto tool mode would strip .shell whenever the Terminal panel is
-            // closed, breaking Maestro→Mechanic delegation. Pin it off.
+            // closed, breaking Maestro→SwiftHelper delegation. Pin it off.
             if mech.autoToolCategories ?? true {
                 mech.autoToolCategories = false
                 mechChanged = true
             }
             // One-time: drop any saved tool-category customization so the
-            // Mechanic re-defaults to the curated support set (the previously
+            // SwiftHelper re-defaults to the curated support set (the previously
             // saved full menu + MCP flood produced a 252-tool/40K-token prompt
             // that crashed the 4B model). Users can re-customize afterwards.
             let resetKey = "mechanic.curatedToolset.v1"
@@ -142,7 +143,7 @@ final class WorkspaceStore {
             }
             return mech
         }
-        var mech = AgentRecord(name: "Mechanic", kind: .mechanic)
+        var mech = AgentRecord(name: "SwiftHelper", kind: .mechanic)
         mech.autoToolCategories = false
         if ModelCatalog.mechanicModelAvailable {
             mech.modelID = ModelCatalog.mechanicModelID
@@ -195,6 +196,39 @@ final class WorkspaceStore {
         agents.insert(c, at: insertAt)
         save()
         return c
+    }
+
+    /// The always-present search/research agent (created if missing). Handles
+    /// web search, local file discovery, network drive search, and Maps queries.
+    /// Its toolset is pinned (Auto tool mode off) so panel state can never strip
+    /// the search tools the role depends on.
+    var searcher: AgentRecord {
+        if var s = agents.first(where: { $0.kind == .search }) {
+            var searchChanged = false
+            if s.autoToolCategories ?? true {
+                s.autoToolCategories = false
+                searchChanged = true
+            }
+            // One-time: drop any saved tool-category customization so the
+            // searcher re-defaults to the curated search set.
+            let resetKey = "searcher.curatedToolset.v1"
+            if !UserDefaults.standard.bool(forKey: resetKey), s.enabledToolCategories != nil {
+                s.enabledToolCategories = nil
+                searchChanged = true
+            }
+            UserDefaults.standard.set(true, forKey: resetKey)
+            if searchChanged, let idx = agents.firstIndex(where: { $0.id == s.id }) {
+                agents[idx] = s
+                save()
+            }
+            return s
+        }
+        var s = AgentRecord(name: "Searcher", kind: .search)
+        s.autoToolCategories = false
+        let insertAt = agents.isEmpty ? 0 : min(3, agents.count)  // after navigator + mechanic + coder
+        agents.insert(s, at: insertAt)
+        save()
+        return s
     }
 
     /// Projects that should appear in the main sidebar and in Maestro-facing lists.

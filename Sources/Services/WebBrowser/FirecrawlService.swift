@@ -24,6 +24,12 @@ struct FirecrawlService: Sendable {
         let links: [String]
     }
 
+    struct SearchResult: Sendable {
+        let title: String
+        let url: String
+        let snippet: String
+    }
+
     enum FirecrawlError: Error, LocalizedError {
         case badStatus(Int)
         case empty
@@ -76,6 +82,23 @@ struct FirecrawlService: Sendable {
         let links = (dataObj?["links"] as? [String]) ?? []
         guard !markdown.isEmpty else { throw FirecrawlError.empty }
         return ScrapeResult(url: sourceURL, title: title, markdown: markdown, links: links)
+    }
+
+    // MARK: - Search (web search via Firecrawl)
+
+    func search(query: String, limit: Int = 10, timeout: TimeInterval = 20) async throws -> [SearchResult] {
+        let data = try await post("/v1/search", body: [
+            "query": query,
+            "limit": limit,
+        ], timeout: timeout)
+        let top = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let items = (top?["data"] as? [[String: Any]]) ?? []
+        return items.compactMap { item in
+            guard let title = item["title"] as? String,
+                  let url = item["url"] as? String else { return nil }
+            let snippet = (item["description"] as? String) ?? (item["snippet"] as? String) ?? ""
+            return SearchResult(title: title, url: url, snippet: snippet)
+        }
     }
 
     // MARK: - Map (discover URLs)
