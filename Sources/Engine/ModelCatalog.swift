@@ -34,6 +34,11 @@ struct MaestroModel: Identifiable, Hashable {
     var recTemperature: Double? = nil
     var recTopP: Double? = nil
     var recRepetitionPenalty: Double? = nil
+    /// Fixed sampling values enforced for remote providers whose APIs reject
+    /// arbitrary temperature/top_p (e.g. Kimi K3 fixes both). When set, these
+    /// override user tuning and the tool-active temperature reduction.
+    var fixedTemperature: Double? = nil
+    var fixedTopP: Double? = nil
     /// Per-model recommended max output tokens. nil = use global default (32768).
     var recMaxTokens: Int? = nil
     /// Per-model recommended context length in tokens. nil = use global default (128000).

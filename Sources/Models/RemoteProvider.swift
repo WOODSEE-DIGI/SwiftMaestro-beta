@@ -47,7 +47,7 @@ struct RemoteProviderPreset: Identifiable, Sendable {
             id: "moonshot",
             name: "Kimi (Moonshot AI)",
             baseURL: "https://api.moonshot.ai/v1",
-            suggestedModels: ["kimi-k3"],
+            suggestedModels: ["kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6"],
             keyHelp: "API key from platform.moonshot.ai — stored in Keychain via Secrets."),
         RemoteProviderPreset(
             id: "dashscope",
@@ -83,7 +83,13 @@ struct RemoteProvider: Identifiable, Codable, Hashable, Sendable {
     /// The models this provider contributes to the catalog.
     func catalogModels() -> [MaestroModel] {
         modelIDs.map { modelID in
-            MaestroModel(
+            // Kimi/Moonshot models enforce fixed sampling; sending other values
+            // returns HTTP 400 "invalid temperature" / "invalid top_p".
+            let lowercased = modelID.lowercased()
+            let isKimi = lowercased.hasPrefix("kimi-")
+            let fixedTemperature: Double? = isKimi ? 1.0 : nil
+            let fixedTopP: Double? = isKimi ? 0.95 : nil
+            return MaestroModel(
                 id: "remote-\(id.uuidString)-\(modelID)",
                 displayName: "\(modelID) · \(name)",
                 huggingFaceID: modelID,
@@ -92,6 +98,10 @@ struct RemoteProvider: Identifiable, Codable, Hashable, Sendable {
                 estimatedMemoryGB: 0,
                 supportsTools: true,
                 toolCallFormat: nil,   // remote backend uses OpenAI function calling
+                recTemperature: fixedTemperature,
+                recTopP: fixedTopP,
+                fixedTemperature: fixedTemperature,
+                fixedTopP: fixedTopP,
                 remoteBaseURL: baseURL,
                 remoteProviderKind: kind,
                 remoteRequestTimeout: requestTimeout,

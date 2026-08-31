@@ -70,6 +70,10 @@ enum KeychainService {
     /// Store (or replace) a secret value for `account`.
     /// - Parameter synchronizable: when true the item is eligible for iCloud Keychain sync.
     static func store(account: String, value: String, synchronizable: Bool) throws {
+        try _store(account: account, value: value, synchronizable: synchronizable)
+    }
+
+    private static func _store(account: String, value: String, synchronizable: Bool, isRetry: Bool = false) throws {
         guard let data = value.data(using: .utf8) else { throw KeychainError.encodingFailed }
 
         let accessible: CFString = synchronizable
@@ -106,6 +110,14 @@ enum KeychainService {
                 kSecAttrAccessible as String: accessible,
             ]
             let status = SecItemAdd(query as CFDictionary, nil)
+            if status == errSecMissingEntitlement && synchronizable && !isRetry {
+                // Some signed builds (Xcode local development, certain Developer-ID
+                // configurations) do not provide a valid keychain access group, so
+                // iCloud-synced writes fail with -34018. Fall back to a local-only
+                // item so the secret can still be saved on this Mac.
+                try _store(account: account, value: value, synchronizable: false, isRetry: true)
+                return
+            }
             guard status == errSecSuccess else { throw KeychainError.unexpectedStatus(status) }
         } else if updateStatus != errSecSuccess {
             throw KeychainError.unexpectedStatus(updateStatus)

@@ -47,12 +47,16 @@ final class RemoteLMStudioBackend: GenerationBackend, @unchecked Sendable {
         }
 
         // Build request body — conversation is already OpenAI wire format.
+        // Respect provider-fixed sampling (e.g. Kimi K3 requires temp=1.0,
+        // top_p=0.95) so remote APIs don't return HTTP 400.
+        let effectiveTemperature = model.fixedTemperature ?? temperature
+        let effectiveTopP = model.fixedTopP ?? topP
         var body: [String: Any] = [
             "model": model.huggingFaceID,
             "messages": convo,
             "stream": true,
-            "temperature": temperature,
-            "top_p": topP,
+            "temperature": effectiveTemperature,
+            "top_p": effectiveTopP,
             "max_tokens": maxTokens,
         ]
 

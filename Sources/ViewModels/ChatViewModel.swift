@@ -312,7 +312,14 @@ class ChatViewModel: ObservableObject {
             }
         }
             // Low temperature when tools are active keeps function-calling faithful.
-            let effectiveTemp = toolSpecs.isEmpty ? temperature : min(temperature, 0.3)
+            // Some remote providers (e.g. Kimi K3) fix temperature at 1.0 and
+            // reject any other value, so never override a fixed temperature.
+            let effectiveTemp: Double
+            if let fixed = model.fixedTemperature {
+                effectiveTemp = fixed
+            } else {
+                effectiveTemp = toolSpecs.isEmpty ? temperature : min(temperature, 0.3)
+            }
 
             // Delegated sub-agents resolve their OWN model/backend via this
             // resolver. Lite / known-weak tool-calling models are promoted to a
