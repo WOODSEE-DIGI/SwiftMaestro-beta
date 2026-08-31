@@ -587,6 +587,22 @@ final class WorkspaceStore {
             NSLog("[WORKSPACE] renamed support agent from Mechanic to Swift Helper")
         }
 
+        // One-time model-ID migration: the bundled Swift Helper model id was
+        // renamed from swiftmaestro-mechanic-qwen3-4b to
+        // swiftmaestro-swifthelper-qwen3-4b. Any agent still pinned to the old
+        // id would show an invalid Picker tag and fail to resolve.
+        let legacySwiftHelperModelID = ModelCatalog.legacySwiftHelperModelID
+        let swiftHelperModelID = ModelCatalog.swiftHelperModelID
+        var modelIDMigrationChanged = false
+        for i in agents.indices where agents[i].modelID == legacySwiftHelperModelID {
+            agents[i].modelID = swiftHelperModelID
+            modelIDMigrationChanged = true
+        }
+        if modelIDMigrationChanged {
+            save()
+            NSLog("[WORKSPACE] migrated %d agent(s) from legacy Swift Helper model id", agents.filter { $0.modelID == swiftHelperModelID }.count)
+        }
+
         // One-time category migration: infer a category for existing project
         // agents that don't have one yet. This lets the new sidebar group
         // existing agents immediately without requiring manual assignment.
