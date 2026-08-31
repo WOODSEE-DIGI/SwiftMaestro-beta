@@ -290,15 +290,21 @@ class ChatViewModel: ObservableObject {
         // Tool surface: project agents get the normal tools; Maestro
         // additionally gets the workspace/delegation tools. Per-agent enabled
         // tool categories override the old automatic lite-mode reduction.
+        // Remote online models additionally get a curated surface to avoid
+        // overwhelming hosted APIs with 160+ tool schemas.
         var toolSpecs: [ToolSpec] = []
         var specsProvider: (@Sendable () async -> [ToolSpec])?
         if model.advertisesTools {
             nonisolated(unsafe) let mcpService = engine.mcpService
             let agentID = agent.id
             let isLite = model.isLiteModel
+            let allowedCategories = model.allowedToolCategories
+            let prefersCompact = model.prefersCompactToolMode
             toolSpecs = await Self.buildToolSpecs(
                 agentID: agentID, isNavigator: isNavigator, isLiteModel: isLite,
-                mcp: mcpService)
+                mcp: mcpService,
+                allowedCategories: allowedCategories,
+                prefersCompact: prefersCompact)
             // Re-derive the tool surface EVERY ROUND from the live panel set:
             // panel-linked categories (Auto tool mode) activate when open_panel
             // opens their panel and withdraw when it closes. A frozen run-start
@@ -308,7 +314,9 @@ class ChatViewModel: ObservableObject {
             specsProvider = { [isNavigator] in
                 await Self.buildToolSpecs(
                     agentID: agentID, isNavigator: isNavigator, isLiteModel: isLite,
-                    mcp: mcpService)
+                    mcp: mcpService,
+                    allowedCategories: allowedCategories,
+                    prefersCompact: prefersCompact)
             }
         }
             // Low temperature when tools are active keeps function-calling faithful.
@@ -1594,17 +1602,18 @@ class ChatViewModel: ObservableObject {
                 call ask_project_agent with the question/task instead of guessing.
 
                 TOOLS:
-                - ask_swiftHelper: YOUR HANDS. Swift Helper is the built-in support \
-                engineer with the tools you don't have: shell commands, file edits, \
-                crash/console diagnostics, settings backup/restore, and bug-report \
-                filing. When the user asks you to run, update, install, fix, \
-                diagnose, or check ANYTHING concrete ("update brew", "why is X slow", \
-                "fix my settings"), call ask_swiftHelper IMMEDIATELY with the full task \
-                and all context. NEVER answer "I can't run commands" — Swift Helper \
-                can. Report back what Swift Helper did.
+                - ask_swiftHelper: Swift Helper is the built-in support engineer \
+                with shell commands, file edits, crash/console diagnostics, settings \
+                backup/restore, and bug-report filing. Use it when the user explicitly \
+                asks you to TAKE ACTION on their Mac ("run ...", "update ...", \
+                "install ...", "fix ...", "diagnose ...", "check why ..."). For casual \
+                chat, explanations, or questions about how something works, answer \
+                directly instead of delegating. NEVER answer "I can't run commands" \
+                when the user clearly wants action — Swift Helper can. Report back \
+                what Swift Helper did.
                 - ask_project_agent / ask_project_agents: Delegate project work to \
                 project agents (research, writing, code). For system/app/support \
-                tasks, prefer ask_swiftHelper.
+                tasks, prefer ask_swiftHelper only when the user wants action taken.
                 - ask_search: Delegate search tasks to the Searcher agent. For any \
                 search, lookup, or research request, call ask_search with the query.
                 - list_workspace: See all projects and agents if unsure.
@@ -1622,10 +1631,12 @@ class ChatViewModel: ObservableObject {
                 user says "ai context" or "context".
 
                 DIRECT SWIFTHELPER COMMAND:
-                - If the user says "run ...", "update ...", "install ...", "fix ...", \
-                "diagnose ...", "check why ...", or asks for anything that needs shell \
-                access or system changes, you MUST call ask_swiftHelper IMMEDIATELY. \
+                - If the user explicitly says "run ...", "update ...", "install ...", \
+                "fix ...", "diagnose ...", "check why ...", or asks for anything that \
+                needs shell access or system changes, call ask_swiftHelper IMMEDIATELY. \
                 Do NOT write "I will ask..." or a plan first — just emit the tool call.
+                - If the user is chatting, explaining, asking "how do I...", or using \
+                words like "about" or "tell me", answer directly.
 
                 DIRECT SEARCH COMMAND:
                 - If the user says "search ...", "find ...", "look up ...", "where ...", \
@@ -1951,21 +1962,33 @@ class ChatViewModel: ObservableObject {
     /// Build the agent's tool schema list from the CURRENT workspace state.
     /// Extracted so the executor can re-derive the list every round —
     /// panel-linked categories (Auto tool mode) follow the live panel set.
+    /// `allowedCategories` and `prefersCompact` come from the model and narrow
+    /// the surface for remote providers that are overwhelmed by the full set.
     static func buildToolSpecs(
-        agentID: UUID, isNavigator: Bool, isLiteModel: Bool, mcp: MCPClientService?
+        agentID: UUID, isNavigator: Bool, isLiteModel: Bool, mcp: MCPClientService?,
+        allowedCategories: Set<ToolCategory>? = nil,
+        prefersCompact: Bool = false
     ) async -> [ToolSpec] {
-        let (enabledCategories, compactMode) = await MainActor.run {
+        let (enabledCategories, savedCompact) = await MainActor.run {
             (MaestroTools.workspace?.effectiveToolCategories(for: agentID),
-             MaestroTools.workspace?.compactToolMode(for: agentID) ?? false)
+             MaestroTools.workspace?.compactToolMode(for: agentID))
         }
+        let compactMode = savedCompact ?? prefersCompact
         // Gate Apple app tools by the launcher toggles: disabled apps
         // lose their agent tools, not just their launcher rows.
         let blockedByLauncher = await MainActor.run {
             AppEnablementStore.shared.blockedToolCategories()
         }
         let filteredCategories: Set<ToolCategory>? = {
-            guard let enabledCategories else { return nil }
-            return enabledCategories.subtracting(blockedByLauncher)
+            guard let enabledCategories else {
+                // No user customization: apply model-level whitelist if present.
+                return allowedCategories?.subtracting(blockedByLauncher)
+            }
+            let effective = enabledCategories.subtracting(blockedByLauncher)
+            if let allowedCategories {
+                return effective.intersection(allowedCategories)
+            }
+            return effective
         }()
         // Set immediately before use (mirrors MaestroTools.inheritedRoots)
         // so search_tools/call_tool can see this agent's actual scope.

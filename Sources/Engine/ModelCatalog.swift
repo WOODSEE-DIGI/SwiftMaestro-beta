@@ -39,6 +39,12 @@ struct MaestroModel: Identifiable, Hashable {
     /// override user tuning and the tool-active temperature reduction.
     var fixedTemperature: Double? = nil
     var fixedTopP: Double? = nil
+    /// Optional whitelist of tool categories for models that are overwhelmed by
+    /// the full toolset (e.g. hosted online providers). nil = allow everything.
+    var allowedToolCategories: Set<ToolCategory>? = nil
+    /// Whether this model prefers Compact Tool Mode (deferred tools via
+    /// search_tools/call_tool) by default. User per-agent setting wins if set.
+    var prefersCompactToolMode: Bool = false
     /// Per-model recommended max output tokens. nil = use global default (32768).
     var recMaxTokens: Int? = nil
     /// Per-model recommended context length in tokens. nil = use global default (128000).
