@@ -130,6 +130,11 @@ targets:
           CODE_SIGN_STYLE: Automatic
           CODE_SIGN_IDENTITY: "Apple Development"
           DEVELOPMENT_TEAM: "3BMZ2ULZ54"
+          # Disable Hardened Runtime for Debug builds. The app is not sandboxed,
+          # and Hardened Runtime's entitlement requirements (especially Keychain
+          # access groups) are unreliable with Xcode's local development signing.
+          # Release builds keep Hardened Runtime enabled for notarization.
+          ENABLE_HARDENED_RUNTIME: NO
         Release:
           CODE_SIGN_STYLE: Manual
           CODE_SIGN_IDENTITY: "Developer ID Application"
