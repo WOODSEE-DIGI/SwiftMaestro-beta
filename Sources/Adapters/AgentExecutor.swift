@@ -1676,11 +1676,11 @@ final class AgentExecutor: Sendable {
     private static let nonInjectedMutators: Set<String> = [
         "create_project_agent", "archive_project_agent",
         "ask_project_agent", "ask_project_agents",
-        // ask_mechanic delegates real work — without this the post-delegation
+        // ask_swiftHelper delegates real work — without this the post-delegation
         // summary (results + a "would you like me to…" follow-up offer) was
         // misread as future-tense narration and nudged into regenerating the
         // same answer repeatedly (each copy streaming into the same bubble).
-        "ask_mechanic",
+        "ask_swiftHelper",
     ]
 
     /// Planning/tracking tools organize the turn but produce no user-visible
@@ -1806,8 +1806,8 @@ final class AgentExecutor: Sendable {
         if tc.name == "ask_project_agents" {
             return await delegateMany(argumentsJSON: tc.arguments, mcp: mcp, workingDirectory: workingDirectory)
         }
-        if tc.name == "ask_mechanic" {
-            return await delegateToMechanic(argumentsJSON: tc.arguments, mcp: mcp, workingDirectory: workingDirectory)
+        if tc.name == "ask_swiftHelper" {
+            return await delegateToSwiftHelper(argumentsJSON: tc.arguments, mcp: mcp, workingDirectory: workingDirectory)
         }
         if tc.name == "ask_search" {
             return await delegateToSearcher(argumentsJSON: tc.arguments, mcp: mcp, workingDirectory: workingDirectory)
@@ -2387,11 +2387,11 @@ final class AgentExecutor: Sendable {
         return DelegateResult(project: proj, agent: target.name, answer: answer, error: nil)
     }
 
-    /// `ask_mechanic` — delegate a support/diagnostics/repair task to the
-    /// built-in SwiftHelper agent. SwiftHelper lives outside the project-agent
+    /// `ask_swiftHelper` — delegate a support/diagnostics/repair task to the
+    /// built-in Swift Helper agent. Swift Helper lives outside the project-agent
     /// list (delegateOne only resolves `kind == .project`), so it needs this
     /// dedicated path; the actual run reuses delegateOneResolved unchanged.
-    private func delegateToMechanic(argumentsJSON: String, mcp: MCPClientService?, workingDirectory: String? = nil) async -> String {
+    private func delegateToSwiftHelper(argumentsJSON: String, mcp: MCPClientService?, workingDirectory: String? = nil) async -> String {
         // Repair + sanitize BEFORE parsing: small models (Gemma 4) frequently
         // emit literal newlines inside JSON strings or mangled keys, and a bare
         // parse failure makes the model blind-retry the identical broken call
@@ -2405,14 +2405,14 @@ final class AgentExecutor: Sendable {
                 in: raw, keys: ["task", "question", "prompt", "message", "request", "text"]),
             !task.trimmingCharacters(in: .whitespaces).isEmpty
         else {
-            NSLog("[DELEGATE] ask_mechanic arg parse failed; raw=\(argumentsJSON.prefix(500))")
+            NSLog("[DELEGATE] ask_swiftHelper arg parse failed; raw=\(argumentsJSON.prefix(500))")
             return MaestroTools.errorJSON(
-                "ask_mechanic could not parse its arguments. Retry with EXACTLY this JSON "
-                + "shape on one line: {\"task\": \"<what the Mechanic should do>\"}. "
+                "ask_swiftHelper could not parse its arguments. Retry with EXACTLY this JSON "
+                + "shape on one line: {\"task\": \"<what the Swift Helper should do>\"}. "
                 + "Escape quotes inside the task; do not break the JSON across lines.")
         }
 
-        // Resolve the SwiftHelper (auto-created if missing) and build its prompt
+        // Resolve the Swift Helper (auto-created if missing) and build its prompt
         // on the MainActor, same as delegateOne does for project agents.
         let prep: (AgentRecord, [Message], String?)? = await MainActor.run {
             guard let ws = MaestroTools.workspace else { return nil }
@@ -2436,10 +2436,10 @@ final class AgentExecutor: Sendable {
             return (mech, msgs, targetWD)
         }
         guard let (mech, messages, effectiveWD) = prep else {
-            return MaestroTools.errorJSON("workspace unavailable — cannot reach SwiftHelper")
+            return MaestroTools.errorJSON("workspace unavailable — cannot reach Swift Helper")
         }
 
-        NSLog("[DELEGATE] -> SwiftHelper (ask_mechanic)")
+        NSLog("[DELEGATE] -> SwiftHelper (ask_swiftHelper)")
         let r = await delegateOneResolved(
             target: mech, proj: "", messages: messages, task: task,
             mcp: mcp, workingDirectory: effectiveWD)

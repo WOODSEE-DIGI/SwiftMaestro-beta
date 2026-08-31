@@ -25,6 +25,10 @@ actor NotesService {
     }
 
     /// List all note items inside a folder, recursively for folders.
+    /// Resilient: a single unreadable subfolder (e.g. an iCloud placeholder
+    /// mid-sync, or a large shared store like AI Memory) logs and skips that
+    /// subtree instead of aborting the whole listing — so one bad folder can
+    /// never make a parent folder (or the AI Memory entry) disappear.
     func listDirectory(at url: URL) throws -> [NoteItem] {
         try coordinate(reading: url) { url in
             let fm = FileManager.default
@@ -35,12 +39,13 @@ actor NotesService {
 
             var items: [NoteItem] = []
             for itemURL in contents {
-                let resourceValues = try itemURL.resourceValues(forKeys: [.contentModificationDateKey, .isDirectoryKey])
-                let isDirectory = resourceValues.isDirectory ?? false
-                let modified = resourceValues.contentModificationDate ?? Date()
+                let resourceValues = try? itemURL.resourceValues(
+                    forKeys: [.contentModificationDateKey, .isDirectoryKey])
+                let isDirectory = resourceValues?.isDirectory ?? false
+                let modified = resourceValues?.contentModificationDate ?? Date()
 
                 if isDirectory {
-                    let children = try listDirectory(at: itemURL)
+                    let children = (try? listDirectory(at: itemURL)) ?? []
                     items.append(NoteItem(url: itemURL, isFolder: true, modifiedAt: modified, children: children))
                 } else if Self.isListableFile(itemURL) {
                     items.append(NoteItem(url: itemURL, isFolder: false, modifiedAt: modified))

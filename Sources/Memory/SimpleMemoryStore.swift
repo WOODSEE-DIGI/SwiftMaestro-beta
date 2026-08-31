@@ -18,9 +18,16 @@ struct SimpleMemoryStore: Sendable {
         if let path = basePath {
             self.baseDir = path
         } else {
-            // Use the shared memory directory — same store as all other AI tools
-            let home = FileManager.default.homeDirectoryForCurrentUser
-            self.baseDir = home.appendingPathComponent(".ai-context/memory")
+            // Check iCloud Drive container first, fallback to ~/.ai-context/memory
+            let fileManager = FileManager.default
+            if let iCloudContainer = fileManager.url(forUbiquityContainerIdentifier: nil)?
+                .appendingPathComponent("Documents/SwiftMaestro/memory", isDirectory: true) {
+                try? fileManager.createDirectory(at: iCloudContainer, withIntermediateDirectories: true)
+                self.baseDir = iCloudContainer
+            } else {
+                let home = fileManager.homeDirectoryForCurrentUser
+                self.baseDir = home.appendingPathComponent(".ai-context/memory")
+            }
         }
     }
 
@@ -122,16 +129,19 @@ struct SimpleMemoryStore: Sendable {
     /// Relative slash paths of entries stored under a kind (recursive), with optional path prefix and pagination.
     func entries(kind: MaestroURI.Kind, pathPrefix: String? = nil, limit: Int? = nil, offset: Int? = nil) -> [String] {
         let dir = directory(for: kind)
-        guard let walker = FileManager.default.enumerator(
-            at: dir, includingPropertiesForKeys: [.isRegularFileKey]) else { return [] }
+        let subpaths: [String]
+        do {
+            subpaths = try FileManager.default.subpathsOfDirectory(atPath: dir.path)
+        } catch {
+            return []
+        }
         let prefix = pathPrefix?.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         var out: [String] = []
-        for case let url as URL in walker {
-            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true
+        for sub in subpaths {
+            guard (try? dir.appendingPathComponent(sub).resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true
             else { continue }
-            let rel = url.path.replacingOccurrences(of: dir.path + "/", with: "")
-            if let prefix = prefix, !prefix.isEmpty, !rel.hasPrefix(prefix) && !rel.hasPrefix(prefix + "/") { continue }
-            out.append(rel)
+            if let prefix = prefix, !prefix.isEmpty, !sub.hasPrefix(prefix) && !sub.hasPrefix(prefix + "/") { continue }
+            out.append(sub)
         }
         let sorted = out.sorted()
         let total = sorted.count
@@ -142,20 +152,24 @@ struct SimpleMemoryStore: Sendable {
         } else {
             end = total
         }
+        guard start < end else { return [] }
         return Array(sorted[start..<end])
     }
 
     /// Count entries under a kind, optionally filtered by a path prefix.
     func countEntries(kind: MaestroURI.Kind, pathPrefix: String? = nil) -> Int {
         let dir = directory(for: kind)
-        guard let walker = FileManager.default.enumerator(
-            at: dir, includingPropertiesForKeys: [.isRegularFileKey]) else { return 0 }
+        let subpaths: [String]
+        do {
+            subpaths = try FileManager.default.subpathsOfDirectory(atPath: dir.path)
+        } catch {
+            return 0
+        }
         let prefix = pathPrefix?.trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         var count = 0
-        for case let url as URL in walker {
-            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { continue }
-            let rel = url.path.replacingOccurrences(of: dir.path + "/", with: "")
-            if let prefix = prefix, !prefix.isEmpty, !rel.hasPrefix(prefix) && !rel.hasPrefix(prefix + "/") { continue }
+        for sub in subpaths {
+            guard (try? dir.appendingPathComponent(sub).resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { continue }
+            if let prefix = prefix, !prefix.isEmpty, !sub.hasPrefix(prefix) && !sub.hasPrefix(prefix + "/") { continue }
             count += 1
         }
         return count
@@ -163,17 +177,21 @@ struct SimpleMemoryStore: Sendable {
 
     /// Full-text search across the whole store. Returns (relative path, snippet).
     func search(_ query: String, limit: Int = 20) -> [(path: String, snippet: String)] {
-        guard let walker = FileManager.default.enumerator(
-            at: baseDir, includingPropertiesForKeys: [.isRegularFileKey]) else { return [] }
+        let subpaths: [String]
+        do {
+            subpaths = try FileManager.default.subpathsOfDirectory(atPath: baseDir.path)
+        } catch {
+            return []
+        }
         let needle = query.lowercased()
         var hits: [(path: String, snippet: String)] = []
-        for case let url as URL in walker {
+        for sub in subpaths {
             if hits.count >= limit { break }
+            let url = baseDir.appendingPathComponent(sub)
             guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true,
                   let content = try? String(contentsOf: url, encoding: .utf8),
                   content.lowercased().contains(needle) else { continue }
-            let rel = url.path.replacingOccurrences(of: baseDir.path + "/", with: "")
-            hits.append((rel, Self.snippet(content, around: needle)))
+            hits.append((sub, Self.snippet(content, around: needle)))
         }
         return hits
     }

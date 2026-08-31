@@ -100,7 +100,7 @@ final class NotesViewModel {
         }
     }
 
-    /// Re-evaluates the vault URL based on the current iCloud default.
+    /// Re-evaluates the vault URL based on user settings or default local Documents location.
     static func resolveVaultURL() -> URL {
         let savedPath = UserDefaults.standard.string(forKey: NotesViewModel.vaultPathKey)
         if let savedPath, !savedPath.isEmpty {
@@ -135,11 +135,54 @@ final class NotesViewModel {
         }
     }
 
-    /// Initial load of the vault tree.
+    /// Initial load of the vault tree, injecting the AI Memory folder into the root items.
     func load() async {
         do {
             try await service.ensureVault()
-            rootItems = try await service.listDirectory(at: vaultURL)
+            var items = try await service.listDirectory(at: vaultURL)
+            
+            // Append permanent AI Memory folder link pointing to the shared
+            // memory store (iCloud or ~/.ai-context/memory). Listed SHALLOWLY
+            // (two levels) and tolerantly so the ~43K-file store is never
+            // eagerly expanded into the tree and one unreadable subfolder can't
+            // make the whole AI Memory entry disappear.
+            if let memoryRoot = memoryRootURL {
+                let fileManager = FileManager.default
+                if fileManager.fileExists(atPath: memoryRoot.path),
+                   let memoryChildren = Self.makeShallowMemoryTree(root: memoryRoot) {
+                    var aiMemoryItem = NoteItem(
+                        url: memoryRoot,
+                        isFolder: true,
+                        modifiedAt: Date(),
+                        children: memoryChildren
+                    )
+                    aiMemoryItem.isReadOnly = true
+                    items.insert(aiMemoryItem, at: 0)
+                } else if fileManager.fileExists(atPath: memoryRoot.path) {
+                    // Memory root exists but couldn't be listed (macOS Full Disk
+                    // Access / iCloud not readable yet). Show a single explanatory
+                    // leaf rather than an expandable-but-empty node, so the user
+                    // knows why no contents appear. The message rides in the
+                    // filename because `NoteItem.title` is derived from it.
+                    var placeholder = NoteItem(
+                        url: memoryRoot.appendingPathComponent(
+                            "contents-not-readable-grant-full-disk-access-relaunch.txt"),
+                        isFolder: false,
+                        modifiedAt: Date()
+                    )
+                    placeholder.isReadOnly = true
+                    var aiMemoryItem = NoteItem(
+                        url: memoryRoot,
+                        isFolder: true,
+                        modifiedAt: Date(),
+                        children: [placeholder]
+                    )
+                    aiMemoryItem.isReadOnly = true
+                    items.insert(aiMemoryItem, at: 0)
+                }
+            }
+
+            rootItems = items
             errorMessage = nil
         } catch {
             errorMessage = "Could not load notes vault: \(error.localizedDescription)"
@@ -173,6 +216,11 @@ final class NotesViewModel {
     func saveCurrentNote() async {
         autosaveTask?.cancel()
         guard let item = selectedItem, item.isNote else { return }
+        if let reason = readOnlyGuard(for: item, action: .write) {
+            errorMessage = reason
+            NSLog("[NOTES] blocked save to read-only AI Memory file: \(item.url.path)")
+            return
+        }
         isSaving = true
         defer { isSaving = false }
         do {
@@ -189,6 +237,10 @@ final class NotesViewModel {
     /// Create a new note in the currently selected folder (or vault root).
     func createNote(named name: String) async {
         let folder = selectedFolder()
+        if let item = selectedItem, let reason = readOnlyGuard(for: item, action: .write), item.isFolder {
+            errorMessage = reason
+            return
+        }
         do {
             let url = try await service.createNote(named: name, in: folder)
             await load()
@@ -202,6 +254,10 @@ final class NotesViewModel {
     /// Create a new folder in the currently selected folder (or vault root).
     func createFolder(named name: String) async {
         let folder = selectedFolder()
+        if let item = selectedItem, let reason = readOnlyGuard(for: item, action: .write), item.isFolder {
+            errorMessage = reason
+            return
+        }
         do {
             let url = try await service.createFolder(named: name, in: folder)
             await load()
@@ -214,6 +270,10 @@ final class NotesViewModel {
 
     /// Delete a note or folder.
     func delete(item: NoteItem) async {
+        if let reason = readOnlyGuard(for: item, action: .delete) {
+            errorMessage = reason
+            return
+        }
         if selectedItem?.id == item.id { selectedItem = nil }
         do {
             try await service.delete(item: item)
@@ -226,6 +286,10 @@ final class NotesViewModel {
 
     /// Rename a note or folder.
     func rename(item: NoteItem, to name: String) async {
+        if let reason = readOnlyGuard(for: item, action: .rename) {
+            errorMessage = reason
+            return
+        }
         do {
             let newURL = try await service.rename(item: item, to: name)
             let isFolder = item.isFolder
@@ -352,6 +416,156 @@ final class NotesViewModel {
         guard let item = selectedItem else { return vaultURL }
         return item.isFolder ? item.url : item.url.deletingLastPathComponent()
     }
+
+    /// Build a bounded, tolerant, read-only listing of the AI Memory root so the
+    /// huge shared store (tens of thousands of files) is never eagerly expanded
+    /// into the Notes tree, and a single unreadable subfolder can't hide the whole
+    /// entry. Traverses a few levels so subfolders are actually expandable, but
+    /// stops at a hard node cap to bound memory. Folders with no discovered
+    /// children are emitted with `children == nil` so SwiftUI renders them as true
+    /// leaves (a non-nil-but-empty array would suppress the disclosure chevron).
+    /// Returns nil only if the root itself fails to read.
+    private static func makeShallowMemoryTree(root: URL) -> [NoteItem]? {
+        let maxDepth = 4
+        let maxNodes = 600
+        var nodeCount = 0
+
+        func scan(_ folder: URL, depth: Int) -> [NoteItem] {
+            let fm = FileManager.default
+            let contents = (try? fm.contentsOfDirectory(
+                at: folder,
+                includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey],
+                options: [.skipsHiddenFiles])) ?? []
+            var items: [NoteItem] = []
+            for url in contents {
+                if nodeCount >= maxNodes { break }
+                let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+                let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date()
+                if isDir {
+                    // Deeper folders stay folded once we hit the depth budget or
+                    // node cap; deeper than that always reads lazily on expansion.
+                    let children = depth <= 0 ? nil : scan(url, depth: depth - 1)
+                    var item = NoteItem(url: url, isFolder: true, modifiedAt: modified, children: children)
+                    // Only load-bearing structure (kind folders directly under the
+                    // root) is read-only; nested content is user-editable.
+                    item.isReadOnly = Self.isStructuralMemoryNode(url, root: root)
+                    items.append(item)
+                    nodeCount += 1
+                } else if Self.isListableMemoryFile(url) {
+                    var item = NoteItem(url: url, isFolder: false, modifiedAt: modified)
+                    // Root index files (README/_index/*.json/*.md) are structural;
+                    // notes nested inside a kind folder are freely editable.
+                    item.isReadOnly = Self.isStructuralMemoryNode(url, root: root)
+                    items.append(item)
+                    nodeCount += 1
+                }
+            }
+            // Folders with no descendants become true leaves (children == nil) so
+            // SwiftUI shows no chevron instead of an expandable-but-empty one.
+            return items.isEmpty ? items
+                : items.sorted {
+                    if $0.isFolder != $1.isFolder { return $0.isFolder && !$1.isFolder }
+                    return $0.name.localizedCompare($1.name) == .orderedAscending
+                }
+        }
+
+        // If the root itself can't even be listed, report that back to the caller
+        // so `load()` can surface a clear explanation instead of an empty expand.
+        guard let rootContents = try? FileManager.default.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]),
+            !rootContents.isEmpty else {
+            return nil
+        }
+        return scan(root, depth: maxDepth)
+    }
+
+    /// File types surfaced in the read-only AI Memory tree (markdown notes plus
+    /// the plain-text knowledge files agents write). Internal artifacts
+    /// (index DB, binary assets, iCloud .icloud placeholders) are excluded.
+    private static func isListableMemoryFile(_ url: URL) -> Bool {
+        switch url.pathExtension.lowercased() {
+        case "md", "txt", "markdown": return true
+        default: return false
+        }
+    }
+
+    /// The kind of mutation being attempted, so memory content edits are allowed
+    /// while structure-breaking ones are blocked.
+    enum MemoryEditAction {
+        /// Saving content, or creating a note/folder (additive and safe).
+        case write
+        case delete
+        case rename
+    }
+
+    /// True if the item lives inside the shared AI Memory store.
+    func isInMemory(_ item: NoteItem) -> Bool {
+        guard let memoryRoot = memoryRootURL else { return false }
+        return item.url.path == memoryRoot.path || item.url.path.hasPrefix(memoryRoot.path + "/")
+    }
+
+    /// True if the item is a load-bearing part of the memory store that must not
+    /// be deleted or renamed: the memory root itself, any top-level kind
+    /// directory (e.g. `knowledge/`, `context/`), or any root index file
+    /// (README, `_index.md`, `*.json`/`*.md` at the store root). Content nested
+    /// inside a kind directory is freely editable.
+    static func isStructuralMemoryNode(_ url: URL, root: URL) -> Bool {
+        let rootPath = root.path
+        let path = url.path
+        guard path == rootPath || path.hasPrefix(rootPath + "/") else { return false }
+        // The memory root itself is structural.
+        if path == rootPath { return true }
+        // Direct children of the root are the kind dirs + root index files.
+        return url.deletingLastPathComponent().path == rootPath
+    }
+
+    /// The resolved shared AI Memory root (iCloud container or ~/.ai-context/memory).
+    ///
+    /// The on-disk store at `~/.ai-context/memory` is a SYMLINK into the iCloud
+    /// container (e.g. `~/Library/Mobile Documents/com~apple~CloudDocs/Documents/
+    /// SwiftMaestro/memory`). The URL-based FileManager APIs used to build the
+    /// memory tree (`contentsOfDirectory(at:includingPropertiesForKeys:)`) do NOT
+    /// follow a top-level symlink and throw `ENOTDIR` ("Not a directory") on it,
+    /// which made the memory tree show the "not readable — grant Full Disk Access"
+    /// placeholder even when Full Disk Access was granted. Resolving the symlink
+    /// yields the canonical on-disk directory those APIs can enumerate, so the
+    /// real memory contents are listed. `resolvingSymlinksInPath()` is a no-op
+    /// when the path is a real directory.
+    private var memoryRootURL: URL? {
+        let fm = FileManager.default
+        if let iCloudContainer = fm.url(forUbiquityContainerIdentifier: nil)?
+            .appendingPathComponent("Documents/SwiftMaestro/memory", isDirectory: true) {
+            return iCloudContainer.resolvingSymlinksInPath()
+        }
+        let homeMemory = fm.homeDirectoryForCurrentUser
+            .appendingPathComponent(".ai-context/memory", isDirectory: true)
+        return homeMemory.resolvingSymlinksInPath()
+    }
+
+    /// Returns an error message when the requested mutation would break the AI
+    /// Memory store. Users may freely edit content (save) and create notes or
+    /// folders anywhere in memory, and may delete/rename content nested inside a
+    /// kind folder. They may NOT delete or rename the memory root, top-level kind
+    /// directories, or root index files — those keep the store working.
+    func readOnlyGuard(for item: NoteItem?, action: MemoryEditAction) -> String? {
+        guard let item, isInMemory(item) else { return nil }
+        switch action {
+        case .write:
+            // Writing/creating memory content is additive — always allowed.
+            return nil
+        case .delete, .rename:
+            guard let memoryRoot = memoryRootURL else { return nil }
+            if Self.isStructuralMemoryNode(item.url, root: memoryRoot) {
+                return "This is part of the AI Memory store's structure (a kind folder or index "
+                    + "file). Deleting or renaming it would break memory for every agent. You can "
+                    + "edit its contents freely, but don't delete or rename this item."
+            }
+            return nil
+        }
+    }
+
 
     private func performSearch() async {
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)

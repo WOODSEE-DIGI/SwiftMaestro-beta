@@ -107,17 +107,19 @@ struct NotesView: View {
                 Label(item.title, systemImage: iconFor(item))
                     .tag(item.id)
                     .contextMenu {
-                        if item.isFolder {
+                        if item.isFolder && !item.isReadOnly {
                             Button("New Note") { showingNewNoteSheet = true }
                             Button("New Folder") { showingNewFolderSheet = true }
                         }
-                        Button("Rename") {
-                            renamingItem = item
-                            renameText = item.name
-                        }
-                        Divider()
-                        Button("Delete", role: .destructive) {
-                            Task { await viewModel.delete(item: item) }
+                        if !item.isReadOnly {
+                            Button("Rename") {
+                                renamingItem = item
+                                renameText = item.name
+                            }
+                            Divider()
+                            Button("Delete", role: .destructive) {
+                                Task { await viewModel.delete(item: item) }
+                            }
                         }
                     }
             }

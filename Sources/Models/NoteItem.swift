@@ -14,6 +14,11 @@ struct NoteItem: Identifiable, Hashable, Sendable {
     let modifiedAt: Date
     var children: [NoteItem]?
 
+    /// When true, the note/folder is reserved for agents (e.g. the AI Memory
+    /// store). Notes.md reads it freely but refuses to create, edit, rename, or
+    /// delete without the user explicitly unlocking after a backup warning.
+    var isReadOnly = false
+
     init(url: URL, isFolder: Bool, modifiedAt: Date, children: [NoteItem]? = nil) {
         self.url = url
         self.name = url.deletingPathExtension().lastPathComponent

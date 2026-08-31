@@ -521,10 +521,10 @@ enum MaestroTools {
                 category: ToolCategory.workspace.rawValue,
                 handler: { call in await closePanelTool(call) }),
             ToolDefinition(
-                name: "ask_mechanic", spec: navigatorToolSpecs[10],
+                name: "ask_swiftHelper", spec: navigatorToolSpecs[10],
                 category: ToolCategory.workspace.rawValue,
                 handler: { _ in
-                    errorJSON("ask_mechanic must be intercepted by AgentExecutor, not dispatched directly.")
+                    errorJSON("ask_swiftHelper must be intercepted by AgentExecutor, not dispatched directly.")
                 }),
             ToolDefinition(
                 name: "ask_search", spec: navigatorToolSpecs[11],
@@ -690,19 +690,19 @@ enum MaestroTools {
                 required: ["panel"]
             ),
             functionSpec(
-                name: "ask_mechanic",
+                name: "ask_swiftHelper",
                 description:
-                    "Ask SwiftHelper — SwiftMaestro's built-in support agent — to "
-                    + "diagnose or fix a problem. SwiftHelper has the tools you don't: "
+                    "Ask Swift Helper — SwiftMaestro's built-in support agent — to "
+                    + "diagnose or fix a problem. Swift Helper has the tools you don't: "
                     + "shell commands (execute_command), crash/console diagnostics, settings "
                     + "backup/restore, and bug-report filing. USE THIS whenever the user asks "
                     + "you to run a command (brew, defaults, git, scripts), change a system or "
                     + "app setting, diagnose a crash/hang/slowdown, or fix something that isn't "
                     + "working. NEVER tell the user you 'can't run commands' — hand the task to "
-                    + "SwiftHelper instead. Write the task as clear instructions with full "
-                    + "context; SwiftHelper reports back what it did.",
+                    + "Swift Helper instead. Write the task as clear instructions with full "
+                    + "context; Swift Helper reports back what it did.",
                 properties: [
-                    "task": ["type": "string", "description": "What SwiftHelper should do, with all needed context (e.g. 'Run brew update and brew upgrade, then report what was upgraded')."],
+                    "task": ["type": "string", "description": "What Swift Helper should do, with all needed context (e.g. 'Run brew update and brew upgrade, then report what was upgraded')."],
                 ],
                 required: ["task"]
             ),

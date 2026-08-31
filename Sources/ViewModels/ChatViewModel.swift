@@ -210,6 +210,14 @@ class ChatViewModel: ObservableObject {
         messages.append(Message(
             role: .assistant, content: "", timestamp: now,
             modelName: currentModelDisplayName))
+        // Persist dropped/added attachments into shared memory so they become
+        // durable, `memory_search`-able knowledge — the same import route the
+        // Settings → Context "Import Folder Into Memory" feature uses. Runs on a
+        // background task so it never blocks stream start.
+        Self.persistDroppedAttachments(
+            imagePaths: allPaths,
+            imageBytes: images,
+            agentName: agent.name)
         isStreaming = true
         AIBroadcastService.broadcastGenerationStarted(modelName: currentModelDisplayName ?? "unknown")
         // Update the compaction progress ring immediately.
@@ -568,6 +576,55 @@ class ChatViewModel: ObservableObject {
             if FileManager.default.fileExists(atPath: full) { return full }
         }
         return nil
+    }
+
+    /// Import a chat's dropped/added attachments into shared memory via the
+    /// reusable `MemoryImportService` (the same route the Settings "Import
+    /// Folder Into Memory" feature uses). Fire-and-forget: runs on a background
+    /// task, retries nothing, and on completion refreshes the FTS index so the
+    /// content is immediately searchable. Failures are logged, never surfaced
+    /// in the chat stream.
+    ///
+    /// - Parameters:
+    ///   - imagePaths: absolute paths of dropped file attachments.
+    ///   - imageBytes: raw bytes of image attachments (e.g. pasteboard drops).
+    ///   - agentName: the agent the attachment was sent to, used to scope the
+    ///     import under `knowledge/imports/chat/<agent>/`.
+    static func persistDroppedAttachments(
+        imagePaths: [String],
+        imageBytes: [Data],
+        agentName: String
+    ) {
+        guard !imagePaths.isEmpty || !imageBytes.isEmpty else { return }
+        let scope = MemoryImportDestination.knowledge
+
+        Task.detached(priority: .utility) {
+            let service = MemoryImportService.shared
+            let subfolder = "chat/\(MemoryImportService.sanitizeComponent(agentName))"
+            var wrote = 0
+
+            for path in imagePaths {
+                let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+                guard FileManager.default.fileExists(atPath: url.path) else { continue }
+                if (try? await service.importFile(at: url, destination: scope, subfolder: subfolder)) != nil {
+                    wrote += 1
+                }
+            }
+            for (index, data) in imageBytes.enumerated() {
+                let ext = index < imagePaths.count
+                    ? (imagePaths[index] as NSString).pathExtension
+                    : "png"
+                let name = ext.isEmpty ? "image-\(index).png" : "image-\(index).\(ext)"
+                if (try? await service.importData(data, filename: name, destination: scope, subfolder: subfolder)) != nil {
+                    wrote += 1
+                }
+            }
+
+            if wrote > 0 {
+                NSLog("[MEMIMPORT] persisted \(wrote) chat attachment(s) for agent \(agentName)")
+                await MemorySearchService.shared.warm()
+            }
+        }
     }
 
     /// Load image bytes if `path` points to an existing image file.
@@ -1530,17 +1587,17 @@ class ChatViewModel: ObservableObject {
                 call ask_project_agent with the question/task instead of guessing.
 
                 TOOLS:
-                - ask_mechanic: YOUR HANDS. SwiftHelper is the built-in support \
+                - ask_swiftHelper: YOUR HANDS. Swift Helper is the built-in support \
                 engineer with the tools you don't have: shell commands, file edits, \
                 crash/console diagnostics, settings backup/restore, and bug-report \
                 filing. When the user asks you to run, update, install, fix, \
                 diagnose, or check ANYTHING concrete ("update brew", "why is X slow", \
-                "fix my settings"), call ask_mechanic IMMEDIATELY with the full task \
-                and all context. NEVER answer "I can't run commands" — SwiftHelper \
-                can. Report back what SwiftHelper did.
+                "fix my settings"), call ask_swiftHelper IMMEDIATELY with the full task \
+                and all context. NEVER answer "I can't run commands" — Swift Helper \
+                can. Report back what Swift Helper did.
                 - ask_project_agent / ask_project_agents: Delegate project work to \
                 project agents (research, writing, code). For system/app/support \
-                tasks, prefer ask_mechanic.
+                tasks, prefer ask_swiftHelper.
                 - ask_search: Delegate search tasks to the Searcher agent. For any \
                 search, lookup, or research request, call ask_search with the query.
                 - list_workspace: See all projects and agents if unsure.
@@ -1560,7 +1617,7 @@ class ChatViewModel: ObservableObject {
                 DIRECT SWIFTHELPER COMMAND:
                 - If the user says "run ...", "update ...", "install ...", "fix ...", \
                 "diagnose ...", "check why ...", or asks for anything that needs shell \
-                access or system changes, you MUST call ask_mechanic IMMEDIATELY. \
+                access or system changes, you MUST call ask_swiftHelper IMMEDIATELY. \
                 Do NOT write "I will ask..." or a plan first — just emit the tool call.
 
                 DIRECT SEARCH COMMAND:
@@ -1583,7 +1640,7 @@ class ChatViewModel: ObservableObject {
                 If the user asks for real-time traffic, explain that the panel shows the map \
                 location but you cannot determine current traffic conditions.
                 """
-        } else if agent.kind == .mechanic {
+        } else if agent.kind == .swiftHelper {
             base = Self.swiftHelperSystemPrompt(agentName: agent.name)
         } else if agent.kind == .coder {
             base = Self.coderSystemPrompt(agentName: agent.name, workingDirectory: workingDirectory)

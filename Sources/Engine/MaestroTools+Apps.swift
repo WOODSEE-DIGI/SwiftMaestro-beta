@@ -69,8 +69,8 @@ extension MaestroTools {
                 handler: { call in await writeNumbersCell(call) }),
             ToolDefinition(name: "export_numbers_document", spec: appsToolSpecs[25], category: ToolCategory.numbers.rawValue,
                 handler: { call in await exportNumbersDocument(call) }),
-            ToolDefinition(name: "whiteboard_list_objects", spec: appsToolSpecs[26], category: ToolCategory.whiteboard.rawValue,
-                handler: { call in await whiteboardListObjects(call) }),
+            ToolDefinition(name: "whiteboard_list_elements", spec: appsToolSpecs[26], category: ToolCategory.whiteboard.rawValue,
+                handler: { call in await whiteboardListElements(call) }),
             ToolDefinition(name: "whiteboard_add_shape", spec: appsToolSpecs[27], category: ToolCategory.whiteboard.rawValue,
                 handler: { call in await whiteboardAddShape(call) }),
             ToolDefinition(name: "whiteboard_add_text", spec: appsToolSpecs[28], category: ToolCategory.whiteboard.rawValue,
@@ -166,20 +166,18 @@ extension MaestroTools {
                     "card": ["type": "string", "description": "Card title (or id)."],
                 ], required: ["board", "card"]),
 
-            // MARK: Canvas (metadata only — the drawing itself is opaque PaperKit
-            // binary data, not something a text model can meaningfully read/write).
-            // MARK: Whiteboard boards (object content is readable via whiteboard_list_objects)
+            // MARK: Whiteboard boards (Excalidraw scene files)
             rawSpec("whiteboard_list_boards",
-                "List whiteboard boards (name, created/modified dates). Use whiteboard_list_objects "
-                + "to see the shapes, notes, and workflow arrows on a board.",
+                "List Excalidraw whiteboard boards (name, created/modified dates). Use whiteboard_list_elements "
+                + "to see the shapes, text, and workflow arrows on a board.",
                 properties: [:], required: []),
             rawSpec("whiteboard_create_board",
-                "Create a new empty whiteboard board. Add workflow shapes with whiteboard_add_shape and connect them with whiteboard_connect.",
+                "Create a new empty Excalidraw whiteboard board. Add workflow shapes with whiteboard_add_shape and connect them with whiteboard_connect.",
                 properties: [
                     "name": ["type": "string", "description": "Board name."],
                 ], required: ["name"]),
             rawSpec("whiteboard_delete_board",
-                "Delete a whiteboard board by name (or id).",
+                "Delete an Excalidraw whiteboard board by name (or id).",
                 properties: [
                     "name": ["type": "string", "description": "Board name (or id)."],
                 ], required: ["name"]),
@@ -259,55 +257,53 @@ extension MaestroTools {
                     "format": ["type": "string", "description": "csv, pdf, or xlsx."],
                 ], required: ["document", "path", "format"]),
 
-            // MARK: Whiteboard objects (workflow diagrams)
-            rawSpec("whiteboard_list_objects",
-                "List the objects on a whiteboard board: shapes, sticky notes, text boxes, images, and "
-                + "connectors (workflow arrows), with ids, text, positions and sizes. Omit 'board' to "
-                + "use the most recently modified board. Use the ids with whiteboard_connect.",
+            // MARK: Whiteboard elements (Excalidraw workflow diagrams)
+            rawSpec("whiteboard_list_elements",
+                "List the elements on an Excalidraw whiteboard board: shapes, text, and arrows, "
+                + "with ids, types, positions and sizes. Omit 'board' to use the most recently "
+                + "modified board. Use the ids with whiteboard_connect.",
                 properties: [
                     "board": ["type": "string", "description": "Board name (or id). Omit for the most recently modified board."],
                 ], required: []),
             rawSpec("whiteboard_add_shape",
-                "Add a shape to a whiteboard board and return its object id. For process workflows, "
-                + "prefer rectangle (steps), diamond (decisions) and roundedRectangle (start/end). "
-                + "Positions are canvas coordinates with the object centred at x/y; omit them to "
-                + "auto-place below existing content. Opens the Whiteboard panel so the user sees it.",
+                "Add a shape element to an Excalidraw whiteboard board and return its element id. "
+                + "For process workflows, prefer rectangle (steps), diamond (decisions) and "
+                + "roundedRectangle (start/end). Positions are Excalidraw canvas coordinates with "
+                + "the element's top-left at x/y; omit them to auto-place below existing content. "
+                + "Opens the Whiteboard panel so the user sees it.",
                 properties: [
                     "board": ["type": "string", "description": "Board name (or id). Omit for the most recently modified board (auto-creates one if none exist)."],
-                    "shape": ["type": "string", "description": "rectangle, roundedRectangle, circle, ellipse, diamond, arrow, star, cloud, or heart."],
+                    "shape": ["type": "string", "description": "rectangle, roundedRectangle, circle, ellipse, diamond, star, cloud, or heart (heart = ellipse)."],
                     "text": ["type": "string", "description": "Label text inside the shape."],
                     "color": ["type": "string", "description": "Hex color like #3498DB (default blue)."],
-                    "x": ["type": "number", "description": "Canvas x of the shape's centre."],
-                    "y": ["type": "number", "description": "Canvas y of the shape's centre."],
+                    "x": ["type": "number", "description": "Canvas x of the element's top-left."],
+                    "y": ["type": "number", "description": "Canvas y of the element's top-left."],
                     "width": ["type": "number", "description": "Width in canvas points (default 150)."],
                     "height": ["type": "number", "description": "Height in canvas points (default 150)."],
                 ], required: ["shape"]),
             rawSpec("whiteboard_add_text",
-                "Add a sticky note or text box to a whiteboard board and return its object id. "
-                + "Use sticky notes for annotations and text boxes for titles/labels on workflows. "
-                + "Opens the Whiteboard panel so the user sees it.",
+                "Add a text element to an Excalidraw whiteboard board and return its element id. "
+                + "Use for titles/labels on workflows. Opens the Whiteboard panel so the user sees it.",
                 properties: [
                     "board": ["type": "string", "description": "Board name (or id). Omit for the most recently modified board (auto-creates one if none exist)."],
                     "text": ["type": "string", "description": "The text content."],
-                    "kind": ["type": "string", "description": "note (sticky note, default) or textbox (plain text)."],
-                    "color": ["type": "string", "description": "Sticky note hex color like #FFE066 (notes only)."],
-                    "x": ["type": "number", "description": "Canvas x of the object's centre."],
-                    "y": ["type": "number", "description": "Canvas y of the object's centre."],
+                    "color": ["type": "string", "description": "Text hex color like #3498DB (default)."],
+                    "x": ["type": "number", "description": "Canvas x of the element's top-left."],
+                    "y": ["type": "number", "description": "Canvas y of the element's top-left."],
                 ], required: ["text"]),
             rawSpec("whiteboard_connect",
-                "Draw a workflow arrow between two objects on a whiteboard board. 'from' and 'to' "
-                + "accept object ids (from whiteboard_add_shape/whiteboard_list_objects) or exact "
-                + "object text. The arrow snaps to the best edge anchors based on the objects' "
-                + "relative positions and stays glued when the objects move. "
+                "Draw a workflow arrow between two elements on an Excalidraw whiteboard board. "
+                + "'from' and 'to' accept element ids (from whiteboard_add_shape/whiteboard_list_elements) "
+                + "or exact text labels. The arrow points from the source to the target element. "
                 + "Opens the Whiteboard panel so the user sees it.",
                 properties: [
                     "board": ["type": "string", "description": "Board name (or id). Omit for the most recently modified board."],
-                    "from": ["type": "string", "description": "Source object id or its exact text label."],
-                    "to": ["type": "string", "description": "Target object id or its exact text label."],
+                    "from": ["type": "string", "description": "Source element id or its exact text label."],
+                    "to": ["type": "string", "description": "Target element id or its exact text label."],
                     "label": ["type": "string", "description": "Optional label on the arrow (e.g. a decision's 'yes'/'no')."],
                 ], required: ["from", "to"]),
             rawSpec("whiteboard_clear",
-                "Remove ALL objects and pen strokes from a whiteboard board.",
+                "Remove ALL elements from an Excalidraw whiteboard board.",
                 properties: [
                     "board": ["type": "string", "description": "Board name (or id). Omit for the most recently modified board."],
                 ], required: []),
@@ -321,9 +317,6 @@ extension MaestroTools {
 
     @MainActor
     private static let sharedKanbanStore = KanbanStore()
-
-    @MainActor
-    private static let sharedWhiteboardStore = WhiteboardStore()
 
     @MainActor
     private static let sharedNumbersService = NumbersService()
@@ -657,36 +650,36 @@ extension MaestroTools {
         }
     }
 
-    // MARK: - Canvas argument types
+    // MARK: - Whiteboard (Excalidraw) argument types
 
     private struct WhiteboardBoardArgs: Codable { let name: String? }
 
-    /// Object-level whiteboard tools take `board` (not `name`) per their
+    /// Element-level whiteboard tools take `board` (not `name`) per their
     /// published specs.
     private struct WhiteboardBoardKeyArgs: Codable { let board: String? }
 
     @MainActor
-    private static func findWhiteboardBoard(_ key: String) -> WhiteboardBoard? {
-        if let byID = sharedWhiteboardStore.boards.first(where: { $0.id.uuidString.caseInsensitiveCompare(key) == .orderedSame }) {
+    private static func findWhiteboardBoard(_ key: String) -> ExcalidrawBoard? {
+        let boards = ExcalidrawStore.shared.listBoards()
+        if let byID = boards.first(where: { $0.url.lastPathComponent.caseInsensitiveCompare(key) == .orderedSame }) {
             return byID
         }
-        if let exact = sharedWhiteboardStore.boards.first(where: { $0.name.caseInsensitiveCompare(key) == .orderedSame }) {
+        if let exact = boards.first(where: { $0.name.caseInsensitiveCompare(key) == .orderedSame }) {
             return exact
         }
-        return sharedWhiteboardStore.boards.first { $0.name.localizedCaseInsensitiveContains(key) }
+        return boards.first { $0.name.localizedCaseInsensitiveContains(key) }
     }
 
-    // MARK: - Canvas implementations
+    // MARK: - Whiteboard board implementations
 
     static func listWhiteboardBoards() async -> String {
         await MainActor.run {
-            sharedWhiteboardStore.loadBoards()
-            let boards = sharedWhiteboardStore.boards
-            guard !boards.isEmpty else { return "No Canvas boards yet. Use whiteboard_create_board to make one." }
+            let boards = ExcalidrawStore.shared.listBoards()
+            guard !boards.isEmpty else { return "No whiteboard boards yet. Use whiteboard_create_board to make one." }
             let iso = ISO8601DateFormatter()
             return jsonString(["boards": boards.map { board -> [String: Any] in
                 [
-                    "id": board.id.uuidString,
+                    "id": board.url.lastPathComponent,
                     "name": board.name,
                     "created": iso.string(from: board.created),
                     "modified": iso.string(from: board.modified),
@@ -700,8 +693,12 @@ extension MaestroTools {
               let name = args.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty
         else { return errorJSON("whiteboard_create_board requires 'name'") }
         return await MainActor.run {
-            let board = sharedWhiteboardStore.createBoard(name: name)
-            return jsonString(["status": "created", "id": board.id.uuidString, "name": board.name])
+            do {
+                try ExcalidrawStore.shared.saveBoard(name: name, data: emptyExcalidrawSceneJSON())
+                return jsonString(["status": "created", "name": name])
+            } catch {
+                return errorJSON("failed to create board '\(name)': \(error.localizedDescription)")
+            }
         }
     }
 
@@ -711,14 +708,18 @@ extension MaestroTools {
         else { return errorJSON("whiteboard_delete_board requires 'name'") }
         return await MainActor.run {
             guard let board = findWhiteboardBoard(key) else {
-                return errorJSON("no canvas board matching \"\(key)\".")
+                return errorJSON("no whiteboard board matching \"\(key)\".")
             }
-            sharedWhiteboardStore.delete(board.id)
-            return jsonString(["status": "deleted", "name": board.name])
+            do {
+                try ExcalidrawStore.shared.deleteBoard(url: board.url)
+                return jsonString(["status": "deleted", "name": board.name])
+            } catch {
+                return errorJSON("failed to delete board '\(board.name)': \(error.localizedDescription)")
+            }
         }
     }
 
-    // MARK: - Whiteboard object implementations (workflow diagrams)
+    // MARK: - Whiteboard element implementations (Excalidraw workflow diagrams)
 
     private struct WhiteboardAddShapeArgs: Codable {
         let board: String?
@@ -734,7 +735,6 @@ extension MaestroTools {
     private struct WhiteboardAddTextArgs: Codable {
         let board: String?
         let text: String?
-        let kind: String?
         let color: String?
         let x: Double?
         let y: Double?
@@ -752,80 +752,229 @@ extension MaestroTools {
     /// fresh "Workflows" board so an agent's first workflow command never
     /// dead-ends on setup.
     @MainActor
-    private static func resolveWhiteboard(_ key: String?, createIfNone: Bool) -> WhiteboardBoard? {
-        sharedWhiteboardStore.loadBoards()
+    private static func resolveWhiteboard(_ key: String?, createIfNone: Bool) -> ExcalidrawBoard? {
+        let boards = ExcalidrawStore.shared.listBoards()
         if let key, !key.isEmpty {
             return findWhiteboardBoard(key)
         }
-        if let latest = sharedWhiteboardStore.boards.first { return latest }
-        return createIfNone ? sharedWhiteboardStore.createBoard(name: "Workflows") : nil
+        if let latest = boards.first { return latest }
+        if createIfNone {
+            let name = "Workflows"
+            do {
+                try ExcalidrawStore.shared.saveBoard(name: name, data: emptyExcalidrawSceneJSON())
+                return ExcalidrawStore.shared.listBoards().first
+            } catch {
+                return nil
+            }
+        }
+        return nil
     }
 
-    @MainActor
-    private static func whiteboardData(for board: WhiteboardBoard) -> WhiteboardBoardData {
-        guard let data = board.markupData,
-              let decoded = try? JSONDecoder().decode(WhiteboardBoardData.self, from: data)
-        else { return WhiteboardBoardData() }
-        return decoded
+    /// An empty Excalidraw scene, matching what the bundled Excalidraw app emits.
+    private static func emptyExcalidrawSceneJSON() -> String {
+        "{\"type\":\"excalidraw\",\"version\":2,\"source\":\"swiftmaestro\",\"elements\":[],\"appState\":{}}"
     }
 
-    /// Persist board object data, reload any open panel showing this board,
-    /// and (for content-creating tools) surface the Whiteboard panel so the
-    /// user watches the workflow appear.
+    /// Read a board's decoded scene dictionary (elements survive round-trip).
     @MainActor
-    private static func saveWhiteboardData(
-        _ data: WhiteboardBoardData, for board: WhiteboardBoard, surface: Bool
-    ) {
-        var updated = board
-        updated.markupData = try? JSONEncoder().encode(data)
-        try? sharedWhiteboardStore.save(updated)
-        NotificationCenter.default.post(
-            name: .whiteboardBoardExternallyModified, object: nil,
-            userInfo: ["boardID": updated.id.uuidString])
-        if surface {
-            _ = WorkspaceLayoutState.shared.open(.canvas)
+    private static func readScene(for board: ExcalidrawBoard) -> [String: Any] {
+        guard let data = try? ExcalidrawStore.shared.loadBoard(url: board.url),
+              let obj = try? JSONSerialization.jsonObject(with: Data(data.utf8)) as? [String: Any]
+        else { return [:] }
+        return obj
+    }
+
+    /// Write a scene dictionary back to disk, notify any open panel, and
+    /// (for content-creating tools) surface the Whiteboard panel so the user
+    /// watches the workflow appear.
+    @MainActor
+    private static func writeScene(_ scene: [String: Any], for board: ExcalidrawBoard, surface: Bool) {
+        do {
+            let data = try JSONSerialization.data(withJSONObject: scene, options: [.prettyPrinted, .sortedKeys])
+            try ExcalidrawStore.shared.saveBoard(name: board.name, data: String(data: data, encoding: .utf8) ?? emptyExcalidrawSceneJSON())
+            NotificationCenter.default.post(
+                name: .excalidrawBoardExternallyModified, object: nil,
+                userInfo: ["boardURL": board.url])
+            if surface {
+                _ = WorkspaceLayoutState.shared.open(.canvas)
+            }
+        } catch {
+            // Persist failure is best-effort for the agent tool.
         }
     }
 
-    /// Default placement for agent-added objects: under the lowest existing
+    /// Fully-qualified elements list from a scene (non-deleted only).
+    @MainActor
+    private static func liveElements(in scene: [String: Any]) -> [[String: Any]] {
+        guard let raw = scene["elements"] as? [[String: Any]] else { return [] }
+        return raw.filter { ($0["isDeleted"] as? Bool) != true }
+    }
+
+    /// A new lowercase Excalidraw element id.
+    private static func newElementID() -> String {
+        UUID().uuidString.lowercased()
+    }
+
+    /// Reasonable text width/height for a bare text element.
+    private static func textExtents(_ text: String, fontSize: Double) -> (width: Double, height: Double) {
+        let chars = Double(text.count)
+        return (max(60, chars * fontSize * 0.6), fontSize * 1.5)
+    }
+
+    /// Default placement for agent-added elements: under the lowest existing
     /// content so workflow steps stack downward predictably.
-    private static func nextFreePoint(in data: WhiteboardBoardData) -> CGPoint {
-        guard let lowest = data.objects.map({ $0.position.y + $0.size.height / 2 }).max() else {
-            return CGPoint(x: 400, y: 200)
+    @MainActor
+    private static func nextFreePoint(in elements: [[String: Any]]) -> (x: Double, y: Double) {
+        guard let lowest = elements.map({ (($0["y"] as? Double) ?? 0) + (($0["height"] as? Double) ?? 0) }).max() else {
+            return (300, 200)
         }
-        let left = data.objects.map { $0.position.x - $0.size.width / 2 }.min() ?? 250
-        return CGPoint(x: left + 75, y: lowest + 100)
+        let left = elements.map { ($0["x"] as? Double) ?? 0 }.min() ?? 250
+        return (left, lowest + 80)
     }
 
-    static func whiteboardListObjects(_ call: ToolCall) async -> String {
+    /// Map a requested shape name to an Excalidraw element type.
+    private static func excalidrawType(for shape: String) -> String? {
+        switch shape.lowercased() {
+        case "rectangle", "roundedrectangle", "rounded_rectangle": return "rectangle"
+        case "circle", "ellipse", "oval": return "ellipse"
+        case "diamond": return "diamond"
+        case "star": return "star"
+        case "cloud": return "cloud"
+        case "heart", "arrow": return "ellipse"
+        default: return nil
+        }
+    }
+
+    /// Build a fully-qualified Excalidraw element dictionary for a shape.
+    private static func shapeElement(
+        shape: String, text: String?, color: String?,
+        x: Double?, y: Double?, width: Double?, height: Double?
+    ) -> [String: Any] {
+        let strokeColor = color ?? "#3498DB"
+        let bg = lighten(strokeColor)
+        var el: [String: Any] = [
+            "id": newElementID(),
+            "type": excalidrawType(for: shape) ?? "rectangle",
+            "x": x ?? 300,
+            "y": y ?? 200,
+            "width": width ?? 150,
+            "height": height ?? 150,
+            "angle": 0,
+            "strokeColor": strokeColor,
+            "backgroundColor": bg,
+            "fillStyle": "solid",
+            "strokeWidth": 2,
+            "strokeStyle": "solid",
+            "roughness": 1,
+            "opacity": 100,
+            "groupIds": [],
+            "frameId": NSNull(),
+            "seed": Int.random(in: 0..<Int.max),
+            "versionNonce": Int.random(in: 0..<Int.max),
+            "isDeleted": false,
+            "boundElements": [],
+            "updated": Int(Date().timeIntervalSince1970 * 1000),
+            "link": NSNull(),
+            "locked": false,
+            "version": 1,
+            "customData": NSNull(),
+        ]
+        if let text, !text.isEmpty {
+            el["label"] = [
+                "text": text,
+                "fontSize": 20,
+                "fontFamily": 1,
+                "textAlign": "center",
+                "verticalAlign": "middle",
+            ]
+        }
+        return el
+    }
+
+    /// Build a text element.
+    private static func textElement(text: String, color: String?, x: Double?, y: Double?) -> [String: Any] {
+        let fontSize = 20.0
+        let extents = textExtents(text, fontSize: fontSize)
+        return [
+            "id": newElementID(),
+            "type": "text",
+            "x": x ?? 300,
+            "y": y ?? 200,
+            "width": extents.width,
+            "height": extents.height,
+            "angle": 0,
+            "strokeColor": color ?? "#1e1e1e",
+            "backgroundColor": "transparent",
+            "fillStyle": "solid",
+            "strokeWidth": 2,
+            "strokeStyle": "solid",
+            "roughness": 1,
+            "opacity": 100,
+            "groupIds": [],
+            "frameId": NSNull(),
+            "seed": Int.random(in: 0..<Int.max),
+            "versionNonce": Int.random(in: 0..<Int.max),
+            "isDeleted": false,
+            "boundElements": NSNull(),
+            "updated": Int(Date().timeIntervalSince1970 * 1000),
+            "link": NSNull(),
+            "locked": false,
+            "version": 1,
+            "customData": NSNull(),
+            "text": text,
+            "fontSize": fontSize,
+            "fontFamily": 1,
+            "textAlign": "left",
+            "verticalAlign": "top",
+        ]
+    }
+
+    /// Compute a lighter background tone from a hex stroke color.
+    private static func lighten(_ hex: String) -> String {
+        var h = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        if h.hasPrefix("#") { h.removeFirst() }
+        guard h.count == 6, let val = Int(h, radix: 16) else { return "#ffffff" }
+        let r = (val >> 16) & 0xFF
+        let g = (val >> 8) & 0xFF
+        let b = val & 0xFF
+        let mix: (Int) -> Int = { c in c + (255 - c) * 3 / 4 }
+        return String(format: "#%02X%02X%02X", mix(r), mix(g), mix(b))
+    }
+
+    /// Center (top-left + half extents) of an element.
+    private static func elementCenter(_ el: [String: Any]) -> (x: Double, y: Double) {
+        let x = (el["x"] as? Double) ?? 0
+        let y = (el["y"] as? Double) ?? 0
+        let w = (el["width"] as? Double) ?? 0
+        let h = (el["height"] as? Double) ?? 0
+        return (x + w / 2, y + h / 2)
+    }
+
+    private static func elementLabel(_ el: [String: Any]) -> String {
+        if let label = el["label"] as? [String: Any], let text = label["text"] as? String { return text }
+        return (el["text"] as? String) ?? ""
+    }
+
+    static func whiteboardListElements(_ call: ToolCall) async -> String {
         let args = decodeArgs(call, as: WhiteboardBoardKeyArgs.self)
         return await MainActor.run {
             guard let board = resolveWhiteboard(args?.board ?? nil, createIfNone: false) else {
                 return errorJSON("No whiteboard boards yet. Add a shape with whiteboard_add_shape (a board is auto-created) or create one with whiteboard_create_board.")
             }
-            let data = whiteboardData(for: board)
+            let elements = liveElements(in: readScene(for: board))
             return jsonString([
                 "board": board.name,
-                "board_id": board.id.uuidString,
-                "objects": data.objects.map { obj -> [String: Any] in
+                "elements": elements.compactMap { el -> [String: Any]? in
                     var d: [String: Any] = [
-                        "id": obj.id.uuidString,
-                        "x": Int(obj.position.x), "y": Int(obj.position.y),
-                        "width": Int(obj.size.width), "height": Int(obj.size.height),
+                        "id": el["id"] ?? "",
+                        "type": el["type"] ?? "unknown",
+                        "x": Int(el["x"] as? Double ?? 0),
+                        "y": Int(el["y"] as? Double ?? 0),
+                        "width": Int(el["width"] as? Double ?? 0),
+                        "height": Int(el["height"] as? Double ?? 0),
                     ]
-                    switch obj.type {
-                    case .stickyNote: d["type"] = "sticky_note"
-                    case .textBox: d["type"] = "text_box"
-                    case .shape(let kind):
-                        d["type"] = "shape"
-                        d["shape"] = kind.rawValue
-                    case .image: d["type"] = "image"
-                    case .connector(let conn):
-                        d["type"] = "connector"
-                        d["from"] = conn.fromObjectID?.uuidString ?? "free"
-                        d["to"] = conn.toObjectID?.uuidString ?? "free"
-                    }
-                    if !obj.text.isEmpty { d["text"] = obj.text }
+                    let label = elementLabel(el)
+                    if !label.isEmpty { d["text"] = label }
                     return d
                 },
             ])
@@ -836,28 +985,41 @@ extension MaestroTools {
         guard let args = decodeArgs(call, as: WhiteboardAddShapeArgs.self),
               let shapeName = args.shape, !shapeName.isEmpty
         else { return errorJSON("whiteboard_add_shape requires 'shape'") }
-        guard let kind = WhiteboardObject.ShapeKind(rawValue: shapeName) else {
-            return errorJSON("unknown shape '\(shapeName)' — use rectangle, roundedRectangle, circle, ellipse, diamond, arrow, star, cloud, or heart.")
+        guard excalidrawType(for: shapeName) != nil else {
+            return errorJSON("unknown shape '\(shapeName)' — use rectangle, roundedRectangle, circle, ellipse, diamond, star, cloud, or heart.")
         }
         return await MainActor.run {
             guard let board = resolveWhiteboard(args.board, createIfNone: true) else {
                 return errorJSON("no board found for '\(args.board ?? "")'.")
             }
-            var data = whiteboardData(for: board)
-            let position = (args.x != nil && args.y != nil)
-                ? CGPoint(x: args.x!, y: args.y!)
-                : nextFreePoint(in: data)
-            let obj = WhiteboardObject(
-                type: .shape(kind),
-                text: args.text ?? "",
-                position: position,
-                size: CGSize(width: args.width ?? 150, height: args.height ?? 150),
-                shapeColor: args.color ?? "#3498DB")
-            data.objects.append(obj)
-            saveWhiteboardData(data, for: board, surface: true)
+            var scene = readScene(for: board)
+            var elements = liveElements(in: scene)
+            let pos: (x: Double, y: Double)
+            if let x = args.x, let y = args.y {
+                pos = (x, y)
+            } else {
+                pos = nextFreePoint(in: elements)
+            }
+            var el = shapeElement(
+                shape: shapeName,
+                text: args.text,
+                color: args.color,
+                x: pos.x, y: pos.y,
+                width: args.width, height: args.height
+            )
+            let id = el["id"] as? String ?? ""
+            // If a label was added, record it as a bound element for canonical form.
+            if el["label"] != nil {
+                el["boundElements"] = [["type": "text", "id": "\(id)-label"]]
+            }
+            elements.append(el)
+            scene["elements"] = elements
+            writeScene(scene, for: board, surface: true)
             return jsonString([
-                "status": "added", "id": obj.id.uuidString,
-                "board": board.name, "board_id": board.id.uuidString,
+                "status": "added", "id": id,
+                "type": el["type"] ?? "", "x": el["x"] ?? 0, "y": el["y"] ?? 0,
+                "width": el["width"] ?? 0, "height": el["height"] ?? 0,
+                "board": board.name,
             ])
         }
     }
@@ -870,23 +1032,24 @@ extension MaestroTools {
             guard let board = resolveWhiteboard(args.board, createIfNone: true) else {
                 return errorJSON("no board found for '\(args.board ?? "")'.")
             }
-            var data = whiteboardData(for: board)
-            let isTextBox = args.kind?.lowercased() == "textbox"
-            let position = (args.x != nil && args.y != nil)
-                ? CGPoint(x: args.x!, y: args.y!)
-                : nextFreePoint(in: data)
-            let obj = WhiteboardObject(
-                type: isTextBox
-                    ? .textBox
-                    : .stickyNote(color: args.color ?? "#FFE066"),
-                text: text,
-                position: position,
-                size: isTextBox ? CGSize(width: 250, height: 60) : CGSize(width: 200, height: 200))
-            data.objects.append(obj)
-            saveWhiteboardData(data, for: board, surface: true)
+            var scene = readScene(for: board)
+            var elements = liveElements(in: scene)
+            let pos: (x: Double, y: Double)
+            if let x = args.x, let y = args.y {
+                pos = (x, y)
+            } else {
+                pos = nextFreePoint(in: elements)
+            }
+            let el = textElement(text: text, color: args.color, x: pos.x, y: pos.y)
+            let id = el["id"] as? String ?? ""
+            elements.append(el)
+            scene["elements"] = elements
+            writeScene(scene, for: board, surface: true)
             return jsonString([
-                "status": "added", "id": obj.id.uuidString,
-                "board": board.name, "board_id": board.id.uuidString,
+                "status": "added", "id": id,
+                "type": "text", "x": el["x"] ?? 0, "y": el["y"] ?? 0,
+                "width": el["width"] ?? 0, "height": el["height"] ?? 0,
+                "board": board.name,
             ])
         }
     }
@@ -900,65 +1063,89 @@ extension MaestroTools {
             guard let board = resolveWhiteboard(args.board, createIfNone: false) else {
                 return errorJSON("No whiteboard boards yet — add shapes first with whiteboard_add_shape.")
             }
-            var data = whiteboardData(for: board)
+            var scene = readScene(for: board)
+            let elements = liveElements(in: scene)
 
-            // Resolve an endpoint key: object id, else exact text match, else
-            // case-insensitive text containment (shapes only — never another
-            // connector).
-            func findObject(_ key: String) -> WhiteboardObject? {
-                let candidates = data.objects.filter { !$0.isConnector }
-                if let byID = candidates.first(where: { $0.id.uuidString.caseInsensitiveCompare(key) == .orderedSame }) {
+            func findElement(_ key: String) -> [String: Any]? {
+                let candidates = elements.filter { (($0["type"] as? String) ?? "") != "arrow" }
+                if let byID = candidates.first(where: { ($0["id"] as? String)?.caseInsensitiveCompare(key) == .orderedSame }) {
                     return byID
                 }
-                if let exact = candidates.first(where: { !$0.text.isEmpty && $0.text == key }) {
+                if let exact = candidates.first(where: { !elementLabel($0).isEmpty && elementLabel($0) == key }) {
                     return exact
                 }
                 return candidates.first {
-                    !$0.text.isEmpty && $0.text.localizedCaseInsensitiveContains(key)
+                    !elementLabel($0).isEmpty && elementLabel($0).localizedCaseInsensitiveContains(key)
                 }
             }
 
-            guard let fromObj = findObject(fromKey) else {
-                return errorJSON("no object matching '\(fromKey)' on board '\(board.name)'. Use whiteboard_list_objects to see ids and labels.")
+            guard let fromEl = findElement(fromKey) else {
+                return errorJSON("no element matching '\(fromKey)' on board '\(board.name)'. Use whiteboard_list_elements to see ids and labels.")
             }
-            guard let toObj = findObject(toKey) else {
-                return errorJSON("no object matching '\(toKey)' on board '\(board.name)'. Use whiteboard_list_objects to see ids and labels.")
+            guard let toEl = findElement(toKey) else {
+                return errorJSON("no element matching '\(toKey)' on board '\(board.name)'. Use whiteboard_list_elements to see ids and labels.")
             }
-            guard fromObj.id != toObj.id else {
-                return errorJSON("can't connect an object to itself.")
-            }
-
-            // Pick edge anchors from relative geometry: if the target sits to
-            // the right, leave the source's right edge and arrive at its left;
-            // same for vertical. Diagonal ties break toward horizontal.
-            let dx = toObj.position.x - fromObj.position.x
-            let dy = toObj.position.y - fromObj.position.y
-            let fromAnchor: Connector.Anchor
-            let toAnchor: Connector.Anchor
-            if abs(dx) >= abs(dy) {
-                fromAnchor = dx >= 0 ? .right : .left
-                toAnchor = dx >= 0 ? .left : .right
-            } else {
-                fromAnchor = dy >= 0 ? .bottom : .top
-                toAnchor = dy >= 0 ? .top : .bottom
+            let fromID = (fromEl["id"] as? String) ?? ""
+            let toID = (toEl["id"] as? String) ?? ""
+            guard fromID != toID else {
+                return errorJSON("can't connect an element to itself.")
             }
 
-            let conn = Connector(
-                fromObjectID: fromObj.id, fromAnchor: fromAnchor,
-                toObjectID: toObj.id, toAnchor: toAnchor,
-                startPoint: fromObj.anchorPoint(fromAnchor),
-                endPoint: toObj.anchorPoint(toAnchor))
-            var obj = WhiteboardObject(
-                type: .connector(conn),
-                text: args.label ?? "",
-                position: .zero, size: .zero,
-                shapeColor: "#FFFFFF", textColor: "#FFFFFF")
-            obj.syncConnectorFrame(in: data.objects)
-            data.objects.append(obj)
-            saveWhiteboardData(data, for: board, surface: true)
+            let s = elementCenter(fromEl)
+            let e = elementCenter(toEl)
+            let dx = e.x - s.x
+            let dy = e.y - s.y
+
+            var arrow: [String: Any] = [
+                "id": newElementID(),
+                "type": "arrow",
+                "x": s.x,
+                "y": s.y,
+                "width": abs(dx),
+                "height": abs(dy),
+                "angle": 0,
+                "strokeColor": "#1e1e1e",
+                "backgroundColor": "transparent",
+                "fillStyle": "solid",
+                "strokeWidth": 2,
+                "strokeStyle": "solid",
+                "roughness": 1,
+                "opacity": 100,
+                "groupIds": [],
+                "frameId": NSNull(),
+                "seed": Int.random(in: 0..<Int.max),
+                "versionNonce": Int.random(in: 0..<Int.max),
+                "isDeleted": false,
+                "boundElements": NSNull(),
+                "updated": Int(Date().timeIntervalSince1970 * 1000),
+                "link": NSNull(),
+                "locked": false,
+                "version": 1,
+                "customData": NSNull(),
+                "points": [[0, 0], [dx, dy]],
+                "lastCommittedPoint": NSNull(),
+                "startBinding": ["elementId": fromID],
+                "endBinding": ["elementId": toID],
+                "start": ["id": fromID],
+                "end": ["id": toID],
+            ]
+            if let label = args.label, !label.isEmpty {
+                arrow["label"] = [
+                    "text": label,
+                    "fontSize": 16,
+                    "fontFamily": 1,
+                    "textAlign": "center",
+                    "verticalAlign": "middle",
+                ]
+            }
+            let arrowID = arrow["id"] as? String ?? ""
+            var allElements = elements
+            allElements.append(arrow)
+            scene["elements"] = allElements
+            writeScene(scene, for: board, surface: true)
             return jsonString([
-                "status": "connected", "id": obj.id.uuidString,
-                "from": fromObj.id.uuidString, "to": toObj.id.uuidString,
+                "status": "connected", "id": arrowID,
+                "from": fromID, "to": toID,
                 "board": board.name,
             ])
         }
@@ -970,11 +1157,10 @@ extension MaestroTools {
             guard let board = resolveWhiteboard(args?.board ?? nil, createIfNone: false) else {
                 return errorJSON("No whiteboard boards yet.")
             }
-            var data = whiteboardData(for: board)
-            let removed = data.objects.count + data.strokes.count
-            data.objects.removeAll()
-            data.strokes.removeAll()
-            saveWhiteboardData(data, for: board, surface: true)
+            var scene = readScene(for: board)
+            let removed = liveElements(in: scene).count
+            scene["elements"] = []
+            writeScene(scene, for: board, surface: true)
             return jsonString(["status": "cleared", "board": board.name, "removed": removed])
         }
     }

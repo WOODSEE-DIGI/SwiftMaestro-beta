@@ -24,6 +24,7 @@ final class SettingsBackupService {
         // Model selection
         "models.selectedModelID",
         "models.localRoot",
+        ModelCatalog.additionalRootsKey,
         "models.systemMemoryReserveFraction",
 
         // Settings stores

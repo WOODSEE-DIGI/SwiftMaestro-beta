@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Config Version Store
 //
-// Git-versioned history of SwiftMaestro's restorable state — the Mechanic's
+// Git-versioned history of SwiftMaestro's restorable state — the Swift Helper's
 // "reset to last working condition" backend. A LOCAL, offline git repository
 // at ~/Library/Application Support/SwiftMaestro/config-history/ (no remote —
 // project rule: offline-first git). Each snapshot commits:
@@ -102,7 +102,7 @@ final class ConfigVersionStore: Sendable {
 
     /// Restore settings (+ MCP registry if the commit has it) from a restore
     /// point. Returns what was restored. A restart may be needed — the caller
-    /// (Mechanic) tells the user that.
+    /// (Swift Helper) tells the user that.
     @discardableResult
     func restore(sha: String) async throws -> [String] {
         var restored: [String] = []

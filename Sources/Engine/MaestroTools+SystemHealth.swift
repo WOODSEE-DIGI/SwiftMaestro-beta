@@ -465,7 +465,7 @@ extension MaestroTools {
               + "settings_backup_now first next time."
     }
 
-    // MARK: - Config history + app rollback (Mechanic's reset-to-known-good)
+    // MARK: - Config history + app rollback (Swift Helper's reset-to-known-good)
 
     private static func configHistory() async -> String {
         do {

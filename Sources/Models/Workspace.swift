@@ -11,9 +11,32 @@ import Foundation
 enum AgentKind: String, Codable, Hashable {
     case navigator   // the always-present general/conductor agent
     case project     // a long-lived agent that belongs to a project
-    case mechanic    // the always-present self-repair/support engineer
+    case swiftHelper // the always-present self-repair/support engineer ("Swift Helper")
     case coder       // the always-present bundled coding agent (DeepSeek Coder V2 Lite)
     case search      // the always-present search/research agent (web, local, network)
+
+    /// Agent kinds persisted by older builds under a different raw value, mapped
+    /// to their current case so existing `workspace.json` files keep decoding.
+    /// The "mechanic" support agent was renamed to "Swift Helper".
+    private static let legacyRawValues: [String: AgentKind] = [
+        "mechanic": .swiftHelper,
+    ]
+
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        if let kind = AgentKind(rawValue: raw) ?? AgentKind.legacyRawValues[raw] {
+            self = kind
+        } else {
+            throw DecodingError.dataCorruptedError(
+                in: try decoder.singleValueContainer(),
+                debugDescription: "Unknown AgentKind raw value: \(raw)")
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
 }
 
 struct Project: Identifiable, Codable, Hashable {
@@ -113,11 +136,11 @@ final class WorkspaceStore {
     }
 
     /// The always-present self-repair/support agent (created if missing).
-    /// Defaults to the bundled Qwen3-4B mechanic model when it's on disk —
+    /// "Swift Helper" defaults to the bundled Qwen3-4B model when it's on disk —
     /// small enough to coexist with whatever the user is running, so help is
     /// available even on Light installs with no chat model configured.
     var swiftHelper: AgentRecord {
-        if var mech = agents.first(where: { $0.kind == .mechanic }) {
+        if var mech = agents.first(where: { $0.kind == .swiftHelper }) {
             var mechChanged = false
             // The SwiftHelper's diagnostic role requires its full toolset (shell,
             // system health, files) regardless of which panels are open —
@@ -131,8 +154,13 @@ final class WorkspaceStore {
             // SwiftHelper re-defaults to the curated support set (the previously
             // saved full menu + MCP flood produced a 252-tool/40K-token prompt
             // that crashed the 4B model). Users can re-customize afterwards.
-            let resetKey = "mechanic.curatedToolset.v1"
-            if !UserDefaults.standard.bool(forKey: resetKey), mech.enabledToolCategories != nil {
+            // The guard honors the legacy "mechanic.*" key too so an existing
+            // user who already had the reset applied is never reset a second time.
+            let resetKey = "swiftHelper.curatedToolset.v1"
+            let legacyResetKey = "mechanic.curatedToolset.v1"
+            let alreadyReset = UserDefaults.standard.bool(forKey: resetKey)
+                || UserDefaults.standard.bool(forKey: legacyResetKey)
+            if !alreadyReset, mech.enabledToolCategories != nil {
                 mech.enabledToolCategories = nil
                 mechChanged = true
             }
@@ -143,10 +171,10 @@ final class WorkspaceStore {
             }
             return mech
         }
-        var mech = AgentRecord(name: "SwiftHelper", kind: .mechanic)
+        var mech = AgentRecord(name: "Swift Helper", kind: .swiftHelper)
         mech.autoToolCategories = false
-        if ModelCatalog.mechanicModelAvailable {
-            mech.modelID = ModelCatalog.mechanicModelID
+        if ModelCatalog.swiftHelperModelAvailable {
+            mech.modelID = ModelCatalog.swiftHelperModelID
         }
         let insertAt = agents.isEmpty ? 0 : 1  // right after the navigator
         agents.insert(mech, at: min(insertAt, agents.count))
@@ -192,7 +220,7 @@ final class WorkspaceStore {
         if ModelCatalog.coderModelAvailable {
             c.modelID = ModelCatalog.coderModelID
         }
-        let insertAt = agents.isEmpty ? 0 : min(2, agents.count)  // after navigator + mechanic
+        let insertAt = agents.isEmpty ? 0 : min(2, agents.count)  // after navigator + swiftHelper
         agents.insert(c, at: insertAt)
         save()
         return c
@@ -225,7 +253,7 @@ final class WorkspaceStore {
         }
         var s = AgentRecord(name: "Searcher", kind: .search)
         s.autoToolCategories = false
-        let insertAt = agents.isEmpty ? 0 : min(3, agents.count)  // after navigator + mechanic + coder
+        let insertAt = agents.isEmpty ? 0 : min(3, agents.count)  // after navigator + swiftHelper + coder
         agents.insert(s, at: insertAt)
         save()
         return s
@@ -522,12 +550,12 @@ final class WorkspaceStore {
             }
             projects = uniqueProjects
             agents = ws.agents.filter { a in
-                // Keep always-present agents (navigator/mechanic/coder) and
+                // Keep always-present agents (navigator/swiftHelper/coder) and
                 // agents whose project still exists. Without the explicit
-                // always-present kinds, the Mechanic was silently dropped on
+                // always-present kinds, the Swift Helper was silently dropped on
                 // every load and re-created with a fresh UUID on next access —
                 // orphaning its settings and chat history each launch.
-                a.kind == .navigator || a.kind == .mechanic || a.kind == .coder
+                a.kind == .navigator || a.kind == .swiftHelper || a.kind == .coder
                     || projects.contains { $0.id == a.projectId }
             }
             if uniqueProjects.count != ws.projects.count { save() }
@@ -543,6 +571,20 @@ final class WorkspaceStore {
             agents[i].name = "Maestro"
             save()
             NSLog("[WORKSPACE] renamed conductor agent from Navigator to Maestro")
+        }
+
+        // One-time rename: the self-repair support agent was renamed from
+        // "Mechanic" to "Swift Helper". Agents persisted before the rename keep
+        // the old name, so update it (case-insensitively, trimmed) on load and
+        // persist so the agents panel shows "Swift Helper".
+        if let i = agents.firstIndex(where: {
+            $0.kind == .swiftHelper
+                && $0.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .caseInsensitiveCompare("Mechanic") == .orderedSame
+        }) {
+            agents[i].name = "Swift Helper"
+            save()
+            NSLog("[WORKSPACE] renamed support agent from Mechanic to Swift Helper")
         }
 
         // One-time category migration: infer a category for existing project

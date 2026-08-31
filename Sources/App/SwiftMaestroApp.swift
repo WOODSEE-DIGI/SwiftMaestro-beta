@@ -156,6 +156,9 @@ struct SwiftMaestroApp: App {
             let catalog = ModelCatalog()
             let agent = ACPAgent(engine: engine, catalog: catalog)
             Task {
+                // Warm the FTS memory index in the background so headless agent
+                // memory_search calls don't block on the first full-store build.
+                await MemorySearchService.shared.warm()
                 await agent.run()
                 exit(0)
             }
@@ -179,7 +182,7 @@ struct SwiftMaestroApp: App {
     @State private var eventKitStore = EventKitStore()
     @State private var appleNotesService = AppleNotesService()
     @State private var contactsService = ContactsService()
-    @State private var whiteboardStore = WhiteboardStore()
+
     @State private var kanbanStore = KanbanStore()
     @State private var numbersService = NumbersService()
     @State private var mapsService = AppleMapsService.shared
@@ -212,7 +215,6 @@ struct SwiftMaestroApp: App {
                 .environment(eventKitStore)
                 .environment(appleNotesService)
                 .environment(contactsService)
-                .environment(whiteboardStore)
                 .environment(kanbanStore)
                 .environment(numbersService)
                 .environment(mapsService)
@@ -254,6 +256,11 @@ struct SwiftMaestroApp: App {
                     // Create the shared ~/.ai-context scaffold up front so a fresh,
                     // self-contained install has its data directory before first use.
                     SimpleMemoryStore.ensureScaffold()
+                    // Warm the SQLite FTS memory index in the background so the
+                    // first memory_search doesn't pay the (multi-minute) full-store
+                    // build on the caller's critical path. Fire-and-forget: the
+                    // service runs the walk on a detached utility task.
+                    await MemorySearchService.shared.warm()
                     // First-run dependency installation. The services are all
                     // nonisolated, so their heavy synchronous work (extraction,
                     // npm installs, per-binary codesigning, multi-GB model
@@ -340,8 +347,8 @@ struct SwiftMaestroApp: App {
                     // Qwen3-4B is on disk (DMG install or Models-tab download), default
                     // the SwiftHelper to it so help works with no other model configured.
                     let swiftHelper = workspace.swiftHelper
-                    if swiftHelper.modelID == nil, ModelCatalog.mechanicModelAvailable {
-                        workspace.setModel(ModelCatalog.mechanicModelID, for: swiftHelper.id)
+                    if swiftHelper.modelID == nil, ModelCatalog.swiftHelperModelAvailable {
+                        workspace.setModel(ModelCatalog.swiftHelperModelID, for: swiftHelper.id)
                     }
                     // Ensure the bundled coding agent exists, and once the bundled
                     // DeepSeek Coder V2 Lite is on disk (DMG install or Models-tab
@@ -489,7 +496,6 @@ struct SwiftMaestroApp: App {
                     .environment(eventKitStore)
                     .environment(appleNotesService)
                     .environment(contactsService)
-                    .environment(whiteboardStore)
                     .environment(kanbanStore)
                     .environment(numbersService)
                     .environment(mapsService)
@@ -525,7 +531,6 @@ struct SwiftMaestroApp: App {
                     .environment(eventKitStore)
                     .environment(appleNotesService)
                     .environment(contactsService)
-                    .environment(whiteboardStore)
                     .environment(kanbanStore)
                     .environment(numbersService)
                     .environment(mapsService)

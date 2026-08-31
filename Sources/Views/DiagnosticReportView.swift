@@ -9,7 +9,7 @@ import SwiftUI
 // sends automatically.
 
 struct DiagnosticReportView: View {
-    /// Prefill from the agent flow (Mechanic can open this sheet with a
+    /// Prefill from the agent flow (Swift Helper can open this sheet with a
     /// description and media path — but only the user presses Send).
     var initialDescription: String = ""
     var initialMediaPath: String = ""

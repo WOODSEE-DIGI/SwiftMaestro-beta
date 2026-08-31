@@ -254,7 +254,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .whiteboard:
             return [
                 "whiteboard_list_boards", "whiteboard_create_board", "whiteboard_delete_board",
-                "whiteboard_list_objects", "whiteboard_add_shape", "whiteboard_add_text",
+                "whiteboard_list_elements", "whiteboard_add_shape", "whiteboard_add_text",
                 "whiteboard_connect", "whiteboard_clear",
             ]
         case .numbers:
@@ -422,7 +422,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
                 .notes, .kanban, .whiteboard, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky, .patreon, .database, .dam, .blockchain,
                 .overlayBuilder, .calendar, .reminders, .contacts,
             ]
-        case .mechanic:
+        case .swiftHelper:
             // The support engineer's surface: diagnostics + repair. No
             // delegation (navigator-only), no messaging, no Apple-app panels.
             // Deliberately EXCLUDES .mcp (the full MCP server menu — playwright,
@@ -483,7 +483,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             return Set(allCases).subtracting([.sqlite, .messaging])
         case .project:
             return Set(allCases).subtracting([.workspace])
-        case .mechanic:
+        case .swiftHelper:
             // Self-repair support: no delegation, no inter-agent messaging.
             return Set(allCases).subtracting([.workspace, .messaging])
         case .coder:

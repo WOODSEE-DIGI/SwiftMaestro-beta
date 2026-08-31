@@ -249,7 +249,18 @@ extension MaestroTools {
               let query = args.query?.trimmingCharacters(in: .whitespaces), !query.isEmpty else {
             return errorJSON("memory_search requires 'query'")
         }
-        let hits = SimpleMemoryStore().search(query, limit: 20)
+
+        // Prefer the local FTS5 index for sub-millisecond search over the full
+        // store; fall back to the file-walking scan if indexing is unavailable,
+        // still warming (not built yet), or yields no matches.
+        let hits: [(path: String, snippet: String)]
+        let engineHits = await MemorySearchService.shared.search(query, limit: 20)
+        if let engineHits, !engineHits.isEmpty {
+            hits = engineHits.map { ($0.path, $0.snippet) }
+        } else {
+            hits = SimpleMemoryStore().search(query, limit: 20)
+        }
+
         guard !hits.isEmpty else { return "No memory entries match \"\(query)\"." }
         let lines = hits.map { "- \($0.path)\n    \($0.snippet)" }
         return "Found \(hits.count) match(es) for \"\(query)\":\n" + lines.joined(separator: "\n")

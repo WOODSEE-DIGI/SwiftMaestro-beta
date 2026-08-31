@@ -87,19 +87,21 @@ final class BundledModelService: @unchecked Sendable {
         )
     }
 
-    /// The Mechanic support model (fine-tuned Qwen3-4B — see
+    /// The Swift Helper support model (fine-tuned Qwen3-4B — see
     /// scripts/mechanic-training/) is bundled in BOTH full and light .dmgs:
     /// small (~2.1 GB) so in-app help works on fresh installs with nothing
     /// else configured (Light users may never download a chat model). The
-    /// Mechanic agent prefers this fine-tuned dir; users who delete it can
+    /// Swift Helper agent prefers this fine-tuned dir; users who delete it can
     /// re-fetch the stock Qwen3-4B from Settings → Models.
-    private var mechanicModel: BundledModelDescriptor {
+    private var swiftHelperModel: BundledModelDescriptor {
         let name = "SwiftMaestro-Mechanic-4bit"
         return BundledModelDescriptor(
             name: name,
             bundleSubpath: "swiftmaestro-models/\(name)",
             installedURL: SwiftMaestroPaths.modelsDir
                 .appendingPathComponent("swiftmaestro-models/\(name)", isDirectory: true),
+            // versionKey intentionally left as "bundledModel.mechanic.…" so an
+            // existing install doesn't re-copy the ~GB bundle after the rename.
             versionKey: "bundledModel.mechanic.installedVersion",
             currentVersion: "1",
             isInstalled: { url in
@@ -142,7 +144,7 @@ final class BundledModelService: @unchecked Sendable {
 
     /// All models that may be bundled. Each is installed independently if present.
     private var models: [BundledModelDescriptor] {
-        [gemmaModel, whisperModel, mechanicModel, coderModel]
+        [gemmaModel, whisperModel, swiftHelperModel, coderModel]
     }
 
     /// URL to the bundled model directory inside the app bundle.

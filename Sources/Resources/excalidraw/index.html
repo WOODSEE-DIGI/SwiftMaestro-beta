@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>Excalidraw</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover,shrink-to-fit=no"/>
+  <meta name="referrer" content="origin"/>
+  <meta name="mobile-web-app-capable" content="yes"/>
+  <meta name="theme-color" content="#121212"/>
+  <style>
+    html.dark { background-color: #121212; color: #fff; }
+    body, html { margin: 0; -webkit-text-size-adjust: 100%; width: 100%; height: 100%; overflow: hidden; }
+    #root { height: 100%; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+    @media screen and (min-width: 1200px) {
+      #root { -webkit-touch-callout: default; -webkit-user-select: auto; user-select: auto; }
+    }
+  </style>
+  <script>
+    // Theme: force dark mode for SwiftMaestro integration
+    try {
+      var theme = window.localStorage.getItem("excalidraw-theme");
+      if (!theme || theme === "system") {
+        theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      }
+      if (theme === "dark") {
+        document.documentElement.classList.add("dark");
+      }
+    } catch (e) {}
+  </script>
+  <script>
+    // SwiftMaestro bridge — Excalidraw ↔ native communication
+    window.__swiftmaestro = {
+      // Send a message to Swift
+      postMessage: function(type, payload) {
+        try {
+          window.webkit.messageHandlers.excalidrawBridge.postMessage(
+            Object.assign({ type: type }, payload || {})
+          );
+        } catch (e) {
+          console.error("Bridge postMessage failed:", e);
+        }
+      },
+      // Load a file from a file:// URL
+      loadFile: function(url) {
+        try {
+          var xhr = new XMLHttpRequest();
+          xhr.open("GET", url, false); // synchronous for simplicity
+          xhr.send();
+          if (xhr.status === 200) {
+            var data = JSON.parse(xhr.responseText);
+            // Use Excalidraw API to load the scene
+            if (window.excalidrawAPI) {
+              window.excalidrawAPI.updateScene({
+                elements: data.elements || [],
+                appState: data.appState || {}
+              });
+              window.excalidrawAPI.scrollToContent(
+                data.elements || [],
+                { fitToViewport: true, viewportZoomFactor: 0.8 }
+              );
+            }
+            this.postMessage("fileLoaded", { url: url });
+          }
+        } catch (e) {
+          console.error("Load file failed:", e);
+        }
+      },
+      // Get current scene data as JSON string
+      getSceneData: function() {
+        if (window.excalidrawAPI) {
+          var data = window.excalidrawAPI.getSceneElements();
+          var appState = window.excalidrawAPI.getAppState();
+          return JSON.stringify({
+            type: "excalidraw",
+            version: 2,
+            source: "swiftmaestro",
+            elements: data,
+            appState: appState,
+            files: appState.files || {}
+          });
+        }
+        return null;
+      }
+    };
+
+    // Called from Swift to load a file
+    window.__swiftmaestro_loadFile = function(url) {
+      window.__swiftmaestro.loadFile(url);
+    };
+  </script>
+  <link rel="stylesheet" href="/assets/index-cnPW3WX-.css">
+  <script type="module" src="/assets/index-BbQbQ9GL.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+  <script>
+    // After Excalidraw loads, capture the API reference
+    // Excalidraw exposes window.excalidrawAPI when the component mounts
+    var _excalidrawCheck = setInterval(function() {
+      var app = document.querySelector(".excalidraw");
+      if (app && app.__excalidrawAPI) {
+        window.excalidrawAPI = app.__excalidrawAPI;
+        clearInterval(_excalidrawCheck);
+        window.__swiftmaestro.postMessage("ready", {});
+
+        // Notify Swift that the editor is ready
+        if (window.webkit && window.webkit.messageHandlers.excalidrawBridge) {
+          // Auto-save on changes (debounced)
+          var saveTimeout;
+          var originalElements = null;
+
+          // Watch for element changes
+          var observer = new MutationObserver(function() {
+            window.__swiftmaestro.postMessage("edited", {});
+          });
+          observer.observe(document.getElementById("root"), {
+            childList: true, subtree: true, attributes: true
+          });
+        }
+      }
+    }, 100);
+
+    // Expose save/load for Swift notifications
+    window.addEventListener("message", function(event) {
+      if (event.data && event.data.type === "save") {
+        var data = window.__swiftmaestro.getSceneData();
+        if (data) {
+          window.__swiftmaestro.postMessage("save", { data: data });
+        }
+      }
+    });
+
+    // Handle keyboard shortcuts for save
+    document.addEventListener("keydown", function(e) {
+      if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+        e.preventDefault();
+        var data = window.__swiftmaestro.getSceneData();
+        if (data) {
+          window.__swiftmaestro.postMessage("save", { data: data });
+        }
+      }
+    });
+  </script>
+</body>
+</html>

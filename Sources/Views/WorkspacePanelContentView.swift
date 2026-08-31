@@ -30,7 +30,7 @@ struct WorkspacePanelContentView: View {
         case .contacts:
             ContactsView()
         case .canvas:
-            WhiteboardView()
+            ExcalidrawPanelView()
         case .kanban:
             KanbanView()
         case .numbers:

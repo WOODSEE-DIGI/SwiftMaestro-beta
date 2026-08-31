@@ -1032,7 +1032,7 @@ struct ChatView: View {
             .help("Attach image")
 
             // Microphone button — only shown for Maestro.
-            if vm.agent.kind == .navigator || vm.agent.kind == .mechanic || vm.agent.kind == .coder || vm.agent.kind == .search {
+            if vm.agent.kind == .navigator || vm.agent.kind == .swiftHelper || vm.agent.kind == .coder || vm.agent.kind == .search {
                 Button { whisper.toggleRecording() } label: {
                     if whisper.isRecording {
                         Image(systemName: "stop.circle.fill")

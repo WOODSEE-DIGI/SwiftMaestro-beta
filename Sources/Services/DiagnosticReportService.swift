@@ -4,8 +4,8 @@ import Foundation
 // MARK: - Diagnostic Report Service
 //
 // Builds and sends an anonymous, user-initiated diagnostic report so problems
-// that need a CODE fix (not something self-healing or the Mechanic can patch
-// at runtime) reach the developers with real evidence attached.
+// that need a CODE fix (not something self-healing or the Swift Helper can
+// patch at runtime) reach the developers with real evidence attached.
 //
 // PRIVACY CONTRACT (hard requirements, do not weaken):
 //   • Every report is a separate, explicit user action — the sheet previews

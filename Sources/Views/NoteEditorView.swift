@@ -32,12 +32,48 @@ struct NoteEditorView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if let warning = readOnlyWarning {
+                readOnlyBanner(message: warning)
+            }
             toolbar
             Divider()
             editorContent
         }
         .background(theme.background)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Non-nil when the selected note lives in the read-only AI Memory store.
+    private var readOnlyWarning: String? {
+        guard let item = viewModel.selectedItem, item.isReadOnly else { return nil }
+        return "This file lives in AI Memory and is read-only in Notes. "
+            + "The agent writes it automatically; back it up before editing."
+    }
+
+    private func readOnlyBanner(message: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "lock.fill")
+                .foregroundStyle(.orange)
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button {
+                if let item = viewModel.selectedItem {
+                    try? FileManager.default.createDirectory(
+                        at: item.url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    NSWorkspace.shared.activateFileViewerSelecting([item.url])
+                }
+            } label: {
+                Label("Reveal & Back Up", systemImage: "folder.badge.gearshape")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help("Reveal this file in Finder so you can back it up before editing")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(theme.secondaryBackground)
     }
 
     // MARK: - Toolbar

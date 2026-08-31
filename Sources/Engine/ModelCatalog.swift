@@ -254,12 +254,15 @@ final class ModelCatalog {
     /// matches and pick one based on local-weights availability.
     func model(forID id: String?) -> MaestroModel? {
         guard let id, !id.isEmpty else { return nil }
-        if let exact = models.first(where: { $0.id == id }) { return exact }
-        let target = Self.normalized(id)
+        // Back-compat: the Swift Helper model's id was renamed from the legacy
+        // "mechanic" spelling; map any saved legacy id to the new model.
+        let resolvedID = Self.resolveLegacyModelID(id)
+        if let exact = models.first(where: { $0.id == resolvedID }) { return exact }
+        let target = Self.normalized(resolvedID)
         return models.first {
             Self.normalized($0.id) == target
             || Self.normalized($0.displayName) == target
-            || $0.huggingFaceID.lowercased() == id.lowercased()
+            || $0.huggingFaceID.lowercased() == resolvedID.lowercased()
         }
     }
 
@@ -268,13 +271,23 @@ final class ModelCatalog {
     /// variants) so the caller can prefer the one with local weights installed.
     func matchingModels(for id: String?) -> [MaestroModel] {
         guard let id, !id.isEmpty else { return [] }
-        if let exact = models.first(where: { $0.id == id }) { return [exact] }
-        let target = Self.normalized(id)
+        let resolvedID = Self.resolveLegacyModelID(id)
+        if let exact = models.first(where: { $0.id == resolvedID }) { return [exact] }
+        let target = Self.normalized(resolvedID)
         return models.filter {
             Self.normalized($0.id) == target
             || Self.normalized($0.displayName) == target
-            || $0.huggingFaceID.lowercased() == id.lowercased()
+            || $0.huggingFaceID.lowercased() == resolvedID.lowercased()
         }
+    }
+
+    /// Map a persisted model id to the current id after a rename. Today this
+    /// only bridges the Swift Helper model's legacy `swiftmaestro-mechanic-…`
+    /// id to the renamed `swiftmaestro-swifthelper-…` id so existing saved
+    /// `AgentRecord.modelID` values keep resolving. Unchanged ids pass through.
+    private static func resolveLegacyModelID(_ id: String) -> String {
+        if id == legacySwiftHelperModelID { return swiftHelperModelID }
+        return id
     }
 
     /// Case- and punctuation-insensitive normalization for model id/name lookup.
@@ -404,22 +417,51 @@ final class ModelCatalog {
         return SwiftMaestroPaths.modelsDir.path
     }
 
-    /// The Mechanic agent's bundled model id (Qwen3-4B instruct, tool-verified).
-    nonisolated static let mechanicModelID = "swiftmaestro-mechanic-qwen3-4b"
+    /// UserDefaults key for the list of extra local model directories.
+    nonisolated static let additionalRootsKey = "models.additionalRoots"
 
-    /// True when a Mechanic model is on disk under modelsRoot — the fine-tuned
-    /// specialist (SwiftMaestro-Mechanic-4bit) is preferred; the stock
-    /// Qwen3-4B instruct model serves until a fine-tune exists.
-    nonisolated static var mechanicModelAvailable: Bool {
-        localIfPresent(["swiftmaestro-models/SwiftMaestro-Mechanic-4bit", "mlx-community/SwiftMaestro-Mechanic-4bit"]) != nil
-            || localIfPresent(["swiftmaestro-models/Qwen3-4B-Instruct-2507-4bit", "mlx-community/Qwen3-4B-Instruct-2507-4bit"]) != nil
+    /// Additional local model directories (beyond `modelsRoot`) scanned as extra
+    /// read-only sources. Useful for models kept on an external/RAID drive
+    /// without moving the default collection. The app never downloads into these
+    /// — the primary `modelsRoot` remains the single download destination.
+    nonisolated static var additionalModelRoots: [String] {
+        (UserDefaults.standard.stringArray(forKey: additionalRootsKey) ?? [])
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
     }
 
-    /// Effective local path for the Mechanic model: fine-tuned specialist
+    /// Every local model directory searched, primary root first. Resolution
+    /// prefers the primary, so a model present in both the primary and an
+    /// additional root resolves from the primary.
+    nonisolated static var allModelRoots: [String] {
+        [modelsRoot] + additionalModelRoots
+    }
+
+    /// The Swift Helper agent's bundled model id (Qwen3-4B instruct, tool-verified).
+    ///
+    /// The id was historically `swiftmaestro-mechanic-qwen3-4b`. We keep the new
+    /// id and expose `legacySwiftHelperModelID` so existing saved
+    /// `AgentRecord.modelID` values and any persisted references still resolve.
+    nonisolated static let swiftHelperModelID = "swiftmaestro-swifthelper-qwen3-4b"
+    nonisolated static let legacySwiftHelperModelID = "swiftmaestro-mechanic-qwen3-4b"
+
+    /// True when a Swift Helper model is on disk under modelsRoot — the
+    /// fine-tuned specialist is preferred; the stock Qwen3-4B instruct model
+    /// serves until a fine-tune exists.
+    nonisolated static var swiftHelperModelAvailable: Bool {
+        localIfPresent(["swiftmaestro-models/SwiftMaestro-Mechanic-4bit", "mlx-community/SwiftMaestro-Mechanic-4bit"]) != nil
+            || localIfPresent(["swiftmaestro-models/Mechanic-Qwen3-4B-Instruct-2507-4bit", "mlx-community/Qwen3-4B-Instruct-2507-4bit"]) != nil
+    }
+
+    /// Effective local path for the Swift Helper model: fine-tuned specialist
     /// first, stock bundled model second. Nil when neither is installed.
-    nonisolated static var mechanicModelPath: String? {
+    ///
+    /// The on-disk bundle keeps the legacy "Mechanic" directory name (it ships
+    /// inside the DMG and is not renamed to avoid re-bundling); the new,
+    /// equally-valid spelling is checked first without breaking existing installs.
+    nonisolated static var swiftHelperModelPath: String? {
         localIfPresent(["swiftmaestro-models/SwiftMaestro-Mechanic-4bit", "mlx-community/SwiftMaestro-Mechanic-4bit"])
-            ?? localIfPresent(["swiftmaestro-models/Qwen3-4B-Instruct-2507-4bit", "mlx-community/Qwen3-4B-Instruct-2507-4bit"])
+            ?? localIfPresent(["swiftmaestro-models/Mechanic-Qwen3-4B-Instruct-2507-4bit", "mlx-community/Qwen3-4B-Instruct-2507-4bit"])
     }
 
     /// The Coder agent's bundled model id (DeepSeek Coder V2 Lite, bundled in
@@ -431,13 +473,18 @@ final class ModelCatalog {
         localIfPresent(["swiftmaestro-models/DeepSeek-Coder-V2-Lite-Instruct-4bit-mlx", "mlx-community/DeepSeek-Coder-V2-Lite-Instruct-4bit-mlx"]) != nil
     }
 
-    /// Resolve a model's local directory under `modelsRoot` ONLY if it exists on
-    /// disk; otherwise return nil so the model is pulled from Hugging Face Hub by
-    /// its `huggingFaceID` on first use. This is what makes a fresh install work
-    /// with no preinstalled models.
+    /// Resolve a model's local directory under any model root (primary first,
+    /// then each additional root) ONLY if it exists on disk; otherwise return
+    /// nil so the model is pulled from Hugging Face Hub by its `huggingFaceID`
+    /// on first use. This is what makes a fresh install work with no
+    /// preinstalled models, and lets models stored in an extra directory (e.g.
+    /// an external drive added in Settings → Models) be discovered and loaded.
     nonisolated static func localIfPresent(_ subdir: String) -> String? {
-        let path = (modelsRoot as NSString).appendingPathComponent(subdir)
-        return FileManager.default.fileExists(atPath: path) ? path : nil
+        for root in allModelRoots {
+            let path = (root as NSString).appendingPathComponent(subdir)
+            if FileManager.default.fileExists(atPath: path) { return path }
+        }
+        return nil
     }
 
     /// Try several candidate subdirectories under `modelsRoot` and return the
@@ -454,16 +501,18 @@ final class ModelCatalog {
     static let builtInModels: [MaestroModel] = [
         // ── Primary: Verified & Daily-Use ──────────────────────────────────
 
-        // Mechanic support model — small, tool-verified, bundled in every DMG
-        // so in-app help works even on fresh/broken installs with nothing else
-        // configured. The Mechanic agent references it by id; it also appears
-        // in the picker so Light-install users have a tiny bundled chat model.
+        // Swift Helper support model — small, tool-verified, bundled in every
+        // DMG so in-app help works even on fresh/broken installs with nothing
+        // else configured. The Swift Helper agent references it by id; it also
+        // appears in the picker so Light-install users have a tiny bundled chat
+        // model. The id was renamed from swiftmaestro-mechanic-qwen3-4b (see
+        // legacySwiftHelperModelID alias used by model(forID:)/matchingModels).
         MaestroModel(
-            id: "swiftmaestro-mechanic-qwen3-4b",
-            displayName: "SwiftMaestro Mechanic (Qwen3 4B)",
+            id: "swiftmaestro-swifthelper-qwen3-4b",
+            displayName: "SwiftMaestro Swift Helper (Qwen3 4B)",
             huggingFaceID: "mlx-community/Qwen3-4B-Instruct-2507-4bit",
             isVision: false,
-            localPath: mechanicModelPath,
+            localPath: swiftHelperModelPath,
             estimatedMemoryGB: 3,
             supportsTools: true,
             // Qwen3 Instruct models natively emit JSON inside <tool_call> tags
@@ -702,6 +751,7 @@ final class ModelCatalog {
     /// newly downloaded files without a relaunch, then refresh each model's
     /// discovered capabilities from its on-disk config.
     func refreshLocalPaths() {
+        pruneDiscoveredModels()
         for i in models.indices {
             let candidates = Self.localSubdirs(for: models[i])
             models[i].localPath = Self.localIfPresent(candidates)
@@ -709,6 +759,32 @@ final class ModelCatalog {
         // Auto-discover models in the models directory that aren't in the catalog.
         discoverUnlistedModels()
         Task { await refreshCapabilities() }
+    }
+
+    /// Drop user-discovered models (`discovered-*`) whose backing directory no
+    /// longer exists on disk, so removing an added model folder automatically
+    /// removes its models from the catalog. Discovered entries are tracked only
+    /// by their on-disk path, so a deleted directory can never leave a stale
+    /// entry behind.
+    private func pruneDiscoveredModels() {
+        let fm = FileManager.default
+        models.removeAll { model in
+            guard model.id.hasPrefix("discovered-"),
+                  let path = model.localPath,
+                  !path.isEmpty,
+                  !fm.fileExists(atPath: path) else { return false }
+            if selectedModelID == model.id { selectedModelID = models.first?.id }
+            return true
+        }
+    }
+
+    /// Returns `true` for models the user created and can remove from the
+    /// catalog themselves — those discovered from an added model folder
+    /// (`discovered-*`) or added via the Hub (`hub-*`). Built-in registry
+    /// entries and remote-provider models are managed elsewhere and are not
+    /// user-removable here.
+    func canRemoveModel(_ id: String) -> Bool {
+        id.hasPrefix("discovered-") || id.hasPrefix("hub-")
     }
 
     /// Derive candidate local subdirectories for a model. Checks all three
@@ -733,62 +809,68 @@ final class ModelCatalog {
     /// (standard MLX/HuggingFace config) or `Weights.plist` (MLX weight index).
     /// Discovered models are appended to the catalog with sensible defaults.
     private func discoverUnlistedModels() {
-        let root = URL(fileURLWithPath: Self.modelsRoot)
-        guard let contents = try? FileManager.default.contentsOfDirectory(
-            at: root, includingPropertiesForKeys: [.isDirectoryKey]
-        ) else { return }
-
         // Build a set of known repo names already in the catalog.
         var knownRepos = Set(models.map { model -> String in
             model.huggingFaceID.components(separatedBy: "/").last ?? model.huggingFaceID
         })
 
-        for orgEntry in contents {
-            // Skip non-directories and the swiftmaestro-models bucket.
-            var isDir: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: orgEntry.path, isDirectory: &isDir),
-                  isDir.boolValue,
-                  orgEntry.lastPathComponent != "swiftmaestro-models" else { continue }
-
-            // Scan one level deep for repo directories.
-            guard let repoContents = try? FileManager.default.contentsOfDirectory(
-                at: orgEntry, includingPropertiesForKeys: [.isDirectoryKey]
+        // Scan every model root (primary first, then each additional root).
+        // Scanning in order + inserting into `knownRepos` as we discover means a
+        // repo found in the primary root is never re-added from an additional
+        // root — the primary wins for duplicate names.
+        for rootPath in Self.allModelRoots {
+            let root = URL(fileURLWithPath: rootPath)
+            guard let contents = try? FileManager.default.contentsOfDirectory(
+                at: root, includingPropertiesForKeys: [.isDirectoryKey]
             ) else { continue }
 
-            for repoEntry in repoContents {
-                var repoIsDir: ObjCBool = false
-                guard FileManager.default.fileExists(atPath: repoEntry.path, isDirectory: &repoIsDir),
-                      repoIsDir.boolValue else { continue }
+            for orgEntry in contents {
+                // Skip non-directories and the swiftmaestro-models bucket.
+                var isDir: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: orgEntry.path, isDirectory: &isDir),
+                      isDir.boolValue,
+                      orgEntry.lastPathComponent != "swiftmaestro-models" else { continue }
 
-                let repoName = repoEntry.lastPathComponent
+                // Scan one level deep for repo directories.
+                guard let repoContents = try? FileManager.default.contentsOfDirectory(
+                    at: orgEntry, includingPropertiesForKeys: [.isDirectoryKey]
+                ) else { continue }
 
-                // Skip if already in the catalog.
-                guard !knownRepos.contains(repoName) else { continue }
+                for repoEntry in repoContents {
+                    var repoIsDir: ObjCBool = false
+                    guard FileManager.default.fileExists(atPath: repoEntry.path, isDirectory: &repoIsDir),
+                          repoIsDir.boolValue else { continue }
 
-                // Check if this is a valid MLX model directory.
-                let configPath = repoEntry.appendingPathComponent("config.json").path
-                let weightsPath = repoEntry.appendingPathComponent("Weights.plist").path
-                guard FileManager.default.fileExists(atPath: configPath)
-                        || FileManager.default.fileExists(atPath: weightsPath) else { continue }
+                    let repoName = repoEntry.lastPathComponent
 
-                // Derive org from parent directory name.
-                let org = orgEntry.lastPathComponent
-                let huggingFaceID = "\(org)/\(repoName)"
+                    // Skip if already in the catalog (or an earlier root).
+                    guard !knownRepos.contains(repoName) else { continue }
 
-                // Estimate memory from directory size (rough heuristic).
-                let sizeBytes = (try? FileManager.default.attributesOfItem(atPath: repoEntry.path)[.size] as? Int64) ?? 0
-                let sizeGB = max(1, Int(sizeBytes / (1024 * 1024 * 1024)))
+                    // Check if this is a valid MLX model directory.
+                    let configPath = repoEntry.appendingPathComponent("config.json").path
+                    let weightsPath = repoEntry.appendingPathComponent("Weights.plist").path
+                    guard FileManager.default.fileExists(atPath: configPath)
+                            || FileManager.default.fileExists(atPath: weightsPath) else { continue }
 
-                let discovered = MaestroModel(
-                    id: "discovered-\(repoName)",
-                    displayName: repoName,
-                    huggingFaceID: huggingFaceID,
-                    isVision: false,
-                    localPath: repoEntry.path,
-                    estimatedMemoryGB: sizeGB
-                )
-                models.append(discovered)
-                knownRepos.insert(repoName)
+                    // Derive org from parent directory name.
+                    let org = orgEntry.lastPathComponent
+                    let huggingFaceID = "\(org)/\(repoName)"
+
+                    // Estimate memory from directory size (rough heuristic).
+                    let sizeBytes = (try? FileManager.default.attributesOfItem(atPath: repoEntry.path)[.size] as? Int64) ?? 0
+                    let sizeGB = max(1, Int(sizeBytes / (1024 * 1024 * 1024)))
+
+                    let discovered = MaestroModel(
+                        id: "discovered-\(repoName)",
+                        displayName: repoName,
+                        huggingFaceID: huggingFaceID,
+                        isVision: false,
+                        localPath: repoEntry.path,
+                        estimatedMemoryGB: sizeGB
+                    )
+                    models.append(discovered)
+                    knownRepos.insert(repoName)
+                }
             }
         }
     }

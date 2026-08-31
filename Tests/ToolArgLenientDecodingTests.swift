@@ -156,9 +156,9 @@ extension ToolArgLenientDecodingTests {
     // write_file "volume is read only" were over-escaped separators, not I/O)
 
     func testUnescapeShellPathCollapsesAllSeparatorRuns() {
-        XCTAssertEqual(MaestroTools.unescapeShellPath(#"\/Users\/shootyultra"#), "/Users/shootyultra")
-        XCTAssertEqual(MaestroTools.unescapeShellPath(#"\/Users\\\/shootyultra"#), "/Users/shootyultra")
-        XCTAssertEqual(MaestroTools.unescapeShellPath(#"\/Users\\\\\/shootyultra"#), "/Users/shootyultra")
+        XCTAssertEqual(MaestroTools.unescapeShellPath(#"\/Users\/testuser"#), "/Users/testuser")
+        XCTAssertEqual(MaestroTools.unescapeShellPath(#"\/Users\\\/testuser"#), "/Users/testuser")
+        XCTAssertEqual(MaestroTools.unescapeShellPath(#"\/Users\\\\\/testuser"#), "/Users/testuser")
     }
 
     func testUnescapeShellPathKeepsShellSpaceEscapes() {
@@ -167,6 +167,6 @@ extension ToolArgLenientDecodingTests {
     }
 
     func testUnescapeShellPathPlainIsUntouched() {
-        XCTAssertEqual(MaestroTools.unescapeShellPath("/Users/shootyultra/GitHub"), "/Users/shootyultra/GitHub")
+        XCTAssertEqual(MaestroTools.unescapeShellPath("/Users/testuser/GitHub"), "/Users/testuser/GitHub")
     }
 }

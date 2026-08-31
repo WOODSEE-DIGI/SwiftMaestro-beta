@@ -376,6 +376,11 @@ extension MaestroTools {
     }
 
     static func isAllowed(_ resolved: String, roots: [String]) -> Bool {
+        // Full Disk Access installs "/" as the sole root to authorize every
+        // path. The prefix test below would otherwise compare against "//" and
+        // deny everything on FDA-enabled systems, so short-circuit here.
+        if roots.contains("/") { return true }
+
         func normalize(_ p: String) -> String {
             var s = normalizePathInvisibles(p)
             s = s.trimmingCharacters(in: .whitespaces)

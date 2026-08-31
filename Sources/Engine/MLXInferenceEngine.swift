@@ -525,7 +525,7 @@ final class MLXInferenceEngine {
         if let cached = modelCache[model.id] {
             touchResident(model.id)
             state = .ready(model.displayName)
-            scheduleMechanicPreload(triggeredBy: model)
+            scheduleSwiftHelperPreload(triggeredBy: model)
             return cached
         }
 
@@ -615,18 +615,19 @@ final class MLXInferenceEngine {
             displayName: model.displayName, estimatedBytes: newBytes, lastUsed: lruClock)
         state = .ready(model.displayName)
         downloadProgress = nil
-        scheduleMechanicPreload(triggeredBy: model)
+        scheduleSwiftHelperPreload(triggeredBy: model)
         return container
     }
 
-    // MARK: - Mechanic preload
+    // MARK: - Swift Helper preload
 
-    /// Whether the Mechanic preload has already been scheduled this session.
-    private var mechanicPreloadScheduled = false
+    /// Whether the Swift Helper preload has already been scheduled this session.
+    private var swiftHelperPreloadScheduled = false
 
-    /// Preload the Mechanic's small (~3 GB) support model in the background once
-    /// the user's main model is ready, so a Maestro → Mechanic delegation skips
-    /// the model-load hop on its first use. Pure latency optimization:
+    /// Preload the Swift Helper's small (~3 GB) support model in the background
+    /// once the user's main model is ready, so a Maestro → Swift Helper
+    /// delegation skips the model-load hop on its first use. Pure latency
+    /// optimization:
     ///
     /// - local-only (never triggers a download in the background)
     /// - runs at utility priority after a short settle delay, and defers while
@@ -634,16 +635,16 @@ final class MLXInferenceEngine {
     /// - loadModel's own residency/system-memory guards apply; any failure
     ///   (e.g. insufficient memory on a smaller machine) is logged and
     ///   swallowed — the delegation path still loads on demand
-    private func scheduleMechanicPreload(triggeredBy model: MaestroModel) {
-        guard !mechanicPreloadScheduled else { return }
-        guard model.id != ModelCatalog.mechanicModelID else { return }
-        guard ModelCatalog.mechanicModelAvailable,
-              let mechanic = ModelCatalog.builtInModels.first(where: {
-                  $0.id == ModelCatalog.mechanicModelID
+    private func scheduleSwiftHelperPreload(triggeredBy model: MaestroModel) {
+        guard !swiftHelperPreloadScheduled else { return }
+        guard model.id != ModelCatalog.swiftHelperModelID else { return }
+        guard ModelCatalog.swiftHelperModelAvailable,
+              let swiftHelperModel = ModelCatalog.builtInModels.first(where: {
+                  $0.id == ModelCatalog.swiftHelperModelID
               })
         else { return }
-        guard modelCache[mechanic.id] == nil else { return }  // already resident
-        mechanicPreloadScheduled = true
+        guard modelCache[swiftHelperModel.id] == nil else { return }  // already resident
+        swiftHelperPreloadScheduled = true
 
         Task.detached(priority: .utility) { [weak self] in
             // Let the UI settle and any immediate user message start first.
@@ -655,17 +656,17 @@ final class MLXInferenceEngine {
                 let busy = await MainActor.run { self.state == .generating }
                 if !busy { break }
                 if attempt == 9 {
-                    NSLog("[ENGINE] Mechanic preload skipped — engine stayed busy")
+                    NSLog("[ENGINE] Swift Helper preload skipped — engine stayed busy")
                     return
                 }
                 try? await Task.sleep(for: .seconds(6))
             }
             do {
-                NSLog("[ENGINE] preloading Mechanic model in background")
-                _ = try await self.loadModel(mechanic)
-                NSLog("[ENGINE] Mechanic model preloaded and resident")
+                NSLog("[ENGINE] preloading Swift Helper model in background")
+                _ = try await self.loadModel(swiftHelperModel)
+                NSLog("[ENGINE] Swift Helper model preloaded and resident")
             } catch {
-                NSLog("[ENGINE] Mechanic preload skipped: \(error.localizedDescription)")
+                NSLog("[ENGINE] Swift Helper preload skipped: \(error.localizedDescription)")
             }
         }
     }
@@ -1224,10 +1225,10 @@ final class MLXInferenceEngine {
             // never collides with the previous model's state — and resetting here
             // would destroy the RETURNING model's intact cache, forcing a full
             // re-prefill of the whole conversation on every delegation round-trip
-            // (Maestro 30K tok → Mechanic 25K tok → Maestro 30K tok… ≈ 2.5 min of
-            // prefill per ask_mechanic). Prefix matching below safely reuses what
-            // it can (pure append → no trim) and falls back to a fresh prefill on
-            // divergence, so keep the cache and let it do its job.
+            // (Maestro 30K tok → Swift Helper 25K tok → Maestro 30K tok… ≈ 2.5
+            // min of prefill per ask_swiftHelper). Prefix matching below safely
+            // reuses what it can (pure append → no trim) and falls back to a
+            // fresh prefill on divergence, so keep the cache and let it do its job.
             NSLog("[ENGINE] model switch \(last) -> \(model.id): keeping prompt cache (prefix reuse if append-only)")
         }
         lastGenerationModelID = model.id

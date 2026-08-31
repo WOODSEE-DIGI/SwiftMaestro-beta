@@ -823,6 +823,18 @@ struct StorageSettingsTab: View {
     private var todosDir: URL { dataDir.appendingPathComponent("todos", isDirectory: true) }
     private var plansDir: URL { dataDir.appendingPathComponent("plans", isDirectory: true) }
 
+    /// Resolved shared AI Memory location: prefer the iCloud Drive container,
+    /// falling back to `~/.ai-context/memory` (which is symlinked to iCloud
+    /// once migrated). Matches `SimpleMemoryStore`'s resolution logic.
+    private var memoryDir: URL {
+        let fm = FileManager.default
+        if let iCloudContainer = fm.url(forUbiquityContainerIdentifier: nil)?
+            .appendingPathComponent("Documents/SwiftMaestro/memory", isDirectory: true) {
+            return iCloudContainer
+        }
+        return fm.homeDirectoryForCurrentUser.appendingPathComponent(".ai-context/memory", isDirectory: true)
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -842,12 +854,15 @@ struct StorageSettingsTab: View {
                         Divider()
                         locationRow("Logs", logsDir,
                             subtitle: "Background process output and download logs")
+                        Divider()
+                        locationRow("AI Memory", memoryDir,
+                            subtitle: "Shared memory store — synced to iCloud so every agent reads one current source of truth")
                     }
                     .padding(8)
                 }
                 GroupBox("About") {
                     Text("SwiftMaestro keeps everything in one app root under Application Support. "
-                        + "Shared memory still lives in ~/.ai-context/memory/ so Qwen Code and other tools can read it.")
+                        + "Shared memory lives in AI Memory (iCloud Drive, with ~/.ai-context/memory symlinked to it) so Qwen Code and other tools can read it.")
                         .font(.caption).foregroundStyle(.secondary).padding(8)
                 }
                 Spacer()
@@ -1172,6 +1187,11 @@ struct ModelsSettingsTab: View {
     @Environment(ModelCatalog.self) private var catalog
     @Environment(MLXInferenceEngine.self) private var engine
     @AppStorage("models.localRoot") private var modelsRoot: String = ""
+    /// Extra local model directories scanned as additional (read-only) sources,
+    /// e.g. a collection on an external/RAID drive. Downloads still go to the
+    /// primary `modelsRoot` only. Persisted manually to
+    /// `ModelCatalog.additionalRootsKey` (String array) on add/remove.
+    @State private var additionalRoots: [String] = []
     /// Download gating: hide models whose estimated memory need (weights +
     /// 25% runtime headroom) exceeds this Mac's residency budget. Remote and
     /// already-downloaded models always show. ON by default so a low-memory
@@ -1179,6 +1199,7 @@ struct ModelsSettingsTab: View {
     @AppStorage("models.onlyShowFitting") private var onlyShowFitting = true
     @State private var hubModelID: String = ""
     @State private var loadingModelID: String? = nil
+    @State private var removingModelID: String? = nil
     @State private var showingAddProvider = false
     @State private var providerStore = RemoteProviderStore.shared
     private let sampler = ModelActivitySampler.shared
@@ -1190,6 +1211,36 @@ struct ModelsSettingsTab: View {
         let requiredGB = model.estimatedMemoryGB + model.estimatedMemoryGB / 4
         let budgetGB = engine.residentBudgetBytes / 1_073_741_824
         return (requiredGB <= budgetGB, requiredGB, budgetGB)
+    }
+
+    /// Present an NSOpenPanel to choose an additional directory to scan for
+    /// models (e.g. a collection on an external/RAID drive). The chosen path is
+    /// appended to `models.additionalRoots`; it is a read-only source — the app
+    /// never downloads into it.
+    private func presentModelFolderPicker() {
+        let panel = NSOpenPanel()
+        panel.title = "Add Additional Model Folder"
+        panel.prompt = "Add Folder"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = URL(fileURLWithPath: ModelCatalog.modelsRoot)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        let path = url.path
+        guard !additionalRoots.contains(path),
+              path != ModelCatalog.modelsRoot else { return }
+        additionalRoots.append(path)
+        UserDefaults.standard.set(additionalRoots, forKey: ModelCatalog.additionalRootsKey)
+        catalog.refreshLocalPaths()
+    }
+
+    /// Remove an additional model folder from the scan list and rescan.
+    private func removeModelFolder(_ path: String) {
+        additionalRoots.removeAll { $0 == path }
+        UserDefaults.standard.set(additionalRoots, forKey: ModelCatalog.additionalRootsKey)
+        catalog.refreshLocalPaths()
     }
 
     /// The visible catalog: remote models and on-disk models always show;
@@ -1255,11 +1306,51 @@ struct ModelsSettingsTab: View {
                     .padding(8)
                 }
                 GroupBox("Models folder") {
-                    VStack(alignment: .leading, spacing: 6) {
+                    VStack(alignment: .leading, spacing: 10) {
                         Text("Where MLX models are stored and downloaded. Defaults to this app's Application Support folder (portable to any Mac). Set a custom path to use an existing collection. Relaunch to apply.")
                             .font(.caption).foregroundStyle(.secondary)
                         TextField(ModelCatalog.modelsRoot, text: $modelsRoot)
                             .textFieldStyle(.roundedBorder)
+
+                        Divider()
+
+                        HStack(alignment: .firstTextBaseline) {
+                            Text("Additional model folders")
+                                .font(.headline)
+                            Spacer()
+                            Button {
+                                presentModelFolderPicker()
+                            } label: {
+                                Label("Add Folder…", systemImage: "plus")
+                            }
+                            .help("Scan an extra directory (e.g. models on an external drive) for locally available models. Downloads still go to the primary folder above.")
+                        }
+
+                        if additionalRoots.isEmpty {
+                            Text("No additional folders. Models are only scanned in the primary folder above.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            ForEach(additionalRoots, id: \.self) { path in
+                                HStack(spacing: 6) {
+                                    Image(systemName: "externaldrive")
+                                        .foregroundStyle(.secondary)
+                                    Text(path)
+                                        .font(.caption)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                        .help(path)
+                                    Spacer()
+                                    Button(role: .destructive) {
+                                        removeModelFolder(path)
+                                    } label: {
+                                        Image(systemName: "minus.circle")
+                                    }
+                                    .buttonStyle(.plain)
+                                    .foregroundStyle(.red)
+                                    .help("Remove this additional model folder")
+                                }
+                            }
+                        }
                     }
                     .padding(8)
                 }
@@ -1337,6 +1428,16 @@ struct ModelsSettingsTab: View {
                                 if model.isVision {
                                     Image(systemName: "eye").foregroundStyle(.blue)
                                 }
+                                if catalog.canRemoveModel(model.id) {
+                                    Button {
+                                        removingModelID = model.id
+                                    } label: {
+                                        Image(systemName: "trash")
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("Remove this model from the catalog")
+                                }
                             }
                             .padding(.vertical, 2)
                             Divider()
@@ -1396,10 +1497,33 @@ struct ModelsSettingsTab: View {
         .sheet(isPresented: $showingAddProvider) {
             AddRemoteProviderSheet()
         }
+        .confirmationDialog(
+            "Remove this model from the catalog?",
+            isPresented: Binding(
+                get: { removingModelID != nil },
+                set: { if !$0 { removingModelID = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Remove", role: .destructive) {
+                if let id = removingModelID {
+                    catalog.removeModel(id)
+                }
+                removingModelID = nil
+            }
+            Button("Cancel", role: .cancel) {
+                removingModelID = nil
+            }
+        } message: {
+            Text("This removes the model entry from the list. It does not delete any files from disk.")
+        }
         .onAppear {
-            // Rescan the model root so models that live under the
-            // swiftmaestro-models/ layout are recognized without requiring a
-            // manual download attempt.
+            // Load persisted additional model folders, then rescan the model
+            // root(s) so models that live under the swiftmaestro-models/ layout
+            // (or in an added external folder) are recognized without requiring
+            // a manual download attempt.
+            additionalRoots = UserDefaults.standard.stringArray(
+                forKey: ModelCatalog.additionalRootsKey) ?? []
             catalog.refreshLocalPaths()
         }
     }
@@ -2123,6 +2247,8 @@ struct ContextSettingsTab: View {
     @State private var importScope: String = "Maestro (parent)"
     @State private var importFolderPath: String = ""
     @State private var importStatus: String = ""
+    @State private var importProgressWritten: Int = 0
+    @State private var importing: Bool = false
     @State private var filesInMemory: Int = 0
     @State private var lastImportDate: String = ""
     @State private var collapseCompactionSummaries: Bool = false
@@ -2132,6 +2258,110 @@ struct ContextSettingsTab: View {
     /// toggle above it (which only bypasses the Authorized Folders list).
     @State private var macOSFullDiskAccess: Bool = false
     @State private var saveMessage: String?
+
+    /// Wire the "Import Into Memory" button to the real `MemoryImportService`
+    /// routes — the same routes chat attachments use — so the imported documents
+    /// land in shared memory and become `memory_search`-able. Accepts both a
+    /// folder (recursively imported) and a single file (imported as-is).
+    private func performImport() {
+        var trimmed = importFolderPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Paths copied from Finder / a terminal often arrive wrapped in shell
+        // quotes (e.g. '.../YT Audio Assets' or ".../My Folder"). A single
+        // wrapping quote pair of either kind is not part of the path — strip it
+        // so spaces-in-names aren't rejected as "does not exist".
+        if trimmed.count >= 2 {
+            let first = trimmed.first
+            let last = trimmed.last
+            if (first == "'" && last == "'") || (first == "\"" && last == "\"") {
+                trimmed.removeFirst()
+                trimmed.removeLast()
+            }
+        }
+        let scope = importScope
+        let path = (trimmed as NSString).expandingTildeInPath
+        guard !path.isEmpty else {
+            importStatus = "Enter a file or folder path first."
+            return
+        }
+
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        var isDirectory: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+        guard exists else {
+            // The path may genuinely be missing, but in protected locations
+            // (Mail, Messages, Safari, the Music media library, other apps'
+            // containers) macOS hides it entirely from processes without Full
+            // Disk Access — so "does not exist" is misleading there. Surface
+            // that case so the user knows how to unblock it.
+            if !FullDiskAccessService.isGranted() {
+                importStatus = "Can't access that path — macOS Full Disk Access is not granted. "
+                    + "Grant it in System Settings → Privacy & Security → Full Disk Access for "
+                    + "SwiftMaestro, then relaunch the app. (Protected locations like ~/Music are "
+                    + "invisible without it.)"
+            } else {
+                importStatus = "Path does not exist: \(path)"
+            }
+            return
+        }
+
+        let destination: MemoryImportDestination =
+            scope == "Agent project (child)" ? .project(selectedAgent == "All" ? "agent" : selectedAgent) : .knowledge
+
+        importing = true
+        importProgressWritten = 0
+        importStatus = ""
+        Task {
+            do {
+                let written: Int
+                if isDirectory.boolValue {
+                    written = try await MemoryImportService.shared.importFolder(
+                        at: url,
+                        destination: destination
+                    ) { _, writtenCount in
+                        Task { @MainActor in
+                            self.importProgressWritten = writtenCount
+                        }
+                    }
+                } else {
+                    // Mirror chat-attachment scoping: land single-file imports
+                    // under a subfolder (`manual/`) so they stay distinct from
+                    // folder imports and chat `chat/<agent>/` attachments.
+                    written = try await MemoryImportService.shared.importFile(
+                        at: url,
+                        destination: destination,
+                        subfolder: "manual"
+                    )
+                }
+                // Refresh the full-text index so the newly imported file(s) are
+                // immediately discoverable via the memory_search tool.
+                await MemorySearchService.shared.warm()
+
+                let total = (try? await MemoryImportService.shared.countFiles(
+                    in: destination)) ?? written
+                await MainActor.run {
+                    importing = false
+                    filesInMemory = total
+                    lastImportDate = Self.currentTimestamp()
+                    SwiftMaestroSettingsStore.saveFilesInMemory(total)
+                    SwiftMaestroSettingsStore.saveLastImportDate(lastImportDate)
+                    let kind = isDirectory.boolValue ? "file(s)" : "file"
+                    importStatus = "Imported \(written) \(kind) into memory."
+                }
+            } catch {
+                await MainActor.run {
+                    importing = false
+                    importStatus = "Import failed: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    /// HH:mm:ss AM/PM-style timestamp for the import date readout.
+    private static func currentTimestamp() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss a"
+        return f.string(from: Date())
+    }
 
     var body: some View {
         ScrollView {
@@ -2229,7 +2459,7 @@ struct ContextSettingsTab: View {
                     }
                     .padding(8)
                 }
-                GroupBox("Import Folder Into Memory (v2)") {
+                GroupBox("Import Into Memory") {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
                             Text("Scope")
@@ -2240,11 +2470,22 @@ struct ContextSettingsTab: View {
                             .pickerStyle(.segmented)
                         }
                         HStack {
-                            TextField("/absolute/path", text: $importFolderPath)
+                            TextField("/path/to/file-or-folder", text: $importFolderPath)
                                 .textFieldStyle(.roundedBorder)
-                            Button("Import Folder") {
-                                importStatus = "Importing..."
+                            Button("Import") {
+                                performImport()
                             }
+                            .disabled(importing)
+                        }
+                        if importing {
+                            ProgressView()
+                                .controlSize(.small)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Text("Importing… \(importProgressWritten) file(s) written")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else if !importStatus.isEmpty {
+                            Text(importStatus).font(.caption).foregroundStyle(.secondary)
                         }
                         if filesInMemory > 0 {
                             Text("\(filesInMemory) file(s) in memory — \(lastImportDate)")
@@ -2738,8 +2979,8 @@ struct MCPServerEntry: Identifiable, Codable {
             env: "",
             workingDir: "\(NSHomeDirectory())/.ai-context/mcp-server",
             timeout: 10,
-            enabled: true,
-            notes: "Cross-project context, memory, knowledge, build tools (29 tools)."
+            enabled: false,
+            notes: "Decommissioned: Native Swift memory engine handles context internally (saves ~32 tool definitions)."
         ),
         MCPServerEntry(
             name: "playwright",
