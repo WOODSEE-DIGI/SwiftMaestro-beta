@@ -149,12 +149,12 @@ enum KeychainService {
         }
     }
 
-    private static func _read(service customService: String, account: String, allowUI: Bool) throws -> String? {
+    private static func _read(service customService: String, account: String, allowUI: Bool, triedLocalFallback: Bool = false) throws -> String? {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: customService,
             kSecAttrAccount as String: account,
-            kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
+            kSecAttrSynchronizable as String: triedLocalFallback ? false : kSecAttrSynchronizableAny,
             kSecReturnData as String: kCFBooleanTrue!,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
@@ -165,6 +165,12 @@ enum KeychainService {
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
+        // -34018 (errSecMissingEntitlement / errSecNotAvailable) can occur when
+        // reading a synced item from a build without the keychain access group entitlement.
+        // Fall back to reading the local-only copy (synchronizable=false).
+        if status == errSecMissingEntitlement && !triedLocalFallback {
+            return try _read(service: customService, account: account, allowUI: allowUI, triedLocalFallback: true)
+        }
         guard status == errSecSuccess else { throw KeychainError.unexpectedStatus(status) }
         guard let data = result as? Data, let value = String(data: data, encoding: .utf8) else {
             return nil
