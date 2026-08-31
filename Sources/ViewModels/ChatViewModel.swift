@@ -300,11 +300,13 @@ class ChatViewModel: ObservableObject {
             let isLite = model.isLiteModel
             let allowedCategories = model.allowedToolCategories
             let prefersCompact = model.prefersCompactToolMode
+            let isCoding = CodingToolSet.isCodingAgent(agent)
             toolSpecs = await Self.buildToolSpecs(
                 agentID: agentID, isNavigator: isNavigator, isLiteModel: isLite,
                 mcp: mcpService,
                 allowedCategories: allowedCategories,
-                prefersCompact: prefersCompact)
+                prefersCompact: prefersCompact,
+                isCodingAgent: isCoding)
             // Re-derive the tool surface EVERY ROUND from the live panel set:
             // panel-linked categories (Auto tool mode) activate when open_panel
             // opens their panel and withdraw when it closes. A frozen run-start
@@ -316,7 +318,8 @@ class ChatViewModel: ObservableObject {
                     agentID: agentID, isNavigator: isNavigator, isLiteModel: isLite,
                     mcp: mcpService,
                     allowedCategories: allowedCategories,
-                    prefersCompact: prefersCompact)
+                    prefersCompact: prefersCompact,
+                    isCodingAgent: isCoding)
             }
         }
             // Low temperature when tools are active keeps function-calling faithful.
@@ -1964,10 +1967,13 @@ class ChatViewModel: ObservableObject {
     /// panel-linked categories (Auto tool mode) follow the live panel set.
     /// `allowedCategories` and `prefersCompact` come from the model and narrow
     /// the surface for remote providers that are overwhelmed by the full set.
+    /// Coding agents get the focused OpenCode-style native whitelist plus all
+    /// enabled MCP tools, instead of the full MaestroTools surface.
     static func buildToolSpecs(
         agentID: UUID, isNavigator: Bool, isLiteModel: Bool, mcp: MCPClientService?,
         allowedCategories: Set<ToolCategory>? = nil,
-        prefersCompact: Bool = false
+        prefersCompact: Bool = false,
+        isCodingAgent: Bool = false
     ) async -> [ToolSpec] {
         let (enabledCategories, savedCompact) = await MainActor.run {
             (MaestroTools.workspace?.effectiveToolCategories(for: agentID),
@@ -1999,11 +2005,20 @@ class ChatViewModel: ObservableObject {
         var specs = await MaestroTools.schemas(
             navigator: isNavigator, liteMode: isLiteModel,
             enabledCategories: filteredCategories, compactMode: compactMode)
+        if isCodingAgent {
+            // Focused native surface: drop the Apple-app/workspace/delegation
+            // flood so coding agents see an OpenCode-style toolset.
+            specs = CodingToolSet.filterNativeSchemas(specs)
+        }
         if let mcp {
             // Maestro gets NO MCP tools — it delegates everything.
-            // Only project agents get MCP tools (read_note, list_dir, etc.).
+            // Coding agents get ALL enabled MCP tools directly (OpenCode-style).
+            // Other project agents only get MCP tools if their category filter
+            // includes .mcp.
             if !isNavigator {
-                if let filteredCategories {
+                if isCodingAgent {
+                    specs += await mcp.currentSchemas()
+                } else if let filteredCategories {
                     if filteredCategories.contains(ToolCategory.mcp) {
                         specs += await mcp.currentSchemas(forCategories: filteredCategories)
                     }

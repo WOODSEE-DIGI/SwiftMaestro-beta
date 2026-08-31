@@ -1816,6 +1816,18 @@ final class AgentExecutor: Sendable {
             return await taskDelegate(argumentsJSON: tc.arguments, mcp: mcp, workingDirectory: workingDirectory)
         }
 
+        // Coding-agent guard: enforce the focused OpenCode-style whitelist.
+        // Native tools outside the whitelist are rejected; MCP tools pass through.
+        let isCodingBlockedNative = await MainActor.run {
+            guard let agentID,
+                  let agentUUID = UUID(uuidString: agentID),
+                  let agent = MaestroTools.workspace?.agent(id: agentUUID) else { return false }
+            return CodingToolSet.isCodingAgent(agent) && !CodingToolSet.allowsNativeTool(tc.name)
+        }
+        if isCodingBlockedNative, !(await mcp?.handles(tc.name) ?? false) {
+            return "{\"error\":\"\(tc.name) is not available to coding agents. Use the provided file, shell, search, memory, and MCP tools.\"}"
+        }
+
         // Maestro guard: if project is nil (Maestro), block work tools.
         // The model sometimes ignores the tool spec and calls tools it shouldn't have.
         if project == nil && Self.navigatorBlockedTools.contains(tc.name) {
