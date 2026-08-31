@@ -2017,7 +2017,9 @@ class ChatViewModel: ObservableObject {
             // includes .mcp.
             if !isNavigator {
                 if isCodingAgent {
-                    specs += await mcp.currentSchemas()
+                    let mcpSchemas = await mcp.currentSchemas()
+                    let existingNames = Set(specs.compactMap { MaestroTools.toolName(from: $0) })
+                    specs += mcpSchemas.filter { MaestroTools.toolName(from: $0).map { !existingNames.contains($0) } ?? true }
                 } else if let filteredCategories {
                     if filteredCategories.contains(ToolCategory.mcp) {
                         specs += await mcp.currentSchemas(forCategories: filteredCategories)
