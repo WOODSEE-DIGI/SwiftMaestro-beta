@@ -392,7 +392,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .mediaPlayer: return [.mediaPlayer]
         case .overlayBuilder: return [.htmlBuilder]
         case .documents: return [.maestroDocs]
-        case .shell: return [.terminal]
+        case .shell: return [.terminalApp]
         case .calendar: return [.calendar]
         case .reminders: return [.reminders]
         case .contacts: return [.contacts]

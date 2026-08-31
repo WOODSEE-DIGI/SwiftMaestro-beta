@@ -952,7 +952,7 @@ extension WorkspacePanelKind {
             "kanban": .kanban,
             "numbers": .numbers,
             "whatsapp": .whatsapp,
-            "terminal": .terminal,
+            "terminal": .terminalApp,
             "tethering": .tethering,
             "streamIngest": .streamIngest,
             "broadcast": .broadcast,

@@ -461,11 +461,17 @@ struct ContentView: View {
     /// Opens a panel via `workspaceLayout`, and — if it opened as a floating
     /// window rather than docking directly — actually presents that window.
     /// The single call site every "open this panel" action should go through.
+    /// Terminal is special-cased: every open creates a fresh `.terminal(UUID())`
+    /// instance so multiple terminals can coexist.
     private func openPanel(_ kind: WorkspacePanelKind, zone: TilingDropZone? = .right) {
-        let result = workspaceLayout.open(kind, zone: zone)
+        let kindToOpen: WorkspacePanelKind = {
+            if case .terminal = kind { return .terminal(UUID()) }
+            return kind
+        }()
+        let result = workspaceLayout.open(kindToOpen, zone: zone)
         switch result {
         case .floated:
-            openWindow(id: "workspace-panel-window", value: WorkspacePanelWindowID(kind: kind))
+            openWindow(id: "workspace-panel-window", value: WorkspacePanelWindowID(kind: kindToOpen))
         case .alreadyOpen:
             // Self-healing: if state says this panel is floating but its
             // window somehow doesn't actually exist anymore (e.g. state
@@ -474,13 +480,13 @@ struct ContentView: View {
             // instead of silently doing nothing. `openWindow` is safe to call
             // even when a matching window already exists — it just brings
             // that window forward rather than duplicating it.
-            if workspaceLayout.isFloating(kind) {
-                openWindow(id: "workspace-panel-window", value: WorkspacePanelWindowID(kind: kind))
+            if workspaceLayout.isFloating(kindToOpen) {
+                openWindow(id: "workspace-panel-window", value: WorkspacePanelWindowID(kind: kindToOpen))
             }
             // Bring any open floating window for this panel to the front, and
             // also bring any detached agent-chat window to the front.
-            NotificationCenter.default.post(name: .bringWorkspacePanelToFront, object: kind)
-            if case .agentChat(let id) = kind {
+            NotificationCenter.default.post(name: .bringWorkspacePanelToFront, object: kindToOpen)
+            if case .agentChat(let id) = kindToOpen {
                 NotificationCenter.default.post(name: .bringAgentChatToFront, object: id)
             }
         case .dockedDirectly:

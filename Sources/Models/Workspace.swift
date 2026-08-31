@@ -499,7 +499,17 @@ final class WorkspaceStore {
         Self.effectiveCategories(
             saved: enabledToolCategories(for: agentID),
             auto: autoToolCategories(for: agentID),
-            isOpen: { WorkspaceLayoutState.shared.isOpen($0) })
+            isOpen: { kind in
+                // Shell tools are available when any Terminal panel is open,
+                // not just the launcher template UUID.
+                if case .terminal = kind {
+                    return WorkspaceLayoutState.shared.allOpenPanels.contains(where: { panel in
+                        if case .terminal = panel { return true }
+                        return false
+                    })
+                }
+                return WorkspaceLayoutState.shared.isOpen(kind)
+            })
     }
 
     /// Pure filter behind `effectiveToolCategories`, extracted so tests can

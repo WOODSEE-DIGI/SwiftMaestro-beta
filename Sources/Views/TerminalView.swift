@@ -11,6 +11,11 @@ import SwiftUI
 // gets the representation it actually needs.
 struct TerminalView: View {
 
+    /// Unique identifier for this Terminal panel instance. Multiple Terminal
+    /// panels can be open in the workspace at once; each has its own tab/pane
+    /// state and badge handler.
+    let sessionID: UUID
+
     private enum Tab: String, CaseIterable, Identifiable {
         case live = "Live Terminal"
         case agentLog = "Agent Log"
@@ -133,6 +138,7 @@ struct TerminalView: View {
         .frame(minWidth: 360, idealWidth: 480)
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear { registerTriggerBadgeHandler() }
+        .onDisappear { TerminalTriggerEngine.shared.unregisterBadgeHandler(sessionID: sessionID) }
     }
 
     private var activeShellID: UUID? {
@@ -146,7 +152,8 @@ struct TerminalView: View {
     }
 
     private func registerTriggerBadgeHandler() {
-        triggerEngine.onBadge = { tabID, _, _ in
+        triggerEngine.registerBadgeHandler(sessionID: sessionID) { tabID, _, _ in
+            guard shells.contains(where: { $0.id == tabID }) else { return }
             if tabID != activeShellID {
                 badgedTabs.insert(tabID)
             }
@@ -804,6 +811,6 @@ private struct TerminalLogEntryRow: View {
 // MARK: - Preview
 
 #Preview {
-    TerminalView()
+    TerminalView(sessionID: UUID())
         .frame(height: 400)
 }

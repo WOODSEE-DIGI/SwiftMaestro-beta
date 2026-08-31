@@ -106,6 +106,19 @@ struct WorkspacePanelWindowView: View {
         if case .plugin(let id) = target.kind {
             return pluginService.manifest(id: id)?.name ?? "Plugin"
         }
+        if case .terminal(let id) = target.kind {
+            let terminals = layout.allOpenPanels.filter {
+                if case .terminal = $0 { return true }
+                return false
+            }
+            if let index = terminals.firstIndex(where: {
+                if case .terminal(let tid) = $0 { return tid == id }
+                return false
+            }) {
+                return "Terminal \(index + 1)"
+            }
+            return "Terminal"
+        }
         return target.kind.staticDisplayName ?? "Panel"
     }
 

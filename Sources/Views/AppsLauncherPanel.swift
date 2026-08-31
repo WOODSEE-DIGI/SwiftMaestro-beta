@@ -94,7 +94,7 @@ struct AppsLauncherPanel: View {
 
     @ViewBuilder
     private func iconOnlyRow(_ kind: WorkspacePanelKind) -> some View {
-        let isOpen = workspaceLayout.isOpen(kind)
+        let isOpen = workspaceLayout.isOpenOrAnyTerminal(kind)
         Image(systemName: kind.icon)
             .font(.system(size: 24))
             .foregroundStyle(isOpen ? theme.accent : theme.sidebarText)
@@ -187,7 +187,7 @@ struct AppsLauncherPanel: View {
                 Image(systemName: "lock.fill")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-            } else if workspaceLayout.isOpen(kind) {
+            } else if workspaceLayout.isOpenOrAnyTerminal(kind) {
                 Circle()
                     .fill(theme.accent)
                     .frame(width: 6, height: 6)

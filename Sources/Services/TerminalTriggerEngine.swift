@@ -63,9 +63,12 @@ final class TerminalTriggerEngine: @unchecked Sendable {
 
     var triggers: [TerminalTrigger] = [] { didSet { save() } }
 
-    /// Registered by the Terminal panel: (tabID, trigger, matchedLine) → Void.
-    /// Used to badge the tab chip until the user focuses that tab.
-    var onBadge: ((UUID, TerminalTrigger, String) -> Void)?
+    /// Registered by each Terminal panel: sessionID → (tabID, trigger, matchedLine) → Void.
+    /// Multiple Terminal panels can be open concurrently; each handler filters
+    /// tabID against its own shell tabs. Handlers run on the MainActor because
+    /// they mutate SwiftUI @State.
+    private var onBadgeHandlers: [UUID: @MainActor (UUID, TerminalTrigger, String) -> Void] = [:]
+    private let handlerLock = NSLock()
 
     // MARK: - Output processing
 
@@ -108,6 +111,20 @@ final class TerminalTriggerEngine: @unchecked Sendable {
         lock.unlock()
     }
 
+    // MARK: - Multi-panel badge handlers
+
+    func registerBadgeHandler(sessionID: UUID, handler: @escaping @MainActor (UUID, TerminalTrigger, String) -> Void) {
+        handlerLock.lock()
+        onBadgeHandlers[sessionID] = handler
+        handlerLock.unlock()
+    }
+
+    func unregisterBadgeHandler(sessionID: UUID) {
+        handlerLock.lock()
+        onBadgeHandlers.removeValue(forKey: sessionID)
+        handlerLock.unlock()
+    }
+
     // MARK: - Firing
 
     private func fire(_ rule: TerminalTrigger, line: String, tab: UUID) {
@@ -115,8 +132,12 @@ final class TerminalTriggerEngine: @unchecked Sendable {
             DispatchQueue.main.async { NSSound.beep() }
         }
         if rule.badge {
-            let callback = onBadge
-            DispatchQueue.main.async { callback?(tab, rule, line) }
+            handlerLock.lock()
+            let handlers = Array(onBadgeHandlers.values)
+            handlerLock.unlock()
+            for handler in handlers {
+                Task { @MainActor in handler(tab, rule, line) }
+            }
         }
         if rule.notify {
             postNotification(for: rule, line: line)

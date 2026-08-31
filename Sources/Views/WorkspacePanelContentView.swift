@@ -57,8 +57,8 @@ struct WorkspacePanelContentView: View {
                     description: Text("No plugin with id \"\(id)\" is currently installed.")
                 )
             }
-        case .terminal:
-            TerminalView()
+        case .terminal(let sessionID):
+            TerminalView(sessionID: sessionID)
         case .busMonitor:
             BusMonitorView()
         case .audioControl:

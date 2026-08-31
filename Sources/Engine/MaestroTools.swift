@@ -1619,7 +1619,7 @@ enum MaestroTools {
         case "notes.md", "notesmd", "md notes": return .notesMD
         case "apple notes", "applenotes", "notes": return .appleNotes
         // General panels.
-        case "terminal", "shell", "term": return .terminal
+        case "terminal", "shell", "term": return .terminal(UUID())
         case "calendar", "cal": return .calendar
         case "reminders", "todo", "tasks": return .reminders
         case "contacts", "people": return .contacts
@@ -1767,8 +1767,17 @@ enum MaestroTools {
 
         return await MainActor.run {
             guard let layout = workspaceLayout else { return errorJSON("workspace layout unavailable") }
-            guard let kind = resolvePanelKind(args.panel) else {
+            guard var kind = resolvePanelKind(args.panel) else {
                 return errorJSON("unknown panel '\(args.panel)'. Available: \(panelListForErrors)")
+            }
+            // Terminal panels have unique instance UUIDs; resolvePanelKind returns
+            // a fresh UUID, so find an actually-open terminal to close.
+            if case .terminal = kind,
+               let openTerminal = layout.allOpenPanels.first(where: {
+                   if case .terminal = $0 { return true }
+                   return false
+               }) {
+                kind = openTerminal
             }
             // Closing a panel the user can re-open is safe; only report honestly
             // when it wasn't open in the first place.

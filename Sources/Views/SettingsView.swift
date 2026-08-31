@@ -373,7 +373,7 @@ struct AppearanceSettingsTab: View {
     /// the shared accent for now).
     static let customizablePanels: [WorkspacePanelKind] = [
         .busMonitor, .notesMD, .appleNotes, .calendar, .reminders, .contacts,
-        .canvas, .kanban, .numbers, .whatsapp, .terminal,
+        .canvas, .kanban, .numbers, .whatsapp, .terminalApp,
         .webBrowser, .damBrowser, .maestroDocs, .maestroBooks, .maestroDB, .htmlBuilder, .backup, .voiceNotes,
         .pomodoro,
     ]

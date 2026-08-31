@@ -221,8 +221,14 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
     case plugin(String)
     /// Shell command execution log. Used to live inside a single agent's chat
     /// as a `PanelType` sub-panel; moved here so it's a normal top-level
-    /// "Swift Apps" item instead — one Terminal, independent of any agent.
-    case terminal
+    /// "Swift Apps" item instead. The UUID lets multiple independent Terminal
+    /// panels coexist in the workspace, each with its own tab/pane state.
+    case terminal(UUID)
+
+    /// Launcher/settings template for Terminal. Every tap creates a fresh
+    /// `.terminal(UUID())` instance; this constant is only used for display,
+    /// enablement, and theming (all of which share the "terminal" key).
+    static let terminalApp: WorkspacePanelKind = .terminal(UUID())
     /// Live view of the internal agent bus: topics, messages, and subscribers.
     case busMonitor
     /// Audio input/output control panel: device selection, mute, and level meter.
@@ -862,6 +868,20 @@ final class WorkspaceLayoutState {
     /// then floating panels.
     var allOpenPanels: [WorkspacePanelKind] {
         canvasTiles.sorted { $0.z > $1.z }.flatMap(\.kinds) + floatingPanels
+    }
+
+    /// Like `isOpen`, but treats `.terminal` as a wildcard: returns `true` if
+    /// ANY Terminal panel is currently open. Used by the launcher so the
+    /// Terminal row shows its "open" dot even though each Terminal panel has a
+    /// unique instance UUID.
+    func isOpenOrAnyTerminal(_ kind: WorkspacePanelKind) -> Bool {
+        if case .terminal = kind {
+            return allOpenPanels.contains(where: { panel in
+                if case .terminal = panel { return true }
+                return false
+            })
+        }
+        return isOpen(kind)
     }
 
     /// Whether the canvas holds more than one tile.
