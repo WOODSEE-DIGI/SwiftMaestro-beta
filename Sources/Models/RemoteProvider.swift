@@ -89,14 +89,11 @@ struct RemoteProvider: Identifiable, Codable, Hashable, Sendable {
             let isKimi = lowercased.hasPrefix("kimi-")
             let fixedTemperature: Double? = isKimi ? 1.0 : nil
             let fixedTopP: Double? = isKimi ? 0.95 : nil
-            // Online providers get a curated tool surface by default: core chat,
-            // shell, memory, web, and workspace tools — but not the full Apple
-            // app/MCP flood. Compact mode defers the rest via search_tools.
+            // Online providers default to Compact Tool Mode: every tool is still
+            // reachable, but most schemas are deferred behind search_tools/call_tool
+            // instead of being inlined in every request. This keeps full capability
+            // parity with local models while avoiding the 160-tool prompt flood.
             let isOnline = kind == .online
-            let allowedCategories: Set<ToolCategory>? = isOnline ? Set([
-                .file, .shell, .memory, .index, .web, .browser, .scraping,
-                .workspace, .rules, .time, .system, .messaging
-            ]) : nil
             return MaestroModel(
                 id: "remote-\(id.uuidString)-\(modelID)",
                 displayName: "\(modelID) · \(name)",
@@ -110,7 +107,6 @@ struct RemoteProvider: Identifiable, Codable, Hashable, Sendable {
                 recTopP: fixedTopP,
                 fixedTemperature: fixedTemperature,
                 fixedTopP: fixedTopP,
-                allowedToolCategories: allowedCategories,
                 prefersCompactToolMode: isOnline,
                 remoteBaseURL: baseURL,
                 remoteProviderKind: kind,
