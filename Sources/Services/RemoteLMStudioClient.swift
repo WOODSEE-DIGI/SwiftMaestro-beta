@@ -28,7 +28,7 @@ final class RemoteLMStudioBackend: GenerationBackend, @unchecked Sendable {
         thinkingEnabled: Bool,
         maxTokens: Int,
         continuation: AsyncThrowingStream<AgentOutput, Error>.Continuation
-    ) async throws -> (content: String, toolCalls: [RoundToolCall]) {
+    ) async throws -> (content: String, reasoning: String?, toolCalls: [RoundToolCall]) {
         guard let url = config.chatCompletionURL else {
             throw RemoteModelError.invalidURL
         }
@@ -91,6 +91,7 @@ final class RemoteLMStudioBackend: GenerationBackend, @unchecked Sendable {
 
         let startTime = Date()
         var content = ""
+        var reasoning = ""
         var toolCalls: [RoundToolCall] = []
         // Accumulate tool call deltas keyed by index (OpenAI streams args incrementally).
         var toolCallBuffers: [Int: (id: String, name: String, arguments: String)] = [:]
@@ -145,7 +146,7 @@ final class RemoteLMStudioBackend: GenerationBackend, @unchecked Sendable {
                         toolCount: toolCalls.count,
                         elapsedMs: Int(elapsed * 1000)
                     )
-                    return (content, toolCalls)
+                    return (content, reasoning.isEmpty ? nil : reasoning, toolCalls)
                 }
 
                 guard let jsonData = jsonPart.data(using: .utf8),
@@ -165,6 +166,13 @@ final class RemoteLMStudioBackend: GenerationBackend, @unchecked Sendable {
                 if let token = delta["content"] as? String, !token.isEmpty {
                     content += token
                     continuation.yield(.token(token))
+                }
+
+                // Separate reasoning/thinking token (OpenAI-compatible providers such as
+                // DeepSeek / QwQ / some Kimi endpoints expose this as `reasoning_content`).
+                if let reasoningToken = delta["reasoning_content"] as? String, !reasoningToken.isEmpty {
+                    reasoning += reasoningToken
+                    continuation.yield(.reasoningToken(reasoningToken))
                 }
 
                 // Tool call delta (OpenAI function-calling format).
@@ -208,7 +216,7 @@ final class RemoteLMStudioBackend: GenerationBackend, @unchecked Sendable {
             toolCount: toolCalls.count,
             elapsedMs: Int(elapsed * 1000)
         )
-        return (content, toolCalls)
+        return (content, reasoning.isEmpty ? nil : reasoning, toolCalls)
     }
 }
 

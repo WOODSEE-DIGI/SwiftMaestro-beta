@@ -15,7 +15,7 @@ struct FloatingPanelWindowView: View {
     @Environment(TodoStore.self) private var todoStore
     @Environment(PlanStore.self) private var planStore
     @Environment(ThemeStore.self) private var theme
-    @State private var layoutState = PanelLayoutState.shared
+    @State private var layoutState = PanelLayoutState()
     /// Keep this window in front of all others. Opt-in, off by default.
     @State private var isPinnedToFront = false
 
@@ -92,11 +92,12 @@ struct FloatingPanelWindowView: View {
     private var floatingTasksContent: some View {
         let agentID = target.agentID ?? UUID()
         let todos = todoStore.lists[agentID] ?? []
-        let done = todos.filter { $0.done }.count
+        let doneCount = todos.filter(\.done).count
+
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 6) {
                 Spacer()
-                Text("\(done)/\(todos.count)")
+                Text("\(doneCount)/\(todos.count)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Button { todoStore.clear(for: agentID) } label: {

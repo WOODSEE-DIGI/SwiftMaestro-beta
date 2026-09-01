@@ -18,6 +18,10 @@ import MLXLMCommon
 /// Streamed output from a generation round / the agentic loop.
 public enum AgentOutput: Sendable {
     case token(String)
+    /// Separate reasoning/thinking token from APIs that expose `reasoning_content`
+    /// (DeepSeek, QwQ, some Kimi endpoints, etc.). The UI renders these in a
+    /// dimmer disclosure so the final reply stays bright and readable.
+    case reasoningToken(String)
     case toolCall(name: String, arguments: String)
     case info(tokensPerSecond: Double)
     /// A mid-run user steer was injected at a round boundary: the UI should
@@ -83,7 +87,7 @@ public protocol GenerationBackend: Sendable {
         thinkingEnabled: Bool,
         maxTokens: Int,
         continuation: AsyncThrowingStream<AgentOutput, Error>.Continuation
-    ) async throws -> (content: String, toolCalls: [RoundToolCall])
+    ) async throws -> (content: String, reasoning: String?, toolCalls: [RoundToolCall])
 }
 
 /// Resolves a delegated target agent's own backend, wire model id, and per-run

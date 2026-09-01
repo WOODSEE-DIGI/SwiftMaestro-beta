@@ -177,6 +177,8 @@ actor BusWorker {
             for try await output in stream {
                 if case .token(let token) = output {
                     payload += token
+                } else if case .reasoningToken(let token) = output {
+                    payload += token
                 }
             }
         } catch {

@@ -31,7 +31,7 @@ struct WorkspacePanelContainer<Content: View>: View {
     var canvasTileID: UUID? = nil
 
     @State private var layout = WorkspaceLayoutState.shared
-    @State private var panelLayout = PanelLayoutState.shared
+    @Environment(PanelLayoutState.self) private var panelLayout
     @Environment(ThemeStore.self) private var theme
     @Environment(\.openWindow) private var openWindow
 

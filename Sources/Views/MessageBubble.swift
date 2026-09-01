@@ -51,11 +51,15 @@ struct MessageBubble: View {
                         // fences as literal noise. Code blocks get boxes + copy/
                         // run buttons; the caption font + secondary color keep
                         // the block visually subordinate to the answer.
-                        RichMarkdownView(text: reasoning, isUser: false, onRunCommand: { command in
-                            Self.openTerminal(with: command)
-                        })
-                        .font(.caption)
-                        .foregroundStyle(theme.chatSecondaryText)
+                        RichMarkdownView(
+                            text: reasoning,
+                            isUser: false,
+                            textColor: theme.chatSecondaryText,
+                            font: .caption,
+                            onRunCommand: { command in
+                                Self.openTerminal(with: command)
+                            }
+                        )
                         .padding(.top, 2)
                     } label: {
                         Label(reasoningLabel, systemImage: "brain")
@@ -104,9 +108,15 @@ struct MessageBubble: View {
                             .background(bubbleColor, in: bubbleShape)
                             .foregroundStyle(theme.userBubbleText)
                     } else {
-                        RichMarkdownView(text: displayAnswer, isUser: false, onRunCommand: { command in
-                            Self.openTerminal(with: command)
-                        })
+                        RichMarkdownView(
+                            text: displayAnswer,
+                            isUser: false,
+                            textColor: theme.chatText,
+                            font: .body,
+                            onRunCommand: { command in
+                                Self.openTerminal(with: command)
+                            }
+                        )
                         .padding(.vertical, 4)
                     }
                 }

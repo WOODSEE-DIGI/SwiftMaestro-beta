@@ -11,6 +11,11 @@ struct RichMarkdownView: View {
 
     let text: String
     let isUser: Bool
+    /// Color for the body text (headings, paragraphs, inline text, table text).
+    /// Defaults to the theme's `chatText` when nil.
+    var textColor: Color? = nil
+    /// Optional font override. When nil the caller's environment font is used.
+    var font: Font? = nil
     /// Optional callback when user taps "Run" on a shell code block.
     var onRunCommand: ((String) -> Void)? = nil
     /// Base directory for resolving relative image paths (clip notes reference
@@ -27,7 +32,12 @@ struct RichMarkdownView: View {
             ForEach(segments) { segment in
                 switch segment {
                 case .text(let content):
-                    TextSegmentView(content: content, isUser: isUser, baseURL: baseURL)
+                    TextSegmentView(
+                        content: content,
+                        isUser: isUser,
+                        textColor: textColor,
+                        baseURL: baseURL
+                    )
                 case .code(let language, let code, let id):
                     CodeBlockView(
                         language: language,
@@ -38,6 +48,7 @@ struct RichMarkdownView: View {
                 }
             }
         }
+        .font(font)
     }
 
     private func isShellLanguage(_ lang: String) -> Bool {
@@ -290,8 +301,14 @@ struct TextSegmentView: View {
 
     let content: String
     let isUser: Bool
+    /// Color for body text. Falls back to the theme's `chatText`.
+    var textColor: Color? = nil
     /// Base directory for resolving relative image paths (nil = remote only).
     var baseURL: URL? = nil
+
+    private var effectiveTextColor: Color {
+        textColor ?? theme.chatText
+    }
 
     private var blocks: [MarkdownBlock] {
         MarkdownBlockParser.parse(
@@ -299,12 +316,11 @@ struct TextSegmentView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             ForEach(blocks) { block in
-                MarkdownBlockView(block: block, textColor: theme.chatText, baseURL: baseURL)
+                MarkdownBlockView(block: block, textColor: effectiveTextColor, baseURL: baseURL)
             }
         }
-        .font(.body)
         .textSelection(.enabled)
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
@@ -566,6 +582,8 @@ struct MarkdownBlockView: View {
                 .padding(.top, level == 1 ? 10 : 6)
         case .paragraph(_, let text):
             inlineText(text)
+                .padding(.vertical, 2)
+                .lineSpacing(2)
         case .blockquote(_, let text):
             HStack(alignment: .top, spacing: 8) {
                 RoundedRectangle(cornerRadius: 1)
@@ -672,7 +690,7 @@ struct MarkdownBlockView: View {
                         Text(col < header.count ? header[col] : "")
                             .font(.subheadline)
                             .fontWeight(.semibold)
-                            .foregroundStyle(theme.chatText)
+                            .foregroundStyle(textColor)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 6)
                             .frame(minWidth: 60, alignment: .leading)
@@ -686,7 +704,7 @@ struct MarkdownBlockView: View {
                         ForEach(0..<columnCount, id: \.self) { col in
                             Text(col < row.count ? row[col] : "")
                                 .font(.subheadline)
-                                .foregroundStyle(theme.chatText)
+                                .foregroundStyle(textColor)
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 5)
                                 .frame(minWidth: 60, alignment: .leading)

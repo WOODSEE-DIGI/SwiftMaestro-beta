@@ -60,6 +60,10 @@ class ChatViewModel: ObservableObject {
     private var reasoningStart: Date?
     private var streamBuffer = ""
     private var sawReasoningClose = false
+    /// True when the backend explicitly streamed `.reasoningToken` (e.g. via the
+    /// OpenAI-compatible `reasoning_content` delta). Prevents the end-of-stream
+    /// rescue from promoting the reasoning bucket into the answer.
+    private var hasReasoningContent = false
     /// Per-ROUND close tracking: each tool-round re-arms reasoning, so a final
     /// answer round with NO thinking block (no close tag of its own) would
     /// otherwise pour the answer into `reasoning` and leave the chat empty —
@@ -236,6 +240,7 @@ class ChatViewModel: ObservableObject {
         streamBuffer = ""
         sawReasoningClose = false
         sawCloseSinceFold = false
+        hasReasoningContent = false
         reasoningLengthAtLastFold = 0
         suppressingToolCall = false
         // Fresh steer queue for this run; the executor drains it each round.
@@ -420,6 +425,7 @@ class ChatViewModel: ObservableObject {
                     guard !Task.isCancelled else { break }
                     switch output {
                     case .token(let token): consumeStreamChunk(token)
+                    case .reasoningToken(let token): consumeReasoningToken(token)
                     case .toolCall(let name, let args): recordToolStep(name, arguments: args)
                     case .info(let tps): engine.reportExternalTokensPerSecond(tps)
                     case .turnBreak: beginSteeredTurn()
@@ -523,6 +529,7 @@ class ChatViewModel: ObservableObject {
         streamBuffer = ""
         sawReasoningClose = false
         sawCloseSinceFold = false
+        hasReasoningContent = false
         reasoningLengthAtLastFold = 0
         suppressingToolCall = false
     }
@@ -688,6 +695,9 @@ class ChatViewModel: ObservableObject {
     // is still detected.
 
     private static let qwenCloseTag = "</think>"
+    private static let thinkingCloseTag = "</thinking>"
+    private static let thoughtCloseTag = "</thought>"
+    private static let reasoningCloseTag = "</reasoning>"
     private static let gemmaCloseTag = "</channel>"
     private static let gemmaPipeCloseTag = "<channel|>"
     private static let toolCallOpen = "<tool_call>"
@@ -755,46 +765,40 @@ class ChatViewModel: ObservableObject {
             return
         }
 
-        // Close on either Qwen or Gemma 4 end-of-thinking markers.
-        if let r = streamBuffer.range(of: Self.qwenCloseTag) {
-            let reasoning = ThinkingTagStripper.strip(String(streamBuffer[..<r.lowerBound]))
-            appendReasoning(reasoning)
-            markReasoningClosed()
-            let after = ThinkingTagStripper.strip(String(streamBuffer[r.upperBound...]))
-            streamBuffer = ""
-            inReasoning = false
-            if !after.isEmpty { appendAnswer(after) }
-            return
-        }
-        if let r = streamBuffer.range(of: Self.gemmaCloseTag) {
-            let reasoning = ThinkingTagStripper.strip(String(streamBuffer[..<r.lowerBound]))
-            appendReasoning(reasoning)
-            markReasoningClosed()
-            let after = ThinkingTagStripper.strip(String(streamBuffer[r.upperBound...]))
-            streamBuffer = ""
-            inReasoning = false
-            if !after.isEmpty { appendAnswer(after) }
-            return
-        }
-        // Gemma 4 trailing-pipe: model emits <channel|> as end-of-thinking.
-        if let r = streamBuffer.range(of: Self.gemmaPipeCloseTag) {
-            let reasoning = ThinkingTagStripper.strip(String(streamBuffer[..<r.lowerBound]))
-            appendReasoning(reasoning)
-            markReasoningClosed()
-            let after = ThinkingTagStripper.strip(String(streamBuffer[r.upperBound...]))
-            streamBuffer = ""
-            inReasoning = false
-            if !after.isEmpty { appendAnswer(after) }
-            return
+        // Close on any known end-of-thinking marker.
+        for tag in [Self.qwenCloseTag, Self.thinkingCloseTag, Self.thoughtCloseTag,
+                    Self.reasoningCloseTag, Self.gemmaCloseTag, Self.gemmaPipeCloseTag] {
+            if let r = streamBuffer.range(of: tag) {
+                let reasoning = ThinkingTagStripper.strip(String(streamBuffer[..<r.lowerBound]))
+                appendReasoning(reasoning)
+                markReasoningClosed()
+                let after = ThinkingTagStripper.strip(String(streamBuffer[r.upperBound...]))
+                streamBuffer = ""
+                inReasoning = false
+                if !after.isEmpty { appendAnswer(after) }
+                return
+            }
         }
         // No close tag yet: flush all but a tail that might hold a partial tag.
-        let keep = max(Self.qwenCloseTag.count, Self.gemmaCloseTag.count, Self.gemmaPipeCloseTag.count) - 1
+        let keep = max(Self.qwenCloseTag.count, Self.thinkingCloseTag.count,
+                       Self.thoughtCloseTag.count, Self.reasoningCloseTag.count,
+                       Self.gemmaCloseTag.count, Self.gemmaPipeCloseTag.count) - 1
         if streamBuffer.count > keep {
             let split = streamBuffer.index(streamBuffer.endIndex, offsetBy: -keep)
             let chunk = ThinkingTagStripper.strip(String(streamBuffer[..<split]))
             appendReasoning(chunk)
             streamBuffer = String(streamBuffer[split...])
         }
+    }
+
+    /// Route a token that the backend already identified as reasoning (e.g. via
+    /// the OpenAI-compatible `reasoning_content` delta). It goes straight into
+    /// the reasoning bucket and disables the tag-based reasoning guard so the
+    /// subsequent `delta["content"]` tokens are treated as the answer.
+    private func consumeReasoningToken(_ token: String) {
+        hasReasoningContent = true
+        inReasoning = false
+        appendReasoning(token)
     }
 
     private func appendReasoning(_ text: String) {
@@ -879,12 +883,12 @@ class ChatViewModel: ObservableObject {
               messages[idx].content.isEmpty,
               let reasoning = messages[idx].reasoning, !reasoning.isEmpty else { return }
 
-        if !sawReasoningClose {
-            // Tier 1: no close tags at all this turn.
+        if !sawReasoningClose && !hasReasoningContent {
+            // Tier 1: no close tags and no explicit reasoning_content this turn.
             messages[idx].content = ThinkingTagStripper.strip(reasoning)
             messages[idx].reasoning = nil
             messages[idx].reasoningSeconds = nil
-        } else if !sawCloseSinceFold {
+        } else if !sawCloseSinceFold && !hasReasoningContent {
             // Tier 2: final round unclosed — promote its suffix to the answer.
             let foldPoint = min(reasoningLengthAtLastFold, reasoning.count)
             let splitIndex = reasoning.index(reasoning.startIndex, offsetBy: foldPoint)

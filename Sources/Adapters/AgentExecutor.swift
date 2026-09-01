@@ -359,7 +359,7 @@ final class AgentExecutor: Sendable {
 
                         NSLog("[AGENT] round \(round): calling streamRound (tools=%d, convo=%d messages)",
                               specsThisRound.count, convo.count)
-                        let (content, rawToolCalls) = try await backend.streamRound(
+                        let (content, _, rawToolCalls) = try await backend.streamRound(
                             convo: convo,
                             toolSpecs: specsThisRound,
                             temperature: temperature,
@@ -631,6 +631,10 @@ final class AgentExecutor: Sendable {
                         ])
 
                         // Execute each tool and feed the result back.
+                        // User nudges must NOT be injected between tool results when the
+                        // model made parallel tool_calls — OpenAI-compatible APIs require
+                        // every tool_call_id to be followed immediately by its tool result.
+                        var deferredNudges: [String] = []
                         for tc in effectiveToolCalls {
                             continuation.yield(.toolCall(name: tc.name, arguments: tc.arguments))
                             NSLog("[AGENT] executing tool %@ args=%@", tc.name, tc.arguments)
@@ -749,11 +753,8 @@ final class AgentExecutor: Sendable {
                                     readsSinceLastDbWrite += 1
                                     if dbWorkflowTurn, readsSinceLastDbWrite == 2, !dbWriteNudgeSent {
                                         dbWriteNudgeSent = true
-                                        NSLog("[AGENT] WRITE GUARD: 2 unread reads in db turn — nudging db_add_rows")
-                                        convo.append([
-                                            "role": "user",
-                                            "content": "SYSTEM: you have read 2 pages in a database task WITHOUT saving any rows — the table stays empty while you keep browsing. Call db_add_rows RIGHT NOW with whatever data you have already collected (2-3 rows is fine — saved data beats held data), THEN continue browsing. If the pages you read had no usable data, call browser_links on one of them to find PRODUCT pages instead of opening more listing pages.",
-                                        ])
+                                NSLog("[AGENT] WRITE GUARD: 2 unread reads in db turn — nudging db_add_rows")
+                                deferredNudges.append("SYSTEM: you have read 2 pages in a database task WITHOUT saving any rows — the table stays empty while you keep browsing. Call db_add_rows RIGHT NOW with whatever data you have already collected (2-3 rows is fine — saved data beats held data), THEN continue browsing. If the pages you read had no usable data, call browser_links on one of them to find PRODUCT pages instead of opening more listing pages.")
                                     }
                                 default: break
                                 }
@@ -782,10 +783,7 @@ final class AgentExecutor: Sendable {
                                         + "The data has not changed. Do NOT call it again with these "
                                         + "arguments. Use a different approach or move on."
                                 }
-                                convo.append([
-                                    "role": "user",
-                                    "content": nudgeMessage,
-                                ])
+                                deferredNudges.append(nudgeMessage)
                                 // Also disable NOW so the 3rd call is blocked even if
                                 // the model ignores the nudge in this same round.
                                 disabledArgCombos.insert(argSignature)
@@ -865,15 +863,13 @@ final class AgentExecutor: Sendable {
                                     if emptyArgsCounts[tc.name] == 1 {
                                         let paramList = requiredParams.joined(separator: ", ")
                                         NSLog("[AGENT] EMPTY ARGS: \(tc.name) called with {} — nudging (required: \(paramList))")
-                                        convo.append([
-                                            "role": "user",
-                                            "content":
-                                                "[automated check — NOT a message from the user] "
-                                                + "You called \(tc.name) with EMPTY arguments ({}). "
-                                                + "This tool REQUIRES these parameters: \(paramList). "
-                                                + "Call it again with the correct arguments. "
-                                                + "Do NOT call it without arguments.",
-                                        ])
+                                        deferredNudges.append(
+                                            "[automated check — NOT a message from the user] "
+                                            + "You called \(tc.name) with EMPTY arguments ({}). "
+                                            + "This tool REQUIRES these parameters: \(paramList). "
+                                            + "Call it again with the correct arguments. "
+                                            + "Do NOT call it without arguments."
+                                        )
                                     } else if let count = emptyArgsCounts[tc.name], count >= 3, !disabledLoopTools.contains(tc.name) {
                                         disabledLoopTools.insert(tc.name)
                                         NSLog("[AGENT] EMPTY ARGS BREAKER: disabled \(tc.name) after \(count) empty-args calls")
@@ -900,31 +896,27 @@ final class AgentExecutor: Sendable {
                                 consecutiveFailures = (signature == lastFailureSignature) ? consecutiveFailures + 1 : 1
                                 lastFailureSignature = signature
                                 if consecutiveFailures == 4 {
-                                    convo.append([
-                                        "role": "user",
-                                        "content":
-                                            "SYSTEM: \(tc.name) has failed \(consecutiveFailures) times in a row "
-                                            + "with the SAME error. Your arguments are malformed. Do NOT keep "
-                                            + "retrying the identical call — read the error, compare it against "
-                                            + "the tool's parameter spec, fix the argument format, and try ONCE "
-                                            + "more with DIFFERENT arguments. If you still can't fix it, skip "
-                                            + "this step and quote the exact error text to the user in your "
-                                            + "final answer.",
-                                    ])
+                                    deferredNudges.append(
+                                        "SYSTEM: \(tc.name) has failed \(consecutiveFailures) times in a row "
+                                        + "with the SAME error. Your arguments are malformed. Do NOT keep "
+                                        + "retrying the identical call — read the error, compare it against "
+                                        + "the tool's parameter spec, fix the argument format, and try ONCE "
+                                        + "more with DIFFERENT arguments. If you still can't fix it, skip "
+                                        + "this step and quote the exact error text to the user in your "
+                                        + "final answer."
+                                    )
                                 } else if consecutiveFailures >= 6, !disabledLoopTools.contains(tc.name) {
                                     disabledLoopTools.insert(tc.name)
                                     NSLog("[AGENT] FAILURE BREAKER: disabled \(tc.name) after \(consecutiveFailures) consecutive identical failures")
-                                    convo.append([
-                                        "role": "user",
-                                        "content":
-                                            "SYSTEM: \(tc.name) kept failing with the same error and has been disabled "
-                                            + "for the rest of this turn. Stop calling it. REQUIRED: in your final "
-                                            + "answer you must (1) quote the exact error message, (2) name \(tc.name) "
-                                            + "as the tool that failed, and (3) explain what you were trying to do. "
-                                            + "Do NOT gloss over this with vague phrases like 'technical issues', and "
-                                            + "do NOT silently work around the failure with a different tool — the "
-                                            + "user needs to know the direct path is broken so it can be fixed.",
-                                    ])
+                                    deferredNudges.append(
+                                        "SYSTEM: \(tc.name) kept failing with the same error and has been disabled "
+                                        + "for the rest of this turn. Stop calling it. REQUIRED: in your final "
+                                        + "answer you must (1) quote the exact error message, (2) name \(tc.name) "
+                                        + "as the tool that failed, and (3) explain what you were trying to do. "
+                                        + "Do NOT gloss over this with vague phrases like 'technical issues', and "
+                                        + "do NOT silently work around the failure with a different tool — the "
+                                        + "user needs to know the direct path is broken so it can be fixed."
+                                    )
                                 }
                             } else {
                                 consecutiveFailures = 0
@@ -949,10 +941,7 @@ final class AgentExecutor: Sendable {
                                             + "needed changes, or write_file to create/replace files. Do NOT "
                                             + "keep reading without acting."
                                     }
-                                    convo.append([
-                                        "role": "user",
-                                        "content": saveMsg,
-                                    ])
+                                    deferredNudges.append(saveMsg)
                                     fileOpCount = 0
                                 }
                             }
@@ -963,15 +952,21 @@ final class AgentExecutor: Sendable {
                                !toolBudgetExceededNames.contains(tc.name) {
                                 toolBudgetExceededNames.insert(tc.name)
                                 NSLog("[AGENT] TOOL BUDGET: \(tc.name) reached limit of \(budget)")
-                                convo.append([
-                                    "role": "user",
-                                    "content":
-                                        "SYSTEM: You have already called \(tc.name) "
-                                        + "\(budget) time\(budget == 1 ? "" : "s"). "
-                                        + "Do NOT call \(tc.name) again. Use the results you already "
-                                        + "have and provide your final answer now.",
-                                ])
+                                deferredNudges.append(
+                                    "SYSTEM: You have already called \(tc.name) "
+                                    + "\(budget) time\(budget == 1 ? "" : "s"). "
+                                    + "Do NOT call \(tc.name) again. Use the results you already "
+                                    + "have and provide your final answer now."
+                                )
                             }
+                        }
+                        // Inject any user nudges that accumulated during tool execution
+                        // AFTER all tool results, so parallel tool_calls remain valid.
+                        if !deferredNudges.isEmpty {
+                            convo.append([
+                                "role": "user",
+                                "content": deferredNudges.joined(separator: "\n\n"),
+                            ])
                         }
                         // POST-EXECUTION EMPTY-ARGS NUDGE: if tool calls in
                         // this round had empty args and returned errors, inject a
@@ -2230,7 +2225,7 @@ final class AgentExecutor: Sendable {
                 maxTokens: subMaxTokens
             ) {
                 switch output {
-                case .token(let token):
+                case .token(let token), .reasoningToken(let token):
                     narration += token
                     lastRoundText += token
                     // Forward token to live streaming handler and collect event.
@@ -2358,7 +2353,7 @@ final class AgentExecutor: Sendable {
                 maxTokens: subMaxTokens
             ) {
                 switch output {
-                case .token(let token):
+                case .token(let token), .reasoningToken(let token):
                     narration += token
                     lastRoundText += token
                     // Forward token to live streaming handler and collect event.

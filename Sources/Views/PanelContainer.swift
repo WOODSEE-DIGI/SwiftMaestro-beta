@@ -15,7 +15,7 @@ struct PanelContainer<Content: View>: View {
     var onClose: (() -> Void)? = nil
     var onFloat: ((PanelType) -> Void)? = nil
 
-    @State private var layoutState = PanelLayoutState.shared
+    @Environment(PanelLayoutState.self) private var layoutState
     @State private var isDragHovering = false
     @Environment(ThemeStore.self) private var theme
 
@@ -154,7 +154,7 @@ struct FloatingPanelView<Content: View>: View {
 
     let panelType: PanelType
     @ViewBuilder let content: () -> Content
-    @State private var layoutState = PanelLayoutState.shared
+    @Environment(PanelLayoutState.self) private var layoutState
 
     var body: some View {
         VStack(spacing: 0) {

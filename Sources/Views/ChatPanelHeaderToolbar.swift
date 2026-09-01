@@ -10,7 +10,7 @@ struct ChatPanelHeaderToolbar: View {
     @Environment(AgentMessageStore.self) private var messageStore
     @Environment(\.openWindow) private var openWindow
     @State private var layout = WorkspaceLayoutState.shared
-    @State private var panelLayout = PanelLayoutState.shared
+    @Environment(PanelLayoutState.self) private var panelLayout
     @State private var showingMessages = false
     @State private var showingClearChatConfirm = false
 

@@ -134,15 +134,19 @@ enum KeychainService {
                 kSecAttrAccessible as String: accessible,
             ])
             let status = SecItemAdd(query as CFDictionary, nil)
-            if status == errSecMissingEntitlement && synchronizable && !isRetry {
-                // Some signed builds (Xcode local development, certain Developer-ID
-                // configurations) do not provide a valid keychain access group, so
-                // iCloud-synced writes fail with -34018. Fall back to a local-only
-                // item so the secret can still be saved on this Mac.
+            if (status == errSecMissingEntitlement || status == errSecNotAvailable) && !isRetry {
+                // iCloud-synced writes can fail with -34018 when iCloud Keychain is
+                // disabled or the current build lacks the required group. Fall back
+                // to a local-only item so the secret can still be saved on this Mac.
                 try _store(account: account, value: value, synchronizable: false, isRetry: true)
                 return
             }
             guard status == errSecSuccess else { throw KeychainError.unexpectedStatus(status) }
+        } else if (updateStatus == errSecMissingEntitlement || updateStatus == errSecNotAvailable) && !isRetry {
+            // An existing item (possibly synced or owned by a different signature)
+            // is blocking the update. Delete it and recreate as local-only.
+            try? delete(account: account)
+            try _store(account: account, value: value, synchronizable: false, isRetry: true)
         } else if updateStatus != errSecSuccess {
             throw KeychainError.unexpectedStatus(updateStatus)
         }

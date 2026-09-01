@@ -33,7 +33,7 @@ final class InProcessMLXBackend: GenerationBackend {
         thinkingEnabled: Bool,
         maxTokens: Int,
         continuation: AsyncThrowingStream<AgentOutput, Error>.Continuation
-    ) async throws -> (content: String, toolCalls: [RoundToolCall]) {
+    ) async throws -> (content: String, reasoning: String?, toolCalls: [RoundToolCall]) {
         let tools: [ToolSpec]? = toolSpecs.isEmpty ? nil : toolSpecs
         NSLog("[MLXBackend] model=\(model.id) hf=\(model.huggingFaceID) toolCallFormat=\(String(describing: model.toolCallFormat)) tools=\(tools?.count ?? 0) lite=\(model.isLiteModel)")
         // Gemma 4's chat template expects image parts as `{"type": "image"}`,
@@ -59,7 +59,7 @@ final class InProcessMLXBackend: GenerationBackend {
         // previously blocking the main thread, causing a spinning beachball.
         let sanitizedTools = MLXInferenceEngine.sanitizeToolSchemas(tools)
         NSLog("[InProcessMLXBackend] streamRound model=\(model.id) images=\(images.count) messages=\(wireMessages.count) gemma4=\(isGemma4)")
-        return try await engine.generateRound(
+        let (content, toolCalls) = try await engine.generateRound(
             wireMessages: wireMessages,
             images: images,
             toolSchemas: sanitizedTools,
@@ -72,6 +72,7 @@ final class InProcessMLXBackend: GenerationBackend {
             onToken: { continuation.yield(.token($0)) },
             onInfo: { continuation.yield(.info(tokensPerSecond: $0)) }
         )
+        return (content, nil, toolCalls)
     }
 
     // MARK: - Conversion

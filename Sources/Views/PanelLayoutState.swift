@@ -7,7 +7,7 @@ enum PanelType: String, CaseIterable, Identifiable, Codable, Sendable {
     case plans
     case chat
     case tasks
-    // Terminal moved out of this per-agent chat panel system entirely — it's
+    // Terminal moved out of this per-agent chat panel system entirely â it's
     // now a top-level `WorkspacePanelKind.terminal` under "Swift Apps",
     // openable/dockable/floatable independent of any specific agent's chat.
 
@@ -48,7 +48,7 @@ enum PanelType: String, CaseIterable, Identifiable, Codable, Sendable {
 
 // MARK: - Panel Slot
 
-/// A single panel in the layout — its type and whether it's floating.
+/// A single panel in the layout â its type and whether it's floating.
 struct PanelSlot: Identifiable, Equatable, Codable, Sendable {
     let type: PanelType
     var isFloating: Bool = false
@@ -58,20 +58,26 @@ struct PanelSlot: Identifiable, Equatable, Codable, Sendable {
 // MARK: - Panel Layout State
 
 /// Observable state managing panel order, visibility, and floating status.
-/// Persisted to UserDefaults so layout survives relaunch.
+///
+/// Each chat/agent window owns its own instance so showing or hiding the Plans
+/// or Tasks panel in one window does not affect other windows. Only the
+/// user-adjusted docked widths are persisted globally (they apply as defaults
+/// to every new window).
 @Observable
 @MainActor
 final class PanelLayoutState {
 
+    /// Global shared instance for app-level panel layout access (e.g. menu bar,
+    /// window creation). Per-window views may create their own local instances.
     static let shared = PanelLayoutState()
 
     /// Ordered list of panels in the main window.
-    var mainSlots: [PanelSlot] = []
+    var mainSlots: [PanelSlot] = PanelType.allCases.map { PanelSlot(type: $0) }
 
     /// Which panels are currently floating (shown in separate windows).
     var floatingPanels: Set<PanelType> = []
 
-    /// Visibility — some panels can be hidden entirely.
+    /// Visibility â some panels can be hidden entirely.
     var hiddenPanels: Set<PanelType> = []
 
     /// User-adjusted docked widths for fixed-width panels (drag-resized via
@@ -82,7 +88,7 @@ final class PanelLayoutState {
     private let defaultsKey = "SwiftMaestro.PanelLayout"
 
     init() {
-        load()
+        loadWidths()
     }
 
     // MARK: - Pane Widths
@@ -94,7 +100,7 @@ final class PanelLayoutState {
             get: { self.paneWidths[panel] ?? panel.defaultWidth },
             set: { newValue in
                 self.paneWidths[panel] = newValue
-                self.save()
+                self.saveWidths()
             }
         )
     }
@@ -107,7 +113,6 @@ final class PanelLayoutState {
         } else {
             hiddenPanels.insert(panel)
         }
-        save()
     }
 
     func isFloating(_ panel: PanelType) -> Bool {
@@ -117,7 +122,6 @@ final class PanelLayoutState {
     func float(_ panel: PanelType) {
         guard panel.supportsFloat else { return }
         floatingPanels.insert(panel)
-        save()
     }
 
     func dock(_ panel: PanelType) {
@@ -125,7 +129,6 @@ final class PanelLayoutState {
         if !mainSlots.contains(where: { $0.type == panel }) {
             mainSlots.append(PanelSlot(type: panel))
         }
-        save()
     }
 
     // MARK: - Drag Reordering
@@ -135,37 +138,16 @@ final class PanelLayoutState {
         let slot = mainSlots.remove(at: oldIndex)
         let adjustedIndex = newIndex > oldIndex ? newIndex - 1 : newIndex
         mainSlots.insert(slot, at: min(adjustedIndex, mainSlots.count))
-        save()
     }
 
-    // MARK: - Persistence
+    // MARK: - Persistence (widths only)
 
-    private func save() {
-        let data = try? JSONEncoder().encode(mainSlots)
-        UserDefaults.standard.set(data, forKey: defaultsKey + ".mainSlots")
-        UserDefaults.standard.set(Array(floatingPanels.map(\.rawValue)), forKey: defaultsKey + ".floating")
-        UserDefaults.standard.set(Array(hiddenPanels.map(\.rawValue)), forKey: defaultsKey + ".hidden")
-
+    private func saveWidths() {
         let widthsByRawValue = Dictionary(uniqueKeysWithValues: paneWidths.map { ($0.key.rawValue, Double($0.value)) })
         UserDefaults.standard.set(widthsByRawValue, forKey: defaultsKey + ".paneWidths")
     }
 
-    private func load() {
-        if let data = UserDefaults.standard.data(forKey: defaultsKey + ".mainSlots"),
-           let slots = try? JSONDecoder().decode([PanelSlot].self, from: data) {
-            mainSlots = slots
-        } else {
-            mainSlots = PanelType.allCases.map { PanelSlot(type: $0) }
-        }
-
-        if let floating = UserDefaults.standard.stringArray(forKey: defaultsKey + ".floating") {
-            floatingPanels = Set(floating.compactMap(PanelType.init))
-        }
-
-        if let hidden = UserDefaults.standard.stringArray(forKey: defaultsKey + ".hidden") {
-            hiddenPanels = Set(hidden.compactMap(PanelType.init))
-        }
-
+    private func loadWidths() {
         if let widthsByRawValue = UserDefaults.standard.dictionary(forKey: defaultsKey + ".paneWidths") as? [String: Double] {
             paneWidths = Dictionary(uniqueKeysWithValues: widthsByRawValue.compactMap { key, value in
                 PanelType(rawValue: key).map { ($0, CGFloat(value)) }

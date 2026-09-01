@@ -41,13 +41,5 @@
 	     already runs arbitrary local tooling/MCP subprocesses by design. -->
 	<key>com.apple.security.cs.disable-library-validation</key>
 	<true/>
-	<!-- Hardened Runtime requires an explicit keychain access group for
-	     writes to the legacy login keychain. Without this entitlement,
-	     SecItemAdd can fail with errSecMissingEntitlement (-34018) on some
-	     signed builds. The app identifier prefix resolves to TeamID.BundleID. -->
-	<key>com.apple.security.cs.keychain-access-groups</key>
-	<array>
-		<string>$(AppIdentifierPrefix)$(CFBundleIdentifier)</string>
-	</array>
 </dict>
 </plist>
