@@ -33,6 +33,30 @@ enum KeychainService {
         }
     }
 
+    /// The keychain access group declared in the app's entitlements.
+    /// For signed builds this is required on every SecItem query when the
+    /// `com.apple.security.cs.keychain-access-groups` entitlement is present;
+    /// omitting it causes errSecMissingEntitlement (-34018). For unsigned local
+    /// builds the entitlement is absent, so no access group is added.
+    private static var accessGroup: String? {
+        guard let task = SecTaskCreateFromSelf(nil) else { return nil }
+        guard let value = SecTaskCopyValueForEntitlement(
+            task,
+            "com.apple.security.cs.keychain-access-groups" as CFString,
+            nil
+        ) else { return nil }
+        guard let groups = value as? [String], let first = groups.first else { return nil }
+        return first
+    }
+
+    private static func queryWithAccessGroup(_ base: [String: Any]) -> [String: Any] {
+        var query = base
+        if let group = accessGroup {
+            query[kSecAttrAccessGroup as String] = group
+        }
+        return query
+    }
+
     // MARK: - UI suppression
 
     /// The legacy login keychain does not always honor `kSecUseAuthenticationUIFail`.
@@ -87,12 +111,12 @@ enum KeychainService {
         // /usr/bin/security, older ad-hoc builds) — so two identities that
         // both write the same account (e.g. DMG and Xcode Debug both
         // refreshing plugin tokens) ping-ponged password prompts forever.
-        let findQuery: [String: Any] = [
+        let findQuery = queryWithAccessGroup([
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
-        ]
+        ])
         let updates: [String: Any] = [
             kSecValueData as String: data,
             kSecAttrAccessible as String: accessible,
@@ -101,14 +125,14 @@ enum KeychainService {
         let updateStatus = SecItemUpdate(findQuery as CFDictionary, updates as CFDictionary)
 
         if updateStatus == errSecItemNotFound {
-            let query: [String: Any] = [
+            let query = queryWithAccessGroup([
                 kSecClass as String: kSecClassGenericPassword,
                 kSecAttrService as String: service,
                 kSecAttrAccount as String: account,
                 kSecValueData as String: data,
                 kSecAttrSynchronizable as String: synchronizable ? kCFBooleanTrue! : kCFBooleanFalse!,
                 kSecAttrAccessible as String: accessible,
-            ]
+            ])
             let status = SecItemAdd(query as CFDictionary, nil)
             if status == errSecMissingEntitlement && synchronizable && !isRetry {
                 // Some signed builds (Xcode local development, certain Developer-ID
@@ -150,14 +174,14 @@ enum KeychainService {
     }
 
     private static func _read(service customService: String, account: String, allowUI: Bool, triedLocalFallback: Bool = false) throws -> String? {
-        var query: [String: Any] = [
+        var query = queryWithAccessGroup([
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: customService,
             kSecAttrAccount as String: account,
             kSecAttrSynchronizable as String: triedLocalFallback ? false : kSecAttrSynchronizableAny,
             kSecReturnData as String: kCFBooleanTrue!,
             kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
+        ])
         if !allowUI {
             query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
         }
@@ -182,12 +206,12 @@ enum KeychainService {
 
     /// Delete the secret for `account` (matching either sync state).
     static func delete(account: String) throws {
-        let query: [String: Any] = [
+        let query = queryWithAccessGroup([
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
-        ]
+        ])
         let status = SecItemDelete(query as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw KeychainError.unexpectedStatus(status)
@@ -226,13 +250,13 @@ enum KeychainService {
     }
 
     private static func _accounts(withPrefix prefix: String, allowUI: Bool) throws -> [String] {
-        var query: [String: Any] = [
+        var query = queryWithAccessGroup([
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
             kSecReturnAttributes as String: kCFBooleanTrue!,
             kSecMatchLimit as String: kSecMatchLimitAll,
-        ]
+        ])
         if !allowUI {
             query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
         }

@@ -69,7 +69,12 @@ WHISPER_MODEL_NAME="$(basename "$WHISPER_MODEL_PATH")"
 
 echo "=== Packaging full $DMG (bundled: $MODEL_NAME + $WHISPER_MODEL_NAME) ==="
 
-STAGE="$(mktemp -d)"
+# Honor RELEASE_TMPDIR when the system temp volume is too small for 30+ GB staging.
+if [ -n "${RELEASE_TMPDIR:-}" ]; then
+    STAGE="$(mktemp -d "$RELEASE_TMPDIR/tmp.XXXXXX")"
+else
+    STAGE="$(mktemp -d)"
+fi
 APP_STAGE="$STAGE/${APP_NAME}.app"
 
 # Copy the signed app into the staging area so we can add the model and re-sign.
@@ -148,7 +153,11 @@ EOF
 
 rm -f "$DMG"
 # Create a writable sparse bundle first, then convert to compressed UDZO.
-SPARSE_BASE="$(mktemp -u)"
+if [ -n "${RELEASE_TMPDIR:-}" ]; then
+    SPARSE_BASE="$(mktemp -u "$RELEASE_TMPDIR/sparse.XXXXXX")"
+else
+    SPARSE_BASE="$(mktemp -u)"
+fi
 SPARSE="${SPARSE_BASE}.sparsebundle"
 VOLNAME="${APP_NAME} ${VERSION}"
 hdiutil create -volname "$VOLNAME" -srcfolder "$STAGE" -fs APFS -format UDSB -ov "$SPARSE_BASE"
