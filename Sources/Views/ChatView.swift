@@ -205,27 +205,27 @@ struct ChatView: View {
             // tag pins this agent (and its delegations) to that model.
             Image(systemName: "cpu").foregroundStyle(theme.chatSecondaryText)
             Text("This agent").foregroundStyle(theme.chatSecondaryText)
-            Picker("", selection: agentModelBinding) {
-                Label {
-                    Text(defaultAgentModelLabel)
-                } icon: {
-                    // The Default entry carries the badge of the model it
-                    // currently resolves to, so provenance is visible even
-                    // when this agent follows the global default.
-                    if let defaultModel = catalog.selectedModel {
-                        Image(nsImage: Self.badgeDotImage(defaultModel.providerBadge.colorName))
-                    }
-                }
-                .tag("")
-                ForEach(catalog.models) { m in
+                Picker("", selection: agentModelBinding) {
                     Label {
-                        Text(m.displayName)
+                        Text(defaultAgentModelLabel)
                     } icon: {
-                        Image(nsImage: Self.badgeDotImage(m.providerBadge.colorName))
+                        // The Default entry carries the badge of the model it
+                        // currently resolves to, so provenance is visible even
+                        // when this agent follows the global default.
+                        if let defaultModel = catalog.selectedModel {
+                            Image(nsImage: Self.badgeDotImage(defaultModel.providerBadge.colorName))
+                        }
                     }
-                    .tag(m.id)
+                    .tag("")
+                    ForEach(ModelVisibilityStore.shared.visibleModels(from: catalog.models)) { m in
+                        Label {
+                            Text(m.displayName)
+                        } icon: {
+                            Image(nsImage: Self.badgeDotImage(m.providerBadge.colorName))
+                        }
+                        .tag(m.id)
+                    }
                 }
-            }
             .labelsHidden()
             .pickerStyle(.menu)
             .frame(maxWidth: 220)
@@ -261,6 +261,14 @@ struct ChatView: View {
         case "blue": return .blue
         case "purple": return .purple
         case "orange": return .orange
+        case "pink": return .pink
+        case "cyan": return .cyan
+        case "yellow": return .yellow
+        case "red": return .red
+        case "indigo": return .indigo
+        case "teal": return .teal
+        case "mint": return .mint
+        case "brown": return .brown
         default: return .secondary
         }
     }
@@ -277,6 +285,14 @@ struct ChatView: View {
         case "blue": nsColor = .systemBlue
         case "purple": nsColor = .systemPurple
         case "orange": nsColor = .systemOrange
+        case "pink": nsColor = .systemPink
+        case "cyan": nsColor = .systemCyan
+        case "yellow": nsColor = .systemYellow
+        case "red": nsColor = .systemRed
+        case "indigo": nsColor = .systemIndigo
+        case "teal": nsColor = .systemTeal
+        case "mint": nsColor = .systemMint
+        case "brown": nsColor = .systemBrown
         default: nsColor = .secondaryLabelColor
         }
         let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
@@ -689,6 +705,7 @@ struct ChatView: View {
             toolBar
             Divider()
             ShellApprovalBanner()
+            PermissionRequestDock()
             messageList
             Divider()
             errorBanner
@@ -1031,8 +1048,8 @@ struct ChatView: View {
             .buttonStyle(.plain)
             .help("Attach image")
 
-            // Microphone button — only shown for Maestro.
-            if vm.agent.kind == .navigator || vm.agent.kind == .swiftHelper || vm.agent.kind == .coder || vm.agent.kind == .search {
+            // Microphone button — only shown for built-in agents.
+            if vm.agent.kind == .navigator || vm.agent.kind == .swiftHelper || vm.agent.kind == .coder || vm.agent.kind == .onlineCoder || vm.agent.kind == .search {
                 Button { whisper.toggleRecording() } label: {
                     if whisper.isRecording {
                         Image(systemName: "stop.circle.fill")

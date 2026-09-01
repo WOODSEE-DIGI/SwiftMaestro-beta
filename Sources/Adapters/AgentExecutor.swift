@@ -633,6 +633,7 @@ final class AgentExecutor: Sendable {
                         // Execute each tool and feed the result back.
                         for tc in effectiveToolCalls {
                             continuation.yield(.toolCall(name: tc.name, arguments: tc.arguments))
+                            NSLog("[AGENT] executing tool %@ args=%@", tc.name, tc.arguments)
                             // Reset empty-args counter when the model provides args.
                             if tc.arguments.trimmingCharacters(in: .whitespacesAndNewlines) != "{}" {
                                 emptyArgsCounts[tc.name] = 0
@@ -712,6 +713,11 @@ final class AgentExecutor: Sendable {
                             let result = await executeTool(
                                 tc, mcp: mcp, project: project,
                                 workingDirectory: workingDirectory, agentID: agentID)
+                            if result.hasPrefix("{\"error\"") {
+                                NSLog("[AGENT] tool ERROR for %@: %@", tc.name, result)
+                            } else {
+                                NSLog("[AGENT] tool result for %@: %@", tc.name, String(result.prefix(500)))
+                            }
                             // VLM tools return image data that must be injected as a
                             // user message with the image attached, not as text.
                             if let vlmPayload = Self.parseVLMResult(result) {
@@ -991,9 +997,10 @@ final class AgentExecutor: Sendable {
                             "browser_scroll": ["ref"],
                             "browser_evaluate": ["code"],
                             "open_panel": ["panel"],
-                            "create_todo_list": ["todos"],
-                            "create_plan": ["plan"],
-                            "edit_plan": ["plan"],
+                            "create_todo_list": ["items"],
+                            "add_todos": ["items"],
+                            "create_plan": ["title", "content"],
+                            "edit_plan": ["plan_id", "title", "content"],
                             "db_create_base": ["name"],
                             "db_create_table": ["base_id", "name"],
                             "db_add_field": ["base_id", "table_id", "field_name"],
@@ -2839,7 +2846,7 @@ final class AgentExecutor: Sendable {
         "index_document", "search_chunks", "read_chunk",
         "execute_sqlite",
         "db_import_csv", "db_export_csv",
-        "glob_files", "grep_code", "edit_file",
+        "glob_files", "grep_code", "edit_file", "multi_file_edit",
         "git_status", "git_diff", "git_log", "git_branch",
     ]
 

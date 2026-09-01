@@ -88,7 +88,7 @@ struct ContentView: View {
                     // custom Label content in the closed state (the text
                     // vanished), so the label is drawn explicitly here.
                     Menu {
-                        ForEach(catalog.models) { model in
+                        ForEach(ModelVisibilityStore.shared.visibleModels(from: catalog.models)) { model in
                             Button {
                                 catalog.selectedModelID = model.id
                             } label: {

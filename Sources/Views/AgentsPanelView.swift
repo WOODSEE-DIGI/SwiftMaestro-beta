@@ -46,6 +46,11 @@ struct AgentsPanelView: View {
                             tooltip: "Reads, edits, and writes code. Builds and tests projects. Works inside your codebase like an in-process coding assistant."
                         )
                         agentRow(
+                            workspace.onlineCoder,
+                            systemImage: "network",
+                            tooltip: "Online coding agent with full OpenCode-style tool access. Use with a remote model like Kimi K2.7 Code for large build tasks and long-term plans."
+                        )
+                        agentRow(
                             workspace.searcher,
                             systemImage: "magnifyingglass",
                             tooltip: "Finds information fast — from the web, Google Maps, local files, network drives, or your Obsidian vault."

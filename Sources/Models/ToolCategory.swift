@@ -192,7 +192,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     var toolNames: [String] {
         switch self {
         case .file:
-            return ["read_file", "write_file", "list_dir", "ocr_image", "glob_files", "grep_code", "edit_file"]
+            return ["read_file", "write_file", "list_dir", "ocr_image", "glob_files", "grep_code", "edit_file", "multi_file_edit"]
         case .documents:
             return ["document_read", "document_create", "document_info"]
         case .books:
@@ -436,7 +436,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
                 .web, .time,
             ]
         case .coder:
-            // The coding agent's surface: edit files, run builds/tests, search
+            // The local coding agent's surface: edit files, run builds/tests, search
             // the codebase, recall prior decisions. Deliberately lean — the
             // bundled DeepSeek Coder V2 Lite has only 2.4B active params, and
             // oversized tool menus both flood its prompt and confuse it. No
@@ -446,6 +446,24 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
                 .file, .shell, .index, .memory, .sqlite,
                 .web, .time,
             ]
+        case .onlineCoder:
+            // The online coding agent gets the full OpenCode-style surface:
+            // files, shell, indexing, memory/plans, web, browser, scraping,
+            // workspace delegation, MCP, SQLite, rules, and time. Apple-app
+            // and social panels are available as toggles but off by default.
+            var base: [ToolCategory] = [
+                .file, .documents, .books, .shell, .server, .index, .memory,
+                .messaging, .bus, .system, .mcp, .sqlite, .web, .browser,
+                .scraping, .vault, .workspace, .rules, .time,
+            ]
+            // Apple-app / social panels: visible so the user can opt in,
+            // but not enabled by default for the coding role.
+            base += [
+                .notes, .kanban, .whiteboard, .numbers, .maps, .photos, .stocks,
+                .news, .mail, .whatsapp, .discord, .bluesky, .patreon, .database,
+                .dam, .blockchain, .overlayBuilder, .calendar, .reminders, .contacts,
+            ]
+            return base
         case .search:
             // The search agent's surface: web search, local file search,
             // network drive search, Maps, clipping. Deliberately focused —
@@ -461,7 +479,18 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
 
     /// Default enabled categories for an agent kind.
     static func defaultEnabled(for kind: AgentKind) -> Set<ToolCategory> {
-        Set(visible(for: kind))
+        if kind == .onlineCoder {
+            // Curated OpenCode-style surface for the online coding agent.
+            // Apple-app/social/scraping panels remain visible toggles but are off
+            // by default. MCP servers are routed to real categories (.shell,
+            // .memory, .browser, .web) so the prompt stays lean and tool-calling
+            // stays fast.
+            return [
+                .file, .shell, .server, .index, .memory, .system,
+                .sqlite, .web, .browser, .workspace, .rules, .time,
+            ]
+        }
+        return Set(visible(for: kind))
     }
 
     /// What an agent kind gets when `MaestroTools.schemas(enabledCategories:)`
@@ -487,8 +516,11 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             // Self-repair support: no delegation, no inter-agent messaging.
             return Set(allCases).subtracting([.workspace, .messaging])
         case .coder:
-            // Coding agent: no delegation (navigator-only), no inter-agent messaging.
+            // Local coding agent: no delegation (navigator-only), no inter-agent messaging.
             return Set(allCases).subtracting([.workspace, .messaging])
+        case .onlineCoder:
+            // Online coding agent: full surface including delegation and messaging.
+            return Set(allCases)
         case .search:
             // Search agent: no delegation (navigator-only), no inter-agent messaging.
             return Set(allCases).subtracting([.workspace, .messaging])

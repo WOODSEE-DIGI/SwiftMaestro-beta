@@ -751,18 +751,33 @@ enum MaestroTools {
     // Lenient arg structs: small local models emit `items` and `index` in varied
     // shapes, so custom decoders normalize them instead of throwing (a throw
     // would surface as a misleading "missing agent context" error).
+    private struct AnyCodingKey: CodingKey {
+        var stringValue: String
+        var intValue: Int? { nil }
+        init?(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { return nil }
+        init(_ string: String) { self.stringValue = string }
+    }
+
     private struct TodoCreateArgs: Codable {
         let items: [String]
         let agent_id: String?
         init(from decoder: Decoder) throws {
-            let c = try decoder.container(keyedBy: CodingKeys.self)
-            agent_id = try? c.decodeIfPresent(String.self, forKey: .agent_id)
-            let list = (try? c.decodeIfPresent(StringList.self, forKey: .items)) ?? nil
+            let c = try decoder.container(keyedBy: AnyCodingKey.self)
+            agent_id = try? c.decodeIfPresent(String.self, forKey: AnyCodingKey("agent_id"))
+            // Remote models sometimes use `todos` or `tasks` instead of the spec's `items`.
+            let list: StringList? = {
+                for key in ["items", "todos", "tasks", "todo_list"] {
+                    if let l = try? c.decodeIfPresent(StringList.self, forKey: AnyCodingKey(key)) {
+                        return l
+                    }
+                }
+                return nil
+            }()
             items = (list?.values ?? [])
                 .map { MaestroTools.sanitizeModelText($0) }
                 .filter { !$0.isEmpty }
         }
-        enum CodingKeys: String, CodingKey { case items, agent_id }
     }
 
     private struct TodoUpdateArgs: Codable {

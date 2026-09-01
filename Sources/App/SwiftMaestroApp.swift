@@ -350,14 +350,17 @@ struct SwiftMaestroApp: App {
                     if swiftHelper.modelID == nil, ModelCatalog.swiftHelperModelAvailable {
                         workspace.setModel(ModelCatalog.swiftHelperModelID, for: swiftHelper.id)
                     }
-                    // Ensure the bundled coding agent exists, and once the bundled
+                    // Ensure the bundled local coding agent exists, and once the bundled
                     // DeepSeek Coder V2 Lite is on disk (DMG install or Models-tab
-                    // download), default the Coder to it so coding help works out
+                    // download), default the Local Coder to it so coding help works out
                     // of the box.
                     let coder = workspace.coder
                     if coder.modelID == nil, ModelCatalog.coderModelAvailable {
                         workspace.setModel(ModelCatalog.coderModelID, for: coder.id)
                     }
+                    // Ensure the online coding agent exists. It intentionally has no
+                    // default model — the user selects a remote model (e.g. Kimi K2.7 Code).
+                    let onlineCoder = workspace.onlineCoder
                     // Ensure the built-in Searcher agent exists for fast search.
                     let searcher = workspace.searcher
                     // Developer machines: give the SwiftHelper the SwiftMaestro repo as
@@ -369,6 +372,15 @@ struct SwiftMaestroApp: App {
                         let repo = NSHomeDirectory() + "/GitHub/FUSV/SwiftMaestro"
                         if FileManager.default.fileExists(atPath: repo + "/.git") {
                             workspace.setWorkingDirectory(repo, for: swiftHelper.id)
+                        }
+                    }
+                    // Developer machines: give the Online Coder the SwiftMaestro repo
+                    // as its working directory so it can build and edit the project
+                    // out of the box. End users keep the default app-support root.
+                    if onlineCoder.workingDirectory == nil {
+                        let repo = NSHomeDirectory() + "/GitHub/FUSV/SwiftMaestro"
+                        if FileManager.default.fileExists(atPath: repo + "/.git") {
+                            workspace.setWorkingDirectory(repo, for: onlineCoder.id)
                         }
                     }
                     // Validate capabilities for every locally-present model so

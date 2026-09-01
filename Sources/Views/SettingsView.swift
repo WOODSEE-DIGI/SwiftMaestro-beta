@@ -27,8 +27,10 @@ enum SwiftMaestroSettingsStore {
         let defaults: [AuthorizedFolder] = [
             AuthorizedFolder(path: SwiftMaestroPaths.appSupportDir.path, enabled: true),
             AuthorizedFolder(path: home + "/.ai-context", enabled: true),
-            AuthorizedFolder(path: home + "/Documents", enabled: true),
-            AuthorizedFolder(path: home + "/Obsidian", enabled: true),
+            // Documents / Desktop / Downloads and other TCC-protected folders are
+            // intentionally NOT pre-authorized. The runtime permission dock will
+            // ask the user first, then use an NSOpenPanel to obtain persistent
+            // macOS access when they choose "Allow always".
             // Scratch space for agent build/test artifacts (e.g. "create a file in
             // /tmp"). World-writable but standard practice for throwaway work.
             AuthorizedFolder(path: "/tmp", enabled: true),
@@ -288,7 +290,7 @@ struct SettingsView: View {
         // Settings scene.
         .frame(
             minWidth: 760, idealWidth: 900, maxWidth: .infinity,
-            minHeight: 780, idealHeight: 960, maxHeight: .infinity)
+            minHeight: 780, idealHeight: 1100, maxHeight: .infinity)
         .tint(theme.accent)
         .foregroundStyle(theme.chatText)
         .preferredColorScheme(theme.appearance.colorScheme)
@@ -296,7 +298,7 @@ struct SettingsView: View {
         .background(
             WindowSizeConfigurator(
                 minSize: CGSize(width: 760, height: 780),
-                defaultSize: CGSize(width: 900, height: 960),
+                defaultSize: CGSize(width: 900, height: 1100),
                 backgroundColor: theme.background
             )
         )
@@ -1198,7 +1200,7 @@ struct ModelsSettingsTab: View {
     /// Mac never offers a download that would only swap-crash.
     @AppStorage("models.onlyShowFitting") private var onlyShowFitting = true
     @State private var hubModelID: String = ""
-    @State private var loadingModelID: String? = nil
+    @State private var modelSearchText: String = ""
     @State private var removingModelID: String? = nil
     @State private var showingAddProvider = false
     @State private var providerStore = RemoteProviderStore.shared
@@ -1245,11 +1247,32 @@ struct ModelsSettingsTab: View {
 
     /// The visible catalog: remote models and on-disk models always show;
     /// undownloaded local models hide when they can't fit (unless the user
-    /// turns the filter off to see everything).
+    /// turns the filter off to see everything). Search text filters by name,
+    /// ID, and description.
     private var visibleModels: [MaestroModel] {
-        catalog.models.filter { model in
-            if model.isRemote || model.localPath != nil { return true }
-            return !onlyShowFitting || fitInfo(model).fits
+        let search = modelSearchText.trimmingCharacters(in: .whitespaces).lowercased()
+        return catalog.models.filter { model in
+            let fits = model.isRemote || model.localPath != nil || !onlyShowFitting || fitInfo(model).fits
+            guard fits else { return false }
+            guard !search.isEmpty else { return true }
+            return model.displayName.lowercased().contains(search)
+                || model.huggingFaceID.lowercased().contains(search)
+                || model.description?.lowercased().contains(search) == true
+        }
+    }
+
+    /// Models grouped by source, with source-level collapse/expand and
+    /// enable/disable toggles and per-model toggles.
+    private var modelCatalogList: some View {
+        let groups = ModelVisibilityStore.shared.groupedModels(visibleModels)
+        return ForEach(groups, id: \.sourceID) { group in
+            SourceSection(
+                sourceID: group.sourceID,
+                name: group.name,
+                badge: group.badge,
+                models: group.models,
+                removingModelID: $removingModelID
+            )
         }
     }
 
@@ -1357,7 +1380,7 @@ struct ModelsSettingsTab: View {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
-                            Text("MLX Models (download from Hugging Face on first use)")
+                            Text("Model Catalog")
                                 .font(.headline)
                             Spacer()
                             Toggle("Only models that fit this Mac", isOn: $onlyShowFitting)
@@ -1373,6 +1396,23 @@ struct ModelsSettingsTab: View {
                             .foregroundStyle(.secondary)
                             .help("Refresh local model paths")
                         }
+                        HStack {
+                            Image(systemName: "magnifyingglass")
+                                .foregroundStyle(.secondary)
+                            TextField("Search models", text: $modelSearchText)
+                                .textFieldStyle(.plain)
+                            if !modelSearchText.isEmpty {
+                                Button {
+                                    modelSearchText = ""
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(6)
+                        .background(RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.1)))
                         if onlyShowFitting,
                            catalog.models.count > visibleModels.count {
                             let hidden = catalog.models.count - visibleModels.count
@@ -1391,57 +1431,7 @@ struct ModelsSettingsTab: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(RoundedRectangle(cornerRadius: 6).fill(Color.blue.opacity(0.08)))
                         }
-                        ForEach(visibleModels) { model in
-                            HStack(alignment: .top, spacing: 8) {
-                                // Provenance dot: local MLX (green) vs remote
-                                // provider (blue/purple/orange), matching the
-                                // model pickers.
-                                Image(nsImage: ChatView.badgeDotImage(model.providerBadge.colorName, size: 12))
-                                    .padding(.top, 3)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(model.displayName).font(.body.bold())
-                                    if let localPath = model.localPath {
-                                        Text(localPath.replacingOccurrences(
-                                            of: ModelCatalog.modelsRoot,
-                                            with: ""))
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(1)
-                                            .truncationMode(.middle)
-                                    } else {
-                                        Text(model.huggingFaceID)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(1)
-                                            .truncationMode(.middle)
-                                    }
-                                }
-                                Spacer()
-                                modelStatus(model: model)
-                                if model.isRemote {
-                                    Text("Remote").font(.caption).foregroundStyle(.secondary)
-                                    Image(systemName: "cloud").foregroundStyle(.blue)
-                                        .help("Runs on a remote OpenAI-compatible endpoint — uses no local memory")
-                                } else {
-                                    Text("~\(model.estimatedMemoryGB)GB").font(.caption).foregroundStyle(.secondary)
-                                }
-                                if model.isVision {
-                                    Image(systemName: "eye").foregroundStyle(.blue)
-                                }
-                                if catalog.canRemoveModel(model.id) {
-                                    Button {
-                                        removingModelID = model.id
-                                    } label: {
-                                        Image(systemName: "trash")
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .help("Remove this model from the catalog")
-                                }
-                            }
-                            .padding(.vertical, 2)
-                            Divider()
-                        }
+                        modelCatalogList
                         HStack {
                             TextField("Hub ID (e.g. mlx-community/Qwen3-8B-4bit)", text: $hubModelID)
                                 .textFieldStyle(.roundedBorder)
@@ -1461,6 +1451,14 @@ struct ModelsSettingsTab: View {
                         HStack {
                             Text("Remote Providers")
                                 .font(.headline)
+                            if !providerStore.providers.isEmpty {
+                                Text("\(providerStore.providers.count)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 1)
+                                    .background(Capsule().fill(Color.secondary.opacity(0.15)))
+                            }
                             Spacer()
                             Button {
                                 showingAddProvider = true
@@ -1528,10 +1526,181 @@ struct ModelsSettingsTab: View {
         }
     }
 
+    private func activityStateColor(_ state: ModelActivityState) -> Color {
+        switch state {
+        case .loading: return .orange
+        case .generating: return .blue
+        case .idle: return .green
+        }
+    }
+
+    private func activityStateText(_ state: ModelActivityState) -> String {
+        switch state {
+        case .loading: return "Loading"
+        case .generating: return "Generating"
+        case .idle: return "Ready"
+        }
+    }
+}
+
+// MARK: - Grouped Model Catalog UI
+
+/// A collapsible source section in Settings → Models, with a source-level
+/// enable toggle and per-model enable toggles.
+private struct SourceSection: View {
+    let sourceID: String
+    let name: String
+    let badge: (icon: String, colorName: String)
+    let models: [MaestroModel]
+    @Binding var removingModelID: String?
+    @State private var visibility = ModelVisibilityStore.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            sourceHeader
+            if !visibility.isSourceCollapsed(sourceID) {
+                ForEach(models) { model in
+                    ModelCatalogRow(
+                        model: model,
+                        removingModelID: $removingModelID
+                    )
+                    Divider()
+                        .padding(.leading, 28)
+                }
+            }
+        }
+        .padding(.vertical, 2)
+        .background(Color.secondary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var sourceHeader: some View {
+        HStack(spacing: 8) {
+            Button {
+                visibility.toggleSourceCollapsed(sourceID)
+            } label: {
+                Image(systemName: visibility.isSourceCollapsed(sourceID) ? "chevron.right" : "chevron.down")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 16)
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                visibility.toggleSourceCollapsed(sourceID)
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: badge.icon)
+                        .foregroundStyle(ChatView.badgeColor(badge.colorName))
+                    Text(name)
+                        .font(.headline)
+                    Text("\(models.count)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+
+            Toggle("", isOn: Binding(
+                get: { visibility.isSourceEnabled(sourceID) },
+                set: { visibility.setSourceEnabled(sourceID, enabled: $0) }
+            ))
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .controlSize(.small)
+            .scaleEffect(0.75)
+            .frame(width: 28, height: 16)
+            .help("Show or hide every model from \(name) in the model pickers")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+    }
+}
+
+/// One model row in the grouped Settings → Models catalog, with a
+/// description, status, capability badges, and an enable toggle.
+private struct ModelCatalogRow: View {
+    let model: MaestroModel
+    @Binding var removingModelID: String?
+    @Environment(ModelCatalog.self) private var catalog
+    @Environment(MLXInferenceEngine.self) private var engine
+    @State private var visibility = ModelVisibilityStore.shared
+    @State private var loadingModelID: String? = nil
+    private let sampler = ModelActivitySampler.shared
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(nsImage: ChatView.badgeDotImage(model.providerBadge.colorName, size: 12))
+                .padding(.top, 4)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.displayName)
+                    .font(.body.bold())
+                    .foregroundStyle(visibility.isModelEnabled(model.id) ? .primary : .secondary)
+                if let description = model.description, !description.isEmpty {
+                    Text(description)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                HStack(spacing: 8) {
+                    modelStatus
+                    capabilityBadges
+                }
+            }
+            Spacer()
+            Toggle("", isOn: Binding(
+                get: { visibility.isModelEnabled(model.id) },
+                set: { visibility.setModelEnabled(model.id, enabled: $0) }
+            ))
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .controlSize(.small)
+            .scaleEffect(0.75)
+            .frame(width: 28, height: 16)
+            .help("Show or hide \(model.displayName) in the model pickers")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .opacity(visibility.isModelEnabled(model.id) ? 1.0 : 0.55)
+    }
+
+    @ViewBuilder
+    private var capabilityBadges: some View {
+        if model.isRemote {
+            Text("Remote")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Image(systemName: "cloud")
+                .font(.caption2)
+                .foregroundStyle(.blue)
+        } else {
+            Text("~\(model.estimatedMemoryGB)GB")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        if model.isVision {
+            Image(systemName: "eye")
+                .font(.caption2)
+                .foregroundStyle(.blue)
+        }
+        if catalog.canRemoveModel(model.id) {
+            Button {
+                removingModelID = model.id
+            } label: {
+                Image(systemName: "trash")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Remove this model from the catalog")
+        }
+    }
+
     /// Live status for a model row: downloading, explicit loading,
     /// loaded with unload, ready with load, or missing/repairable.
     @ViewBuilder
-    private func modelStatus(model: MaestroModel) -> some View {
+    private var modelStatus: some View {
         let isResident = engine.residentModelsReadout.contains { $0.id == model.id }
 
         if engine.modelDownloadProgress[model.id] != nil {
@@ -1553,10 +1722,6 @@ struct ModelsSettingsTab: View {
                 }
             }
         } else if isResident, let activity = sampler.models[model.id] {
-            // Resident check BEFORE loading check: if the model is already
-            // loaded (e.g. started up, auto-loaded by another agent), show
-            // the real activity state — don't let a stale loadingModelID
-            // from a previous Load-button click mask the truth.
             HStack(spacing: 6) {
                 Circle()
                     .fill(activityStateColor(activity.state))
@@ -1580,8 +1745,6 @@ struct ModelsSettingsTab: View {
                 .help("Unload \(model.displayName) from memory")
             }
         } else if isResident {
-            // Model is resident but sampler hasn't registered it yet —
-            // show a generic loaded state instead of "Loading…".
             HStack(spacing: 6) {
                 Circle()
                     .fill(.green)
@@ -1607,11 +1770,6 @@ struct ModelsSettingsTab: View {
                     .foregroundStyle(.secondary)
             }
         } else if model.hasLocalWeights, !model.hasCompleteLocalWeights {
-            // Weights are present but at least one shard from
-            // model.safetensors.index.json is missing — an interrupted or
-            // partial download. Distinct from "missing metadata": this needs
-            // a real re-download of weight bytes, not just a small config
-            // file repair, and loading it as-is would crash the app.
             let missingCount = ModelFileHealthService.missingWeightShards(for: model).count
             HStack(spacing: 4) {
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -1674,22 +1832,16 @@ struct ModelsSettingsTab: View {
             }
             .help(metadataComplete ? "Downloaded locally" : "Weights present but metadata files are missing")
         } else if model.isRemote {
-            // Remote models run elsewhere — nothing to download or load here.
-            // A quick reachability probe doubles as the row's status.
             HStack(spacing: 4) {
                 Image(systemName: "network").foregroundStyle(.secondary)
                 Text("Endpoint").font(.caption).foregroundStyle(.secondary)
             }
             .help(model.remoteBaseURL ?? "Remote endpoint")
-        } else if !fitInfo(model).fits {
-            // Download gating: never offer a download that this Mac could only
-            // ever load into swap-death. (The engine's load guard would refuse
-            // it anyway — this just says so before a multi-GB download.)
-            let info = fitInfo(model)
-            Text("Won't fit — needs ~\(info.requiredGB) GB, budget ~\(info.budgetGB) GB")
+        } else if !fitInfo.fits {
+            Text("Won't fit — needs ~\(fitInfo.requiredGB) GB, budget ~\(fitInfo.budgetGB) GB")
                 .font(.caption)
                 .foregroundStyle(.orange)
-                .help("This model's estimated memory need (weights + runtime headroom) exceeds this Mac's model budget. Load it via a remote provider instead — LM Studio/Ollama on a bigger Mac, or an online API.")
+                .help("This model's estimated memory need exceeds this Mac's model budget. Load it via a remote provider instead.")
         } else {
             let isRepair = model.localPath != nil
             Button {
@@ -1719,6 +1871,12 @@ struct ModelsSettingsTab: View {
                   ? "Repair incomplete download"
                   : "Download ~\(model.estimatedMemoryGB)GB from Hugging Face")
         }
+    }
+
+    private var fitInfo: (fits: Bool, requiredGB: Int, budgetGB: Int) {
+        let requiredGB = model.estimatedMemoryGB + model.estimatedMemoryGB / 4
+        let budgetGB = engine.residentBudgetBytes / 1_073_741_824
+        return (requiredGB <= budgetGB, requiredGB, budgetGB)
     }
 
     private func activityStateColor(_ state: ModelActivityState) -> Color {
@@ -1751,7 +1909,9 @@ private struct RemoteProviderRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "cloud.fill").foregroundStyle(.blue)
+            let badge = provider.badge
+            Image(systemName: badge.icon)
+                .foregroundStyle(ChatView.badgeColor(badge.colorName))
             VStack(alignment: .leading, spacing: 2) {
                 Text(provider.name).font(.body.bold())
                 Text("\(provider.kind.rawValue) · \(provider.baseURL)")
@@ -1787,7 +1947,7 @@ private struct RemoteProviderRow: View {
                 probing = true
                 probeResult = nil
                 Task {
-                    let (result, _) = await RemoteProviderStore.probe(provider)
+                    let (result, _, _) = await RemoteProviderStore.probe(provider)
                     probeResult = result
                     probing = false
                 }
@@ -1837,6 +1997,7 @@ private struct AddRemoteProviderSheet: View {
     @State private var apiKey: String = ""
     @State private var fetchingModels = false
     @State private var statusLine: String?
+    @State private var fetchedDescriptions: [String: String] = [:]
 
     init(existing: RemoteProvider? = nil) {
         self.existing = existing
@@ -1903,16 +2064,18 @@ private struct AddRemoteProviderSheet: View {
                 Button("Fetch") {
                     fetchingModels = true
                     statusLine = nil
+                    fetchedDescriptions = [:]
                     let probeProvider = RemoteProvider(
                         id: existing?.id ?? UUID(),
                         name: name, kind: kind, baseURL: baseURL,
                         modelIDs: [], apiKeyRef: existing?.apiKeyRef)
                     Task {
-                        let (result, ids) = await RemoteProviderStore.probe(probeProvider)
+                        let (result, ids, descriptions) = await RemoteProviderStore.probe(probeProvider)
                         fetchingModels = false
                         switch result {
                         case .ok(let count):
                             if !ids.isEmpty { modelIDsText = ids.joined(separator: ", ") }
+                            fetchedDescriptions = descriptions
                             statusLine = "Connected — \(count) model(s) reported."
                         case .reachableNeedsAuth:
                             statusLine = "Server reachable — it wants the API key first. Paste it above and Save; the key is verified on first chat."
@@ -1977,12 +2140,22 @@ private struct AddRemoteProviderSheet: View {
         }
         if kind != .online { keyRef = nil }
 
+        var modelDescriptions = fetchedDescriptions
+        // Preserve any previously stored descriptions for models that weren't
+        // re-fetched in this edit session.
+        if let existing {
+            for id in parsedModelIDs where modelDescriptions[id] == nil {
+                modelDescriptions[id] = existing.modelDescriptions[id]
+            }
+        }
+
         let provider = RemoteProvider(
             id: existing?.id ?? UUID(),
             name: trimmedName,
             kind: kind,
             baseURL: trimmedURL,
             modelIDs: parsedModelIDs,
+            modelDescriptions: modelDescriptions,
             apiKeyRef: keyRef,
             requestTimeout: existing?.requestTimeout ?? (kind == .online ? 300 : 180))
         if existing == nil {

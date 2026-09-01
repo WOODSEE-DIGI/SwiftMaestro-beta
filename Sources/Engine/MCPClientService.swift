@@ -303,10 +303,15 @@ actor MCPClientService {
         "webclaw": .scraping,
         "firecrawl": .scraping,
         "read-website-fast": .scraping,
+        "crawlkit": .scraping,
         "whatsapp": .whatsapp,
         "xcodebuildmcp": .shell,
         "swift-terminals": .shell,
-        "ai-context-bridge": .memory,
+        // ai-context-bridge intentionally NOT mapped to .memory.
+        // SwiftMaestro has native memory tools; exposing the bridge to agents
+        // duplicates 32 tools and bloats the prompt. It falls back to .mcp
+        // so it can still be enabled per-agent if cross-tool sync is needed.
+        "playwright": .browser,
     ]
 
     /// MCP tool schemas filtered by the agent's enabled tool categories.

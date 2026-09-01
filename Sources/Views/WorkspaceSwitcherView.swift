@@ -64,7 +64,7 @@ struct WorkspaceSwitcherView: View {
             }
         }
         .keyboardShortcut(
-            KeyboardShortcut(
+            SwiftUI.KeyboardShortcut(
                 KeyEquivalent(Character("\(slot == 10 ? 0 : slot)")),
                 modifiers: [.command]
             )

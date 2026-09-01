@@ -139,52 +139,173 @@ public final class PermissionService: ToolPermissionChecker, @unchecked Sendable
         lock.unlock()
     }
 
-    /// Check a tool call against the active project policy. Returns a JSON
-    /// error string if the tool is denied or requires approval that was not
-    /// obtained. Returns nil to allow the tool to run.
+    // MARK: - Runtime permission check
+
+    private enum PolicyVerdict {
+        case allow
+        case deny(String)
+        case ask
+        case noPolicy
+    }
+
+    /// Check a tool call against the active project policy and the user's
+    /// authorized-folder allowlist. If access is allowed, returns `nil`. If it
+    /// is denied, returns a JSON error string. If it requires approval, this
+    /// method suspends and shows the permission dock; the user can choose Deny,
+    /// Allow once, or Allow always.
     public func checkPermission(for toolName: String, call: ToolCall) async -> String? {
         guard enabled else { return nil }
+
+        let path = Self.extractPath(from: call)
+        let policyVerdict = await evaluatePolicy(toolName: toolName, path: path, call: call)
+
+        switch policyVerdict {
+        case .allow:
+            return nil
+        case .deny(let error):
+            return error
+        case .ask:
+            return await askForAccess(
+                toolName: toolName,
+                path: path.map(Self.normalizePath),
+                call: call
+            )
+        case .noPolicy:
+            let normalizedPath = path.map(Self.normalizePath)
+            let roots = MaestroTools.authorizedRoots()
+            let pathAllowed = normalizedPath.map { MaestroTools.isAllowed($0, roots: roots) } ?? true
+            guard !pathAllowed else { return nil }
+            return await askForAccess(
+                toolName: toolName,
+                path: normalizedPath,
+                call: call
+            )
+        }
+    }
+
+    // MARK: - Policy evaluation
+
+    private func evaluatePolicy(
+        toolName: String,
+        path: String?,
+        call: ToolCall
+    ) async -> PolicyVerdict {
         guard let directory = workingDirectoryForToolCall(call),
-              let policy = policy(forWorkingDirectory: directory) else { return nil }
+              let policy = policy(forWorkingDirectory: directory) else {
+            return .noPolicy
+        }
 
         // 1. Tool-level rule
-        let level = policy.tools.first(where: { $0.tool == toolName })?.level
+        let toolLevel = policy.tools.first(where: { $0.tool == toolName })?.level
             ?? policy.defaultToolLevel
 
-        switch level {
-        case .allow:
-            break
+        switch toolLevel {
         case .deny:
             let reason = policy.tools.first(where: { $0.tool == toolName })?.reason
-            return Self.errorJSON(toolName, reason: reason, "Tool `\(toolName)` is denied by project permissions.")
+            return .deny(Self.errorJSON(toolName, reason: reason, "Tool `\(toolName)` is denied by project permissions."))
         case .ask:
-            let approved = await ToolApprovalCache.shared.isApproved(tool: toolName, call: call)
-            if !approved {
-                return Self.pendingJSON(toolName, "Tool `\(toolName)` requires user approval before it can run.")
-            }
+            return .ask
+        case .allow:
+            break
         }
 
         // 2. Path-level rule for file tools
-        if let path = Self.extractPath(from: call) {
-            let normalizedPath = Self.normalizePath(path)
-            let pathLevel = policy.paths.first { rule in
-                normalizedPath.hasPrefix(Self.normalizePath(rule.path))
-            }?.level ?? policy.defaultPathLevel
+        guard let path else { return .allow }
+        let normalizedPath = Self.normalizePath(path)
+        let pathLevel = policy.paths.first { rule in
+            normalizedPath.hasPrefix(Self.normalizePath(rule.path))
+        }?.level ?? policy.defaultPathLevel
 
-            switch pathLevel {
-            case .allow:
-                break
-            case .deny:
-                return Self.errorJSON(toolName, "Path `\(path)` is denied by project permissions.")
-            case .ask:
-                let approved = await ToolApprovalCache.shared.isApproved(path: path)
-                if !approved {
-                    return Self.pendingJSON(toolName, "Path `\(path)` requires user approval before it can be accessed.")
-                }
-            }
+        switch pathLevel {
+        case .allow:
+            return .allow
+        case .deny:
+            return .deny(Self.errorJSON(toolName, "Path `\(path)` is denied by project permissions."))
+        case .ask:
+            return .ask
         }
+    }
 
-        return nil
+    // MARK: - User-facing ask flow
+
+    private func askForAccess(
+        toolName: String,
+        path: String?,
+        call: ToolCall
+    ) async -> String? {
+        let roots = MaestroTools.authorizedRoots()
+        let needsFolderAccess = path.map { !MaestroTools.isAllowed($0, roots: roots) } ?? false
+        let requestedRoot = path.map { Self.requestedRoot(for: toolName, path: $0) }
+        let kind: PermissionKind = needsFolderAccess ? Self.permissionKind(for: toolName) : .tool
+
+        let request = PermissionRequest(
+            toolName: toolName,
+            path: path,
+            requestedRoot: requestedRoot,
+            kind: kind
+        )
+
+        let decision = await PermissionRequestStore.shared.request(request)
+
+        switch decision {
+        case .deny:
+            let target = path ?? toolName
+            return Self.errorJSON(toolName, "Access to `\(target)` was denied by user.")
+        case .allowOnce:
+            if let root = requestedRoot {
+                MaestroTools.addSessionAuthorizedRoot(root)
+            }
+            return nil
+        case .allowAlways:
+            if let root = requestedRoot {
+                Self.addAuthorizedFolder(root)
+                MaestroTools.addSessionAuthorizedRoot(root)
+            }
+            await ToolApprovalCache.shared.approve(tool: toolName, call: call)
+            if let path {
+                await ToolApprovalCache.shared.approve(path: path)
+            }
+            return nil
+        }
+    }
+
+    // MARK: - Helpers
+
+    /// The folder that should be added to the authorized list when the user
+    /// chooses "Allow always".
+    private static func requestedRoot(for toolName: String, path: String) -> String {
+        let standardized = Self.normalizePath(path)
+        switch toolName {
+        case "list_dir":
+            return standardized
+        case "create_directory":
+            let parent = (standardized as NSString).deletingLastPathComponent
+            return parent.isEmpty ? standardized : parent
+        default:
+            let parent = (standardized as NSString).deletingLastPathComponent
+            return parent.isEmpty ? standardized : parent
+        }
+    }
+
+    private static func permissionKind(for toolName: String) -> PermissionKind {
+        switch toolName {
+        case "read_file", "ocr_image": return .fileRead
+        case "write_file": return .fileWrite
+        case "list_dir": return .directoryList
+        case "create_directory": return .directoryCreate
+        case "delete_file": return .fileDelete
+        case "copy_file": return .fileCopy
+        case "move_file": return .fileMove
+        default: return .externalDirectory
+        }
+    }
+
+    private static func addAuthorizedFolder(_ path: String) {
+        let standardized = Self.normalizePath(path)
+        var folders = SwiftMaestroSettingsStore.loadAuthorizedFolders()
+        guard !folders.contains(where: { Self.normalizePath($0.path) == standardized }) else { return }
+        folders.append(AuthorizedFolder(path: standardized, enabled: true))
+        SwiftMaestroSettingsStore.saveAuthorizedFolders(folders)
     }
 
     /// Normalize a path for consistent comparison.

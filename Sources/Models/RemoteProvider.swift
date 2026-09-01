@@ -17,6 +17,38 @@ import Observation
 // the Keychain (created/managed via Settings → Secrets). The raw key resolves
 // at the HTTP boundary only, per the app's secrets policy.
 
+/// Deterministic color assignment for a source identifier. String.hashValue is
+/// not stable across launches, so this uses djb2 to keep a provider's color
+/// constant every time the app runs. Well-known online providers get fixed,
+/// distinct colors so users can instantly tell which endpoint a model bills to.
+func sourceColorName(for sourceID: String) -> String {
+    switch sourceID {
+    case "local":
+        return "green"
+    case "remote-lmStudio":
+        return "blue"
+    case "remote-ollama":
+        return "purple"
+    default:
+        // Fixed colors for common online providers; fall back to a stable hash
+        // for anything else.
+        if sourceID.contains("moonshot.ai") { return "orange" }
+        if sourceID.contains("googleapis.com") { return "purple" }
+        if sourceID.contains("dashscope") { return "cyan" }
+        if sourceID.contains("openrouter.ai") { return "pink" }
+        if sourceID.contains("openai.com") { return "teal" }
+        if sourceID.contains("anthropic") { return "red" }
+
+        let palette = ["orange", "pink", "cyan", "yellow", "red", "indigo", "teal", "mint", "brown"]
+        var hash = 5381
+        for byte in sourceID.utf8 {
+            hash = ((hash << 5) &+ hash) &+ Int(byte)
+        }
+        let index = abs(hash) % palette.count
+        return palette[index]
+    }
+}
+
 enum RemoteProviderKind: String, Codable, CaseIterable, Sendable {
     case lmStudio = "LM Studio"
     case ollama = "Ollama"
@@ -73,12 +105,77 @@ struct RemoteProvider: Identifiable, Codable, Hashable, Sendable {
     /// The served model identifiers sent as the wire `model` field
     /// (e.g. "qwen3:8b" for Ollama, "kimi-k3" for Moonshot).
     var modelIDs: [String]
+    /// Optional human-readable descriptions fetched from the provider's
+    /// `/v1/models` endpoint, keyed by model ID.
+    var modelDescriptions: [String: String] = [:]
     /// `secret://` reference for the API key (online providers). Never the
     /// raw key. Nil for local servers.
     var apiKeyRef: String?
     /// Streaming request timeout in seconds. Local servers answer fast;
     /// hosted models can spend a while in prefill.
     var requestTimeout: TimeInterval = 180
+
+    /// Backwards-compatible decoding: older persisted providers may lack
+    /// `modelDescriptions` or `requestTimeout`, so default values are used
+    /// when those keys are missing instead of failing the whole store load.
+    private enum CodingKeys: String, CodingKey {
+        case id, name, kind, baseURL, modelIDs, modelDescriptions, apiKeyRef, requestTimeout
+    }
+
+    init(
+        id: UUID = UUID(),
+        name: String,
+        kind: RemoteProviderKind,
+        baseURL: String,
+        modelIDs: [String],
+        modelDescriptions: [String: String] = [:],
+        apiKeyRef: String? = nil,
+        requestTimeout: TimeInterval = 180
+    ) {
+        self.id = id
+        self.name = name
+        self.kind = kind
+        self.baseURL = baseURL
+        self.modelIDs = modelIDs
+        self.modelDescriptions = modelDescriptions
+        self.apiKeyRef = apiKeyRef
+        self.requestTimeout = requestTimeout
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        self.name = try container.decode(String.self, forKey: .name)
+        self.kind = try container.decode(RemoteProviderKind.self, forKey: .kind)
+        self.baseURL = try container.decode(String.self, forKey: .baseURL)
+        self.modelIDs = try container.decode([String].self, forKey: .modelIDs)
+        self.modelDescriptions = try container.decodeIfPresent([String: String].self, forKey: .modelDescriptions) ?? [:]
+        self.apiKeyRef = try container.decodeIfPresent(String.self, forKey: .apiKeyRef)
+        self.requestTimeout = try container.decodeIfPresent(TimeInterval.self, forKey: .requestTimeout) ?? 180
+    }
+
+    /// Stable source identifier used for grouping and color assignment.
+    var sourceID: String {
+        switch kind {
+        case .lmStudio:
+            return "remote-lmStudio"
+        case .ollama:
+            return "remote-ollama"
+        case .online:
+            return "remote-online-\(baseURL)"
+        }
+    }
+
+    /// Badge for this provider, matching the color used for its models.
+    var badge: (icon: String, colorName: String) {
+        let icon: String
+        switch kind {
+        case .lmStudio: icon = "server.rack"
+        case .ollama: icon = "shippingbox"
+        case .online: icon = "globe"
+        }
+        return (icon, sourceColorName(for: sourceID))
+    }
 
     /// The models this provider contributes to the catalog.
     func catalogModels() -> [MaestroModel] {
@@ -98,6 +195,7 @@ struct RemoteProvider: Identifiable, Codable, Hashable, Sendable {
                 id: "remote-\(id.uuidString)-\(modelID)",
                 displayName: "\(modelID) · \(name)",
                 huggingFaceID: modelID,
+                description: modelDescriptions[modelID],
                 isVision: false,
                 localPath: nil,
                 estimatedMemoryGB: 0,
@@ -173,11 +271,18 @@ final class RemoteProviderStore {
     }
 
     private static func load() -> [RemoteProvider] {
-        guard let data = UserDefaults.standard.data(forKey: storageKey) else { return [] }
+        guard let data = UserDefaults.standard.data(forKey: storageKey) else {
+            NSLog("[REMOTE] no persisted providers found")
+            return []
+        }
         do {
-            return try JSONDecoder().decode([RemoteProvider].self, from: data)
+            let providers = try JSONDecoder().decode([RemoteProvider].self, from: data)
+            NSLog("[REMOTE] loaded \(providers.count) persisted provider(s) (\(data.count) bytes)")
+            return providers
         } catch {
+            let preview = String(data: data, encoding: .utf8)?.prefix(500) ?? "<not utf8>"
             NSLog("[REMOTE] failed to decode providers (starting empty): \(error.localizedDescription)")
+            NSLog("[REMOTE] persisted data preview: \(preview)")
             return []
         }
     }
@@ -197,8 +302,9 @@ final class RemoteProviderStore {
 
     /// Probe the endpoint. Tries the OpenAI `GET {base}/v1/models` listing
     /// first; for Ollama additionally falls back to its native
-    /// `GET {base}/api/tags`. Returns the discovered model IDs when known.
-    static func probe(_ provider: RemoteProvider) async -> (ProbeResult, [String]) {
+    /// `GET {base}/api/tags`. Returns the discovered model IDs and any
+    /// descriptions the endpoint reports.
+    static func probe(_ provider: RemoteProvider) async -> (result: ProbeResult, ids: [String], descriptions: [String: String]) {
         let session = URLSession(configuration: {
             let c = URLSessionConfiguration.ephemeral
             c.timeoutIntervalForRequest = 10
@@ -224,18 +330,25 @@ final class RemoteProviderStore {
             if (200...299).contains(status),
                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let list = json["data"] as? [[String: Any]] {
-                let ids = list.compactMap { $0["id"] as? String }
-                return (.ok(modelCount: ids.count), ids)
+                var descriptions: [String: String] = [:]
+                let ids = list.compactMap { item -> String? in
+                    guard let id = item["id"] as? String else { return nil }
+                    if let desc = item["description"] as? String, !desc.isEmpty {
+                        descriptions[id] = desc
+                    }
+                    return id
+                }
+                return (.ok(modelCount: ids.count), ids, descriptions)
             }
             if status == 401 || status == 403 {
                 // The server answered — it just wants the API key. That is a
                 // REACHABLE endpoint, not "no answer".
-                return (.reachableNeedsAuth, [])
+                return (.reachableNeedsAuth, [], [:])
             }
             if provider.kind != .ollama {
                 // HTTP answered but with an unexpected status — alive, wrong
                 // path or non-standard server.
-                return (.reachableUnexpected(status), [])
+                return (.reachableUnexpected(status), [], [:])
             }
         }
 
@@ -245,10 +358,27 @@ final class RemoteProviderStore {
            (200...299).contains(status),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let list = json["models"] as? [[String: Any]] {
-            let ids = list.compactMap { $0["name"] as? String }
-            return (.ok(modelCount: ids.count), ids)
+            var descriptions: [String: String] = [:]
+            let ids = list.compactMap { item -> String? in
+                guard let name = item["name"] as? String else { return nil }
+                // Ollama's native listing carries model details under `details`.
+                if let details = item["details"] as? [String: Any] {
+                    var parts: [String] = []
+                    if let parameterSize = details["parameter_size"] as? String, !parameterSize.isEmpty {
+                        parts.append(parameterSize)
+                    }
+                    if let family = details["family"] as? String, !family.isEmpty {
+                        parts.append(family)
+                    }
+                    if !parts.isEmpty {
+                        descriptions[name] = parts.joined(separator: " · ")
+                    }
+                }
+                return name
+            }
+            return (.ok(modelCount: ids.count), ids, descriptions)
         }
 
-        return (.failed("No answer at \(provider.baseURL) — is the server running and the URL correct?"), [])
+        return (.failed("No answer at \(provider.baseURL) — is the server running and the URL correct?"), [], [:])
     }
 }

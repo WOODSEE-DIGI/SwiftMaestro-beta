@@ -959,6 +959,7 @@ class ChatViewModel: ObservableObject {
         guard let idx = messages.firstIndex(where: { $0.id == messageID }),
               messages[idx].role == .user else { return }
         generateTask?.cancel()
+        PermissionRequestStore.shared.cancelAll()
         isStreaming = false
         currentActivity = nil
         inputText = messages[idx].content
@@ -969,6 +970,7 @@ class ChatViewModel: ObservableObject {
     func cancel(engine: MLXInferenceEngine) {
         generateTask?.cancel()
         engine.cancel()
+        PermissionRequestStore.shared.cancelAll()
         isStreaming = false
         currentActivity = nil
         steerInbox = nil
@@ -978,6 +980,7 @@ class ChatViewModel: ObservableObject {
     /// Clears only this agent's conversation. Project memory is untouched.
     func clearChat() {
         generateTask?.cancel()
+        PermissionRequestStore.shared.cancelAll()
         currentActivity = nil
         ChatHistoryStore.clear(agentId: agent.id)
         // Empty first so the UI clears immediately even if rebuilding the
@@ -1376,6 +1379,30 @@ class ChatViewModel: ObservableObject {
         """
     }
 
+    static func onlineCoderSystemPrompt(agentName: String, workingDirectory: String?) -> String {
+        let wdLine = workingDirectory.map {
+            "Working directory: \($0). Prefer paths inside it."
+        } ?? "No working directory is set. Ask the user for the project path before touching files."
+        return """
+        You are \(agentName), a fast coding agent running on a remote model. You have the same \
+        OpenCode-style tool surface: file read/write/edit, multi-file edits, shell, git, web, MCP, \
+        memory, plans, and todos. Use tools to make real changes; do not just describe them.
+
+        \(wdLine)
+
+        RULES:
+        1. For multi-step work, start with `create_todo_list` or `create_plan` BEFORE reading files.
+        2. When multiple independent tool calls make sense, make them IN PARALLEL in one response.
+        3. Do not narrate exploration. Just call `list_dir`/`glob_files`/`read_file`.
+        4. Use `write_file`/`edit_file`/`multi_file_edit` for code; NEVER paste code into the chat as a block.
+        5. After code changes, verify with the project's build/test command.
+        6. Update todo status as you complete steps.
+        7. Never invent tool results. Wait for the system to return them.
+
+        Respond in English only.
+        """
+    }
+
     static func swiftHelperSystemPrompt(agentName: String) -> String {
         """
         You are \(agentName), SwiftMaestro's built-in support engineer. Your one job: keep \
@@ -1665,6 +1692,8 @@ class ChatViewModel: ObservableObject {
             base = Self.swiftHelperSystemPrompt(agentName: agent.name)
         } else if agent.kind == .coder {
             base = Self.coderSystemPrompt(agentName: agent.name, workingDirectory: workingDirectory)
+        } else if agent.kind == .onlineCoder {
+            base = Self.onlineCoderSystemPrompt(agentName: agent.name, workingDirectory: workingDirectory)
         } else if agent.kind == .search {
             base = Self.searchSystemPrompt(agentName: agent.name)
         } else {
@@ -2016,14 +2045,23 @@ class ChatViewModel: ObservableObject {
             // Other project agents only get MCP tools if their category filter
             // includes .mcp.
             if !isNavigator {
-                if isCodingAgent {
+                // Coding agents also respect the category filter for MCP tools.
+                // Without this, every enabled MCP server (WhatsApp, Discord, Mail,
+                // etc.) is advertised, producing 200+ tool schemas that slow down
+                // remote models and hurt tool-call accuracy. The .mcp/.web/.browser
+                // categories still give the OpenCode-style surface.
+                if let filteredCategories,
+                   filteredCategories.contains(ToolCategory.mcp)
+                    || filteredCategories.contains(.web)
+                    || filteredCategories.contains(.browser)
+                    || filteredCategories.contains(.scraping) {
+                    let mcpSchemas = await mcp.currentSchemas(forCategories: filteredCategories)
+                    let existingNames = Set(specs.compactMap { MaestroTools.toolName(from: $0) })
+                    specs += mcpSchemas.filter { MaestroTools.toolName(from: $0).map { !existingNames.contains($0) } ?? true }
+                } else if isCodingAgent {
                     let mcpSchemas = await mcp.currentSchemas()
                     let existingNames = Set(specs.compactMap { MaestroTools.toolName(from: $0) })
                     specs += mcpSchemas.filter { MaestroTools.toolName(from: $0).map { !existingNames.contains($0) } ?? true }
-                } else if let filteredCategories {
-                    if filteredCategories.contains(ToolCategory.mcp) {
-                        specs += await mcp.currentSchemas(forCategories: filteredCategories)
-                    }
                 } else {
                     specs += await mcp.currentSchemas()
                 }

@@ -12,7 +12,8 @@ enum AgentKind: String, Codable, Hashable {
     case navigator   // the always-present general/conductor agent
     case project     // a long-lived agent that belongs to a project
     case swiftHelper // the always-present self-repair/support engineer ("Swift Helper")
-    case coder       // the always-present bundled coding agent (DeepSeek Coder V2 Lite)
+    case coder       // the always-present local coding agent (small bundled model)
+    case onlineCoder // the always-present online coding agent (remote API, full parity)
     case search      // the always-present search/research agent (web, local, network)
 
     /// Agent kinds persisted by older builds under a different raw value, mapped
@@ -182,7 +183,7 @@ final class WorkspaceStore {
         return mech
     }
 
-    /// The always-present coding agent (created if missing). Defaults to the
+    /// The always-present local coding agent (created if missing). Defaults to the
     /// bundled DeepSeek Coder V2 Lite model when it's on disk — an 8 GB coding
     /// specialist bundled in the DMG so coding help works out of the box with
     /// no downloads. Its toolset is pinned (Auto tool mode off) so panel state
@@ -211,7 +212,7 @@ final class WorkspaceStore {
             }
             return c
         }
-        var c = AgentRecord(name: "Coder", kind: .coder)
+        var c = AgentRecord(name: "Local Coder", kind: .coder)
         c.autoToolCategories = false
         // Deliberately NO explicit category: the category baseline (.coding
         // includes .mcp → all MCP server tools) would override the curated
@@ -221,6 +222,32 @@ final class WorkspaceStore {
             c.modelID = ModelCatalog.coderModelID
         }
         let insertAt = agents.isEmpty ? 0 : min(2, agents.count)  // after navigator + swiftHelper
+        agents.insert(c, at: insertAt)
+        save()
+        return c
+    }
+
+    /// The always-present online coding agent (created if missing). Designed for
+    /// remote high-capacity models (e.g. Kimi K2.7 Code API) with a full OpenCode-
+    /// style tool surface: files, shell, MCP, web, memory, planning, and
+    /// delegation. Its toolset is pinned (Auto tool mode off) so the full surface
+    /// is always advertised regardless of which panels are open.
+    var onlineCoder: AgentRecord {
+        if var c = agents.first(where: { $0.kind == .onlineCoder }) {
+            if c.autoToolCategories ?? true {
+                c.autoToolCategories = false
+                if let idx = agents.firstIndex(where: { $0.id == c.id }) {
+                    agents[idx] = c
+                    save()
+                }
+            }
+            return c
+        }
+        var c = AgentRecord(name: "Online Coder", kind: .onlineCoder)
+        c.autoToolCategories = false
+        // No explicit category: sidebar grouping infers .coding from the name,
+        // while the kind-level default toolset supplies the broad parity surface.
+        let insertAt = agents.isEmpty ? 0 : min(3, agents.count)  // after navigator + swiftHelper + local Coder
         agents.insert(c, at: insertAt)
         save()
         return c
@@ -560,12 +587,13 @@ final class WorkspaceStore {
             }
             projects = uniqueProjects
             agents = ws.agents.filter { a in
-                // Keep always-present agents (navigator/swiftHelper/coder) and
+                // Keep always-present agents (navigator/swiftHelper/coder/onlineCoder) and
                 // agents whose project still exists. Without the explicit
                 // always-present kinds, the Swift Helper was silently dropped on
                 // every load and re-created with a fresh UUID on next access —
                 // orphaning its settings and chat history each launch.
                 a.kind == .navigator || a.kind == .swiftHelper || a.kind == .coder
+                    || a.kind == .onlineCoder
                     || projects.contains { $0.id == a.projectId }
             }
             if uniqueProjects.count != ws.projects.count { save() }
@@ -595,6 +623,15 @@ final class WorkspaceStore {
             agents[i].name = "Swift Helper"
             save()
             NSLog("[WORKSPACE] renamed support agent from Mechanic to Swift Helper")
+        }
+
+        // One-time rename: the bundled local coding agent is now labeled
+        // "Local Coder" to distinguish it from the new "Online Coder".
+        // Custom names are left untouched.
+        if let i = agents.firstIndex(where: { $0.kind == .coder && $0.name == "Coder" }) {
+            agents[i].name = "Local Coder"
+            save()
+            NSLog("[WORKSPACE] renamed built-in Coder to Local Coder")
         }
 
         // One-time model-ID migration: the bundled Swift Helper model id was

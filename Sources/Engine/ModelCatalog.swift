@@ -11,6 +11,9 @@ struct MaestroModel: Identifiable, Hashable {
     let id: String
     let displayName: String
     let huggingFaceID: String
+    /// Optional human-readable description shown in Settings → Models so users
+    /// know what a model is good for (e.g. "Fast coding model, 128K context").
+    var description: String? = nil
     let isVision: Bool
     var localPath: String?
     let estimatedMemoryGB: Int
@@ -75,17 +78,38 @@ struct MaestroModel: Identifiable, Hashable {
     /// Drives the color-coded badge in model pickers.
     var remoteProviderKind: RemoteProviderKind? = nil
 
-    /// Badge for pickers: (SF Symbol, color name) distinguishing local MLX
-    /// models from each remote provider kind at a glance.
+    /// Stable source identifier used for grouping and color assignment.
+    var sourceID: String {
+        if isRemote, let kind = remoteProviderKind {
+            switch kind {
+            case .lmStudio:
+                return "remote-lmStudio"
+            case .ollama:
+                return "remote-ollama"
+            case .online:
+                // Each online provider is its own source so it can have a
+                // unique color. Use the base URL as the stable key.
+                if let base = remoteBaseURL {
+                    return "remote-online-\(base)"
+                }
+                return "remote-online"
+            }
+        }
+        return "local"
+    }
+
+    /// Badge for pickers: (SF Symbol, color name) distinguishing each source
+    /// at a glance. Online providers each get their own color so users can
+    /// instantly see which endpoint a model bills to.
     var providerBadge: (icon: String, colorName: String) {
-        guard let kind = remoteProviderKind else {
-            return ("cpu", "green")            // local in-process MLX
+        let icon: String
+        switch remoteProviderKind {
+        case nil: icon = "cpu"
+        case .lmStudio: icon = "server.rack"
+        case .ollama: icon = "shippingbox"
+        case .online: icon = "globe"
         }
-        switch kind {
-        case .lmStudio: return ("server.rack", "blue")
-        case .ollama: return ("shippingbox", "purple")
-        case .online: return ("globe", "orange")
-        }
+        return (icon, sourceColorName(for: sourceID))
     }
     /// Idle timeout for remote streaming requests. Deltafin/K3 needs minutes
     /// of prefill tolerance; LM Studio's resident models are fine at 120s.
@@ -377,6 +401,7 @@ final class ModelCatalog {
             id: "vision-proxy-qwen3-vl",
             displayName: "Qwen3-VL 8B Vision Proxy",
             huggingFaceID: "mlx-community/Qwen3-VL-8B-Instruct-4bit",
+            description: "Vision-language model used internally for image captioning.",
             isVision: true,
             localPath: exists ? path : Self.builtInModels.first { $0.id == "local-qwen3-vl-8b-4bit" }?.localPath,
             estimatedMemoryGB: 6,
@@ -522,6 +547,7 @@ final class ModelCatalog {
             id: "swiftmaestro-swifthelper-qwen3-4b",
             displayName: "SwiftMaestro Swift Helper (Qwen3 4B)",
             huggingFaceID: "mlx-community/Qwen3-4B-Instruct-2507-4bit",
+            description: "Small bundled helper model. Fast, tool-capable, and always available — good for quick assistance on any Mac.",
             isVision: false,
             localPath: swiftHelperModelPath,
             estimatedMemoryGB: 3,
@@ -544,6 +570,7 @@ final class ModelCatalog {
             id: "local-qwen3-coder-next",
             displayName: "Qwen 3 Coder Next",
             huggingFaceID: "mlx-community/Qwen3-Coder-Next-4bit",
+            description: "Specialised coding model. MoE, fast inference, XML function calls, 128K context.",
             isVision: false,
             localPath: localIfPresent(["swiftmaestro-models/Qwen3-Coder-Next-4bit", "mlx-community/Qwen3-Coder-Next-4bit"]),
             estimatedMemoryGB: 45,
@@ -567,6 +594,7 @@ final class ModelCatalog {
             id: "local-qwen3.5-122b",
             displayName: "Qwen 3.5 122B (A10B)",
             huggingFaceID: "mlx-community/Qwen3.5-122B-A10B-4bit",
+            description: "General and reasoning powerhouse. 122B MoE (10B active), 262K context, strong tool calling.",
             isVision: false,
             localPath: localIfPresent(["swiftmaestro-models/Qwen3.5-122B-A10B-4bit", "mlx-community/Qwen3.5-122B-A10B-4bit"]),
             estimatedMemoryGB: 65,
@@ -587,6 +615,7 @@ final class ModelCatalog {
             id: "local-gemma4-26b",
             displayName: "Gemma 4 26B-A4B (Vision+Text, 8-bit)",
             huggingFaceID: "lmstudio-community/gemma-4-26B-A4B-it-MLX-8bit",
+            description: "Default vision+text model. Native image understanding, 128K context, fits most Apple Silicon Macs.",
             isVision: true,
             localPath: localIfPresent(["swiftmaestro-models/gemma-4-26B-A4B-it-MLX-8bit", "lmstudio-community/gemma-4-26B-A4B-it-MLX-8bit"]),
             estimatedMemoryGB: 26,
@@ -607,6 +636,7 @@ final class ModelCatalog {
             id: "local-deepseek-coder-v2-lite",
             displayName: "DeepSeek Coder V2 Lite (4-bit)",
             huggingFaceID: "mlx-community/DeepSeek-Coder-V2-Lite-Instruct-4bit-mlx",
+            description: "Compact coding specialist. Fast at ~8 GB, good for laptops and quick code help.",
             isVision: false,
             localPath: localIfPresent(["swiftmaestro-models/DeepSeek-Coder-V2-Lite-Instruct-4bit-mlx", "mlx-community/DeepSeek-Coder-V2-Lite-Instruct-4bit-mlx"]),
             estimatedMemoryGB: 8,
@@ -630,6 +660,7 @@ final class ModelCatalog {
             id: "local-gpt-oss-120b",
             displayName: "GPT-OSS 120B",
             huggingFaceID: "mlx-community/gpt-oss-120b-4bit",
+            description: "Open-weight dense alternative. 120B parameters, 128K context.",
             isVision: false,
             localPath: localIfPresent(["swiftmaestro-models/gpt-oss-120b-4bit", "mlx-community/gpt-oss-120b-4bit"]),
             estimatedMemoryGB: 60,
@@ -645,6 +676,7 @@ final class ModelCatalog {
             id: "local-qwen3.6-35b-a3b",
             displayName: "Qwen 3.6 35B-A3B",
             huggingFaceID: "lmstudio-community/Qwen3.6-35B-A3B-MLX-4bit",
+            description: "Fast MoE generalist. 35B total (3B active), 131K context, ~20 GB.",
             isVision: false,
             localPath: localIfPresent(["swiftmaestro-models/Qwen3.6-35B-A3B-MLX-4bit", "lmstudio-community/Qwen3.6-35B-A3B-MLX-4bit"]),
             estimatedMemoryGB: 20,
@@ -665,6 +697,7 @@ final class ModelCatalog {
             id: "local-qwen3-embedding-0.6b",
             displayName: "Qwen3 Embedding 0.6B (4-bit, RAG)",
             huggingFaceID: "mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ",
+            description: "Sentence embeddings for local RAG and vector search. Not a chat model.",
             isVision: false,
             localPath: localIfPresent(["swiftmaestro-models/Qwen3-Embedding-0.6B-4bit-DWQ", "mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ"]),
             estimatedMemoryGB: 1,
@@ -676,6 +709,7 @@ final class ModelCatalog {
             id: "local-qwen3-vl-8b-4bit",
             displayName: "Qwen3-VL 8B (Vision Proxy)",
             huggingFaceID: "mlx-community/Qwen3-VL-8B-Instruct-4bit",
+            description: "Vision-language model used internally for image captioning. Hidden from the main picker.",
             isVision: true,
             localPath: localIfPresent(["swiftmaestro-models/Qwen3-VL-8B-Instruct-4bit", "mlx-community/Qwen3-VL-8B-Instruct-4bit"]),
             estimatedMemoryGB: 6

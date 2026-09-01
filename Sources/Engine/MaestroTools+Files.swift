@@ -26,31 +26,35 @@ extension MaestroTools {
                 category: ToolCategory.file.rawValue,
                 handler: { call in await listDir(call) }),
             ToolDefinition(
-                name: "ocr_image", spec: fileToolSpecs[3],
+                name: "multi_file_edit", spec: fileToolSpecs[3],
+                category: ToolCategory.file.rawValue,
+                handler: { call in await multiFileEdit(call) }),
+            ToolDefinition(
+                name: "ocr_image", spec: fileToolSpecs[4],
                 category: ToolCategory.file.rawValue,
                 handler: { call in await ocrImage(call) }),
             ToolDefinition(
-                name: "copy_file", spec: fileToolSpecs[4],
+                name: "copy_file", spec: fileToolSpecs[5],
                 category: ToolCategory.file.rawValue,
                 handler: { call in await copyFile(call) }),
             ToolDefinition(
-                name: "move_file", spec: fileToolSpecs[5],
+                name: "move_file", spec: fileToolSpecs[6],
                 category: ToolCategory.file.rawValue,
                 handler: { call in await moveFile(call) }),
             ToolDefinition(
-                name: "delete_file", spec: fileToolSpecs[6],
+                name: "delete_file", spec: fileToolSpecs[7],
                 category: ToolCategory.file.rawValue,
                 handler: { call in await deleteFile(call) }),
             ToolDefinition(
-                name: "create_directory", spec: fileToolSpecs[7],
+                name: "create_directory", spec: fileToolSpecs[8],
                 category: ToolCategory.file.rawValue,
                 handler: { call in await createDirectory(call) }),
             ToolDefinition(
-                name: "list_file_snapshots", spec: fileToolSpecs[8],
+                name: "list_file_snapshots", spec: fileToolSpecs[9],
                 category: ToolCategory.file.rawValue,
                 handler: { call in await listFileSnapshots(call) }),
             ToolDefinition(
-                name: "restore_file_snapshot", spec: fileToolSpecs[9],
+                name: "restore_file_snapshot", spec: fileToolSpecs[10],
                 category: ToolCategory.file.rawValue,
                 handler: { call in await restoreFileSnapshot(call) }),
         ])
@@ -101,6 +105,28 @@ extension MaestroTools {
                 properties: [
                     "path": ["type": "string", "description": "Absolute path to the directory."],
                 ], required: ["path"]),
+            rawSpec("multi_file_edit",
+                "Apply multiple precise string replacements across several files in a single call. "
+                + "Each edit must provide an absolute path, the exact existing old_string, and the new_string. "
+                + "Use this instead of many separate edit_file calls when you need to change several files at once. "
+                + "If an individual edit fails (e.g. old_string not found), the remaining edits are still attempted. "
+                + "For creating new files or overwriting large blocks, use write_file instead.",
+                properties: [
+                    "edits": ([
+                        "type": "array",
+                        "description": "List of edits to apply.",
+                        "items": ([
+                            "type": "object",
+                            "properties": ([
+                                "path": ["type": "string", "description": "Absolute path to the file to edit."],
+                                "old_string": ["type": "string", "description": "Exact existing text to replace, including whitespace and newlines."],
+                                "new_string": ["type": "string", "description": "Text to insert in its place."],
+                                "replace_all": ["type": "boolean", "description": "Replace every occurrence instead of just the first. Default false."],
+                            ] as [String: any Sendable]),
+                            "required": ["path", "old_string", "new_string"],
+                        ] as [String: any Sendable]),
+                    ] as [String: any Sendable]),
+                ], required: ["edits"]),
             rawSpec("ocr_image",
                 "Extract text from an image file using the vision model. "
                 + "Supports PNG, JPEG, HEIC, TIFF, BMP, WebP only — not PDFs.",
@@ -158,6 +184,15 @@ extension MaestroTools {
     // "requires 'path' and 'content'" even when both were present.
     struct WriteFileArgs: Decodable { let path: String?; let content: String?; let encoding: String?; let append: LenientBool? }
     private struct ListDirArgs: Codable { let path: String? }
+    struct MultiFileEditArgs: Decodable {
+        struct Edit: Decodable {
+            let path: String?
+            let old_string: String?
+            let new_string: String?
+            let replace_all: LenientBool?
+        }
+        let edits: [Edit]?
+    }
     private struct OCRImageArgs: Codable { let path: String? }
     private struct CopyFileArgs: Codable { let source: String?; let destination: String? }
     private struct MoveFileArgs: Codable { let source: String?; let destination: String? }
@@ -318,6 +353,25 @@ extension MaestroTools {
         return " Did you mean: \(fullPaths.joined(separator: ", "))?"
     }
 
+    private static let sessionAuthorizedRootsLock = NSLock()
+    private static nonisolated(unsafe) var sessionAuthorizedRoots: Set<String> = []
+
+    /// Add a runtime-authorized root (session-scoped). Used by the permission
+    /// dock's "Allow once" path.
+    static func addSessionAuthorizedRoot(_ path: String) {
+        let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+        sessionAuthorizedRootsLock.withLock {
+            _ = sessionAuthorizedRoots.insert(standardized)
+        }
+    }
+
+    /// Clear roots granted with "Allow once" in the current session.
+    static func clearSessionAuthorizedRoots() {
+        sessionAuthorizedRootsLock.withLock {
+            sessionAuthorizedRoots.removeAll()
+        }
+    }
+
     /// Enabled authorized roots from Settings → Context, standardized to absolute
     /// paths. A target path is permitted only if it equals one of these roots or
     /// is nested inside one. The agent's working directory is always an implicit
@@ -355,6 +409,11 @@ extension MaestroTools {
         // created under its own project-scoped path.
         for wd in MaestroTools.delegatedAgentWorkingDirectories where !roots.contains(wd) {
             roots.append(wd)
+        }
+        // Runtime roots granted by the user through the permission dock.
+        let sessionRoots = sessionAuthorizedRootsLock.withLock { Array(sessionAuthorizedRoots) }
+        for r in sessionRoots where !roots.contains(r) {
+            roots.append(r)
         }
         return roots
     }
@@ -617,6 +676,110 @@ extension MaestroTools {
         } catch {
             return errorJSON("failed to list '\(resolved)': \(error.localizedDescription)")
         }
+    }
+
+    static func multiFileEdit(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: MultiFileEditArgs.self),
+              let edits = args.edits, !edits.isEmpty else {
+            return errorJSON("multi_file_edit requires a non-empty 'edits' array")
+        }
+        let roots = authorizedRoots()
+        var results: [[String: any Sendable]] = []
+        var applied = 0
+        var failed = 0
+        for edit in edits {
+            guard let rawPath = edit.path?.trimmingCharacters(in: .whitespaces), !rawPath.isEmpty,
+                  let oldString = edit.old_string,
+                  let newString = edit.new_string else {
+                results.append([
+                    "path": edit.path ?? "(missing)",
+                    "status": "error",
+                    "message": "each edit requires 'path', 'old_string', and 'new_string'",
+                ])
+                failed += 1
+                continue
+            }
+            guard let resolved = resolveAbsolute(rawPath) else {
+                results.append([
+                    "path": rawPath,
+                    "status": "error",
+                    "message": "could not resolve path",
+                ])
+                failed += 1
+                continue
+            }
+            guard isAllowed(resolved, roots: roots) else {
+                results.append([
+                    "path": resolved,
+                    "status": "error",
+                    "message": denied(resolved),
+                ])
+                failed += 1
+                continue
+            }
+            guard let data = FileManager.default.contents(atPath: resolved),
+                  let original = String(data: data, encoding: .utf8) else {
+                results.append([
+                    "path": resolved,
+                    "status": "error",
+                    "message": "could not read file at \(resolved)",
+                ])
+                failed += 1
+                continue
+            }
+            let replaceAll = edit.replace_all?.value ?? false
+            let updated: String
+            let count: Int
+            if replaceAll {
+                let parts = original.components(separatedBy: oldString)
+                count = parts.count - 1
+                guard count > 0 else {
+                    results.append([
+                        "path": resolved,
+                        "status": "error",
+                        "message": "old_string not found in \(resolved)",
+                    ])
+                    failed += 1
+                    continue
+                }
+                updated = parts.joined(separator: newString)
+            } else {
+                guard let range = original.range(of: oldString) else {
+                    results.append([
+                        "path": resolved,
+                        "status": "error",
+                        "message": "old_string not found in \(resolved)",
+                    ])
+                    failed += 1
+                    continue
+                }
+                updated = original.replacingCharacters(in: range, with: newString)
+                count = 1
+            }
+            do {
+                try updated.write(toFile: resolved, atomically: true, encoding: .utf8)
+                results.append([
+                    "path": resolved,
+                    "status": "ok",
+                    "replacements": count,
+                    "replace_all": replaceAll,
+                ])
+                applied += 1
+            } catch {
+                results.append([
+                    "path": resolved,
+                    "status": "error",
+                    "message": "failed to write file: \(error.localizedDescription)",
+                ])
+                failed += 1
+            }
+        }
+        return jsonString([
+            "applied": applied,
+            "failed": failed,
+            "total": edits.count,
+            "results": results,
+        ])
     }
 
     static func ocrImage(_ call: ToolCall) async -> String {

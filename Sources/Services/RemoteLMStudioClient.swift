@@ -78,17 +78,23 @@ final class RemoteLMStudioBackend: GenerationBackend, @unchecked Sendable {
             // that don't support it at all still fall through to the
             // executor's raw-text tool-call recovery.
             body["tool_choice"] = "auto"
+            // Ask the model to emit multiple independent tool calls in a single
+            // response when it can. Matches OpenCode's ai-sdk behavior.
+            body["parallel_tool_calls"] = true
         }
 
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        NSLog("[REMOTE] POST %@ model=%@ tools=%d", url.absoluteString, model.huggingFaceID, toolSpecs.count)
+        let requestID = LLMRequestLogger.logRequest(modelID: model.huggingFaceID, body: body)
+
+        NSLog("[REMOTE] POST %@ model=%@ tools=%d request=%@", url.absoluteString, model.huggingFaceID, toolSpecs.count, requestID.uuidString)
 
         let startTime = Date()
         var content = ""
         var toolCalls: [RoundToolCall] = []
         // Accumulate tool call deltas keyed by index (OpenAI streams args incrementally).
         var toolCallBuffers: [Int: (id: String, name: String, arguments: String)] = [:]
+        var firstTokenLogged = false
 
         // Use URLSession.bytes for true SSE streaming.
         let (bytes, response): (URLSession.AsyncBytes, URLResponse)
@@ -128,11 +134,17 @@ final class RemoteLMStudioBackend: GenerationBackend, @unchecked Sendable {
                     NSLog("[REMOTE] done: %d chars, %d tool calls in %.2fs (%.0f chars/s)",
                           content.count, toolCalls.count, elapsed, tps)
                     continuation.yield(.info(tokensPerSecond: tps))
-                    continuation.finish()
                     // Finalize: convert accumulated tool call buffers.
                     toolCalls = toolCallBuffers.sorted(by: { $0.key < $1.key }).map { _, buf in
                         RoundToolCall(id: buf.id, name: buf.name, arguments: buf.arguments)
                     }
+                    LLMRequestLogger.logRoundComplete(
+                        id: requestID,
+                        modelID: model.huggingFaceID,
+                        contentChars: content.count,
+                        toolCount: toolCalls.count,
+                        elapsedMs: Int(elapsed * 1000)
+                    )
                     return (content, toolCalls)
                 }
 
@@ -142,6 +154,11 @@ final class RemoteLMStudioBackend: GenerationBackend, @unchecked Sendable {
                       let firstChoice = choices.first,
                       let delta = firstChoice["delta"] as? [String: Any] else {
                     continue
+                }
+
+                if !firstTokenLogged {
+                    firstTokenLogged = true
+                    LLMRequestLogger.logFirstToken(id: requestID, modelID: model.huggingFaceID)
                 }
 
                 // Content token.
@@ -161,6 +178,9 @@ final class RemoteLMStudioBackend: GenerationBackend, @unchecked Sendable {
                         }
                         if let function = tcDelta["function"] as? [String: Any] {
                             if let name = function["name"] as? String, !name.isEmpty {
+                                if buffer.name != name {
+                                    LLMRequestLogger.logToolCallReceived(id: requestID, modelID: model.huggingFaceID, name: name)
+                                }
                                 buffer.name = name
                             }
                             if let args = function["arguments"] as? String {
@@ -178,10 +198,16 @@ final class RemoteLMStudioBackend: GenerationBackend, @unchecked Sendable {
         let elapsed = Date().timeIntervalSince(startTime)
         NSLog("[REMOTE] stream ended (no [DONE]): %d chars, %d tool calls in %.2fs",
               content.count, toolCalls.count, elapsed)
-        continuation.finish()
         toolCalls = toolCallBuffers.sorted(by: { $0.key < $1.key }).map { _, buf in
             RoundToolCall(id: buf.id, name: buf.name, arguments: buf.arguments)
         }
+        LLMRequestLogger.logRoundComplete(
+            id: requestID,
+            modelID: model.huggingFaceID,
+            contentChars: content.count,
+            toolCount: toolCalls.count,
+            elapsedMs: Int(elapsed * 1000)
+        )
         return (content, toolCalls)
     }
 }

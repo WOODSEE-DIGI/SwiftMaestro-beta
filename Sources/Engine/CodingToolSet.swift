@@ -12,16 +12,26 @@ enum CodingToolSet {
 
     /// Native tools advertised to coding agents. Everything else is dropped
     /// from the prompt; MCP tools are added separately by the executor.
+    /// This list is shared by Local Coder and Online Coder; Online Coder also
+    /// receives every enabled MCP tool, giving it full OpenCode-style parity.
     static let nativeToolNames: Set<String> = [
         // File operations (OpenCode core)
         "read_file",
         "write_file",
         "edit_file",
+        "multi_file_edit",
+        "list_dir",
         "glob_files",
         "grep_code",
+        "copy_file",
+        "move_file",
+        "create_directory",
+        "delete_file",
 
         // Shell / build
         "execute_command",
+        "list_background_processes",
+        "stop_background_process",
 
         // Git
         "git_status",
@@ -32,15 +42,37 @@ enum CodingToolSet {
         // Web research
         "web_search",
         "fetch_url",
+        "deep_fetch",
+        "web_crawl",
+        "site_map",
 
-        // Delegation (limited)
+        // Indexing / RAG
+        "index_directory",
+        "save_index",
+        "spotlight_search",
+        "index_document",
+        "search_chunks",
+        "read_chunk",
+
+        // Delegation / workspace
         "task",
+        "ask_project_agent",
+        "ask_project_agents",
+        "ask_swiftHelper",
+        "ask_search",
+        "list_workspace",
+        "create_project_agent",
+        "set_agent_model",
+        "list_models",
 
         // Shared context / memory
         "memory_write",
         "memory_read",
         "memory_search",
         "memory_list",
+        "context_read",
+        "fact_remember",
+        "fact_query",
 
         // ai-context-bridge coordination
         "add_decision",
@@ -61,6 +93,14 @@ enum CodingToolSet {
         "update_todo_status",
         "read_todos",
 
+        // Rules
+        "list_rules",
+        "set_rule",
+        "read_project_rules",
+
+        // SQLite
+        "execute_sqlite",
+
         // Utilities
         "get_current_time",
     ]
@@ -68,7 +108,7 @@ enum CodingToolSet {
     /// Whether this agent should use the focused coding surface.
     static func isCodingAgent(_ agent: AgentRecord?) -> Bool {
         guard let agent else { return false }
-        if agent.kind == .coder { return true }
+        if agent.kind == .coder || agent.kind == .onlineCoder { return true }
         return agent.category == .coding
     }
 
