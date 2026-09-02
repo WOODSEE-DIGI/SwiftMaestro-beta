@@ -125,6 +125,7 @@ fi
 "$SPARKLE_BIN/generate_appcast" \
     --ed-key-file "$SPARKLE_KEY_FILE" \
     --download-url-prefix "$DOWNLOAD_URL_PREFIX" \
+    --delta \
     -o "$DIST_DIR/appcast.xml" \
     "$APPCAST_WORKING"
 
