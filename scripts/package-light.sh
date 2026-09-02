@@ -127,7 +127,7 @@ codesign -dvv "$APP_STAGE" 2>&1 | grep -E "Authority|TeamIdentifier|Identifier" 
 # Sparkle binary-delta patches require the update payload to be a .zip/.tar
 # archive, not a DMG. The DMG remains the first-time installer.
 ZIP="${APP_NAME}-${VERSION}-light.zip"
-echo "Creating Sparkle update archive $ZIP…"
+echo "Creating Sparkle update archive $ZIP..."
 rm -f "$ZIP"
 ZIP_ABS="$PWD/$ZIP"
 (cd "$STAGE" && ditto -c -k --sequesterRsrc "${APP_NAME}.app" "$ZIP_ABS")
