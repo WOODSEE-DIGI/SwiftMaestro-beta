@@ -36,6 +36,16 @@ A native macOS AI assistant that runs large language models **fully on-device** 
 
 ---
 
+## Screenshots
+
+### Main workspace
+![SwiftMaestro hero workspace](Image%20Assets/SwiftMaestro-Hero-panel-terminal.png)
+
+### Coding assistant
+![SwiftMaestro coding workspace](Image%20Assets/Maestro-Mechanic-Coder.png)
+
+---
+
 ## Built-In Panels (40+ Mini-Apps)
 
 SwiftMaestro is a **multi-panel workspace** with a tiling canvas. Each panel can be docked in the main window or floated as its own window. Drag, drop, resize, and rearrange freely.
