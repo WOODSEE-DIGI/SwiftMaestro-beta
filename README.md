@@ -38,17 +38,17 @@ A native macOS AI assistant that runs large language models **fully on-device** 
 
 ## Screenshots
 
+### Landing page
+![SwiftMaestro landing page](Image%20Assets/Landing%20page.png)
+
+### How it fits together
+![SwiftMaestro architecture](Image%20Assets/How%20it%20fits%20together.png)
+
 ### Main workspace
 ![SwiftMaestro hero workspace](Image%20Assets/SwiftMaestro-Hero-panel-terminal.png)
 
 ### Coding assistant
 ![SwiftMaestro coding workspace](Image%20Assets/Maestro-Mechanic-Coder.png)
-
-### Landing page
-![SwiftMaestro landing page](Image%20Assets/Landing%20page.png)
-
-### Architecture
-![SwiftMaestro architecture](Image%20Assets/How%20it%20fits%20together.png)
 
 ---
 
