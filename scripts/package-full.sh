@@ -140,11 +140,16 @@ codesign -dvv "$APP_STAGE" 2>&1 | grep -E "Authority|TeamIdentifier|Identifier" 
 # Produce a zip archive of the signed app bundle for Sparkle delta updates.
 # Sparkle binary-delta patches require the update payload to be a .zip/.tar
 # archive, not a DMG. The DMG remains the first-time installer.
-ZIP="${APP_NAME}-${VERSION}-full.zip"
-echo "Creating Sparkle update archive $ZIP..."
-rm -f "$ZIP"
-ZIP_ABS="$OUTPUT_DIR/$ZIP"
-(cd "$STAGE" && ditto -c -k --sequesterRsrc "${APP_NAME}.app" "$ZIP_ABS")
+# Set SKIP_SPARKLE_ZIP=1 to skip this slow step when you only need the DMG.
+if [ "${SKIP_SPARKLE_ZIP:-0}" != "1" ]; then
+    ZIP="${APP_NAME}-${VERSION}-full.zip"
+    echo "Creating Sparkle update archive $ZIP..."
+    rm -f "$ZIP"
+    ZIP_ABS="$OUTPUT_DIR/$ZIP"
+    (cd "$STAGE" && ditto -c -k --sequesterRsrc "${APP_NAME}.app" "$ZIP_ABS")
+else
+    echo "SKIP_SPARKLE_ZIP=1 — skipping Sparkle update archive."
+fi
 
 ln -s /Applications "$STAGE/Applications"
 
