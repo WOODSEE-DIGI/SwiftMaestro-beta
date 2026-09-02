@@ -105226,187 +105226,187 @@
         }
       }
     },
-    "Git — git.woodsee.com" : {
+    "Git — <private-git-host>" : {
       "extractionState" : "stale",
       "localizations" : {
         "ar" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Git — git.woodsee.com"
+            "value" : "Git — <private-git-host>"
           }
         },
         "cs" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Git — git.woodsee.com"
+            "value" : "Git — <private-git-host>"
           }
         },
         "da" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Git — git.woodsee.com"
+            "value" : "Git — <private-git-host>"
           }
         },
         "de" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Git — git.woodsee.com"
+            "value" : "Git — <private-git-host>"
           }
         },
         "el" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Git — git.woodsee.com"
+            "value" : "Git — <private-git-host>"
           }
         },
         "es" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Git — git.woodsee.com"
+            "value" : "Git — <private-git-host>"
           }
         },
         "es-419" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Git — git.woodsee.com"
+            "value" : "Git — <private-git-host>"
           }
         },
         "fi" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Git — git.woodsee.com"
+            "value" : "Git — <private-git-host>"
           }
         },
         "fr" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Git — git.woodsee.com"
+            "value" : "Git — <private-git-host>"
           }
         },
         "he" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Git — git.woodsee.com"
+            "value" : "Git — <private-git-host>"
           }
         },
         "hi" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Git — git.woodsee.com"
+            "value" : "Git — <private-git-host>"
           }
         },
         "hu" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Git — git.woodsee.com"
+            "value" : "Git — <private-git-host>"
           }
         },
         "id" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Git — git.woodsee.com"
+            "value" : "Git — <private-git-host>"
           }
         },
         "it" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Git — git.woodsee.com"
+            "value" : "Git — <private-git-host>"
           }
         },
         "ja" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Git — git.woodsee.com"
+            "value" : "Git — <private-git-host>"
           }
         },
         "ko" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Git — git.woodsee.com"
+            "value" : "Git — <private-git-host>"
           }
         },
         "nb" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Git — git.woodsee.com"
+            "value" : "Git — <private-git-host>"
           }
         },
         "nl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Git — git.woodsee.com"
+            "value" : "Git — <private-git-host>"
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Git — git.woodsee.com"
+            "value" : "Git — <private-git-host>"
           }
         },
         "pt-BR" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Git — git.woodsee.com"
+            "value" : "Git — <private-git-host>"
           }
         },
         "pt-PT" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Git — git.woodsee.com"
+            "value" : "Git — <private-git-host>"
           }
         },
         "ro" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Git — git.woodsee.com"
+            "value" : "Git — <private-git-host>"
           }
         },
         "ru" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Git — git.woodsee.com"
+            "value" : "Git — <private-git-host>"
           }
         },
         "sv" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Git — git.woodsee.com"
+            "value" : "Git — <private-git-host>"
           }
         },
         "th" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Git — git.woodsee.com"
+            "value" : "Git — <private-git-host>"
           }
         },
         "tr" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Git — git.woodsee.com"
+            "value" : "Git — <private-git-host>"
           }
         },
         "uk" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Git — git.woodsee.com"
+            "value" : "Git — <private-git-host>"
           }
         },
         "vi" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Git — git.woodsee.com"
+            "value" : "Git — <private-git-host>"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Git — git.woodsee.com"
+            "value" : "Git — <private-git-host>"
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Git — git.woodsee.com"
+            "value" : "Git — <private-git-host>"
           }
         }
       }

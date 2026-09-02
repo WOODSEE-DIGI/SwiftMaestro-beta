@@ -3255,7 +3255,7 @@ struct AboutSettingsTab: View {
 
                     Link("Website — swiftmaestro.com", destination: URL(string: "https://swiftmaestro.com")!)
                     Link("GitHub — WOODSEE-DIGI/SwiftMaestro", destination: URL(string: "https://github.com/WOODSEE-DIGI/SwiftMaestro")!)
-                    Link("Git — git.woodsee.com", destination: URL(string: "https://git.woodsee.com")!)
+                    Link("Git — <private-git-host>", destination: URL(string: "https://<private-git-host>")!)
                 }
 
                 Divider()

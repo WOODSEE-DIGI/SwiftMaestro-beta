@@ -39,16 +39,16 @@ enum DemoData {
         let clientSpecs: [(name: String, email: String, phone: String,
                            street: String, city: String, region: String,
                            postcode: String, tax: String?)] = [
-            ("Bluegum Builders Pty Ltd", "accounts@bluegumbuilders.example",
-             "(02) 9555 0182", "14 Jarrah Ave", "Leichhardt", "NSW", "2040", "63 117 208 944"),
-            ("Fern & Fig Florist", "hello@fernandfig.example",
-             "0412 880 345", "3/212 King St", "Newtown", "NSW", "2042", nil),
-            ("Sunny Coast Surf School", "bookings@sunnycoastsurf.example",
-             "(02) 6680 7721", "45 Lighthouse Rd", "Byron Bay", "NSW", "2481", "74 552 901 338"),
-            ("Northern Beaches Vet Clinic", "admin@nbvet.example",
-             "(02) 9977 2204", "9 Pittwater Rd", "Manly", "NSW", "2095", "88 460 112 775"),
-            ("Copper Kettle Café", "kat@copperkettle.example",
-             "(02) 4782 1190", "126 Bathurst Rd", "Katoomba", "NSW", "2780", nil),
+            ("Demo Client One", "client1@example.com",
+             "0000 0000 000", "1 Example St", "Sample City", "NSW", "2000", "00 000 000 000"),
+            ("Demo Client Two", "client2@example.com",
+             "0000 000 000", "2 Example Ave", "Sample City", "NSW", "2000", nil),
+            ("Demo Client Three", "client3@example.com",
+             "0000 0000 000", "3 Example Rd", "Sample City", "NSW", "2000", "00 000 000 000"),
+            ("Demo Client Four", "client4@example.com",
+             "0000 0000 000", "4 Example Ln", "Sample City", "NSW", "2000", "00 000 000 000"),
+            ("Demo Client Five", "client5@example.com",
+             "0000 0000 000", "5 Example Pde", "Sample City", "NSW", "2000", nil),
         ]
         var clientIDs: [String: Int64] = [:]
         for spec in clientSpecs {

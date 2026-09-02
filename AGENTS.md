@@ -23,7 +23,7 @@ These are mandatory working agreements for this repo. Follow them every session.
 
 - **App:** SwiftMaestro — native macOS SwiftUI AI assistant powered by local models running fully in-process on Apple MLX (mlx-swift-lm)
 - **Bundle ID:** `com.woodseedigi.swiftmaestro`
-- **Repo path:** `~/GitHub/FUSV/SwiftMaestro`
+- **Repo path:** `<repo-root>`
 - **Distribution:** GitHub + .dmg (no App Store — no sandbox restrictions)
 
 ---
@@ -136,8 +136,8 @@ The ONLY sanctioned upload method for the ~28 GB full DMG is the MinIO client
 UPLOAD=1 ./scripts/release.sh   # same + upload
 
 # 2. If a DMG already exists and only the upload is needed:
-~/GitHub/FUSV/Websites/swiftmaestro-site/upload-to-onidel.sh dist/SwiftMaestro-X.Y.Z-full.dmg
-~/GitHub/FUSV/Websites/swiftmaestro-site/upload-to-onidel.sh --appcast dist/appcast.xml
+<website-repo>/upload-to-onidel.sh dist/SwiftMaestro-X.Y.Z-full.dmg
+<website-repo>/upload-to-onidel.sh --appcast dist/appcast.xml
 ```
 
 **Order matters: DMG first, appcast SECOND.** A live appcast pointing at a

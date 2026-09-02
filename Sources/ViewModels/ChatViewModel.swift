@@ -1438,7 +1438,7 @@ class ChatViewModel: ObservableObject {
         - Shared AI context: ~/.ai-context/ — memory/ (knowledge, context, conversations), \
         mcp-registry/mcp-servers.json (the MCP server registry — the source of truth for \
         configured MCP servers).
-        - Models: ~/Ai-models/models/ (default root; configurable in Settings → Models).
+        - Models: <model-directory>/models/ (default root; configurable in Settings → Models).
         - Crash reports: ~/Library/Logs/DiagnosticReports/.
 
         ═══ PLAYBOOK ═══
