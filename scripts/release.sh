@@ -1,16 +1,22 @@
 #!/bin/bash
 # Full release pipeline for SwiftMaestro.
 #
-# Builds a Developer ID-signed Release app and produces the full .dmg:
-#   - SwiftMaestro-<VERSION>-full.dmg  (app + Gemma 4 + WhisperKit)
-# signs it, and generates the Sparkle appcast. Notarization is OFF by default (NOTARIZE=1 opts in).
-# appcast, and stages everything in dist/ for upload.
+# Builds a Developer ID-signed Release app and produces:
+#   - SwiftMaestro-<VERSION>-full.dmg   (app + Gemma 4 + WhisperKit)
+#   - SwiftMaestro-<VERSION>-light.dmg  (app + WhisperKit, no Gemma 4)
+#   - SwiftMaestro-<VERSION>-full.zip   (Sparkle update archive)
+#   - SwiftMaestro-<VERSION>-light.zip  (Sparkle update archive)
+#   - *.delta patches                    (Sparkle binary deltas from prior versions)
+# signs the DMGs, and generates the Sparkle appcast with delta updates enabled.
+# Notarization is OFF by default (NOTARIZE=1 opts in).
 #
 # Env overrides:
 #   VERSION=<x.y.z>            (default reads from app Info.plist)
 #   DOWNLOAD_URL_PREFIX=<url>  (default https://s3.ap-southeast-2.onidel.cloud/swiftmaestro-releases/)
 #   NOTARIZE=1                 (opt in to notarization — skipped by default)
 #   UPLOAD=1                   (upload: DMGs + appcast → Onidel; appcast → 1984 same-origin)
+#   SPARKLE_ARCHIVE_CACHE=<dir> (default ./.sparkle-archive-cache; stores prior zips for deltas)
+#   ARCHIVE_CACHE_MAX=<n>      (default 3; number of prior full zips to retain for deltas)
 #   ONIDEL_UPLOAD / DEPLOY_SCRIPT  (override upload helper paths)
 #   SM_SFTP_USER / SM_SFTP_HOST / SM_SFTP_PORT  (1984 hosting SFTP — REQUIRED for that step,
 #                              never hardcode personal infrastructure in this repo)
@@ -50,11 +56,25 @@ fi
 rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR"
 
+# Archive cache for Sparkle delta generation. Binary-delta updates require
+# previous version app archives to be present when generate_appcast runs. The
+# cache lives outside dist/ so it persists across release runs.
+SPARKLE_ARCHIVE_CACHE="${SPARKLE_ARCHIVE_CACHE:-$PWD/.sparkle-archive-cache}"
+ARCHIVE_CACHE_MAX="${ARCHIVE_CACHE_MAX:-3}"
+mkdir -p "$SPARKLE_ARCHIVE_CACHE"
+
 # Build the full installer.
 echo ""
 echo "--- Building full installer ---"
 ./scripts/package-full.sh
 mv "${APP_NAME}-${VERSION}-full.dmg" "$DIST_DIR/"
+mv "${APP_NAME}-${VERSION}-full.zip" "$DIST_DIR/"
+
+# Cache the full archive for future delta generation and prune old entries.
+cp "$DIST_DIR/${APP_NAME}-${VERSION}-full.zip" "$SPARKLE_ARCHIVE_CACHE/"
+ls -t "$SPARKLE_ARCHIVE_CACHE"/SwiftMaestro-*-full.zip 2>/dev/null | tail -n +$((ARCHIVE_CACHE_MAX + 1)) | while IFS= read -r old; do
+    [ -n "$old" ] && rm -f "$old"
+done
 
 # Build the light installer (app + WhisperKit, no Gemma 4) — the variant for
 # Macs under 32 GB that run chat on online models or a networked LM Studio
@@ -64,6 +84,7 @@ echo ""
 echo "--- Building light installer ---"
 ./scripts/package-light.sh
 mv "${APP_NAME}-${VERSION}-light.dmg" "$DIST_DIR/"
+mv "${APP_NAME}-${VERSION}-light.zip" "$DIST_DIR/"
 
 # Generate the Sparkle appcast.
 echo ""
@@ -84,9 +105,17 @@ fi
 APPCAST_WORKING="$DIST_DIR/.appcast-work"
 mkdir -p "$APPCAST_WORKING"
 # generate_appcast uses the filename in the working directory as the URL suffix.
-# Keep the real filename so the download URL matches exactly. Use a hard link
-# instead of a copy so the 28 GB full DMG is never duplicated.
-ln "$DIST_DIR/${APP_NAME}-${VERSION}-full.dmg" "$APPCAST_WORKING/${APP_NAME}-${VERSION}-full.dmg"
+# Use a hard link instead of a copy so the full archive is never duplicated.
+ln "$DIST_DIR/${APP_NAME}-${VERSION}-full.zip" "$APPCAST_WORKING/${APP_NAME}-${VERSION}-full.zip"
+
+# Link cached previous-version archives so Sparkle can generate binary delta
+# patches from them to the current version.
+for archive in "$SPARKLE_ARCHIVE_CACHE"/SwiftMaestro-*-full.zip; do
+    [ -f "$archive" ] || continue
+    name="$(basename "$archive")"
+    [ -e "$APPCAST_WORKING/$name" ] && continue
+    ln "$archive" "$APPCAST_WORKING/$name"
+done
 
 # Optional release notes for the full installer (will be picked up by generate_appcast).
 if [ -f "CHANGELOG.md" ]; then
@@ -96,12 +125,17 @@ fi
 "$SPARKLE_BIN/generate_appcast" \
     --ed-key-file "$SPARKLE_KEY_FILE" \
     --download-url-prefix "$DOWNLOAD_URL_PREFIX" \
+    --delta \
     -o "$DIST_DIR/appcast.xml" \
     "$APPCAST_WORKING"
 
 # appcast signed — key material no longer needed from this point on.
 
-# Clean up the working copy.
+# Move generated delta patches into dist for upload, then clean up the working copy.
+for delta in "$APPCAST_WORKING"/*.delta; do
+    [ -f "$delta" ] || continue
+    mv "$delta" "$DIST_DIR/"
+done
 rm -rf "$APPCAST_WORKING"
 
 # Sanity check the appcast.
@@ -135,9 +169,17 @@ if [ "${UPLOAD:-0}" = "1" ]; then
     fi
 
     echo ""
-    echo "--- Uploading DMGs to Onidel Object Storage (Sydney) ---"
+    echo "--- Uploading DMGs and Sparkle update archives to Onidel Object Storage (Sydney) ---"
     "$ONIDEL_UPLOAD" "$DIST_DIR/${APP_NAME}-${VERSION}-full.dmg"
     "$ONIDEL_UPLOAD" "$DIST_DIR/${APP_NAME}-${VERSION}-light.dmg"
+    "$ONIDEL_UPLOAD" "$DIST_DIR/${APP_NAME}-${VERSION}-full.zip"
+
+    echo ""
+    echo "--- Uploading Sparkle delta patches to Onidel ---"
+    for delta in "$DIST_DIR"/*.delta; do
+        [ -f "$delta" ] || continue
+        "$ONIDEL_UPLOAD" "$delta"
+    done
 
     echo ""
     echo "--- Uploading appcast.xml to Onidel ---"

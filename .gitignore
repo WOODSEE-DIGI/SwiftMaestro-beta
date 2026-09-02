@@ -31,6 +31,9 @@ dist/
 BundledMCP/
 store/
 
+# Sparkle archive cache for delta update generation
+.sparkle-archive-cache/
+
 # Node (docs/mcp-template example server)
 node_modules/
 SwiftMaestro-0.1.0-full.dmg

@@ -123,6 +123,15 @@ echo "Verifying app bundle signature…"
 codesign --verify --strict --verbose=2 "$APP_STAGE"
 codesign -dvv "$APP_STAGE" 2>&1 | grep -E "Authority|TeamIdentifier|Identifier" || true
 
+# Produce a zip archive of the signed app bundle for Sparkle delta updates.
+# Sparkle binary-delta patches require the update payload to be a .zip/.tar
+# archive, not a DMG. The DMG remains the first-time installer.
+ZIP="${APP_NAME}-${VERSION}-light.zip"
+echo "Creating Sparkle update archive $ZIP…"
+rm -f "$ZIP"
+ZIP_ABS="$PWD/$ZIP"
+(cd "$STAGE" && ditto -c -k --sequesterRsrc "${APP_NAME}.app" "$ZIP_ABS")
+
 ln -s /Applications "$STAGE/Applications"
 
 cat > "$STAGE/README.txt" <<EOF
