@@ -146,7 +146,8 @@ if [ "${SKIP_SPARKLE_ZIP:-0}" != "1" ]; then
     echo "Creating Sparkle update archive $ZIP..."
     rm -f "$ZIP"
     ZIP_ABS="$OUTPUT_DIR/$ZIP"
-    (cd "$STAGE" && ditto -c -k --sequesterRsrc "${APP_NAME}.app" "$ZIP_ABS")
+    # Archive the whole stage directory so the .app bundle appears at the zip root.
+    ditto -c -k --sequesterRsrc "$STAGE" "$ZIP_ABS"
 else
     echo "SKIP_SPARKLE_ZIP=1 — skipping Sparkle update archive."
 fi
