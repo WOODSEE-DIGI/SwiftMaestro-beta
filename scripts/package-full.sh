@@ -16,6 +16,7 @@
 #   ENTITLEMENTS=<path>      (default Sources/Resources/SwiftMaestro.entitlements)
 set -euo pipefail
 
+OUTPUT_DIR="${OUTPUT_DIR:-$PWD}"
 APP_NAME="SwiftMaestro"
 MODEL_PATH="${MODEL_PATH:-$HOME/Ai-models/models/swiftmaestro-models/gemma-4-26B-A4B-it-MLX-8bit}"
 WHISPER_MODEL_PATH="${WHISPER_MODEL_PATH:-$HOME/Library/Application Support/SwiftMaestro/WhisperKit/models/argmaxinc/whisperkit-coreml/openai_whisper-large-v3}"
@@ -47,7 +48,7 @@ fi
 # Default the DMG version to the app's own CFBundleShortVersionString so the
 # installer and the app bundle can never drift.
 VERSION="${VERSION:-$(defaults read "$PWD/$APP_PATH/Contents/Info.plist" CFBundleShortVersionString)}"
-DMG="${APP_NAME}-${VERSION}-full.dmg"
+DMG="$OUTPUT_DIR/${APP_NAME}-${VERSION}-full.dmg"
 
 if [ ! -d "$MODEL_PATH" ]; then
     echo "Model not found at $MODEL_PATH"
@@ -142,7 +143,7 @@ codesign -dvv "$APP_STAGE" 2>&1 | grep -E "Authority|TeamIdentifier|Identifier" 
 ZIP="${APP_NAME}-${VERSION}-full.zip"
 echo "Creating Sparkle update archive $ZIP..."
 rm -f "$ZIP"
-ZIP_ABS="$PWD/$ZIP"
+ZIP_ABS="$OUTPUT_DIR/$ZIP"
 (cd "$STAGE" && ditto -c -k --sequesterRsrc "${APP_NAME}.app" "$ZIP_ABS")
 
 ln -s /Applications "$STAGE/Applications"

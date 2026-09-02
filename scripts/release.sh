@@ -55,6 +55,7 @@ fi
 # Clean and recreate the dist directory.
 rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR"
+OUTPUT_DIR="$PWD/$DIST_DIR"
 
 # Archive cache for Sparkle delta generation. Binary-delta updates require
 # previous version app archives to be present when generate_appcast runs. The
@@ -66,9 +67,7 @@ mkdir -p "$SPARKLE_ARCHIVE_CACHE"
 # Build the full installer.
 echo ""
 echo "--- Building full installer ---"
-./scripts/package-full.sh
-mv "${APP_NAME}-${VERSION}-full.dmg" "$DIST_DIR/"
-mv "${APP_NAME}-${VERSION}-full.zip" "$DIST_DIR/"
+OUTPUT_DIR="$OUTPUT_DIR" ./scripts/package-full.sh
 
 # Cache the full archive for future delta generation and prune old entries.
 cp "$DIST_DIR/${APP_NAME}-${VERSION}-full.zip" "$SPARKLE_ARCHIVE_CACHE/"
@@ -82,9 +81,7 @@ done
 # "-beta" DMG on 2026-08-15 when only the full installer shipped).
 echo ""
 echo "--- Building light installer ---"
-./scripts/package-light.sh
-mv "${APP_NAME}-${VERSION}-light.dmg" "$DIST_DIR/"
-mv "${APP_NAME}-${VERSION}-light.zip" "$DIST_DIR/"
+OUTPUT_DIR="$OUTPUT_DIR" ./scripts/package-light.sh
 
 # Generate the Sparkle appcast.
 echo ""
