@@ -270,7 +270,7 @@ extension MaestroTools {
                 + "For process workflows, prefer rectangle (steps), diamond (decisions) and "
                 + "roundedRectangle (start/end). Positions are Excalidraw canvas coordinates with "
                 + "the element's top-left at x/y; omit them to auto-place below existing content. "
-                + "Opens the Whiteboard panel so the user sees it.",
+                + "Opens the Excalidraw panel so the user sees it.",
                 properties: [
                     "board": ["type": "string", "description": "Board name (or id). Omit for the most recently modified board (auto-creates one if none exist)."],
                     "shape": ["type": "string", "description": "rectangle, roundedRectangle, circle, ellipse, diamond, star, cloud, or heart (heart = ellipse)."],
@@ -283,7 +283,7 @@ extension MaestroTools {
                 ], required: ["shape"]),
             rawSpec("whiteboard_add_text",
                 "Add a text element to an Excalidraw whiteboard board and return its element id. "
-                + "Use for titles/labels on workflows. Opens the Whiteboard panel so the user sees it.",
+                + "Use for titles/labels on workflows. Opens the Excalidraw panel so the user sees it.",
                 properties: [
                     "board": ["type": "string", "description": "Board name (or id). Omit for the most recently modified board (auto-creates one if none exist)."],
                     "text": ["type": "string", "description": "The text content."],
@@ -295,7 +295,7 @@ extension MaestroTools {
                 "Draw a workflow arrow between two elements on an Excalidraw whiteboard board. "
                 + "'from' and 'to' accept element ids (from whiteboard_add_shape/whiteboard_list_elements) "
                 + "or exact text labels. The arrow points from the source to the target element. "
-                + "Opens the Whiteboard panel so the user sees it.",
+                + "Opens the Excalidraw panel so the user sees it.",
                 properties: [
                     "board": ["type": "string", "description": "Board name (or id). Omit for the most recently modified board."],
                     "from": ["type": "string", "description": "Source element id or its exact text label."],

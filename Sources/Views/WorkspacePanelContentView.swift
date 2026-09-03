@@ -37,6 +37,8 @@ struct WorkspacePanelContentView: View {
             NumbersView()
         case .maps:
             MapsView()
+        case .mapquest:
+            MapQuestView()
         case .photos:
             PhotosView()
         case .stocks:

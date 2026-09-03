@@ -203,6 +203,8 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
     case kanban
     case numbers
     case maps
+    /// MapQuest — free web map panel (no paid API during beta).
+    case mapquest
     case photos
     /// Stocks — watchlist with live quotes + sparklines (Yahoo Finance, no API key).
     case stocks
@@ -298,6 +300,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .kanban: return "rectangle.split.3x1"
         case .numbers: return "tablecells"
         case .maps: return "map"
+        case .mapquest: return "map.fill"
         case .photos: return "photo.stack"
         case .stocks: return "chart.line.uptrend.xyaxis"
         case .mail: return "envelope"
@@ -347,6 +350,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .kanban: return "kanban"
         case .numbers: return "numbers"
         case .maps: return "maps"
+        case .mapquest: return "mapquest"
         case .photos: return "photos"
         case .stocks: return "stocks"
         case .mail: return "mail"
@@ -390,10 +394,11 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .calendar: return String(localized: "Calendar")
         case .reminders: return String(localized: "Reminders")
         case .contacts: return String(localized: "Contacts")
-        case .canvas: return String(localized: "Whiteboard")
+        case .canvas: return String(localized: "Excalidraw")
         case .kanban: return String(localized: "Kanban")
         case .numbers: return String(localized: "Numbers")
         case .maps: return String(localized: "Maps")
+        case .mapquest: return String(localized: "MapQuest")
         case .photos: return String(localized: "Photos")
         case .stocks: return String(localized: "Stocky")
         case .mail: return String(localized: "Mail")
@@ -461,6 +466,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .kanban: return "kanban"
         case .numbers: return "numbers"
         case .maps: return "maps"
+        case .mapquest: return "mapquest"
         case .photos: return "photos"
         case .stocks: return "stocks"
         case .mail: return "mail"
