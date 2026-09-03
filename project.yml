@@ -89,6 +89,7 @@ targets:
           # (browser-start.html / swiftmaestro-clipper.js intentionally stay in
           # the glob — they load from the bundle root.)
           - "Resources/Plugins/**"
+          - "Resources/excalidraw/**"
       - path: Sources/App
       - path: Sources/Views
       - path: Sources/ViewModels
@@ -100,6 +101,8 @@ targets:
       # Folder reference (preserves internal structure, e.g. plugin-id/index.html
       # + its own relative css/js) rather than individual flattened file refs.
       - path: Sources/Resources/Plugins
+        type: folder
+      - path: Sources/Resources/excalidraw
         type: folder
     # NOTE: xcodegen has no top-level `resources:` key — a previous block here
     # was silently ignored. Resource files ship via the Sources glob above.

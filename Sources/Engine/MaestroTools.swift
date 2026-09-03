@@ -645,7 +645,7 @@ enum MaestroTools {
                     + "panel is open, its tools work. "
                     + "Panels (alias — display name the user sees): database — MaestroDB, "
                     + "books — MaestroBooks, docs — MaestroDocs, dam — MaestroDAM (photo/asset "
-                    + "browser), canvas — Whiteboard, browser — SwiftBrowser, voiceNotes — "
+                    + "browser), canvas — Excalidraw, browser — SwiftBrowser, voiceNotes — "
                     + "Voice Notes, htmlBuilder — HTML Builder, backup — Backup, plus kanban, "
                     + "numbers, maps, photos, mail, whatsapp, discord, notesMD, appleNotes, "
                     + "terminal, calendar, reminders, contacts, bus, audio, agents, apps, "
@@ -682,7 +682,7 @@ enum MaestroTools {
                     + "floating). Use when the user asks to close/hide/dismiss a panel or app, "
                     + "or to tidy up the workspace. Panel names are the same as open_panel — "
                     + "including display names like 'MaestroDAM', 'MaestroDB', 'SwiftBrowser', "
-                    + "'Whiteboard', 'Voice Notes' — or an agent name to close its chat panel. "
+                    + "'Excalidraw', 'Voice Notes' — or an agent name to close its chat panel. "
                     + "Closing is always safe: the user can re-open any panel from the sidebar.",
                 properties: [
                     "panel": ["type": "string", "description": "Name of the open panel to close (e.g. 'database', 'dam', 'MaestroDAM', 'browser') or an agent name."],
@@ -1716,7 +1716,7 @@ enum MaestroTools {
     /// display names users actually say, so the model can self-correct.
     private static let panelListForErrors =
         "database (MaestroDB), books (MaestroBooks), docs (MaestroDocs), "
-        + "dam (MaestroDAM — photo/asset browser), canvas (Whiteboard), "
+        + "dam (MaestroDAM — photo/asset browser), canvas (Excalidraw), "
         + "browser (SwiftBrowser), voiceNotes (Voice Notes), htmlBuilder, backup, "
         + "kanban, numbers, maps, photos, stocks, mail, whatsapp, discord, notesMD, "
         + "appleNotes, terminal, calendar, reminders, contacts, bus, audio, "

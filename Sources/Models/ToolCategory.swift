@@ -116,7 +116,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .time: return "Time"
         case .notes: return "Notes"
         case .kanban: return "Kanban"
-        case .whiteboard: return "Whiteboard"
+        case .whiteboard: return "Excalidraw"
         case .numbers: return "Numbers"
         case .maps: return "Maps"
         case .photos: return "Photos"

@@ -1272,7 +1272,7 @@ class ChatViewModel: ObservableObject {
         just describe where to click.
         - Panel names the user says map to these aliases: MaestroDB → 'database', \
         MaestroBooks → 'books', MaestroDocs → 'docs', MaestroDAM (photo/asset \
-        browser) → 'dam', Whiteboard → 'canvas', SwiftBrowser → 'browser', \
+        browser) → 'dam', Excalidraw → 'canvas', SwiftBrowser → 'browser', \
         Voice Notes → 'voiceNotes'. NEVER confuse MaestroDAM with MaestroDB.
         - You can CLOSE any open panel with close_panel (e.g. "close MaestroDAM", \
         "hide the browser"). Closing is always safe — the user can re-open panels \
