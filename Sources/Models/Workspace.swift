@@ -587,13 +587,13 @@ final class WorkspaceStore {
             }
             projects = uniqueProjects
             agents = ws.agents.filter { a in
-                // Keep always-present agents (navigator/swiftHelper/coder/onlineCoder) and
+                // Keep always-present agents (navigator/swiftHelper/coder/onlineCoder/search) and
                 // agents whose project still exists. Without the explicit
                 // always-present kinds, the Swift Helper was silently dropped on
                 // every load and re-created with a fresh UUID on next access —
                 // orphaning its settings and chat history each launch.
                 a.kind == .navigator || a.kind == .swiftHelper || a.kind == .coder
-                    || a.kind == .onlineCoder
+                    || a.kind == .onlineCoder || a.kind == .search
                     || projects.contains { $0.id == a.projectId }
             }
             if uniqueProjects.count != ws.projects.count { save() }
