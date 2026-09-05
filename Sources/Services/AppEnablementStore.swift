@@ -67,7 +67,7 @@ extension WorkspacePanelKind {
             return .appleApps
         case .tethering, .streamIngest, .broadcast, .streamMixer, .ndiBrowser, .colorAdjustments, .scenes:
             return .studio
-        case .audioControl, .mediaPlayer, .notesMD, .voiceNotes, .canvas, .kanban, .terminal, .webBrowser, .damBrowser, .maestroDocs, .maestroBooks, .maestroDB, .htmlBuilder, .backup, .stocks, .blocky, .pomodoro:
+        case .audioControl, .mediaPlayer, .notesMD, .voiceNotes, .canvas, .kanban, .terminal, .webBrowser, .damBrowser, .maestroDocs, .maestroBooks, .maestroDB, .htmlBuilder, .backup, .stocks, .blocky, .pomodoro, .mapquest:
             return .swiftApps
         default:
             return nil

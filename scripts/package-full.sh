@@ -5,10 +5,10 @@
 #
 # Env overrides:
 #   VERSION=<x.y.z>          (default reads from app Info.plist)
-#   MODEL_PATH=<path>        (default ~/Ai-models/models/swiftmaestro-models/gemma-4-26B-A4B-it-MLX-8bit)
+#   MODEL_PATH=<path>        (default <model-directory>/models/swiftmaestro-models/gemma-4-26B-A4B-it-MLX-8bit)
 #   WHISPER_MODEL_PATH=<path> (default ~/Library/Application Support/SwiftMaestro/WhisperKit/models/argmaxinc/whisperkit-coreml/openai_whisper-large-v3)
 #   MECHANIC_MODEL_PATH=<path> (default: SwiftMaestro-Mechanic-4bit, falling back to Qwen3-4B-Instruct-2507-4bit)
-#   CODER_MODEL_PATH=<path>  (default ~/Ai-models/models/swiftmaestro-models/DeepSeek-Coder-V2-Lite-Instruct-4bit-mlx)
+#   CODER_MODEL_PATH=<path>  (default <model-directory>/models/swiftmaestro-models/DeepSeek-Coder-V2-Lite-Instruct-4bit-mlx)
 #   TEAM_ID=<team>           (default 3BMZ2ULZ54)
 #   SIGN_IDENTITY=<name>     (default "Developer ID Application")
 #   NOTARY_PROFILE=<name>    (default SwiftMaestroNotary)

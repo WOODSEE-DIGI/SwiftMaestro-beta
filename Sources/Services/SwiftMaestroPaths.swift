@@ -32,7 +32,7 @@ enum SwiftMaestroPaths {
         return dir
     }
 
-    /// `~/Ai-models/models/` — default MLX model root per project identity.
+    /// `<model-directory>/models/` — default MLX model root per project identity.
     /// Users may override this in Settings → Models; use `ModelCatalog.modelsRoot` for the
     /// effective path.
     static var modelsDir: URL {

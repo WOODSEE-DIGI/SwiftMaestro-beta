@@ -4,7 +4,7 @@
 # The clipper is Defuddle (the Obsidian Web Clipper extraction engine) plus a
 # custom full-metadata entry point. The entry source lives in the
 # obsidian-clipper checkout at:
-#   ~/GitHub/Apple-Swift-iOS-macOS/obsidian-clipper/src/swiftmaestro-clipper.ts
+#   <clipper-repo>/src/swiftmaestro-clipper.ts
 # (also mirrored in this repo at clipper-src/swiftmaestro-clipper.ts).
 #
 # Prerequisites: the obsidian-clipper checkout with node_modules installed

@@ -285,7 +285,7 @@ struct SwiftMaestroApp: App {
                     // so their resolved paths are used instead of the hardcoded defaults.
                     await MCPServerBundleService.shared.applyBundledServersIfNeeded()
                     // Install the default bundled model from the app bundle into the
-                    // canonical ~/Ai-models/models/ root. Hardlinks are used when the app
+                    // canonical <model-directory>/models/ root. Hardlinks are used when the app
                     // bundle and model root share a filesystem; otherwise an awaited
                     // copy runs. This makes the "full" .dmg work immediately after the
                     // user drags the app to /Applications.

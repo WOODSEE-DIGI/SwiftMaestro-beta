@@ -52,7 +52,7 @@ SCENARIOS = [
      "also check self_healing_failures for MCP tool errors from your server."),
     ("A model won't load — it just spins.",
      "I'll check three things: the model path exists under the models root "
-     "(~/Ai-models/models/), free unified memory via system_health (a 122B model needs "
+     "(<model-directory>/models/), free unified memory via system_health (a 122B model needs "
      "~65 GB and won't load while another large model is resident), and "
      "self_healing_failures for MLX allocation errors. If the path is stale, I'll point "
      "you at Settings → Models to re-scan or re-download."),
@@ -85,15 +85,15 @@ SCENARIOS = [
     ("Where does SwiftMaestro keep its data?",
      "App data: ~/Library/Application Support/SwiftMaestro/ (settings, secrets index, "
      "guardian log, learned model quirks, settings backups, the DAM catalog). Shared AI "
-     "memory: ~/.ai-context/memory/. Models: ~/Ai-models/models/ by default (configurable "
+     "memory: ~/.ai-context/memory/. Models: <model-directory>/models/ by default (configurable "
      "in Settings → Models). Crash reports: ~/Library/Logs/DiagnosticReports/."),
     ("The vision proxy says model not found.",
      "The proxy model path is stale. It resolves in order: your configured path, then "
-     "~/Ai-models/models/swiftmaestro-models/Qwen3-VL-8B-Instruct-4bit, then "
+     "<model-directory>/models/swiftmaestro-models/Qwen3-VL-8B-Instruct-4bit, then "
      "mlx-community/Qwen3-VL-8B-Instruct-4bit under the models root. If none exist, "
      "re-download from Settings → Vision Proxy. I can check which path exists right now."),
     ("How do I know if the Mechanic model is installed?",
-     "The Mechanic's bundled model lives at ~/Ai-models/models/swiftmaestro-models/"
+     "The Mechanic's bundled model lives at <model-directory>/models/swiftmaestro-models/"
      "Qwen3-4B-Instruct-2507-4bit. If that folder is missing, download it from "
      "Settings → Models (it's listed as 'SwiftMaestro Mechanic (Qwen3 4B)') — the "
      "Mechanic agent falls back to your default model until then."),

@@ -14,7 +14,7 @@ cloud calls — dataset generation is template/rule-based so it runs offline.
 
 # 2. Train (installs mlx-lm into the SwiftMaestro venv on first run)
 ./scripts/mechanic-training/train.sh
-#    → LoRA adapters → fused → 4-bit → ~/Ai-models/models/swiftmaestro-models/SwiftMaestro-Mechanic-4bit
+#    → LoRA adapters → fused → 4-bit → <model-directory>/models/swiftmaestro-models/SwiftMaestro-Mechanic-4bit
 ```
 
 ## Data sources (generate_dataset.py)
@@ -33,7 +33,7 @@ cloud calls — dataset generation is template/rule-based so it runs offline.
 - Point the Mechanic agent at the fine-tuned dir (it defaults to the stock
   Qwen3-4B when the fine-tuned one is absent — ModelCatalog.mechanicModelID).
 - To bundle the fine-tuned model instead of stock: overwrite
-  `~/Ai-models/models/swiftmaestro-models/Qwen3-4B-Instruct-2507-4bit`
+  `<model-directory>/models/swiftmaestro-models/Qwen3-4B-Instruct-2507-4bit`
   contents, or add a catalog entry with a new id and set the Mechanic's
   model override to it.
 - Evaluate: `train.sh --eval` runs 20 held-out support questions through

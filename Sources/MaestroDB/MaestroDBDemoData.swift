@@ -22,7 +22,7 @@ enum MaestroDBDemoData {
         let titleField = try database.addField(tableID: jobs.id, name: "Job", type: .text)
         let clientField = try database.addField(
             tableID: jobs.id, name: "Client", type: .select,
-            options: ["Bluegum Builders", "Fern & Fig Florist", "Sunny Coast Surf School", "Copper Kettle Café"])
+            options: ["Demo Client A", "Demo Client B", "Demo Client C", "Demo Client D"])
         let statusField = try database.addField(
             tableID: jobs.id, name: "Status", type: .select,
             options: ["Booked", "Shooting", "Wrangling", "Delivered", "Archived"])
@@ -34,12 +34,12 @@ enum MaestroDBDemoData {
 
         let day: TimeInterval = 86_400
         let jobsSeed: [(String, String, String, Int, Int, Bool, String)] = [
-            ("Brand identity shoot",  "Bluegum Builders",       "Shooting",   3, 5, false, "https://bluegumbuilders.example/jobs/101"),
-            ("Spring menu photos",    "Copper Kettle Café",     "Wrangling",  1, 4, false, ""),
-            ("Surf school promos",    "Sunny Coast Surf School","Booked",     9, 3, false, ""),
-            ("Shopfront refresh",     "Fern & Fig Florist",     "Delivered", -6, 4, true,  "https://fernandfig.example/refresh"),
-            ("Office portraits",      "Bluegum Builders",       "Delivered", -13, 2, true, ""),
-            ("Winter specials board", "Copper Kettle Café",     "Booked",    14, 3, false, ""),
+            ("Brand identity shoot",  "Demo Client A",          "Shooting",   3, 5, false, "https://example.com/jobs/101"),
+            ("Spring menu photos",    "Demo Client D",          "Wrangling",  1, 4, false, ""),
+            ("Surf school promos",    "Demo Client C",          "Booked",     9, 3, false, ""),
+            ("Shopfront refresh",     "Demo Client B",          "Delivered", -6, 4, true,  "https://example.com/refresh"),
+            ("Office portraits",      "Demo Client A",          "Delivered", -13, 2, true, ""),
+            ("Winter specials board", "Demo Client D",          "Booked",    14, 3, false, ""),
         ]
         for (title, client, status, dayOffset, priority, delivered, link) in jobsSeed {
             var values: [String: String] = [
@@ -52,7 +52,7 @@ enum MaestroDBDemoData {
             values[shootDateField.id] = DBRow.store(Date().addingTimeInterval(Double(dayOffset) * day))
             if !link.isEmpty { values[linkField.id] = link }
             if title == "Brand identity shoot" {
-                values[notesField.id] = "Two locations — Leichhardt yard and the Marrickville office. Drone permits confirmed for Thursday."
+                values[notesField.id] = "Two locations — main studio and secondary office. Drone permits confirmed for Thursday."
             }
             try database.addRow(tableID: jobs.id, values: values)
         }

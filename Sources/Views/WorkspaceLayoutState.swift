@@ -1519,8 +1519,18 @@ final class WorkspaceLayoutState {
     /// guaranteed. Other canvas windows are untouched.
     func resetToDefaultLayout() {
         let canvasID = CanvasTile.mainCanvasID
-        let workspace = WorkspaceStore()
+        guard let workspace = MaestroTools.workspace else { return }
         let navigatorID = workspace.navigator.id
+
+        // Self-healing: drop agent-chat tiles that point to deleted or stale agents.
+        canvasTiles.removeAll { tile in
+            tile.kinds.contains { kind in
+                if case .agentChat(let id) = kind {
+                    return workspace.agent(id: id) == nil
+                }
+                return false
+            }
+        }
 
         var agentsTile: CanvasTile?
         var launcherTile: CanvasTile?
@@ -1575,6 +1585,17 @@ final class WorkspaceLayoutState {
             )
             canvasTiles.append(navigatorChat)
             chatTiles.append(navigatorChat)
+        }
+
+        // If no valid chat tile remains, open the navigator chat so the workspace isn't empty.
+        if chatTiles.isEmpty, let navigatorID = MaestroTools.workspace?.navigator.id {
+            let chatTile = CanvasTile(
+                kinds: [.agentChat(navigatorID)],
+                col: 0, row: 0, colSpan: 5, rowSpan: 8,
+                z: nextZ(), canvasID: canvasID
+            )
+            canvasTiles.append(chatTile)
+            chatTiles.append(chatTile)
         }
 
         let hasChrome = agentsTile != nil || launcherTile != nil

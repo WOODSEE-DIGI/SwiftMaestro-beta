@@ -83,6 +83,14 @@ done
 # "-beta" DMG on 2026-08-15 when only the full installer shipped).
 echo ""
 echo "--- Building light installer ---"
+<<<<<<< HEAD
+OUTPUT_DIR="$OUTPUT_DIR" DOWNLOAD_URL_PREFIX="$DOWNLOAD_URL_PREFIX" ./scripts/package-light.sh
+
+# Cache the light archive for future delta generation and prune old entries.
+cp "$DIST_DIR/${APP_NAME}-${VERSION}-light.zip" "$SPARKLE_ARCHIVE_CACHE/"
+ls -t "$SPARKLE_ARCHIVE_CACHE"/SwiftMaestro-*-light.zip 2>/dev/null | tail -n +$((ARCHIVE_CACHE_MAX + 1)) | while IFS= read -r old; do
+    [ -n "$old" ] && rm -f "$old"
+done
 OUTPUT_DIR="$OUTPUT_DIR" DOWNLOAD_URL_PREFIX="$DOWNLOAD_URL_PREFIX" ./scripts/package-light.sh
 
 # Cache the light archive for future delta generation and prune old entries.
