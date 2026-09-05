@@ -13,6 +13,33 @@ struct AppsLauncherPanel: View {
     private var workspaceLayout = WorkspaceLayoutState.shared
     private var appEnablement = AppEnablementStore.shared
 
+    /// User-selected view mode for the Apps panel. `automatic` follows the tile
+    /// shape; `list` and `icon` force the corresponding layout.
+    enum ViewMode: String, CaseIterable {
+        case automatic
+        case list
+        case icon
+
+        var icon: String {
+            switch self {
+            case .automatic: return "arrow.left.arrow.right"
+            case .list: return "list.bullet"
+            case .icon: return "square.grid.2x2"
+            }
+        }
+
+        var title: String {
+            switch self {
+            case .automatic: return "Auto"
+            case .list: return "List"
+            case .icon: return "Icons"
+            }
+        }
+    }
+
+    /// Persisted view mode preference for the Apps panel.
+    @AppStorage("appsLauncher.viewMode") private var viewMode: ViewMode = .automatic
+
     /// Titles of the sections the user has collapsed (expanded by default).
     @State private var collapsed: Set<String> = []
     /// Measured panel width — updated via `.background(GeometryReader)` so it
@@ -30,8 +57,27 @@ struct AppsLauncherPanel: View {
         return tile.frame(in: workspaceLayout.canvasSize)
     }
 
-    private var mode: AdaptivePanelMode {
-        AdaptivePanelMode.from(width: panelWidth, height: tileFrame.height)
+    private var resolvedMode: AdaptivePanelMode {
+        switch viewMode {
+        case .automatic:
+            return AdaptivePanelMode.from(width: panelWidth, height: tileFrame.height)
+        case .list:
+            return panelWidth < 56 ? .iconsOnly : .iconsWithLabels
+        case .icon:
+            return panelWidth < 56 ? .iconsOnly : .horizontalColumns
+        }
+    }
+
+    /// The header toolbar shown inside `WorkspacePanelContainer` for this panel.
+    var headerToolbar: some View {
+        Picker("View", selection: $viewMode) {
+            ForEach(ViewMode.allCases, id: \.self) { mode in
+                Label(mode.title, systemImage: mode.icon).tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+        .frame(width: 140)
+        .help("Switch between automatic, list, and icon views")
     }
 
     var body: some View {
@@ -41,7 +87,7 @@ struct AppsLauncherPanel: View {
             icon: "sidebar.left"
         ) {
             Group {
-                switch mode {
+                switch resolvedMode {
                 case .iconsOnly:
                     iconsOnlyContent
                 case .iconsWithLabels:
@@ -219,75 +265,92 @@ struct AppsLauncherPanel: View {
         }
     }
 
-    // MARK: - Horizontal Columns (wider than tall) — grid of icon+label cells
+    // MARK: - Horizontal Columns (wider than tall) — categorized icon+label grid
 
     private var horizontalContent: some View {
-        let allItems = buildHorizontalItems()
-        // Adaptive columns: ~120pt per column, filling available width
-        let columnCount = max(1, Int((panelWidth / 120).rounded(.down)))
-        let columns = Array(repeating: GridItem(.flexible(), spacing: 10), count: columnCount)
-
-        return ScrollView(.vertical, showsIndicators: false) {
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 10) {
-                ForEach(allItems) { item in
-                    horizontalItem(item)
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 14) {
+                ForEach(AppCategory.allCases, id: \.self) { category in
+                    if !category.isHidden {
+                        let visible = appEnablement.visibleKinds(in: category)
+                        if !visible.isEmpty {
+                            horizontalSection(title: category.title, kinds: visible)
+                        }
+                    }
+                }
+                let visibleBuiltIns = AppCategory.builtInPluginKinds.filter { appEnablement.showsBuiltInPlugin($0) }
+                let visiblePlugins = pluginService.plugins.filter { appEnablement.showsPlugin($0.id) }
+                if !visibleBuiltIns.isEmpty || !visiblePlugins.isEmpty {
+                    horizontalSection(title: "Plugins", kinds: visibleBuiltIns) {
+                        ForEach(visiblePlugins) { manifest in
+                            gridCell(kind: .plugin(manifest.id), name: manifest.name, icon: manifest.icon)
+                        }
+                    }
                 }
             }
-            .padding(10)
+            .padding(12)
         }
         .background(theme.sidebarBackground)
     }
 
-    private struct HorizontalItem: Identifiable {
-        let id = UUID()
-        let kind: WorkspacePanelKind
-        let name: String
-        let icon: String
-    }
+    /// One category section laid out as an adaptive grid. Items flow into as
+    /// many equal-width columns as fit, then wrap to the next row. This keeps
+    /// apps evenly distributed while respecting the panel width.
+    @ViewBuilder
+    private func horizontalSection(
+        title: String,
+        kinds: [WorkspacePanelKind],
+        @ViewBuilder extra: () -> some View = { EmptyView() }
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 4)
 
-    private func buildHorizontalItems() -> [HorizontalItem] {
-        var items: [HorizontalItem] = []
-        for category in AppCategory.allCases where !category.isHidden {
-            for kind in appEnablement.visibleKinds(in: category) {
-                items.append(HorizontalItem(kind: kind, name: kind.staticDisplayName ?? kind.themeStorageKey, icon: kind.icon))
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 78, maximum: 110), spacing: 8)],
+                alignment: .center,
+                spacing: 10
+            ) {
+                ForEach(kinds, id: \.self) { kind in
+                    gridCell(
+                        kind: kind,
+                        name: kind.staticDisplayName ?? kind.themeStorageKey,
+                        icon: kind.icon)
+                }
+                extra()
             }
         }
-        for kind in AppCategory.builtInPluginKinds where appEnablement.showsBuiltInPlugin(kind) {
-            items.append(HorizontalItem(kind: kind, name: kind.staticDisplayName ?? kind.themeStorageKey, icon: kind.icon))
-        }
-        for manifest in pluginService.plugins where appEnablement.showsPlugin(manifest.id) {
-            items.append(HorizontalItem(kind: .plugin(manifest.id), name: manifest.name, icon: manifest.icon))
-        }
-        return items
     }
 
     @ViewBuilder
-    private func horizontalItem(_ item: HorizontalItem) -> some View {
-        let isOpen = workspaceLayout.isOpen(item.kind)
+    private func gridCell(kind: WorkspacePanelKind, name: String, icon: String) -> some View {
+        let isOpen = workspaceLayout.isOpenOrAnyTerminal(kind)
         VStack(spacing: 4) {
             ZStack(alignment: .topTrailing) {
-                Image(systemName: item.icon)
+                Image(systemName: icon)
                     .font(.system(size: 22))
                     .foregroundStyle(isOpen ? theme.accent : theme.sidebarText)
                     .frame(width: 28, height: 28)
-                if item.kind.appCategory == .swiftApps {
+                if kind.appCategory == .swiftApps {
                     betaDot
                 }
             }
-            HStack(spacing: 4) {
-                Text(item.name)
+            HStack(spacing: 2) {
+                Text(name)
                     .font(.caption)
                     .foregroundStyle(theme.sidebarText)
                     .lineLimit(1)
-                if item.kind.appCategory == .swiftApps {
+                if kind.appCategory == .swiftApps {
                     BetaTag()
                 }
             }
             .frame(maxWidth: .infinity)
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, minHeight: 56)
         .contentShape(Rectangle())
-        .onTapGesture { openPanel(item.kind) }
+        .onTapGesture { openPanel(kind) }
     }
 
     // MARK: - Helpers

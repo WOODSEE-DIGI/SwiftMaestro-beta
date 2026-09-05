@@ -18,11 +18,19 @@ enum WorkspaceCanvasCoordinateSpace {
 @MainActor
 final class CanvasDragState {
     static let shared = CanvasDragState()
+
+    enum ResizeAnchor {
+        case bottomTrailing
+        case topLeading
+    }
+
     /// Tile currently being live-moved.
     var movingTileID: UUID?
     /// Tile currently being resized.
     var resizingTileID: UUID?
-    /// Live pixel translation during a move (the store only learns the final
+    /// Which corner is being dragged for the resize.
+    var resizeAnchor: ResizeAnchor = .bottomTrailing
+    /// Live pixel translation during a move (the view renders the final
     /// cell on drop — the tile renders frame + this offset mid-drag).
     var dragTranslation: CGSize = .zero
     /// Live pixel delta during a resize (width/height grow by this).
@@ -270,7 +278,7 @@ struct CanvasTileView: View {
             let frame = baseFrame
                 .offsetBy(dx: isMoving ? canvasDrag.dragTranslation.width : 0,
                           dy: isMoving ? canvasDrag.dragTranslation.height : 0)
-                .resized(by: isResizing ? canvasDrag.resizeDelta : .zero)
+                .resized(by: isResizing ? canvasDrag.resizeDelta : .zero, anchor: canvasDrag.resizeAnchor)
 
             VStack(spacing: 0) {
                 if tile.kinds.count > 1 {
@@ -286,7 +294,8 @@ struct CanvasTileView: View {
                     },
                     onHeaderDragChanged: layout.isLocked ? nil : { value in headerDragChanged(value, tile: tile) },
                     onHeaderDragEnded: layout.isLocked ? nil : { value in headerDragEnded(value, tile: tile) },
-                    canvasTileID: tile.id
+                    canvasTileID: tile.id,
+                    headerToolbar: kind == .appLauncher ? AnyView(AppsLauncherPanel().headerToolbar) : nil
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -310,7 +319,8 @@ struct CanvasTileView: View {
             // Overlays MUST come before .position — overlays after .position
             // are laid out in the parent coordinate space, detaching them from
             // the tile frame (the resize grip would float at the wrong spot).
-            .overlay(alignment: .bottomTrailing) { resizeHandle(tile: tile) }
+            .overlay(alignment: .bottomTrailing) { resizeHandle(tile: tile, anchor: .bottomTrailing) }
+            .overlay(alignment: .topLeading) { resizeHandle(tile: tile, anchor: .topLeading) }
             .overlay { stackPreviewOverlay(tile: tile) }
             // NB: .position, never .offset — an .offset child in an aligned
             // ZStack is CENTERED first and offset second (SwiftUI behavior),
@@ -365,11 +375,23 @@ struct CanvasTileView: View {
 }
 
 private extension CGRect {
-    /// Grow/shrink the size keeping the origin (used for live resize render).
-    func resized(by delta: CGSize) -> CGRect {
-        CGRect(x: minX, y: minY,
-               width: max(80, width + delta.width),
-               height: max(60, height + delta.height))
+    /// Grow/shrink the size during a live resize. The anchor determines which
+    /// corner stays fixed: `.bottomTrailing` grows down/right; `.topLeading`
+    /// grows up/left and also moves the origin.
+    func resized(by delta: CGSize, anchor: CanvasDragState.ResizeAnchor = .bottomTrailing) -> CGRect {
+        switch anchor {
+        case .bottomTrailing:
+            return CGRect(x: minX, y: minY,
+                          width: max(80, width + delta.width),
+                          height: max(60, height + delta.height))
+        case .topLeading:
+            let newWidth = max(80, width - delta.width)
+            let newHeight = max(60, height - delta.height)
+            return CGRect(x: minX + (width - newWidth),
+                          y: minY + (height - newHeight),
+                          width: newWidth,
+                          height: newHeight)
+        }
     }
 }
 
@@ -455,7 +477,15 @@ extension CanvasTileView {
         if overlapped.isEmpty {
             layout.moveTile(tile.id, toCol: col, row: row)
         } else if overlapped.count == 1, let other = overlapped.first {
-            layout.swapTiles(tile.id, other.id)
+            // Only swap if the pointer is actually over the other tile. This
+            // prevents accidental swaps when a dragged tile's computed span
+            // barely clips a neighbour in otherwise cleared space.
+            let otherFrame = other.frame(in: canvasSize)
+            if otherFrame.contains(pointer) {
+                layout.swapTiles(tile.id, other.id)
+            }
+            // If the pointer isn't truly over the other tile, stay put rather
+            // than guessing the user's intent.
         }
         // Multi-overlap (dropping across a cell junction): stay put.
     }
@@ -495,18 +525,25 @@ extension CanvasTileView {
         }
     }
 
-    /// Bottom-right resize grip — a visible diagonal-lines handle, live pixel
-    /// follow, span commit on release.
+    /// Corner resize grip — a visible diagonal-lines handle, live pixel
+    /// follow, span commit on release. Supports both bottom-right and top-left
+    /// anchors so a tile can be resized from either corner.
     @ViewBuilder
-    func resizeHandle(tile: CanvasTile) -> some View {
+    func resizeHandle(tile: CanvasTile, anchor: CanvasDragState.ResizeAnchor) -> some View {
         if !layout.isLocked {
             Canvas { context, size in
                 // Three diagonal lines, classic window-corner affordance.
                 for i in 0..<3 {
                     let inset = CGFloat(i) * 6 + 4
                     var path = Path()
-                    path.move(to: CGPoint(x: size.width - inset, y: size.height))
-                    path.addLine(to: CGPoint(x: size.width, y: size.height - inset))
+                    switch anchor {
+                    case .bottomTrailing:
+                        path.move(to: CGPoint(x: size.width - inset, y: size.height))
+                        path.addLine(to: CGPoint(x: size.width, y: size.height - inset))
+                    case .topLeading:
+                        path.move(to: CGPoint(x: inset, y: 0))
+                        path.addLine(to: CGPoint(x: 0, y: inset))
+                    }
                     context.stroke(path, with: .color(theme.isDarkAppearanceActive ? .white.opacity(0.45) : .black.opacity(0.35)), lineWidth: 1.5)
                 }
             }
@@ -517,6 +554,7 @@ extension CanvasTileView {
                     .onChanged { value in
                         if canvasDrag.resizingTileID != tile.id {
                             canvasDrag.resizingTileID = tile.id
+                            canvasDrag.resizeAnchor = anchor
                             canvasDrag.resizeDelta = .zero
                             layout.bringTileToFront(tile.id)
                         }
@@ -524,19 +562,45 @@ extension CanvasTileView {
                     }
                     .onEnded { _ in
                         let delta = canvasDrag.resizeDelta
+                        let anchor = canvasDrag.resizeAnchor
                         canvasDrag.resizingTileID = nil
                         canvasDrag.resizeDelta = .zero
+                        canvasDrag.resizeAnchor = .bottomTrailing
+
                         let cell = CanvasGrid.cellSize(in: canvasSize)
                         let base = tile.frame(in: canvasSize)
-                        let newColSpan = max(tile.minColSpan, min(
-                            CanvasGrid.cols - tile.col,
-                            Int(((base.width + delta.width) / (cell.width + CanvasGrid.gap)).rounded())
-                        ))
-                        let newRowSpan = max(tile.minRowSpan, min(
-                            CanvasGrid.rows - tile.row,
-                            Int(((base.height + delta.height) / (cell.height + CanvasGrid.gap)).rounded())
-                        ))
-                        layout.resizeTileSpan(tile.id, colSpan: newColSpan, rowSpan: newRowSpan)
+                        let liveFrame = base.resized(by: delta, anchor: anchor)
+
+                        switch anchor {
+                        case .bottomTrailing:
+                            let newColSpan = max(tile.minColSpan, min(
+                                CanvasGrid.cols - tile.col,
+                                Int(((base.width + delta.width) / (cell.width + CanvasGrid.gap)).rounded())
+                            ))
+                            let newRowSpan = max(tile.minRowSpan, min(
+                                CanvasGrid.rows - tile.row,
+                                Int(((base.height + delta.height) / (cell.height + CanvasGrid.gap)).rounded())
+                            ))
+                            layout.resizeTileSpan(tile.id, colSpan: newColSpan, rowSpan: newRowSpan)
+                        case .topLeading:
+                            let newColSpan = max(tile.minColSpan, min(
+                                tile.col + tile.colSpan,
+                                Int((liveFrame.width / (cell.width + CanvasGrid.gap)).rounded())
+                            ))
+                            let newRowSpan = max(tile.minRowSpan, min(
+                                tile.row + tile.rowSpan,
+                                Int((liveFrame.height / (cell.height + CanvasGrid.gap)).rounded())
+                            ))
+                            let newCol = max(0, min(
+                                tile.col + tile.colSpan - newColSpan,
+                                Int((liveFrame.minX / (cell.width + CanvasGrid.gap)).rounded())
+                            ))
+                            let newRow = max(0, min(
+                                tile.row + tile.rowSpan - newRowSpan,
+                                Int((liveFrame.minY / (cell.height + CanvasGrid.gap)).rounded())
+                            ))
+                            layout.resizeTileFromTopLeading(tile.id, toCol: newCol, row: newRow, colSpan: newColSpan, rowSpan: newRowSpan)
+                        }
                     }
             )
             .onHover { hovering in

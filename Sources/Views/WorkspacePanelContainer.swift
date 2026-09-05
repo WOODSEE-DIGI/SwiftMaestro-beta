@@ -30,6 +30,10 @@ struct WorkspacePanelContainer<Content: View>: View {
     /// Enables the "Move to ▸" canvas-window menu.
     var canvasTileID: UUID? = nil
 
+    /// Optional trailing header content (e.g. a view-mode switcher for the
+    /// Apps panel). Rendered between the context menu and the close button.
+    var headerToolbar: (any View)? = nil
+
     @State private var layout = WorkspaceLayoutState.shared
     /// Per-panel layout state shared between the container header and the
     /// panel content (e.g. the agent chat's Plans/Tasks side panels).
@@ -115,6 +119,10 @@ struct WorkspacePanelContainer<Content: View>: View {
 
             if case .agentChat(let id) = kind {
                 ChatPanelHeaderToolbar(agentID: id)
+            }
+
+            if let headerToolbar {
+                AnyView(headerToolbar)
             }
 
             Menu {

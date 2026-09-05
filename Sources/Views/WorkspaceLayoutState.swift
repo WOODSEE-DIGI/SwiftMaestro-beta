@@ -2,13 +2,18 @@ import SwiftUI
 
 // MARK: - Canvas Grid
 
-/// The workspace grid: 12 columns × 8 rows with gutters. Tiles occupy whole
+/// The workspace grid: 24 columns × 16 rows with gutters. Tiles occupy whole
 /// cell spans, so tiles can never overlap — empty cells are the visible
 /// "space available" for new panels. Grid units scale with the window, so
 /// resizing the window re-flows tiles proportionally.
+///
+/// The grid was doubled from 12×8 to 24×16 so small resize/drag adjustments
+/// actually free up cells instead of leaving a tile parked across the same
+/// coarse span. This eliminates the "panels weren't touching but still
+/// overlapped/swap" bug caused by quantization.
 enum CanvasGrid {
-    static let cols = 12
-    static let rows = 8
+    static let cols = 24
+    static let rows = 16
     static let gap: Double = 10
 
     static func cellSize(in canvas: CGSize) -> CGSize {
@@ -109,11 +114,13 @@ struct CanvasTile: Identifiable, Codable, Hashable, Sendable {
     }
 
     /// Smallest sane span (a kind with a wide minimum column gets more cells).
+    /// These thresholds are tuned for the 24×16 grid; they correspond to the
+    /// previous 12×8 values doubled so the same pixel widths are enforced.
     var minColSpan: Int {
         let minWidth = kinds.map(\.minColumnWidth).max() ?? 280
-        return minWidth > 560 ? 5 : minWidth > 420 ? 4 : minWidth > 200 ? 3 : 2
+        return minWidth > 560 ? 10 : minWidth > 420 ? 8 : minWidth > 200 ? 6 : 4
     }
-    var minRowSpan: Int { 2 }
+    var minRowSpan: Int { 4 }
 
     /// Memberwise init (explicit because the custom decoder suppresses the
     /// synthesized one).
@@ -170,8 +177,8 @@ struct CanvasTile: Identifiable, Codable, Hashable, Sendable {
             let originCell = CanvasGrid.cell(at: CGPoint(x: px, y: py), in: nominal)
             col = originCell.col
             row = originCell.row
-            colSpan = min(CanvasGrid.cols - col, max(3, Int((pw / 1400.0 * 12).rounded())))
-            rowSpan = min(CanvasGrid.rows - row, max(2, Int((ph / 900.0 * 8).rounded())))
+            colSpan = min(CanvasGrid.cols - col, max(6, Int((pw / 1400.0 * Double(CanvasGrid.cols)).rounded())))
+            rowSpan = min(CanvasGrid.rows - row, max(4, Int((ph / 900.0 * Double(CanvasGrid.rows)).rounded())))
         }
     }
 }
@@ -443,9 +450,8 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         // on the canvas grid. 380 keeps it readable; go narrower by choice.
         case .agentChat: return 380
         // Agents and Apps are simple icon+label lists — they stay usable as
-        // narrow rails, so they get a lower floor (2 grid cells ≈ 300 px on a
-        // 1440p canvas) than content-heavy panels. Requested so the two
-        // sidebars can share the space of one normal panel.
+        // narrow rails, so they get a lower floor (4 grid cells ≈ 300 px on a
+        // 1440p canvas with the 24×16 grid) than content-heavy panels.
         case .agents, .appLauncher: return 160
         default: return 320
         }
@@ -853,6 +859,8 @@ final class WorkspaceLayoutState {
     }
 
     private let defaultsKey = "SwiftMaestro.WorkspaceLayout"
+    private var gridVersionKey: String { defaultsKey + ".gridVersion" }
+    private let currentGridVersion = 2
     private static let minRatio: Double = 0.1
     private static let maxRatio: Double = 0.9
 
@@ -938,20 +946,20 @@ final class WorkspaceLayoutState {
 
         if !canvasContains(.agents) {
             canvasTiles.append(CanvasTile(
-                kinds: [.agents], col: 0, row: 0, colSpan: 3, rowSpan: 5, z: nextZ()
+                kinds: [.agents], col: 0, row: 0, colSpan: 6, rowSpan: 10, z: nextZ()
             ))
             changed = true
         }
         if !canvasContains(.appLauncher) {
             canvasTiles.append(CanvasTile(
-                kinds: [.appLauncher], col: 0, row: 5, colSpan: 3, rowSpan: 3, z: nextZ()
+                kinds: [.appLauncher], col: 0, row: 10, colSpan: 6, rowSpan: 6, z: nextZ()
             ))
             changed = true
         }
         let chat = WorkspacePanelKind.agentChat(navigatorID)
         if !canvasContains(chat) {
             canvasTiles.append(CanvasTile(
-                kinds: [chat], col: 3, row: 0, colSpan: 9, rowSpan: 8, z: nextZ()
+                kinds: [chat], col: 6, row: 0, colSpan: 18, rowSpan: 16, z: nextZ()
             ))
             changed = true
         }
@@ -1118,16 +1126,16 @@ final class WorkspaceLayoutState {
     }
 
     /// Preferred grid span for a panel kind (chats get a big area, chrome is
-    /// narrow, utility panels are compact).
+    /// narrow, utility panels are compact). Values are tuned for the 24×16 grid.
     private func preferredSpan(for kind: WorkspacePanelKind) -> (colSpan: Int, rowSpan: Int) {
         switch kind {
-        case .agentChat: return (5, 8)
-        case .agents, .appLauncher: return (3, 4)
-        case .terminal: return (4, 4)
-        case .webBrowser, .damBrowser, .maestroDocs, .maestroDB: return (5, 6)
-        case .htmlBuilder: return (6, 8)
-        case .backup, .voiceNotes: return (4, 6)
-        default: return (4, 4)
+        case .agentChat: return (10, 16)
+        case .agents, .appLauncher: return (6, 8)
+        case .terminal: return (8, 8)
+        case .webBrowser, .damBrowser, .maestroDocs, .maestroDB: return (10, 12)
+        case .htmlBuilder: return (12, 16)
+        case .backup, .voiceNotes: return (8, 12)
+        default: return (8, 8)
         }
     }
 
@@ -1360,6 +1368,41 @@ final class WorkspaceLayoutState {
         save()
     }
 
+    /// Resize a tile from its top-leading corner: both the origin and span may
+    /// change. The span is first clamped to the new origin and minimum size,
+    /// then shrunk until it no longer overlaps any neighbour.
+    func resizeTileFromTopLeading(_ id: UUID, toCol col: Int, row: Int, colSpan: Int, rowSpan: Int) {
+        guard let idx = canvasTiles.firstIndex(where: { $0.id == id }) else { return }
+        let tile = canvasTiles[idx]
+        let others = canvasTiles.filter { $0.canvasID == tile.canvasID && $0.id != id }
+
+        var newCol = min(max(0, col), CanvasGrid.cols - tile.minColSpan)
+        var newRow = min(max(0, row), CanvasGrid.rows - tile.minRowSpan)
+        var newColSpan = min(max(tile.minColSpan, colSpan), tile.col + tile.colSpan - newCol)
+        var newRowSpan = min(max(tile.minRowSpan, rowSpan), tile.row + tile.rowSpan - newRow)
+
+        // Shrink from the top-left until the new span doesn't overlap anyone.
+        while newColSpan > tile.minColSpan,
+              others.contains(where: { CanvasGrid.spansIntersect($0.cellSpan, (newCol, newRow, newColSpan, newRowSpan)) }) {
+            newColSpan -= 1
+        }
+        while newRowSpan > tile.minRowSpan,
+              others.contains(where: { CanvasGrid.spansIntersect($0.cellSpan, (newCol, newRow, newColSpan, newRowSpan)) }) {
+            newRowSpan -= 1
+        }
+
+        // If shrinking the span created a gap, pull the origin back toward the
+        // original bottom-right corner so the tile stays contiguous.
+        newCol = min(newCol, tile.col + tile.colSpan - newColSpan)
+        newRow = min(newRow, tile.row + tile.rowSpan - newRowSpan)
+
+        canvasTiles[idx].col = newCol
+        canvasTiles[idx].row = newRow
+        canvasTiles[idx].colSpan = newColSpan
+        canvasTiles[idx].rowSpan = newRowSpan
+        save()
+    }
+
     func bringTileToFront(_ id: UUID) {
         guard let idx = canvasTiles.firstIndex(where: { $0.id == id }) else { return }
         let top = canvasTiles.map(\.z).max() ?? 0
@@ -1380,20 +1423,41 @@ final class WorkspaceLayoutState {
         save()
     }
 
-    /// Swap two tiles' cell positions (drop onto an occupied cell).
+    /// Swap two tiles' cell *positions* only, keeping each tile's own span.
+    /// This prevents the jumbled layouts caused by swapping different-sized
+    /// spans. The swap is validated: if either tile would overlap a third tile
+    /// or leave the grid bounds, the swap is cancelled and nothing moves.
     func swapTiles(_ a: UUID, _ b: UUID) {
         guard a != b,
               let ai = canvasTiles.firstIndex(where: { $0.id == a }),
               let bi = canvasTiles.firstIndex(where: { $0.id == b }) else { return }
-        let aSpan = canvasTiles[ai].cellSpan
-        canvasTiles[ai].col = canvasTiles[bi].col
-        canvasTiles[ai].row = canvasTiles[bi].row
-        canvasTiles[ai].colSpan = canvasTiles[bi].colSpan
-        canvasTiles[ai].rowSpan = canvasTiles[bi].rowSpan
-        canvasTiles[bi].col = aSpan.col
-        canvasTiles[bi].row = aSpan.row
-        canvasTiles[bi].colSpan = aSpan.colSpan
-        canvasTiles[bi].rowSpan = aSpan.rowSpan
+        let aTile = canvasTiles[ai]
+        let bTile = canvasTiles[bi]
+        let others = canvasTiles.filter { $0.canvasID == aTile.canvasID && $0.id != a && $0.id != b }
+
+        // Try position swap, keeping original spans.
+        canvasTiles[ai].col = bTile.col
+        canvasTiles[ai].row = bTile.row
+        canvasTiles[bi].col = aTile.col
+        canvasTiles[bi].row = aTile.row
+
+        let newA = canvasTiles[ai].cellSpan
+        let newB = canvasTiles[bi].cellSpan
+        let aInBounds = newA.col + newA.colSpan <= CanvasGrid.cols && newA.row + newA.rowSpan <= CanvasGrid.rows
+        let bInBounds = newB.col + newB.colSpan <= CanvasGrid.cols && newB.row + newB.rowSpan <= CanvasGrid.rows
+        let overlaps = others.contains(where: {
+            CanvasGrid.spansIntersect($0.cellSpan, newA) || CanvasGrid.spansIntersect($0.cellSpan, newB)
+        })
+
+        if !aInBounds || !bInBounds || overlaps {
+            // Revert: leave both tiles where they started.
+            canvasTiles[ai].col = aTile.col
+            canvasTiles[ai].row = aTile.row
+            canvasTiles[bi].col = bTile.col
+            canvasTiles[bi].row = bTile.row
+            return
+        }
+
         canvasTiles[ai].z = nextZ()
         save()
     }
@@ -1449,26 +1513,73 @@ final class WorkspaceLayoutState {
     // MARK: - Default Layout
 
     /// Rearrange the main canvas's tiles into the canonical layout:
-    /// Agents over Apps launcher in the left column, agent chats center,
-    /// everything else in the right column. Repositions only — nothing opens
-    /// or closes. Other canvas windows are untouched.
+    /// Agents over Apps launcher in the left column, navigator chat center,
+    /// everything else in the right column. Stale agent-chat tiles (whose
+    /// agent no longer exists) are dropped, and a navigator chat tile is
+    /// guaranteed. Other canvas windows are untouched.
     func resetToDefaultLayout() {
         let canvasID = CanvasTile.mainCanvasID
+        let workspace = WorkspaceStore()
+        let navigatorID = workspace.navigator.id
+
         var agentsTile: CanvasTile?
         var launcherTile: CanvasTile?
         var chatTiles: [CanvasTile] = []
         var otherTiles: [CanvasTile] = []
+        var staleTileIDs: [UUID] = []
 
         for tile in canvasTiles where tile.canvasID == canvasID {
             if tile.kinds.contains(.agents) { agentsTile = tile }
             else if tile.kinds.contains(.appLauncher) { launcherTile = tile }
-            else if tile.kinds.contains(where: { if case .agentChat = $0 { return true } else { return false } }) { chatTiles.append(tile) }
-            else { otherTiles.append(tile) }
+            else if tile.kinds.contains(where: { kind in
+                if case .agentChat(let id) = kind {
+                    // Keep only chat tiles whose agent still exists. The
+                    // navigator chat is always valid; project/searcher chats
+                    // are kept if their agent survived load.
+                    return workspace.agent(id: id) != nil
+                }
+                return false
+            }) {
+                chatTiles.append(tile)
+            } else {
+                otherTiles.append(tile)
+            }
+        }
+
+        // Drop any chat tile whose agent no longer exists so we never show
+        // "Agent Not Found" after a reset.
+        for tile in chatTiles {
+            let hasMissingAgent = tile.kinds.contains(where: { kind in
+                if case .agentChat(let id) = kind { return workspace.agent(id: id) == nil }
+                return false
+            })
+            if hasMissingAgent { staleTileIDs.append(tile.id) }
+        }
+        if !staleTileIDs.isEmpty {
+            canvasTiles.removeAll { staleTileIDs.contains($0.id) }
+            chatTiles.removeAll { staleTileIDs.contains($0.id) }
+        }
+
+        // Ensure the navigator chat exists in the layout.
+        let hasNavigatorChat = chatTiles.contains { tile in
+            tile.kinds.contains(where: { kind in
+                if case .agentChat(let id) = kind { return id == navigatorID }
+                return false
+            })
+        }
+        if !hasNavigatorChat {
+            let navigatorChat = CanvasTile(
+                kinds: [.agentChat(navigatorID)],
+                col: 0, row: 0, colSpan: 12, rowSpan: 16, z: nextZ(),
+                canvasID: canvasID
+            )
+            canvasTiles.append(navigatorChat)
+            chatTiles.append(navigatorChat)
         }
 
         let hasChrome = agentsTile != nil || launcherTile != nil
-        let chromeCols = hasChrome ? 3 : 0
-        let rightCols = otherTiles.isEmpty ? 0 : 3
+        let chromeCols = hasChrome ? 6 : 0
+        let rightCols = otherTiles.isEmpty ? 0 : 6
         let centerCols = CanvasGrid.cols - chromeCols - rightCols
 
         var zCounter = 0
@@ -1483,17 +1594,17 @@ final class WorkspaceLayoutState {
         }
 
         if let agentsTile, let launcherTile {
-            place(agentsTile, col: 0, row: 0, colSpan: chromeCols, rowSpan: 5)
-            place(launcherTile, col: 0, row: 5, colSpan: chromeCols, rowSpan: 3)
+            place(agentsTile, col: 0, row: 0, colSpan: chromeCols, rowSpan: 10)
+            place(launcherTile, col: 0, row: 10, colSpan: chromeCols, rowSpan: 6)
         } else if let agentsTile {
-            place(agentsTile, col: 0, row: 0, colSpan: chromeCols, rowSpan: 8)
+            place(agentsTile, col: 0, row: 0, colSpan: chromeCols, rowSpan: 16)
         } else if let launcherTile {
-            place(launcherTile, col: 0, row: 0, colSpan: chromeCols, rowSpan: 8)
+            place(launcherTile, col: 0, row: 0, colSpan: chromeCols, rowSpan: 16)
         }
 
         for (i, chat) in chatTiles.enumerated() {
             let each = centerCols / max(1, chatTiles.count)
-            place(chat, col: chromeCols + i * each, row: 0, colSpan: each, rowSpan: 8)
+            place(chat, col: chromeCols + i * each, row: 0, colSpan: each, rowSpan: 16)
         }
 
         for (i, tile) in otherTiles.enumerated() {
@@ -1580,8 +1691,8 @@ final class WorkspaceLayoutState {
             .sorted { $0.z < $1.z }
         guard !tiles.isEmpty else { return }
 
-        let masterCols = 7   // ~58% of 12 columns
-        let stackCols = 5    // ~42%
+        let masterCols = 14   // ~58% of 24 columns
+        let stackCols = 10    // ~42%
         let stackX = masterCols
 
         // Master tile gets the full left side.
@@ -1699,8 +1810,8 @@ final class WorkspaceLayoutState {
 
                 // Clamp into grid bounds first.
                 let before = canvasTiles[idx].cellSpan
-                canvasTiles[idx].colSpan = min(max(2, canvasTiles[idx].colSpan), CanvasGrid.cols)
-                canvasTiles[idx].rowSpan = min(max(2, canvasTiles[idx].rowSpan), CanvasGrid.rows)
+                canvasTiles[idx].colSpan = min(max(4, canvasTiles[idx].colSpan), CanvasGrid.cols)
+                canvasTiles[idx].rowSpan = min(max(4, canvasTiles[idx].rowSpan), CanvasGrid.rows)
                 canvasTiles[idx].col = min(max(0, canvasTiles[idx].col), CanvasGrid.cols - canvasTiles[idx].colSpan)
                 canvasTiles[idx].row = min(max(0, canvasTiles[idx].row), CanvasGrid.rows - canvasTiles[idx].rowSpan)
                 if canvasTiles[idx].cellSpan != before { changed = true }
@@ -1828,6 +1939,7 @@ final class WorkspaceLayoutState {
         if let tilesData = UserDefaults.standard.data(forKey: defaultsKey + ".canvasTiles"),
            let decoded = try? JSONDecoder().decode([CanvasTile].self, from: tilesData) {
             canvasTiles = decoded
+            migrateGridResolutionIfNeeded()
         } else {
             migrateTreeToCanvas()
         }
@@ -1873,6 +1985,21 @@ final class WorkspaceLayoutState {
         // Persist the repaired layout so the corrupt state doesn't come back
         // on the next launch.
         if repair.changed { save() }
+    }
+
+    /// One-time migration: scale layouts saved on the old 12×8 grid up to the
+    /// current 24×16 grid. Doubles every tile's col/row/colSpan/rowSpan.
+    private func migrateGridResolutionIfNeeded() {
+        let savedVersion = UserDefaults.standard.integer(forKey: gridVersionKey)
+        guard savedVersion < currentGridVersion else { return }
+        for idx in canvasTiles.indices {
+            canvasTiles[idx].col *= 2
+            canvasTiles[idx].row *= 2
+            canvasTiles[idx].colSpan *= 2
+            canvasTiles[idx].rowSpan *= 2
+        }
+        UserDefaults.standard.set(currentGridVersion, forKey: gridVersionKey)
+        save()
     }
 
     /// One-time migration: replace the old hardcoded canvas-ID UUID that was

@@ -10,8 +10,11 @@ struct PipelinePage: View {
     @Environment(ThemeStore.self) private var theme
 
     @State private var selectedTab: PipelineTab = .pipeline
-    @State private var selectedLead: BooksCRMLead?
-    @State private var showLeadEditor = false
+    /// Single source of truth for the lead editor sheet. Using an enum item
+    /// sheet avoids the two-state timing bug where `selectedLead` and
+    /// `showLeadEditor` could update out of order, causing an existing lead
+    /// tap to present the "New Lead" blank form.
+    @State private var leadEditSheet: LeadEditSheet?
     @State private var activityContact: CRMActivityContact?
 
     private enum PipelineTab: String, CaseIterable, Identifiable {
@@ -19,6 +22,27 @@ struct PipelinePage: View {
         case leads = "Leads"
         case activities = "Activities"
         var id: String { rawValue }
+    }
+
+    /// Identifiable wrapper so `.sheet(item:)` can present reliably for both
+    /// new leads (no database id) and existing leads.
+    private enum LeadEditSheet: Identifiable {
+        case new
+        case edit(BooksCRMLead)
+
+        var id: String {
+            switch self {
+            case .new: return "new-lead"
+            case .edit(let lead): return "lead-\(lead.id ?? 0)"
+            }
+        }
+
+        var lead: BooksCRMLead {
+            switch self {
+            case .new: return .blank
+            case .edit(let lead): return lead
+            }
+        }
     }
 
     var body: some View {
@@ -29,13 +53,11 @@ struct PipelinePage: View {
             case .pipeline:
                 PipelineView(
                     viewModel: viewModel,
-                    selectedLead: $selectedLead,
-                    showEditor: $showLeadEditor)
+                    onEdit: { lead in leadEditSheet = .edit(lead) })
             case .leads:
                 LeadsView(
                     viewModel: viewModel,
-                    selectedLead: $selectedLead,
-                    showEditor: $showLeadEditor,
+                    onEdit: { lead in leadEditSheet = .edit(lead) },
                     onActivity: { lead in
                         activityContact = CRMActivityContact(kind: "lead", contactID: lead.id ?? 0, name: lead.name)
                     })
@@ -43,11 +65,15 @@ struct PipelinePage: View {
                 CRMActivitiesView(viewModel: viewModel)
             }
         }
-        .sheet(isPresented: $showLeadEditor) {
+        .sheet(item: $leadEditSheet) { sheet in
             CRMLeadEditor(
                 viewModel: viewModel,
-                lead: selectedLead ?? .blank,
-                isPresented: $showLeadEditor)
+                lead: sheet.lead,
+                isPresented: Binding(
+                    get: { leadEditSheet != nil },
+                    set: { if !$0 { leadEditSheet = nil } }
+                )
+            )
         }
         .sheet(item: $activityContact) { contact in
             CRMActivityEditor(
@@ -74,12 +100,8 @@ struct PipelinePage: View {
             Spacer()
             Button {
                 switch selectedTab {
-                case .pipeline:
-                    selectedLead = .blank
-                    showLeadEditor = true
-                case .leads:
-                    selectedLead = .blank
-                    showLeadEditor = true
+                case .pipeline, .leads:
+                    leadEditSheet = .new
                 case .activities:
                     break // Activities are created from a lead or client context.
                 }
@@ -104,8 +126,7 @@ private struct LeadStatusColumn: Identifiable, Hashable {
 
 private struct PipelineView: View {
     @Bindable var viewModel: BooksViewModel
-    @Binding var selectedLead: BooksCRMLead?
-    @Binding var showEditor: Bool
+    let onEdit: (BooksCRMLead) -> Void
     @Environment(ThemeStore.self) private var theme
 
     private let columns: [LeadStatusColumn] = [
@@ -124,10 +145,7 @@ private struct PipelineView: View {
                         column: column,
                         leads: viewModel.crmLeads.filter { $0.status == column.status },
                         theme: theme,
-                        onSelect: { lead in
-                            selectedLead = lead
-                            showEditor = true
-                        })
+                        onSelect: onEdit)
                 }
             }
             .padding()
@@ -217,8 +235,7 @@ private struct PipelineCard: View {
 
 private struct LeadsView: View {
     @Bindable var viewModel: BooksViewModel
-    @Binding var selectedLead: BooksCRMLead?
-    @Binding var showEditor: Bool
+    let onEdit: (BooksCRMLead) -> Void
     let onActivity: (BooksCRMLead) -> Void
     @Environment(ThemeStore.self) private var theme
 
@@ -227,8 +244,7 @@ private struct LeadsView: View {
             LeadRow(lead: lead, theme: theme)
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    selectedLead = lead
-                    showEditor = true
+                    onEdit(lead)
                 }
                 .contextMenu {
                     Button {

@@ -43,6 +43,8 @@ final class WorkspaceLayoutPresetStore {
     var activePresetID: UUID?
 
     private let defaultsKey = "SwiftMaestro.LayoutPresets"
+    private var gridVersionKey: String { defaultsKey + ".gridVersion" }
+    private let currentGridVersion = 2
     private let layout = WorkspaceLayoutState.shared
 
     init() {
@@ -161,26 +163,26 @@ final class WorkspaceLayoutPresetStore {
         func tiles(agentID: UUID) -> [CanvasTile] {
             switch self {
             case .default:
-                // Agents (3 cols, 5 rows) + Apps (3 cols, 3 rows) left,
-                // Navigator chat (9 cols, 8 rows) center.
+                // Agents (6 cols, 10 rows) + Apps (6 cols, 6 rows) left,
+                // Navigator chat (18 cols, 16 rows) center.
                 return [
-                    CanvasTile(kinds: [.agents], col: 0, row: 0, colSpan: 3, rowSpan: 5, z: 1),
-                    CanvasTile(kinds: [.appLauncher], col: 0, row: 5, colSpan: 3, rowSpan: 3, z: 2),
-                    CanvasTile(kinds: [.agentChat(agentID)], col: 3, row: 0, colSpan: 9, rowSpan: 8, z: 3),
+                    CanvasTile(kinds: [.agents], col: 0, row: 0, colSpan: 6, rowSpan: 10, z: 1),
+                    CanvasTile(kinds: [.appLauncher], col: 0, row: 10, colSpan: 6, rowSpan: 6, z: 2),
+                    CanvasTile(kinds: [.agentChat(agentID)], col: 6, row: 0, colSpan: 18, rowSpan: 16, z: 3),
                 ]
             case .focus:
                 // Single full-screen chat, no chrome — maximum focus.
                 return [
-                    CanvasTile(kinds: [.agentChat(agentID)], col: 0, row: 0, colSpan: 12, rowSpan: 8, z: 1),
+                    CanvasTile(kinds: [.agentChat(agentID)], col: 0, row: 0, colSpan: 24, rowSpan: 16, z: 1),
                 ]
             case .dashboard:
                 // Agents + Apps left column, chat center, tasks right.
                 return [
-                    CanvasTile(kinds: [.agents], col: 0, row: 0, colSpan: 2, rowSpan: 4, z: 1),
-                    CanvasTile(kinds: [.appLauncher], col: 0, row: 4, colSpan: 2, rowSpan: 4, z: 2),
-                    CanvasTile(kinds: [.agentChat(agentID)], col: 2, row: 0, colSpan: 7, rowSpan: 8, z: 3),
-                    CanvasTile(kinds: [.kanban], col: 9, row: 0, colSpan: 3, rowSpan: 4, z: 4),
-                    CanvasTile(kinds: [.notesMD], col: 9, row: 4, colSpan: 3, rowSpan: 4, z: 5),
+                    CanvasTile(kinds: [.agents], col: 0, row: 0, colSpan: 4, rowSpan: 8, z: 1),
+                    CanvasTile(kinds: [.appLauncher], col: 0, row: 8, colSpan: 4, rowSpan: 8, z: 2),
+                    CanvasTile(kinds: [.agentChat(agentID)], col: 4, row: 0, colSpan: 14, rowSpan: 16, z: 3),
+                    CanvasTile(kinds: [.kanban], col: 18, row: 0, colSpan: 6, rowSpan: 8, z: 4),
+                    CanvasTile(kinds: [.notesMD], col: 18, row: 8, colSpan: 6, rowSpan: 8, z: 5),
                 ]
             }
         }
@@ -195,7 +197,21 @@ final class WorkspaceLayoutPresetStore {
     private func ensureBuiltInPresets() {
         let navigatorID = WorkspaceStore().navigator.id
         for builtIn in BuiltInPreset.allCases {
-            if !presets.contains(where: { $0.name == builtIn.displayName }) {
+            if let idx = presets.firstIndex(where: { $0.name == builtIn.displayName }) {
+                // Refresh built-in presets so their navigator chat tile always
+                // points to the current navigator agent. Stale IDs cause
+                // "Agent Not Found" when the preset is recalled.
+                var refreshed = WorkspaceLayoutPreset(
+                    id: presets[idx].id,
+                    name: builtIn.displayName,
+                    slot: builtIn.slot,
+                    canvasTiles: builtIn.tiles(agentID: navigatorID),
+                    floatingPanels: builtIn.floatingPanels,
+                    isLocked: false
+                )
+                refreshed.isBuiltIn = true
+                presets[idx] = refreshed
+            } else {
                 var preset = WorkspaceLayoutPreset(
                     name: builtIn.displayName,
                     slot: builtIn.slot,
@@ -221,5 +237,23 @@ final class WorkspaceLayoutPresetStore {
         guard let data = UserDefaults.standard.data(forKey: defaultsKey),
               let decoded = try? JSONDecoder().decode([WorkspaceLayoutPreset].self, from: data) else { return }
         presets = decoded
+        migrateGridResolutionIfNeeded()
+    }
+
+    /// One-time migration: scale presets saved on the old 12×8 grid up to the
+    /// current 24×16 grid. Doubles every tile's col/row/colSpan/rowSpan.
+    private func migrateGridResolutionIfNeeded() {
+        let savedVersion = UserDefaults.standard.integer(forKey: gridVersionKey)
+        guard savedVersion < currentGridVersion else { return }
+        for presetIdx in presets.indices {
+            for tileIdx in presets[presetIdx].canvasTiles.indices {
+                presets[presetIdx].canvasTiles[tileIdx].col *= 2
+                presets[presetIdx].canvasTiles[tileIdx].row *= 2
+                presets[presetIdx].canvasTiles[tileIdx].colSpan *= 2
+                presets[presetIdx].canvasTiles[tileIdx].rowSpan *= 2
+            }
+        }
+        UserDefaults.standard.set(currentGridVersion, forKey: gridVersionKey)
+        save()
     }
 }
