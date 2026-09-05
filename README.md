@@ -473,7 +473,7 @@ By default models are stored under `~/Library/Application Support/SwiftMaestro/m
 | 7 | 🚧 In Progress | Swift Helper — diagnostic ticketing, self-healing logs, config restore points, and on-Mac security scanning for report attachments |
 | 8 | 🚧 In Progress | MaestroBooks — invoicing, expenses, clients, products, PDF generation, and Xero accounting sync. Currently debugging core bookkeeping workflows. |
 | 9 | 📋 Planned | Financial and crypto market investigation tools (Blocky + Stocky) |
-| 10 | 📋 Planned | Find your local elected representatives and their voting records vs media spin |
+| 10 | 📋 Planned | How does my elected rep vote? |
 | 11 | 📋 Planned | Personalised on-device fine-tuning (LoRA) |
 
 ---
