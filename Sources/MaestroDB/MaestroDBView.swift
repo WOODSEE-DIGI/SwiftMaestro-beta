@@ -32,7 +32,13 @@ struct MaestroDBView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .task { await viewModel.loadAll() }
+        .task {
+            await viewModel.loadAll()
+            if let path = UserDefaults.standard.string(forKey: "crm.pendingMaestroDBAssetPath") {
+                UserDefaults.standard.removeObject(forKey: "crm.pendingMaestroDBAssetPath")
+                await viewModel.importAssetPath(path)
+            }
+        }
         // Hop to main: db_* tools post from background threads, and touching
         // the @Observable view model off-main triggers 'Publishing changes
         // from background threads' warnings.
@@ -52,6 +58,13 @@ struct MaestroDBView: View {
                 Text("MaestroDB")
                     .font(.headline)
                 Spacer()
+                Button {
+                    Task { await viewModel.syncAccountingBase() }
+                } label: {
+                    Image(systemName: "dollarsign.circle")
+                }
+                .buttonStyle(.borderless)
+                .help("Sync Accounting base from MaestroBooks")
                 Menu {
                     Button("New Base…") { newName = ""; isCreatingBase = true }
                     Button("New Table…") { newName = ""; isCreatingTable = true }

@@ -271,8 +271,25 @@ struct ContentView: View {
             guard let agent = notification.object as? AgentRecord else { return }
             removeAgent(agent)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .openInMaestroDAM)) { notification in
+            if let path = notification.userInfo?["path"] as? String {
+                UserDefaults.standard.set(path, forKey: "crm.pendingDAMAssetPath")
+            }
+            openPanel(.damBrowser)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .sendToMaestroDB)) { notification in
+            if let path = notification.userInfo?["path"] as? String {
+                UserDefaults.standard.set(path, forKey: "crm.pendingMaestroDBAssetPath")
+            }
+            openPanel(.maestroDB)
+        }
         .onAppear {
-            workspaceLayout.ensureChromeLayout(navigatorID: workspace.navigator.id)
+            // Only force the default chrome (Agents sidebar + Maestro chat) when
+            // the workspace was empty on launch. If a previous layout was
+            // restored, respect it instead of pushing a new Maestro chat on top.
+            if workspaceLayout.canvasTiles.isEmpty && workspaceLayout.floatingPanels.isEmpty {
+                workspaceLayout.ensureChromeLayout(navigatorID: workspace.navigator.id)
+            }
             // Explicitly (re)present every panel that was floating when the
             // app last quit, rather than relying SOLELY on macOS to
             // automatically restore data-driven WindowGroup windows — that
@@ -327,10 +344,7 @@ struct ContentView: View {
         // (e.g. the setup sheet just finished and the bundled Whisper copy is
         // now loading into memory), surface the explainer — first run only.
         .onChange(of: whisper.modelState) { _, newState in
-            guard !whisperKitSeen, activeSheet == nil else { return }
-            if newState == .downloading || newState == .loading || newState == .prewarming {
-                activeSheet = .whisperSetup
-            }
+            handleWhisperStateChange(newState)
         }
         .task {
             // Prime every agent's inbox from disk so sidebar unread badges are
@@ -455,6 +469,20 @@ struct ContentView: View {
                 }
                 activeSheet = .whisperSetup
             }
+        }
+    }
+
+    private func handleWhisperStateChange(_ newState: WKModelState) {
+        guard !whisperKitSeen, activeSheet == nil else { return }
+        let isPreparing: Bool
+        switch newState {
+        case .downloading, .loading, .prewarming:
+            isPreparing = true
+        default:
+            isPreparing = false
+        }
+        if isPreparing {
+            activeSheet = .whisperSetup
         }
     }
 

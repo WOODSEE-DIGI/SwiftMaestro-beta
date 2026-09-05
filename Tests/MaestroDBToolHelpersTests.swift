@@ -110,7 +110,7 @@ struct MaestroDBToolHelpersTests {
 
     @Test func addFieldAcceptsFieldNameAlias() throws {
         let call = toolCall(argumentsJSON: """
-            {"base": "Sydney Camera Rentals", "table": "Rental Rates",
+            {"base": "Example Camera Rentals", "table": "Rental Rates",
              "field_name": "Rental House", "type": "text"}
             """)
         let args = try #require(MaestroTools.decodeArgs(call, as: MaestroTools.AddFieldArgs.self))
@@ -141,7 +141,7 @@ struct MaestroDBToolHelpersTests {
     @Test func stripModelJunkCleansEdgeEscapes() {
         #expect(MaestroTools.stripModelJunk("\\\"Profoto B1") == "Profoto B1")
         #expect(MaestroTools.stripModelJunk("\\\"2025-05-22") == "2025-05-22")
-        #expect(MaestroTools.stripModelJunk("RENTaCAM Sydney") == "RENTaCAM Sydney")
+        #expect(MaestroTools.stripModelJunk("Example Rental House") == "Example Rental House")
         #expect(MaestroTools.stripModelJunk("https://example.com/page") == "https://example.com/page")
     }
 
@@ -255,16 +255,16 @@ struct MaestroDBToolHelpersTests {
     // key, and keep the complete prefix when the tail row is cut off.
 
     @Test func parseRowsArraySalvagesTokenWrappedTruncatedPayload() {
-        // Decoded-string form of the actual production payload (round 24).
+        // Decoded-string form of a representative production-style payload (round 24).
         let payload = """
-        [{values:<|"|>{"Equipment Name":"Canon EOS R5 Mark II","Rental House":"RENTaCAM Sydney","Daily Rate (AUD)":250,"Last Checked":"2026-08-04"}<|"|>},{values:<|"|>{"Equipment Name":"Profoto B1 500 Air","Rental House":"The Fr
+        [{values:<|"|>{"Equipment Name":"Canon EOS R5 Mark II","Rental House":"Example Rental House","Daily Rate (AUD)":250,"Last Checked":"2026-08-04"}<|"|>},{values:<|"|>{"Equipment Name":"Profoto B1 500 Air","Rental House":"Example Ren
         """
         let rows = MaestroTools.parseRowsArray(payload)
         #expect(rows != nil)
         // Truncated tail row dropped; complete first row survives intact.
         #expect(rows?.count == 1)
         #expect(rows?.first?["Equipment Name"] as? String == "Canon EOS R5 Mark II")
-        #expect(rows?.first?["Rental House"] as? String == "RENTaCAM Sydney")
+        #expect(rows?.first?["Rental House"] as? String == "Example Rental House")
         #expect(rows?.first?["Daily Rate (AUD)"] as? Int == 250)
         #expect(rows?.first?["Last Checked"] as? String == "2026-08-04")
     }

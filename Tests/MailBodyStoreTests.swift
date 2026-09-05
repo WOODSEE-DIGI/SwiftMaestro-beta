@@ -34,7 +34,7 @@ struct MailBodyStoreTests {
     @Test @MainActor
     func rfc2047Decoding() {
         #expect(MailBodyStore.decodeRFC2047("=?UTF-8?B?RGVtbyBTdWJqZWN0?=") == "Demo Subject")
-        #expect(MailBodyStore.decodeRFC2047("=?UTF-8?Q?Georges_Cameras?=") == "Georges Cameras")
+        #expect(MailBodyStore.decodeRFC2047("=?UTF-8?Q?Example_Store_Name?=") == "Example Store Name")
         #expect(MailBodyStore.decodeRFC2047("plain subject") == "plain subject")
     }
 }

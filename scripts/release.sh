@@ -7,7 +7,9 @@
 #   - SwiftMaestro-<VERSION>-full.zip   (Sparkle update archive)
 #   - SwiftMaestro-<VERSION>-light.zip  (Sparkle update archive)
 #   - *.delta patches                    (Sparkle binary deltas from prior versions)
-# signs the DMGs, and generates the Sparkle appcast with delta updates enabled.
+#   - appcast.xml                        (full-installer Sparkle feed)
+#   - appcast-light.xml                  (light-installer Sparkle feed)
+# signs the DMGs, and generates separate full/light Sparkle appcasts with delta updates enabled.
 # Notarization is OFF by default (NOTARIZE=1 opts in).
 #
 # Env overrides:
@@ -16,7 +18,7 @@
 #   NOTARIZE=1                 (opt in to notarization — skipped by default)
 #   UPLOAD=1                   (upload: DMGs + appcast → Onidel; appcast → 1984 same-origin)
 #   SPARKLE_ARCHIVE_CACHE=<dir> (default ./.sparkle-archive-cache; stores prior zips for deltas)
-#   ARCHIVE_CACHE_MAX=<n>      (default 3; number of prior full zips to retain for deltas)
+#   ARCHIVE_CACHE_MAX=<n>      (default 3; number of prior full/light zips to retain for deltas)
 #   ONIDEL_UPLOAD / DEPLOY_SCRIPT  (override upload helper paths)
 #   SM_SFTP_USER / SM_SFTP_HOST / SM_SFTP_PORT  (1984 hosting SFTP — REQUIRED for that step,
 #                              never hardcode personal infrastructure in this repo)
@@ -81,7 +83,13 @@ done
 # "-beta" DMG on 2026-08-15 when only the full installer shipped).
 echo ""
 echo "--- Building light installer ---"
-OUTPUT_DIR="$OUTPUT_DIR" ./scripts/package-light.sh
+OUTPUT_DIR="$OUTPUT_DIR" DOWNLOAD_URL_PREFIX="$DOWNLOAD_URL_PREFIX" ./scripts/package-light.sh
+
+# Cache the light archive for future delta generation and prune old entries.
+cp "$DIST_DIR/${APP_NAME}-${VERSION}-light.zip" "$SPARKLE_ARCHIVE_CACHE/"
+ls -t "$SPARKLE_ARCHIVE_CACHE"/SwiftMaestro-*-light.zip 2>/dev/null | tail -n +$((ARCHIVE_CACHE_MAX + 1)) | while IFS= read -r old; do
+    [ -n "$old" ] && rm -f "$old"
+done
 
 # Generate the Sparkle appcast.
 echo ""
@@ -99,6 +107,9 @@ if [ ! -s "$SPARKLE_KEY_FILE" ]; then
     exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# Full appcast (full installer updates).
+# ---------------------------------------------------------------------------
 APPCAST_WORKING="$DIST_DIR/.appcast-work"
 mkdir -p "$APPCAST_WORKING"
 # generate_appcast uses the filename in the working directory as the URL suffix.
@@ -125,8 +136,6 @@ fi
     -o "$DIST_DIR/appcast.xml" \
     "$APPCAST_WORKING"
 
-# appcast signed — key material no longer needed from this point on.
-
 # Move generated delta patches into dist for upload, then clean up the working copy.
 for delta in "$APPCAST_WORKING"/*.delta; do
     [ -f "$delta" ] || continue
@@ -134,9 +143,45 @@ for delta in "$APPCAST_WORKING"/*.delta; do
 done
 rm -rf "$APPCAST_WORKING"
 
-# Sanity check the appcast.
+# ---------------------------------------------------------------------------
+# Light appcast (light installer updates — prevents 40 GB full download).
+# ---------------------------------------------------------------------------
+APPCAST_LIGHT_WORKING="$DIST_DIR/.appcast-light-work"
+mkdir -p "$APPCAST_LIGHT_WORKING"
+ln "$DIST_DIR/${APP_NAME}-${VERSION}-light.zip" "$APPCAST_LIGHT_WORKING/${APP_NAME}-${VERSION}-light.zip"
+
+for archive in "$SPARKLE_ARCHIVE_CACHE"/SwiftMaestro-*-light.zip; do
+    [ -f "$archive" ] || continue
+    name="$(basename "$archive")"
+    [ -e "$APPCAST_LIGHT_WORKING/$name" ] && continue
+    ln "$archive" "$APPCAST_LIGHT_WORKING/$name"
+done
+
+if [ -f "CHANGELOG.md" ]; then
+    cp "CHANGELOG.md" "$APPCAST_LIGHT_WORKING/${APP_NAME}-${VERSION}-light.md"
+fi
+
+"$SPARKLE_BIN/generate_appcast" \
+    --ed-key-file "$SPARKLE_KEY_FILE" \
+    --download-url-prefix "$DOWNLOAD_URL_PREFIX" \
+    -o "$DIST_DIR/appcast-light.xml" \
+    "$APPCAST_LIGHT_WORKING"
+
+for delta in "$APPCAST_LIGHT_WORKING"/*.delta; do
+    [ -f "$delta" ] || continue
+    mv "$delta" "$DIST_DIR/"
+done
+rm -rf "$APPCAST_LIGHT_WORKING"
+
+# appcast signed — key material no longer needed from this point on.
+
+# Sanity check the appcasts.
 if [ ! -f "$DIST_DIR/appcast.xml" ]; then
     echo "ERROR: appcast.xml was not generated"
+    exit 1
+fi
+if [ ! -f "$DIST_DIR/appcast-light.xml" ]; then
+    echo "ERROR: appcast-light.xml was not generated"
     exit 1
 fi
 
@@ -145,8 +190,11 @@ echo ""
 echo "=== Release artifacts ==="
 ls -lh "$DIST_DIR"
 echo ""
-echo "Appcast preview:"
+echo "Full appcast preview:"
 grep -E "<enclosure|<title|sparkle:version|sparkle:channel" "$DIST_DIR/appcast.xml" | head -40
+echo ""
+echo "Light appcast preview:"
+grep -E "<enclosure|<title|sparkle:version|sparkle:channel" "$DIST_DIR/appcast-light.xml" | head -40
 
 # Upload pipeline (UPLOAD=1):
 #   DMGs (full + beta) → Onidel Object Storage (Sydney) via upload-to-onidel.sh
@@ -169,6 +217,7 @@ if [ "${UPLOAD:-0}" = "1" ]; then
     "$ONIDEL_UPLOAD" "$DIST_DIR/${APP_NAME}-${VERSION}-full.dmg"
     "$ONIDEL_UPLOAD" "$DIST_DIR/${APP_NAME}-${VERSION}-light.dmg"
     "$ONIDEL_UPLOAD" "$DIST_DIR/${APP_NAME}-${VERSION}-full.zip"
+    "$ONIDEL_UPLOAD" "$DIST_DIR/${APP_NAME}-${VERSION}-light.zip"
 
     echo ""
     echo "--- Uploading Sparkle delta patches to Onidel ---"
@@ -180,6 +229,10 @@ if [ "${UPLOAD:-0}" = "1" ]; then
     echo ""
     echo "--- Uploading appcast.xml to Onidel ---"
     "$ONIDEL_UPLOAD" --appcast "$DIST_DIR/appcast.xml"
+
+    echo ""
+    echo "--- Uploading appcast-light.xml to Onidel ---"
+    "$ONIDEL_UPLOAD" --appcast "$DIST_DIR/appcast-light.xml"
 
     echo ""
     echo "--- Uploading appcast.xml to 1984 hosting (same-origin for website JS) ---"
@@ -207,6 +260,8 @@ set ssl:verify-certificate no
 set net:timeout 30
 rm -f htdocs/download/appcast.xml
 put '$DIST_DIR/appcast.xml' -o htdocs/download/appcast.xml
+rm -f htdocs/download/appcast-light.xml
+put '$DIST_DIR/appcast-light.xml' -o htdocs/download/appcast-light.xml
 bye
 LPFTP
             REMOTE_SIZE="$(LFTP_PASSWORD="$SFTP_PASS" lftp --env-password -u "$SFTP_USER" -p "$SFTP_PORT" "sftp://${SFTP_HOST}" -e "set sftp:auto-confirm yes; set ssl:verify-certificate no; cat htdocs/download/appcast.xml; bye" 2>/dev/null | wc -c | tr -d ' ')"
@@ -215,6 +270,14 @@ LPFTP
                 echo "appcast.xml uploaded to 1984 hosting ($LOCAL_SIZE bytes, verified)"
             else
                 echo "ERROR: 1984 appcast upload size mismatch (local=$LOCAL_SIZE remote=${REMOTE_SIZE:-none})"
+                exit 1
+            fi
+            REMOTE_LIGHT_SIZE="$(LFTP_PASSWORD="$SFTP_PASS" lftp --env-password -u "$SFTP_USER" -p "$SFTP_PORT" "sftp://${SFTP_HOST}" -e "set sftp:auto-confirm yes; set ssl:verify-certificate no; cat htdocs/download/appcast-light.xml; bye" 2>/dev/null | wc -c | tr -d ' ')"
+            LOCAL_LIGHT_SIZE="$(stat -f%z "$DIST_DIR/appcast-light.xml")"
+            if [ "$REMOTE_LIGHT_SIZE" = "$LOCAL_LIGHT_SIZE" ]; then
+                echo "appcast-light.xml uploaded to 1984 hosting ($LOCAL_LIGHT_SIZE bytes, verified)"
+            else
+                echo "ERROR: 1984 appcast-light.xml upload size mismatch (local=$LOCAL_LIGHT_SIZE remote=${REMOTE_LIGHT_SIZE:-none})"
                 exit 1
             fi
         fi
@@ -229,9 +292,11 @@ LPFTP
         # 0.3.4 until re-pushed). Sync the fresh appcast into the site repo
         # first so the mirror can only ever move it forward.
         SITE_APPCAST="$(dirname "$DEPLOY_SCRIPT")/download/appcast.xml"
+        SITE_APPCAST_LIGHT="$(dirname "$DEPLOY_SCRIPT")/download/appcast-light.xml"
         if [ -d "$(dirname "$SITE_APPCAST")" ]; then
             cp "$DIST_DIR/appcast.xml" "$SITE_APPCAST"
-            echo "Synced appcast.xml into site repo before deploy"
+            cp "$DIST_DIR/appcast-light.xml" "$SITE_APPCAST_LIGHT"
+            echo "Synced appcast.xml and appcast-light.xml into site repo before deploy"
         fi
         "$DEPLOY_SCRIPT"
     else

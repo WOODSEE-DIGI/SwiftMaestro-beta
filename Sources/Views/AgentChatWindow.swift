@@ -28,6 +28,8 @@ struct AgentChatWindowView: View {
     /// updates; the shared cache keeps the same instance in sync with the main
     /// window and with delegation streaming.
     @State private var vm: ChatViewModel?
+    /// Per-window Plans/Tasks layout state shared with the embedded ChatView.
+    @State private var panelLayout = PanelLayoutState()
     /// Keep this window in front of all others. Opt-in, off by default.
     @State private var isPinnedToFront = false
 
@@ -39,6 +41,7 @@ struct AgentChatWindowView: View {
         Group {
             if let vm {
                 ChatView(vm: vm, title: vm.agent.name)
+                    .environment(panelLayout)
             } else if agent == nil {
                 missingAgentView
             } else {

@@ -24,6 +24,9 @@ struct WorkspacePanelWindowView: View {
     @Environment(WebBrowserStore.self) private var webBrowserStore
     @Environment(\.dismiss) private var dismiss
     @State private var layout = WorkspaceLayoutState.shared
+    /// Per-window Plans/Tasks layout state shared with the header toolbar and
+    /// the embedded agent chat.
+    @State private var panelLayout = PanelLayoutState()
     /// Set right before we dismiss the window ourselves (via "Dock"), so the
     /// close-detection below doesn't also mark the panel fully closed —
     /// `dock(_:)` already moved it into the grid; closing on top of that
@@ -38,6 +41,7 @@ struct WorkspacePanelWindowView: View {
             Divider()
             WorkspacePanelContentView(kind: target.kind)
         }
+        .environment(panelLayout)
         .background(theme.background)
         .frame(minWidth: 420, minHeight: 360)
         // Overrides the WindowGroup's static "Panel" title with the actual

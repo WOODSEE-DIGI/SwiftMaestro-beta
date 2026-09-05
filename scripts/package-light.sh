@@ -8,6 +8,7 @@
 #
 # Env overrides:
 #   VERSION=<x.y.z>          (default reads from app Info.plist)
+#   DOWNLOAD_URL_PREFIX=<url> (default https://s3.ap-southeast-2.onidel.cloud/swiftmaestro-releases/)
 #   WHISPER_MODEL_PATH=<path> (default ~/Library/Application Support/SwiftMaestro/WhisperKit/models/argmaxinc/whisperkit-coreml/openai_whisper-large-v3)
 #   MECHANIC_MODEL_PATH=<path> (default: SwiftMaestro-Mechanic-4bit, falling back to Qwen3-4B-Instruct-2507-4bit)
 #   CODER_MODEL_PATH=<path>  (default ~/Ai-models/models/swiftmaestro-models/DeepSeek-Coder-V2-Lite-Instruct-4bit-mlx)
@@ -16,10 +17,14 @@
 #   NOTARY_PROFILE=<name>    (default SwiftMaestroNotary)
 #   NOTARIZE=1               (opt in to notarization — skipped by default)
 #   ENTITLEMENTS=<path>      (default Sources/Resources/SwiftMaestro.entitlements)
+#
+# The light installer sets SMLightInstaller=true and SUFeedURL to appcast-light.xml
+# in the staged app's Info.plist so Sparkle updates stay on the light channel.
 set -euo pipefail
 
 OUTPUT_DIR="${OUTPUT_DIR:-$PWD}"
 APP_NAME="SwiftMaestro"
+DOWNLOAD_URL_PREFIX="${DOWNLOAD_URL_PREFIX:-https://s3.ap-southeast-2.onidel.cloud/swiftmaestro-releases/}"
 WHISPER_MODEL_PATH="${WHISPER_MODEL_PATH:-$HOME/Library/Application Support/SwiftMaestro/WhisperKit/models/argmaxinc/whisperkit-coreml/openai_whisper-large-v3}"
 # Mechanic support model (Qwen3-4B) — bundled in BOTH installers so in-app
 # help works on fresh/broken installs. Prefers the fine-tuned specialist,
@@ -75,6 +80,14 @@ APP_STAGE="$STAGE/${APP_NAME}.app"
 
 # Copy the signed app into the staging area so we can add the model and re-sign.
 cp -R "$APP_PATH" "$APP_STAGE"
+
+# Mark this build as the light installer and point it at the light appcast so
+# Sparkle updates stay on the light channel (no 40 GB full download).
+INFO_PLIST="$APP_STAGE/Contents/Info.plist"
+LIGHT_FEED_URL="${DOWNLOAD_URL_PREFIX}appcast-light.xml"
+/usr/libexec/PlistBuddy -c "Add :SMLightInstaller bool true" "$INFO_PLIST" 2>/dev/null \
+    || /usr/libexec/PlistBuddy -c "Set :SMLightInstaller true" "$INFO_PLIST"
+/usr/libexec/PlistBuddy -c "Set :SUFeedURL ${LIGHT_FEED_URL}" "$INFO_PLIST"
 
 # Embed the Whisper model inside the app bundle.
 WHISPER_DST="$APP_STAGE/Contents/Resources/models/whisperkit/$WHISPER_MODEL_NAME"

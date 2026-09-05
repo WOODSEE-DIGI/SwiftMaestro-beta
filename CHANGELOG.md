@@ -1,3 +1,49 @@
+# SwiftMaestro 0.5.5
+
+## Swift Helper & Ticketing
+
+- **Settings → Swift Helper**: the former Self-Healing tab is now Swift Helper, covering self-healing, config restore points, and a new ticketing UI.
+- **Problem Reports**: send anonymous diagnostic reports with one click; recent crashes can pre-fill the report; sent reports are tracked locally with reference IDs.
+- **On-Mac security scan for attachments**: every file attached to a diagnostic report is scanned locally with Gatekeeper, quarantine xattrs, file-type sniffing, optional ClamAV, and executable entitlement checks before it is included.
+- **OCR for image attachments**: screenshots attached to reports are OCR'd so visible error text is sent along with the image.
+
+## Workspace & UI
+
+- **Beta tags on all Swift Apps**: every app in the Swift Apps launcher section now shows an orange Beta pill, making it easy to remove tags app-by-app in future builds.
+- **Flexible panel layout**: ChatView panels now render left-to-right based on `mainSlots` order, with working Move Left/Right across the chat boundary.
+- **Floating agent chat windows**: sub-agent delegation now opens a floating window automatically so you can watch Maestro and Scribe side-by-side.
+- **Canvas workspace refinements**: drag-to-swap tiles, stack-as-tabs with Shift, edge snapping, and per-tile resize grips.
+
+# SwiftMaestro 0.5.4
+
+## Workspace & UI
+
+- **Flexible panel layout**: ChatView panels now render left-to-right based on `mainSlots` order, with working Move Left/Right across the chat boundary.
+- **Floating agent chat windows**: sub-agent delegation now opens a floating window automatically so you can watch Maestro and Scribe side-by-side.
+- **Canvas workspace refinements**: drag-to-swap tiles, stack-as-tabs with Shift, edge snapping, and per-tile resize grips.
+
+## Models & Inference
+
+- **Vision proxy**: caption images for non-vision models using `mlx-community/Qwen3-VL-8B-Instruct-4bit` plus Apple Vision OCR prep.
+- **Per-model Max Output Tokens slider**: 512–131072 tokens, persisted per model.
+- **Model path fixes**: Qwen 3.5 122B and Qwen3-Coder now resolve from the correct `mlx-community/` subdirectories.
+- **Memory guard**: resident models are evicted before refusing a new load.
+
+## Tools & Memory
+
+- **Polymorphic file read/write**: native read/write for text, .docx, .pdf, .rtf, .odt, .pages, .html, images, and arbitrary binary files.
+- **RAG chunk indexing**: `index_document`, `search_chunks`, `read_chunk` for local document retrieval.
+- **SQLite tool**: `execute_sqlite` for direct GRDB-backed database queries.
+- **PlanStore migration**: plans moved to shared `~/.ai-context/memory/knowledge/plans/` with history tracking.
+- **CRITICAL HONESTY RULES**: agents must report failures immediately, never fabricate results, and stop after two failed attempts.
+
+## Fixes
+
+- Removed massive debug `NSLog` spam from path authorization checks.
+- Fixed shell command execution for background processes (`start_background`).
+- Fixed path authorization false-negatives for non-breaking spaces and shell-escaped paths.
+- Thinking-tag stripping tightened for Gemma 4 and Qwen formats.
+
 # SwiftMaestro 0.3.8
 
 ## MaestroDAM — AI-assisted tagging that learns as you tag

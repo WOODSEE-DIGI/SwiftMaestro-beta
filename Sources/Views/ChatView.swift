@@ -13,7 +13,7 @@ struct ChatView: View {
     @Environment(WhisperKitService.self) private var whisper
     @Environment(\.openWindow) private var openWindow
     @StateObject var vm: ChatViewModel
-    @State private var layoutState = PanelLayoutState()
+    @Environment(PanelLayoutState.self) private var layoutState
     @State private var showingPlans = false
     // Markdown export driven from the Plans panel's context menu.
     @State private var exporting = false

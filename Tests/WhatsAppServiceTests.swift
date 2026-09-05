@@ -375,28 +375,28 @@ final class WhatsAppServiceTests: XCTestCase {
     // every incoming reply started arriving tagged with the contact's LID —
     // invisible to a query scoped to the phone-number JID, no matter how
     // often it was re-polled (confirmed directly in the bridge's own SQLite
-    // files: the "Brock McFadzean" chat's messages just stopped, while an
-    // unrelated-looking chat named "210414809956389" silently accumulated
+    // files: the "Example Contact One" chat's messages just stopped, while an
+    // unrelated-looking chat named "210000000000001" silently accumulated
     // every message in the conversation from that point on). These tests
     // pin the fix, which reconciles the two forms using the bridge's own
     // whatsmeow_lid_map table (in its whatsapp.db session store).
 
     func testMergeLIDDuplicatesCombinesSameContactUnderCanonicalPNJid() throws {
-        let lidMap = ["246007237447707@lid": "61434035561@s.whatsapp.net"]
+        let lidMap = ["240000000000001@lid": "61400000001@s.whatsapp.net"]
         let raw = [
             WhatsAppChat(
-                jid: "61434035561@s.whatsapp.net", name: "Brock McFadzean",
+                jid: "61400000001@s.whatsapp.net", name: "Example Contact One",
                 lastMessageTime: Date(timeIntervalSince1970: 1_000)),
             WhatsAppChat(
-                jid: "246007237447707@lid", name: "210414809956389",
+                jid: "240000000000001@lid", name: "210000000000001",
                 lastMessageTime: Date(timeIntervalSince1970: 2_000)),
         ]
         let merged = WhatsAppService.mergeLIDDuplicates(raw, lidMap: lidMap)
 
         XCTAssertEqual(merged.count, 1, "the two rows must merge into a single chat")
         let chat = try XCTUnwrap(merged.first)
-        XCTAssertEqual(chat.jid, "61434035561@s.whatsapp.net", "must canonicalize on the phone-number JID")
-        XCTAssertEqual(chat.name, "Brock McFadzean", "must prefer the real name over the raw numeric LID name")
+        XCTAssertEqual(chat.jid, "61400000001@s.whatsapp.net", "must canonicalize on the phone-number JID")
+        XCTAssertEqual(chat.name, "Example Contact One", "must prefer the real name over the raw numeric LID name")
         XCTAssertEqual(
             chat.lastMessageTime, Date(timeIntervalSince1970: 2_000),
             "must keep the most recent last-message time across both halves"
@@ -444,19 +444,19 @@ final class WhatsAppServiceTests: XCTestCase {
                 """)
             try db.execute(sql: """
                 INSERT INTO chats (jid, name, last_message_time)
-                VALUES ('61434035561@s.whatsapp.net', 'Brock McFadzean', ?)
+                VALUES ('61400000001@s.whatsapp.net', 'Example Contact One', ?)
                 """, arguments: [Date(timeIntervalSince1970: 1_000)])
             try db.execute(sql: """
                 INSERT INTO chats (jid, name, last_message_time)
-                VALUES ('246007237447707@lid', '210414809956389', ?)
+                VALUES ('240000000000001@lid', '210000000000001', ?)
                 """, arguments: [Date(timeIntervalSince1970: 2_000)])
             try db.execute(sql: """
                 INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me)
-                VALUES ('old-1', '61434035561@s.whatsapp.net', '61434035561', 'an older message', ?, 0)
+                VALUES ('old-1', '61400000001@s.whatsapp.net', '61400000001', 'an older message', ?, 0)
                 """, arguments: [Date(timeIntervalSince1970: 500)])
             try db.execute(sql: """
                 INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me)
-                VALUES ('new-lid-1', '246007237447707@lid', '246007237447707', 'a newer reply via LID', ?, 0)
+                VALUES ('new-lid-1', '240000000000001@lid', '240000000000001', 'a newer reply via LID', ?, 0)
                 """, arguments: [Date(timeIntervalSince1970: 2_000)])
         }
 
@@ -466,17 +466,17 @@ final class WhatsAppServiceTests: XCTestCase {
         let whatsappDB = try DatabaseQueue(path: whatsappDBPath)
         try await whatsappDB.write { db in
             try db.execute(sql: "CREATE TABLE whatsmeow_lid_map (lid TEXT PRIMARY KEY, pn TEXT UNIQUE NOT NULL)")
-            try db.execute(sql: "INSERT INTO whatsmeow_lid_map (lid, pn) VALUES ('246007237447707', '61434035561')")
+            try db.execute(sql: "INSERT INTO whatsmeow_lid_map (lid, pn) VALUES ('240000000000001', '61400000001')")
         }
 
         let service = WhatsAppService()
         await service.loadChats()
         XCTAssertEqual(service.chats.count, 1, "the two chat rows for the same contact must merge into one")
         let chat = try XCTUnwrap(service.chats.first)
-        XCTAssertEqual(chat.jid, "61434035561@s.whatsapp.net")
-        XCTAssertEqual(chat.name, "Brock McFadzean")
+        XCTAssertEqual(chat.jid, "61400000001@s.whatsapp.net")
+        XCTAssertEqual(chat.name, "Example Contact One")
 
-        await service.loadMessages(chatJID: "61434035561@s.whatsapp.net")
+        await service.loadMessages(chatJID: "61400000001@s.whatsapp.net")
         XCTAssertEqual(
             service.messages.count, 2,
             "messages from both the phone-number and LID chat_jid rows must appear in one thread"
@@ -496,21 +496,21 @@ final class WhatsAppServiceTests: XCTestCase {
     // the raw phone/LID number - it never checked PushName (the OTHER
     // person's own WhatsApp display name, present for almost every contact
     // who's ever messaged us). Confirmed directly in the live bridge's own
-    // whatsmeow_contacts table: contacts like "George Li" and "Carissa
+    // whatsmeow_contacts table: contacts like "Example Contact Two" and "Carissa
     // Anderson" had push_name populated but full_name/first_name empty, and
-    // were showing as raw numbers ("61410906593", "93278217216209") in both
+    // were showing as raw numbers ("61400000002", "93000000000001") in both
     // the chat list and as the sender label on their messages. These tests
     // pin the client-side resolution that fixes this for chats ALREADY
     // stored with a bad name (the bridge-side GetChatName fix only helps
     // chats created from now on).
 
     func testLooksLikeRawIDDetectsBareNumbersAndTreatsRealNamesAsNotRaw() {
-        XCTAssertTrue(WhatsAppService.looksLikeRawID("61410906593"))
-        XCTAssertTrue(WhatsAppService.looksLikeRawID("210414809956389"))
+        XCTAssertTrue(WhatsAppService.looksLikeRawID("61400000002"))
+        XCTAssertTrue(WhatsAppService.looksLikeRawID("210000000000001"))
         XCTAssertTrue(WhatsAppService.looksLikeRawID(""))
         XCTAssertTrue(WhatsAppService.looksLikeRawID(nil))
-        XCTAssertFalse(WhatsAppService.looksLikeRawID("George Li"))
-        XCTAssertFalse(WhatsAppService.looksLikeRawID("Brock McFadzean"))
+        XCTAssertFalse(WhatsAppService.looksLikeRawID("Example Contact Two"))
+        XCTAssertFalse(WhatsAppService.looksLikeRawID("Example Contact One"))
     }
 
     func testLoadChatsResolvesRawNumberNameFromWhatsmeowContactsPushName() async throws {
@@ -544,7 +544,7 @@ final class WhatsAppServiceTests: XCTestCase {
             // Stored exactly as the bridge left it: the raw number as the name.
             try db.execute(sql: """
                 INSERT INTO chats (jid, name, last_message_time)
-                VALUES ('61410906593@s.whatsapp.net', '61410906593', ?)
+                VALUES ('61400000002@s.whatsapp.net', '61400000002', ?)
                 """, arguments: [Date()])
         }
 
@@ -562,7 +562,7 @@ final class WhatsAppServiceTests: XCTestCase {
             // Matches the live data exactly: only push_name is populated.
             try db.execute(sql: """
                 INSERT INTO whatsmeow_contacts (our_jid, their_jid, first_name, full_name, push_name)
-                VALUES ('me', '61410906593@s.whatsapp.net', '', '', 'George Li')
+                VALUES ('me', '61400000002@s.whatsapp.net', '', '', 'Example Contact Two')
                 """)
         }
 
@@ -571,7 +571,7 @@ final class WhatsAppServiceTests: XCTestCase {
 
         let chat = try XCTUnwrap(service.chats.first)
         XCTAssertEqual(
-            chat.name, "George Li",
+            chat.name, "Example Contact Two",
             "a chat stored with a raw number as its name must be resolved from push_name"
         )
     }
@@ -614,7 +614,7 @@ final class WhatsAppServiceTests: XCTestCase {
                 """)
             try db.execute(sql: """
                 INSERT INTO whatsmeow_contacts (our_jid, their_jid, first_name, full_name, push_name)
-                VALUES ('me', '93278217216209@lid', '', '', 'Carissa Anderson')
+                VALUES ('me', '93000000000001@lid', '', '', 'Example Contact Three')
                 """)
         }
 
@@ -623,8 +623,8 @@ final class WhatsAppServiceTests: XCTestCase {
 
         // `messages.sender` stores the BARE number, not the full JID -
         // the lookup must succeed with either form.
-        XCTAssertEqual(service.contactDisplayNames["93278217216209"], "Carissa Anderson")
-        XCTAssertEqual(service.contactDisplayNames["93278217216209@lid"], "Carissa Anderson")
+        XCTAssertEqual(service.contactDisplayNames["93000000000001"], "Example Contact Three")
+        XCTAssertEqual(service.contactDisplayNames["93000000000001@lid"], "Example Contact Three")
     }
 
     // MARK: - Media attachments

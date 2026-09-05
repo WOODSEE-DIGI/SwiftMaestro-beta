@@ -12,13 +12,22 @@ final class BooksViewModel {
     private var database: BooksDatabase { BooksDatabase.shared }
 
     /// Demo mode (mirrors the database swap). Drives the banner, the demo
-    /// seller profile, and disables Xero sync.
-    var isDemo: Bool { BooksDatabase.isDemoMode }
+    /// seller profile, and disables Xero sync. Kept as a stored property so
+    /// SwiftUI observes changes when the database instance is swapped.
+    private(set) var isDemo: Bool = BooksDatabase.isDemoMode
 
     private(set) var clients: [BooksClient] = []
     private(set) var products: [BooksProduct] = []
     private(set) var expenses: [BooksExpense] = []
     private(set) var invoices: [BooksInvoice] = []
+    private(set) var accounts: [BooksAccount] = []
+    private(set) var suppliers: [BooksSupplier] = []
+    private(set) var bills: [BooksBill] = []
+    private(set) var journalEntries: [BooksJournalEntry] = []
+    private(set) var reminders: [BooksInvoiceReminder] = []
+    private(set) var crmLeads: [BooksCRMLead] = []
+    private(set) var crmOpportunities: [BooksCRMOpportunity] = []
+    private(set) var crmActivities: [BooksCRMActivity] = []
     private(set) var selectedInvoice: BooksInvoice?
     private(set) var selectedClient: BooksClient?
     private(set) var selectedItems: [BooksLineItem] = []
@@ -56,11 +65,20 @@ final class BooksViewModel {
     // MARK: - Loading
 
     func reload() async {
+        isDemo = BooksDatabase.isDemoMode
         do {
             clients = try database.clients()
             products = try database.products()
             expenses = try database.expenses()
             invoices = try database.invoices()
+            accounts = try database.accounts()
+            suppliers = try database.suppliers()
+            bills = try database.bills()
+            journalEntries = try database.journalEntries()
+            reminders = try database.pendingReminders(before: Date.distantFuture)
+            crmLeads = try database.crmLeads()
+            crmOpportunities = try database.crmOpportunities()
+            crmActivities = try database.crmActivities()
             if let selected = selectedInvoice, let id = selected.id {
                 await selectInvoice(id)
             }
@@ -234,9 +252,26 @@ final class BooksViewModel {
             _ = try database.saveClient(&client)
             clients = try database.clients()
             if selectedClient?.id == client.id { selectedClient = client }
+            await verifyTaxNumberIfNeeded(name: client.name, taxNumber: client.taxNumber, country: client.poCountry)
             statusMessage = "Saved \(client.name)"
         } catch {
             errorMessage = "Could not save client: \(error.localizedDescription)"
+        }
+    }
+
+    private func verifyTaxNumberIfNeeded(name: String, taxNumber: String?, country: String?) async {
+        guard let taxNumber, !taxNumber.isEmpty,
+              (country ?? LocaleSettings.shared.country).uppercased() == "AU" else { return }
+        let normalised = ABNVerifierService.normalise(taxNumber)
+        guard ABNVerifierService.isValidFormat(normalised) else {
+            statusMessage = "Saved. ABN format appears invalid."
+            return
+        }
+        let result = await ABNVerifierService.shared.verify(abn: normalised)
+        if result.isVerified {
+            statusMessage = "Saved. ABN verified: \(result.entityName ?? name)"
+        } else {
+            statusMessage = "Saved. ABN could not be verified against bulk extract or lookup."
         }
     }
 
@@ -275,6 +310,137 @@ final class BooksViewModel {
         }
     }
 
+    // MARK: - Chart of Accounts
+
+    func saveAccount(_ account: inout BooksAccount) async {
+        do {
+            _ = try database.saveAccount(&account)
+            accounts = try database.accounts()
+            statusMessage = "Saved account \(account.code)"
+        } catch {
+            errorMessage = "Could not save account: \(error.localizedDescription)"
+        }
+    }
+
+    func deleteAccount(id: Int64) async {
+        do {
+            try database.deleteAccount(id: id)
+            accounts = try database.accounts()
+            statusMessage = "Account deleted"
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    // MARK: - Suppliers
+
+    func saveSupplier(_ supplier: inout BooksSupplier) async {
+        do {
+            _ = try database.saveSupplier(&supplier)
+            suppliers = try database.suppliers()
+            statusMessage = "Saved \(supplier.name)"
+        } catch {
+            errorMessage = "Could not save supplier: \(error.localizedDescription)"
+        }
+    }
+
+    func deleteSupplier(id: Int64) async {
+        do {
+            try database.deleteSupplier(id: id)
+            suppliers = try database.suppliers()
+            statusMessage = "Supplier deleted"
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func bills(forSupplier supplierID: Int64) -> [BooksBill] {
+        bills.filter { $0.supplierID == supplierID }
+    }
+
+    // MARK: - Bills
+
+    @discardableResult
+    func createBill(
+        supplierName: String,
+        items: [(description: String, quantity: Double, unitAmount: Double, discount: Double)],
+        dueDays: Int, notes: String?,
+        accountCode: String? = nil
+    ) throws -> BooksBill {
+        let supplier = try findOrCreateSupplier(named: supplierName)
+        guard let supplierID = supplier.id else { throw CocoaError(.coreData) }
+        let due = dueDays > 0
+            ? Calendar.current.date(byAdding: .day, value: dueDays, to: Date()) : nil
+        let resolvedAccountCode = accountCode ?? supplier.defaultExpenseAccountCode ?? seller.defaultExpenseAccountCode
+        let bill = try database.createBill(
+            supplierID: supplierID, items: items,
+            dueDate: due, notes: notes, accountCode: resolvedAccountCode,
+            currency: seller.currency, taxRate: seller.taxRate,
+            taxType: seller.expenseTaxType, taxLabel: seller.taxLabel)
+        bills = try database.bills()
+        statusMessage = "Created \(bill.number)"
+        return bill
+    }
+
+    func setBillStatus(_ billID: Int64, _ status: BooksBillStatus) async {
+        do {
+            try database.setBillStatus(billID, status)
+            bills = try database.bills()
+            statusMessage = "Bill marked \(status.displayName)"
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func deleteBill(id: Int64) async {
+        do {
+            try database.deleteBill(id: id)
+            bills = try database.bills()
+            statusMessage = "Bill deleted"
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    @discardableResult
+    func findOrCreateSupplier(named name: String) throws -> BooksSupplier {
+        if let existing = try database.supplier(named: name) { return existing }
+        var supplier = BooksSupplier(
+            id: nil, name: name, email: nil, phone: nil,
+            addressLine1: nil, addressLine2: nil, city: nil, region: nil,
+            postalCode: nil, country: nil, taxNumber: nil,
+            paymentTerms: nil, defaultExpenseAccountCode: nil, notes: nil,
+            xeroID: nil, createdAt: Date(), updatedAt: Date())
+        let saved = try database.saveSupplier(&supplier)
+        suppliers = try database.suppliers()
+        return saved
+    }
+
+    // MARK: - Journal entries
+
+    func saveJournalEntry(
+        _ entry: inout BooksJournalEntry,
+        lines: [BooksJournalLine]
+    ) async {
+        do {
+            _ = try database.saveJournalEntry(&entry, lines: lines)
+            journalEntries = try database.journalEntries()
+            statusMessage = "Saved journal entry"
+        } catch {
+            errorMessage = "Could not save journal entry: \(error.localizedDescription)"
+        }
+    }
+
+    func deleteJournalEntry(id: Int64) async {
+        do {
+            try database.deleteJournalEntry(id: id)
+            journalEntries = try database.journalEntries()
+            statusMessage = "Journal entry deleted"
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     // MARK: - Computed
 
     var selectedTotals: (subtotal: Double, tax: Double, total: Double, paid: Double) {
@@ -300,7 +466,7 @@ final class BooksViewModel {
             id: nil, name: name, email: email, phone: nil,
             poAddressLine1: nil, poAddressLine2: nil, poCity: nil, poRegion: nil,
             poPostalCode: nil, poCountry: nil, taxNumber: nil, notes: nil,
-            xeroID: nil, createdAt: Date(), updatedAt: Date())
+            xeroID: nil, reportToBlacklist: true, createdAt: Date(), updatedAt: Date())
         let saved = try database.saveClient(&client)
         clients = try database.clients()
         return saved
@@ -341,6 +507,18 @@ final class BooksViewModel {
             invoices = try database.invoices()
             await selectInvoice(id)
             statusMessage = "Marked \(status.displayName.lowercased())"
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func setInvoiceReportToBlacklist(_ value: Bool?) async {
+        guard let id = selectedInvoice?.id else { return }
+        do {
+            try database.setInvoiceReportToBlacklist(id, value)
+            invoices = try database.invoices()
+            await selectInvoice(id)
+            statusMessage = "Reporting preference updated"
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -401,6 +579,63 @@ final class BooksViewModel {
         return dest
     }
 
+    // MARK: - Reminders
+
+    func sendReminder(_ reminderID: Int64) async {
+        do {
+            guard let reminder = reminders.first(where: { $0.id == reminderID }),
+                  let invoice = invoices.first(where: { $0.id == reminder.invoiceID }),
+                  let client = clients.first(where: { $0.id == invoice.clientID }),
+                  let email = client.email, !email.isEmpty else {
+                errorMessage = "Cannot send reminder: missing invoice, client, or email."
+                return
+            }
+            let subject = reminder.subject
+            let body = reminder.body
+            let success = await AppleMailService.shared.compose(to: email, subject: subject, body: body)
+            if success {
+                try database.markReminderSent(id: reminderID)
+                statusMessage = "Reminder sent to \(client.name)"
+            } else {
+                try database.markReminderSent(id: reminderID, error: "Mail compose cancelled or failed")
+                errorMessage = "Reminder compose failed for \(client.name)"
+            }
+            reminders = try database.pendingReminders(before: Date.distantFuture)
+        } catch {
+            self.errorMessage = "Could not send reminder: \(error.localizedDescription)"
+        }
+    }
+
+    func sendDueReminders() async {
+        do {
+            let due = try database.pendingReminders(before: Date())
+            var sent = 0
+            var failed = 0
+            for reminder in due {
+                guard let invoice = invoices.first(where: { $0.id == reminder.invoiceID }),
+                      let client = clients.first(where: { $0.id == invoice.clientID }),
+                      let email = client.email, !email.isEmpty else {
+                    try database.markReminderSent(id: reminder.id ?? 0, error: "Missing client email")
+                    failed += 1
+                    continue
+                }
+                let success = await AppleMailService.shared.compose(
+                    to: email, subject: reminder.subject, body: reminder.body)
+                if success {
+                    try database.markReminderSent(id: reminder.id ?? 0)
+                    sent += 1
+                } else {
+                    try database.markReminderSent(id: reminder.id ?? 0, error: "Mail compose failed")
+                    failed += 1
+                }
+            }
+            reminders = try database.pendingReminders(before: Date.distantFuture)
+            statusMessage = "Sent \(sent) reminders, \(failed) failed"
+        } catch {
+            self.errorMessage = "Could not send reminders: \(error.localizedDescription)"
+        }
+    }
+
     // MARK: - Xero export
 
     /// Writes Xero import CSVs (invoices + contacts) to a chosen folder.
@@ -445,6 +680,147 @@ final class BooksViewModel {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd-HHmm"
         return formatter.string(from: Date())
+    }
+
+    // MARK: - Accountant export
+
+    /// Writes a zip of accountant-ready reports to a chosen folder.
+    func exportAccountantPack() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.zip]
+        panel.nameFieldStringValue = "maestrobooks-accountant-pack.zip"
+        panel.message = "Choose where to save the accountant pack"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let reports = try AccountantExportService.generateAll(database: database, seller: seller)
+            let files: [(name: String, content: String)] = [
+                ("trial_balance.csv", reports.trialBalance),
+                ("profit_and_loss.csv", reports.profitAndLoss),
+                ("balance_sheet.csv", reports.balanceSheet),
+                ("general_ledger.csv", reports.generalLedger),
+                ("ar_aging.csv", reports.arAging),
+                ("ap_aging.csv", reports.apAging),
+            ]
+            try createZip(files: files, destination: url)
+            statusMessage = "Accountant pack saved to \(url.lastPathComponent)"
+        } catch {
+            self.errorMessage = "Accountant export failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func createZip(files: [(name: String, content: String)], destination: URL) throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        for file in files {
+            let fileURL = tempDir.appendingPathComponent(file.name)
+            try file.content.write(to: fileURL, atomically: true, encoding: .utf8)
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+        process.arguments = ["-r", destination.path, "."]
+        process.currentDirectoryURL = tempDir
+        try process.run()
+        process.waitUntilExit()
+        try FileManager.default.removeItem(at: tempDir)
+    }
+
+    // MARK: - Import
+
+    func importFile(at url: URL, source: BooksImportService.ImportSource) async {
+        do {
+            let result = try await BooksImportService.importFile(at: url, source: source, database: database)
+            await reload()
+            if result.errors.isEmpty {
+                statusMessage = "Imported \(result.imported), skipped \(result.skipped)"
+            } else {
+                statusMessage = "Imported \(result.imported), skipped \(result.skipped), \(result.errors.count) errors"
+                errorMessage = result.errors.prefix(3).joined(separator: "; ")
+            }
+        } catch {
+            self.errorMessage = "Import failed: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - CRM Leads
+
+    func saveCRMLead(_ lead: inout BooksCRMLead) async {
+        do {
+            _ = try database.saveCRMLead(&lead)
+            crmLeads = try database.crmLeads()
+            await verifyTaxNumberIfNeeded(name: lead.name, taxNumber: lead.taxNumber, country: lead.country)
+            statusMessage = "Saved \(lead.name)"
+        } catch {
+            self.errorMessage = "Could not save lead: \(error.localizedDescription)"
+        }
+    }
+
+    func deleteCRMLead(id: Int64) async {
+        do {
+            try database.deleteCRMLead(id: id)
+            crmLeads = try database.crmLeads()
+            statusMessage = "Lead deleted"
+        } catch {
+            self.errorMessage = "Could not delete lead: \(error.localizedDescription)"
+        }
+    }
+
+    func convertCRMLeadToClient(id: Int64) async {
+        do {
+            let client = try database.convertCRMLeadToClient(id)
+            await reload()
+            statusMessage = "Converted to client: \(client.name)"
+        } catch {
+            self.errorMessage = "Could not convert lead: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - CRM Opportunities
+
+    func saveCRMOpportunity(_ opp: inout BooksCRMOpportunity) async {
+        do {
+            _ = try database.saveCRMOpportunity(&opp)
+            crmOpportunities = try database.crmOpportunities()
+            statusMessage = "Saved \(opp.title)"
+        } catch {
+            self.errorMessage = "Could not save opportunity: \(error.localizedDescription)"
+        }
+    }
+
+    func deleteCRMOpportunity(id: Int64) async {
+        do {
+            try database.deleteCRMOpportunity(id: id)
+            crmOpportunities = try database.crmOpportunities()
+            statusMessage = "Opportunity deleted"
+        } catch {
+            self.errorMessage = "Could not delete opportunity: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - CRM Activities
+
+    func crmActivities(contactKind: String, contactID: Int64) -> [BooksCRMActivity] {
+        (try? database.crmActivities(contactKind: contactKind, contactID: contactID)) ?? []
+    }
+
+    func saveCRMActivity(_ activity: inout BooksCRMActivity) async {
+        do {
+            _ = try database.saveCRMActivity(&activity)
+            crmActivities = try database.crmActivities()
+            statusMessage = "Activity saved"
+        } catch {
+            self.errorMessage = "Could not save activity: \(error.localizedDescription)"
+        }
+    }
+
+    func deleteCRMActivity(id: Int64) async {
+        do {
+            try database.deleteCRMActivity(id: id)
+            crmActivities = try database.crmActivities()
+            statusMessage = "Activity deleted"
+        } catch {
+            self.errorMessage = "Could not delete activity: \(error.localizedDescription)"
+        }
     }
 }
 

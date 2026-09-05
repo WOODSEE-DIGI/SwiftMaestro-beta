@@ -108,7 +108,7 @@ final class AgentExecutorNudgeTests: XCTestCase {
 
     func testCompletedWorkDoesNotTriggerFutureNarration() {
         XCTAssertFalse(AgentExecutor.claimsFutureAction("The search is complete. Here are the results."))
-        XCTAssertFalse(AgentExecutor.claimsFutureAction("Message sent to Brock McFadzean."))
+        XCTAssertFalse(AgentExecutor.claimsFutureAction("Message sent to Example Contact One."))
         XCTAssertFalse(AgentExecutor.claimsFutureAction(""))
     }
 

@@ -171,6 +171,32 @@ final class DAMViewModel {
         primarySelectedID = nil
     }
 
+    /// Reveal an asset given its filesystem path: select it, switch to the
+    /// metadata workspace, and scope the folder tree. If the path isn't in the
+    /// catalog yet, import its parent folder first.
+    func revealAsset(atPath path: String) async {
+        let normalized = (path as NSString).standardizingPath
+        if let asset = try? database.asset(withPath: normalized) {
+            selectSingle(asset.id)
+            selectedFolder = asset.folder
+            workspace = .metadata
+            await reload()
+            return
+        }
+        let url = URL(fileURLWithPath: normalized)
+        let parent = url.deletingLastPathComponent()
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: parent.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else { return }
+        _ = try? await DAMImportService.shared.importFolder(at: parent, database: database)
+        if let asset = try? database.asset(withPath: normalized) {
+            selectSingle(asset.id)
+            selectedFolder = asset.folder
+            workspace = .metadata
+            await reload()
+        }
+    }
+
     private let pageSize = 500
     private var canLoadMore = true
     private var searchTask: Task<Void, Never>?

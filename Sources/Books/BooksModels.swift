@@ -44,6 +44,12 @@ struct BooksClient: Codable, FetchableRecord, PersistableRecord, Identifiable, S
     var notes: String?
     /// Reserved for Xero API sync.
     var xeroID: String?
+    /// When false, no invoices for this client can be reported to the p2p
+    /// blacklist network. Defaults to true (reporting allowed).
+    var reportToBlacklist: Bool
+    /// Free-form key/value pairs for extra client metadata (website, UEN,
+    /// referral source, etc.). Stored as JSON in the database.
+    var customFields: [String: String]?
     var createdAt: Date
     var updatedAt: Date
 
@@ -62,6 +68,8 @@ struct BooksClient: Codable, FetchableRecord, PersistableRecord, Identifiable, S
         case poCountry = "po_country"
         case taxNumber = "tax_number"
         case xeroID = "xero_id"
+        case reportToBlacklist = "report_to_blacklist"
+        case customFields = "custom_fields"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }
@@ -70,13 +78,107 @@ struct BooksClient: Codable, FetchableRecord, PersistableRecord, Identifiable, S
         static let name = Column(CodingKeys.name)
     }
 
+    /// Memberwise initializer. The compiler stops synthesizing it once we
+    /// implement `init(from:)`, so we keep it explicit for callers.
+    init(
+        id: Int64?,
+        name: String,
+        email: String? = nil,
+        phone: String? = nil,
+        poAddressLine1: String? = nil,
+        poAddressLine2: String? = nil,
+        poCity: String? = nil,
+        poRegion: String? = nil,
+        poPostalCode: String? = nil,
+        poCountry: String? = nil,
+        taxNumber: String? = nil,
+        notes: String? = nil,
+        xeroID: String? = nil,
+        reportToBlacklist: Bool = true,
+        customFields: [String: String]? = nil,
+        createdAt: Date,
+        updatedAt: Date
+    ) {
+        self.id = id
+        self.name = name
+        self.email = email
+        self.phone = phone
+        self.poAddressLine1 = poAddressLine1
+        self.poAddressLine2 = poAddressLine2
+        self.poCity = poCity
+        self.poRegion = poRegion
+        self.poPostalCode = poPostalCode
+        self.poCountry = poCountry
+        self.taxNumber = taxNumber
+        self.notes = notes
+        self.xeroID = xeroID
+        self.reportToBlacklist = reportToBlacklist
+        self.customFields = customFields
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(Int64.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        email = try container.decodeIfPresent(String.self, forKey: .email)
+        phone = try container.decodeIfPresent(String.self, forKey: .phone)
+        poAddressLine1 = try container.decodeIfPresent(String.self, forKey: .poAddressLine1)
+        poAddressLine2 = try container.decodeIfPresent(String.self, forKey: .poAddressLine2)
+        poCity = try container.decodeIfPresent(String.self, forKey: .poCity)
+        poRegion = try container.decodeIfPresent(String.self, forKey: .poRegion)
+        poPostalCode = try container.decodeIfPresent(String.self, forKey: .poPostalCode)
+        poCountry = try container.decodeIfPresent(String.self, forKey: .poCountry)
+        taxNumber = try container.decodeIfPresent(String.self, forKey: .taxNumber)
+        notes = try container.decodeIfPresent(String.self, forKey: .notes)
+        xeroID = try container.decodeIfPresent(String.self, forKey: .xeroID)
+        reportToBlacklist = try container.decodeIfPresent(Bool.self, forKey: .reportToBlacklist) ?? true
+        if let json = try container.decodeIfPresent(String.self, forKey: .customFields),
+           let data = json.data(using: .utf8) {
+            customFields = try JSONDecoder().decode([String: String].self, from: data)
+        } else {
+            customFields = nil
+        }
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encodeIfPresent(email, forKey: .email)
+        try container.encodeIfPresent(phone, forKey: .phone)
+        try container.encodeIfPresent(poAddressLine1, forKey: .poAddressLine1)
+        try container.encodeIfPresent(poAddressLine2, forKey: .poAddressLine2)
+        try container.encodeIfPresent(poCity, forKey: .poCity)
+        try container.encodeIfPresent(poRegion, forKey: .poRegion)
+        try container.encodeIfPresent(poPostalCode, forKey: .poPostalCode)
+        try container.encodeIfPresent(poCountry, forKey: .poCountry)
+        try container.encodeIfPresent(taxNumber, forKey: .taxNumber)
+        try container.encodeIfPresent(notes, forKey: .notes)
+        try container.encodeIfPresent(xeroID, forKey: .xeroID)
+        try container.encode(reportToBlacklist, forKey: .reportToBlacklist)
+        if let customFields {
+            let data = try JSONEncoder().encode(customFields)
+            let json = String(data: data, encoding: .utf8)
+            try container.encodeIfPresent(json, forKey: .customFields)
+        } else {
+            try container.encodeNil(forKey: .customFields)
+        }
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(updatedAt, forKey: .updatedAt)
+    }
+
     /// Empty form value for "New Client" editors.
     static var blank: BooksClient {
         BooksClient(
             id: nil, name: "", email: nil, phone: nil,
             poAddressLine1: nil, poAddressLine2: nil, poCity: nil, poRegion: nil,
             poPostalCode: nil, poCountry: nil, taxNumber: nil, notes: nil,
-            xeroID: nil, createdAt: Date(), updatedAt: Date())
+            xeroID: nil, reportToBlacklist: true, customFields: nil,
+            createdAt: Date(), updatedAt: Date())
     }
 
     /// Single-line address for display/PDF.
@@ -107,6 +209,8 @@ struct BooksInvoice: Codable, FetchableRecord, PersistableRecord, Identifiable, 
     var notes: String?
     var pdfPath: String?
     var xeroID: String?
+    /// nil = inherit from client; true/false = override.
+    var reportToBlacklist: Bool?
     var createdAt: Date
     var updatedAt: Date
 
@@ -124,6 +228,7 @@ struct BooksInvoice: Codable, FetchableRecord, PersistableRecord, Identifiable, 
         case accountCode = "account_code"
         case pdfPath = "pdf_path"
         case xeroID = "xero_id"
+        case reportToBlacklist = "report_to_blacklist"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }
@@ -192,6 +297,8 @@ struct BooksExpense: Codable, FetchableRecord, PersistableRecord, Identifiable, 
     /// Pre-tax amount; tax + total are derived.
     var subtotal: Double
     var notes: String?
+    /// Relative path to a receipt image stored by BooksImageStore.
+    var imageURL: String?
     /// Reserved for Xero API sync.
     var xeroID: String?
     var createdAt: Date
@@ -208,6 +315,7 @@ struct BooksExpense: Codable, FetchableRecord, PersistableRecord, Identifiable, 
         case taxRate = "tax_rate"
         case taxType = "tax_type"
         case subtotal
+        case imageURL = "image_url"
         case xeroID = "xero_id"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
@@ -357,6 +465,8 @@ struct BooksProduct: Codable, FetchableRecord, PersistableRecord, Identifiable, 
     var accountCode: String?
     /// Xero tax type override (nil = invoice default).
     var taxType: String?
+    /// Relative path to a product image stored by BooksImageStore.
+    var imageURL: String?
     var createdAt: Date
     var updatedAt: Date
 
@@ -368,6 +478,7 @@ struct BooksProduct: Codable, FetchableRecord, PersistableRecord, Identifiable, 
         case unitPrice = "unit_price"
         case accountCode = "account_code"
         case taxType = "tax_type"
+        case imageURL = "image_url"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }
@@ -462,7 +573,383 @@ extension BooksClient {
             poRegion: address?.state.isEmpty == false ? address?.state : nil,
             poPostalCode: address?.postalCode.isEmpty == false ? address?.postalCode : nil,
             poCountry: address?.country.isEmpty == false ? address?.country : nil,
-            taxNumber: nil, notes: nil, xeroID: nil,
+            taxNumber: nil, notes: nil, xeroID: nil, reportToBlacklist: true,
             createdAt: now, updatedAt: now)
+    }
+}
+
+// MARK: - Chart of Accounts
+
+enum BooksAccountType: String, Codable, CaseIterable, Sendable, Identifiable {
+    case asset = "Asset"
+    case liability = "Liability"
+    case equity = "Equity"
+    case income = "Income"
+    case expense = "Expense"
+
+    var id: String { rawValue }
+    var displayName: String { rawValue }
+}
+
+/// General ledger account. Code format follows Xero conventions
+/// (e.g. 200 Sales, 429 General Expenses).
+struct BooksAccount: Codable, FetchableRecord, PersistableRecord, Identifiable, Sendable {
+    var id: Int64?
+    var code: String
+    var name: String
+    var type: BooksAccountType
+    /// Xero tax type for lines that default to this account (OUTPUT/INPUT/NONE).
+    var taxType: String
+    /// Display tax label snapshot ("GST", "VAT", etc.).
+    var taxLabel: String
+    /// True for bank/credit-card accounts that appear on the Bank page.
+    var isBank: Bool
+    var bankAccountNumber: String?
+    /// Opening balance at the start of bookkeeping in this app.
+    var openingBalance: Double
+    /// Running balance (denormalised, recalculated by ledger operations).
+    var balance: Double
+    var description: String?
+    /// Reserved for Xero API sync.
+    var xeroID: String?
+    var createdAt: Date
+    var updatedAt: Date
+
+    static let databaseTableName = "accounts"
+
+    enum CodingKeys: String, CodingKey {
+        case id, code, name, type, description
+        case taxType = "tax_type"
+        case taxLabel = "tax_label"
+        case isBank = "is_bank"
+        case bankAccountNumber = "bank_account_number"
+        case openingBalance = "opening_balance"
+        case balance
+        case xeroID = "xero_id"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+    }
+
+    enum Columns {
+        static let code = Column(CodingKeys.code)
+        static let name = Column(CodingKeys.name)
+        static let type = Column(CodingKeys.type)
+    }
+
+    static var blank: BooksAccount {
+        BooksAccount(
+            id: nil, code: "", name: "", type: .expense,
+            taxType: "NONE", taxLabel: "None", isBank: false,
+            bankAccountNumber: nil, openingBalance: 0, balance: 0,
+            description: nil, xeroID: nil,
+            createdAt: Date(), updatedAt: Date())
+    }
+}
+
+// MARK: - Suppliers
+
+/// Supplier / vendor (the "from" on bills). Kept separate from Clients
+/// because the same business can be both customer and supplier.
+struct BooksSupplier: Codable, FetchableRecord, PersistableRecord, Identifiable, Sendable {
+    var id: Int64?
+    var name: String
+    var email: String?
+    var phone: String?
+    var addressLine1: String?
+    var addressLine2: String?
+    var city: String?
+    var region: String?
+    var postalCode: String?
+    var country: String?
+    /// ABN / VAT / EIN.
+    var taxNumber: String?
+    /// Net days, e.g. "30".
+    var paymentTerms: String?
+    /// Default expense account code for this supplier's bills.
+    var defaultExpenseAccountCode: String?
+    var notes: String?
+    /// Relative path to a supplier logo/image stored by BooksImageStore.
+    var imageURL: String?
+    /// Reserved for Xero API sync.
+    var xeroID: String?
+    var createdAt: Date
+    var updatedAt: Date
+
+    static let databaseTableName = "suppliers"
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, email, phone, city, region, country, notes
+        case addressLine1 = "address_line1"
+        case addressLine2 = "address_line2"
+        case postalCode = "postal_code"
+        case taxNumber = "tax_number"
+        case paymentTerms = "payment_terms"
+        case defaultExpenseAccountCode = "default_expense_account_code"
+        case imageURL = "image_url"
+        case xeroID = "xero_id"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+    }
+
+    enum Columns {
+        static let name = Column(CodingKeys.name)
+    }
+
+    static var blank: BooksSupplier {
+        BooksSupplier(
+            id: nil, name: "", email: nil, phone: nil,
+            addressLine1: nil, addressLine2: nil, city: nil, region: nil,
+            postalCode: nil, country: nil, taxNumber: nil, paymentTerms: nil,
+            defaultExpenseAccountCode: nil, notes: nil, xeroID: nil,
+            createdAt: Date(), updatedAt: Date())
+    }
+
+    var addressBlock: String {
+        [addressLine1, addressLine2, city, region, postalCode, country]
+            .compactMap { $0 }.filter { !$0.isEmpty }
+            .joined(separator: ", ")
+    }
+}
+
+// MARK: - Bills (supplier invoices)
+
+enum BooksBillStatus: String, Codable, CaseIterable, Sendable {
+    case draft = "DRAFT"
+    case awaitingPayment = "AWAITING_PAYMENT"
+    case paid = "PAID"
+    case voided = "VOIDED"
+
+    var displayName: String {
+        switch self {
+        case .draft: return "Draft"
+        case .awaitingPayment: return "Awaiting Payment"
+        case .paid: return "Paid"
+        case .voided: return "Voided"
+        }
+    }
+}
+
+/// Proper supplier bill with line items, matching Xero ACCPAY shape.
+struct BooksBill: Codable, FetchableRecord, PersistableRecord, Identifiable, Sendable {
+    var id: Int64?
+    var number: String
+    var supplierID: Int64
+    var reference: String?
+    var issueDate: Date
+    var dueDate: Date?
+    var statusRaw: String
+    var currency: String
+    var taxRate: Double
+    var taxLabel: String
+    var taxType: String
+    var notes: String?
+    /// Relative path to a scanned bill image stored by BooksImageStore.
+    var imageURL: String?
+    /// Reserved for Xero API sync.
+    var xeroID: String?
+    var createdAt: Date
+    var updatedAt: Date
+
+    static let databaseTableName = "bills"
+
+    enum CodingKeys: String, CodingKey {
+        case id, number, reference, currency, notes
+        case supplierID = "supplier_id"
+        case issueDate = "issue_date"
+        case dueDate = "due_date"
+        case statusRaw = "status"
+        case taxRate = "tax_rate"
+        case taxLabel = "tax_label"
+        case taxType = "tax_type"
+        case imageURL = "image_url"
+        case xeroID = "xero_id"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+    }
+
+    enum Columns {
+        static let statusRaw = Column(CodingKeys.statusRaw)
+        static let issueDate = Column(CodingKeys.issueDate)
+        static let supplierID = Column(CodingKeys.supplierID)
+    }
+
+    var status: BooksBillStatus {
+        get { BooksBillStatus(rawValue: statusRaw) ?? .draft }
+        set { statusRaw = newValue.rawValue }
+    }
+}
+
+struct BooksBillLineItem: Codable, FetchableRecord, PersistableRecord, Identifiable, Sendable {
+    var id: Int64?
+    var billID: Int64
+    var position: Int
+    var description: String
+    var quantity: Double
+    var unitAmount: Double
+    var discount: Double
+    var accountCode: String?
+    var taxType: String?
+
+    static let databaseTableName = "bill_line_items"
+
+    enum CodingKeys: String, CodingKey {
+        case id, position, description, quantity, discount
+        case billID = "bill_id"
+        case unitAmount = "unit_amount"
+        case accountCode = "account_code"
+        case taxType = "tax_type"
+    }
+
+    var amount: Double { quantity * unitAmount * (1 - discount / 100) }
+}
+
+// MARK: - Journal entries (double-entry GL)
+
+/// A manual journal entry. Debits must equal credits.
+struct BooksJournalEntry: Codable, FetchableRecord, PersistableRecord, Identifiable, Sendable {
+    var id: Int64?
+    var date: Date
+    var reference: String?
+    var memo: String
+    var currency: String
+    var createdAt: Date
+    var updatedAt: Date
+
+    static let databaseTableName = "journal_entries"
+
+    enum CodingKeys: String, CodingKey {
+        case id, date, reference, memo, currency
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+    }
+}
+
+struct BooksJournalLine: Codable, FetchableRecord, PersistableRecord, Identifiable, Sendable {
+    var id: Int64?
+    var journalEntryID: Int64
+    var accountCode: String
+    var debit: Double
+    var credit: Double
+    var description: String?
+
+    static let databaseTableName = "journal_lines"
+
+    enum CodingKeys: String, CodingKey {
+        case id, debit, credit, description
+        case journalEntryID = "journal_entry_id"
+        case accountCode = "account_code"
+    }
+}
+
+// MARK: - Invoice reminders
+
+/// Scheduled follow-up reminders for an invoice. Created when an invoice is
+/// marked AUTHORISED; cancelled when the invoice is paid or voided.
+struct BooksInvoiceReminder: Codable, FetchableRecord, PersistableRecord, Identifiable, Sendable {
+    enum Kind: String, Codable, CaseIterable, Sendable, Identifiable {
+        case friendly = "Friendly"
+        case overdue7 = "7 Days Overdue"
+        case overdue14 = "14 Days Overdue"
+        case overdue30 = "30 Days Overdue"
+        case overdue45 = "45 Days Overdue"
+        case finalDemand = "Final Demand"
+        case blacklistNotice = "Blacklist Notice"
+
+        var id: String { rawValue }
+
+        /// Days after the invoice due date this reminder should fire.
+        var daysAfterDue: Int {
+            switch self {
+            case .friendly: return 1
+            case .overdue7: return 7
+            case .overdue14: return 14
+            case .overdue30: return 30
+            case .overdue45: return 45
+            case .finalDemand: return 60
+            case .blacklistNotice: return 61
+            }
+        }
+
+        var defaultSubject: String {
+            switch self {
+            case .friendly: return "Friendly reminder: invoice due soon"
+            case .overdue7: return "Invoice now 7 days overdue"
+            case .overdue14: return "Invoice 14 days overdue — please advise"
+            case .overdue30: return "Invoice 30 days overdue — urgent"
+            case .overdue45: return "Invoice 45 days overdue — final notice pending"
+            case .finalDemand: return "FINAL DEMAND — overdue invoice"
+            case .blacklistNotice: return "Notice before debt registration"
+            }
+        }
+
+        /// True once the invoice is considered severely overdue and eligible
+        /// for the future p2p blacklist (60+ days).
+        var isBlacklistEligible: Bool {
+            self == .finalDemand || self == .blacklistNotice
+        }
+    }
+
+    enum Channel: String, Codable, CaseIterable, Sendable {
+        case email = "EMAIL"
+        case inApp = "IN_APP"
+    }
+
+    enum Status: String, Codable, CaseIterable, Sendable {
+        case pending = "PENDING"
+        case sent = "SENT"
+        case failed = "FAILED"
+        case skipped = "SKIPPED"
+
+        var displayName: String {
+            switch self {
+            case .pending: return "Pending"
+            case .sent: return "Sent"
+            case .failed: return "Failed"
+            case .skipped: return "Skipped"
+            }
+        }
+    }
+
+    var id: Int64?
+    var invoiceID: Int64
+    var kindRaw: String
+    var channelRaw: String
+    var scheduledDate: Date
+    var sentDate: Date?
+    var subject: String
+    var body: String
+    var statusRaw: String
+    var errorMessage: String?
+    var createdAt: Date
+    var updatedAt: Date
+
+    static let databaseTableName = "invoice_reminders"
+
+    enum CodingKeys: String, CodingKey {
+        case id, subject, body
+        case invoiceID = "invoice_id"
+        case kindRaw = "kind"
+        case channelRaw = "channel"
+        case scheduledDate = "scheduled_date"
+        case sentDate = "sent_date"
+        case statusRaw = "status"
+        case errorMessage = "error_message"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+    }
+
+    var kind: Kind {
+        get { Kind(rawValue: kindRaw) ?? .friendly }
+        set { kindRaw = newValue.rawValue }
+    }
+
+    var channel: Channel {
+        get { Channel(rawValue: channelRaw) ?? .email }
+        set { channelRaw = newValue.rawValue }
+    }
+
+    var status: Status {
+        get { Status(rawValue: statusRaw) ?? .pending }
+        set { statusRaw = newValue.rawValue }
     }
 }

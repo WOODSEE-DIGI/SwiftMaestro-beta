@@ -228,6 +228,7 @@ struct SwiftMaestroApp: App {
                 .task {
                     appDelegate.mcpService = mcpService
                     appDelegate.whatsAppService = whatsAppService
+                    CRMContactCardService.shared.whatsAppService = whatsAppService
                     pluginService.loadPlugins()
                     // Must complete before any agent could possibly dispatch a
                     // tool call — see ToolRegistry.swift's migration notes.

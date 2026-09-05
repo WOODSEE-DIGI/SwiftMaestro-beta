@@ -44,6 +44,7 @@ extension MaestroTools {
         await registerPatreonTools()
         await registerDatabaseTools()
         await registerDAMTools()
+        await registerContactCardTools()
         await registerPomodoroTools()
         await registerMediaPlayerTools()
         await registerSystemHealthTools()

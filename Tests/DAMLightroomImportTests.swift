@@ -36,8 +36,8 @@ struct DAMLightroomImportTests {
     private func makeCSV() throws -> URL {
         let csv = """
         id,filename,full_path,captureTime,rating,pick,fileFormat,width,height,colorLabels,copyName,keywords
-        1,photo one.jpg,Photos/Trip/photo one.jpg,2024-03-01T10:00:00.000,5.0,0.0,JPG,100.0,200.0,Red,,Alex; Alex; Kids
-        2,photo2.jpg,Photos/Trip/photo2.jpg,2024-03-02T11:00:00,1.0,0.0,JPG,300.0,400.0,Alex Stone,,"Say ""cheese"", please"
+        1,photo one.jpg,Photos/Trip/photo one.jpg,2024-03-01T10:00:00.000,5.0,0.0,JPG,100.0,200.0,Red,,ExampleTag; ExampleTag; Kids
+        2,photo2.jpg,Photos/Trip/photo2.jpg,2024-03-02T11:00:00,1.0,0.0,JPG,300.0,400.0,Example Person,,"Say ""cheese"", please"
         3,plain.jpg,plain.jpg,,0.0,0.0,JPG,50.0,60.0,,,
 
         """
@@ -67,17 +67,17 @@ struct DAMLightroomImportTests {
         #expect(one.width == 100 && one.height == 200)
         #expect(one.captureDate != nil)
         let oneId = try #require(one.id)
-        #expect(try db.tagNames(forAssetId: oneId).sorted() == ["Alex", "Kids"])
-        #expect(one.userKeywords?.contains("Alex") == true)
+        #expect(try db.tagNames(forAssetId: oneId).sorted() == ["ExampleTag", "Kids"])
+        #expect(one.userKeywords?.contains("ExampleTag") == true)
         #expect(one.userKeywords?.contains("Kids") == true)
 
-        // Asset 2: CUSTOM label "Alex Stone" becomes a tag (not a color),
+        // Asset 2: CUSTOM label "Example Person" becomes a tag (not a color),
         // and the quoted comma keyword survives intact.
         let two = try #require(try db.asset(withPath: "/tmp/lr-root/Photos/Trip/photo2.jpg"))
         #expect(two.colorLabel == .none)
         let twoId = try #require(two.id)
         let twoTags = try db.tagNames(forAssetId: twoId)
-        #expect(twoTags.contains("Alex Stone"))
+        #expect(twoTags.contains("Example Person"))
         #expect(twoTags.contains("Say \"cheese\", please"))
 
         // Folder hierarchy → collection chain: Photos (root) → Trip (child),

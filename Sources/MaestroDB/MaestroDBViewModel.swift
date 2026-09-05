@@ -233,6 +233,228 @@ final class MaestroDBViewModel {
         } catch { errorMessage = "Could not create base: \(error.localizedDescription)" }
     }
 
+    /// Creates or refreshes a special "Accounting" base that mirrors the
+    /// current MaestroBooks data. Tables are overwritten on each sync.
+    func syncAccountingBase() async {
+        do {
+            let books = BooksDatabase.shared
+            let base = try database.bases().first(where: { $0.name == "Accounting" })
+                ?? database.createBase(name: "Accounting", icon: "dollarsign.circle")
+
+            let tableDefs: [(name: String, fields: [(name: String, type: DBFieldType)])] = [
+                ("Clients", [
+                    ("Name", .text), ("Email", .email), ("Phone", .phone),
+                    ("Address", .longText), ("Tax Number", .text), ("Xero ID", .text)
+                ]),
+                ("Suppliers", [
+                    ("Name", .text), ("Email", .email), ("Phone", .phone),
+                    ("Address", .longText), ("Tax Number", .text), ("Default Account", .text)
+                ]),
+                ("Accounts", [
+                    ("Code", .text), ("Name", .text), ("Type", .select),
+                    ("Tax Type", .text), ("Is Bank", .checkbox), ("Balance", .number)
+                ]),
+                ("Invoices", [
+                    ("Number", .text), ("Client", .text), ("Issue Date", .date),
+                    ("Due Date", .date), ("Status", .select), ("Total", .number)
+                ]),
+                ("Bills", [
+                    ("Number", .text), ("Supplier", .text), ("Issue Date", .date),
+                    ("Due Date", .date), ("Status", .select), ("Total", .number)
+                ]),
+                ("Journal Entries", [
+                    ("Date", .date), ("Reference", .text), ("Memo", .longText),
+                    ("Account", .text), ("Debit", .number), ("Credit", .number)
+                ]),
+            ]
+
+            var tableIDs: [String: String] = [:]
+            var tableFields: [String: [DBField]] = [:]
+
+            // Create or reuse tables and fields.
+            let existingTables = try database.tables(baseID: base.id)
+            for def in tableDefs {
+                let table: DBTable
+                if let existing = existingTables.first(where: { $0.name == def.name }) {
+                    table = existing
+                } else {
+                    table = try database.createTable(baseID: base.id, name: def.name)
+                }
+                tableIDs[def.name] = table.id
+
+                let existingFields = try database.fields(tableID: table.id)
+                var fields: [DBField] = []
+                for fieldDef in def.fields {
+                    let field: DBField
+                    if let existing = existingFields.first(where: { $0.name == fieldDef.name }) {
+                        field = existing
+                    } else {
+                        field = try database.addField(
+                            tableID: table.id, name: fieldDef.name, type: fieldDef.type,
+                            options: fieldDef.type == .select ? [] : [], config: [:])
+                    }
+                    fields.append(field)
+                }
+                if def.name == "Accounts" || def.name == "Invoices" || def.name == "Bills" {
+                    // Add select options after fields exist.
+                    if let typeField = fields.first(where: { $0.name == "Type" }), typeField.type == .select {
+                        let options: [String]
+                        switch def.name {
+                        case "Accounts": options = ["Asset", "Liability", "Equity", "Income", "Expense"]
+                        case "Invoices", "Bills": options = ["Draft", "Awaiting Payment", "Paid", "Voided"]
+                        default: options = []
+                        }
+                        for option in options where !typeField.options.contains(option) {
+                            try database.addFieldOption(typeField.id, option: option)
+                        }
+                    }
+                    if let statusField = fields.first(where: { $0.name == "Status" }), statusField.type == .select {
+                        let options = def.name == "Invoices"
+                            ? ["Draft", "Sent", "Paid", "Voided"]
+                            : ["Draft", "Awaiting Payment", "Paid", "Voided"]
+                        for option in options where !statusField.options.contains(option) {
+                            try database.addFieldOption(statusField.id, option: option)
+                        }
+                    }
+                }
+                tableFields[table.id] = fields
+                try database.clearTable(table.id)
+            }
+
+            func fieldID(_ tableName: String, _ fieldName: String) -> String? {
+                guard let tableID = tableIDs[tableName] else { return nil }
+                return tableFields[tableID]?.first(where: { $0.name == fieldName })?.id
+            }
+
+            func set(_ tableName: String, _ values: [String: String]) throws {
+                guard let tableID = tableIDs[tableName] else { return }
+                _ = try database.addRow(tableID: tableID, values: values)
+            }
+
+            // Sync clients.
+            for client in try books.clients() {
+                var values: [String: String] = [:]
+                values[fieldID("Clients", "Name") ?? ""] = client.name
+                values[fieldID("Clients", "Email") ?? ""] = client.email ?? ""
+                values[fieldID("Clients", "Phone") ?? ""] = client.phone ?? ""
+                values[fieldID("Clients", "Address") ?? ""] = client.addressBlock
+                values[fieldID("Clients", "Tax Number") ?? ""] = client.taxNumber ?? ""
+                values[fieldID("Clients", "Xero ID") ?? ""] = client.xeroID ?? ""
+                try set("Clients", values)
+            }
+
+            // Sync suppliers.
+            for supplier in try books.suppliers() {
+                var values: [String: String] = [:]
+                values[fieldID("Suppliers", "Name") ?? ""] = supplier.name
+                values[fieldID("Suppliers", "Email") ?? ""] = supplier.email ?? ""
+                values[fieldID("Suppliers", "Phone") ?? ""] = supplier.phone ?? ""
+                values[fieldID("Suppliers", "Address") ?? ""] = supplier.addressBlock
+                values[fieldID("Suppliers", "Tax Number") ?? ""] = supplier.taxNumber ?? ""
+                values[fieldID("Suppliers", "Default Account") ?? ""] = supplier.defaultExpenseAccountCode ?? ""
+                try set("Suppliers", values)
+            }
+
+            // Sync accounts.
+            for account in try books.accounts() {
+                var values: [String: String] = [:]
+                values[fieldID("Accounts", "Code") ?? ""] = account.code
+                values[fieldID("Accounts", "Name") ?? ""] = account.name
+                values[fieldID("Accounts", "Type") ?? ""] = account.type.rawValue
+                values[fieldID("Accounts", "Tax Type") ?? ""] = account.taxType
+                values[fieldID("Accounts", "Is Bank") ?? ""] = account.isBank ? "1" : ""
+                values[fieldID("Accounts", "Balance") ?? ""] = String(account.balance + account.openingBalance)
+                try set("Accounts", values)
+            }
+
+            // Sync invoices.
+            for invoice in try books.invoices() {
+                let client = try books.clients().first(where: { $0.id == invoice.clientID })?.name ?? ""
+                let total = invoice.total(invoices: try books.invoices(), database: books)
+                var values: [String: String] = [:]
+                values[fieldID("Invoices", "Number") ?? ""] = invoice.number
+                values[fieldID("Invoices", "Client") ?? ""] = client
+                values[fieldID("Invoices", "Issue Date") ?? ""] = String(invoice.issueDate.timeIntervalSince1970)
+                values[fieldID("Invoices", "Due Date") ?? ""] = invoice.dueDate.map { String($0.timeIntervalSince1970) } ?? ""
+                values[fieldID("Invoices", "Status") ?? ""] = invoice.status.displayName
+                values[fieldID("Invoices", "Total") ?? ""] = String(total)
+                try set("Invoices", values)
+            }
+
+            // Sync bills.
+            for bill in try books.bills() {
+                let supplier = try books.suppliers().first(where: { $0.id == bill.supplierID })?.name ?? ""
+                let total = bill.total(database: books)
+                var values: [String: String] = [:]
+                values[fieldID("Bills", "Number") ?? ""] = bill.number
+                values[fieldID("Bills", "Supplier") ?? ""] = supplier
+                values[fieldID("Bills", "Issue Date") ?? ""] = String(bill.issueDate.timeIntervalSince1970)
+                values[fieldID("Bills", "Due Date") ?? ""] = bill.dueDate.map { String($0.timeIntervalSince1970) } ?? ""
+                values[fieldID("Bills", "Status") ?? ""] = bill.status.displayName
+                values[fieldID("Bills", "Total") ?? ""] = String(total)
+                try set("Bills", values)
+            }
+
+            // Sync journal entries.
+            for entry in try books.journalEntries() {
+                let lines = try books.journalLines(entryID: entry.id ?? 0)
+                for line in lines {
+                    var values: [String: String] = [:]
+                    values[fieldID("Journal Entries", "Date") ?? ""] = String(entry.date.timeIntervalSince1970)
+                    values[fieldID("Journal Entries", "Reference") ?? ""] = entry.reference ?? ""
+                    values[fieldID("Journal Entries", "Memo") ?? ""] = entry.memo
+                    values[fieldID("Journal Entries", "Account") ?? ""] = line.accountCode
+                    values[fieldID("Journal Entries", "Debit") ?? ""] = String(line.debit)
+                    values[fieldID("Journal Entries", "Credit") ?? ""] = String(line.credit)
+                    try set("Journal Entries", values)
+                }
+            }
+
+            await loadAll()
+            selectedBaseID = base.id
+            noticeMessage = "Accounting base synced from MaestroBooks"
+        } catch {
+            errorMessage = "Could not sync Accounting base: \(error.localizedDescription)"
+        }
+    }
+
+    /// Create or reuse an "Imported Assets" base and "Assets" table, then add a
+    /// row for the file sent from another panel (e.g. the client asset gallery).
+    func importAssetPath(_ path: String) async {
+        do {
+            let base = try database.bases().first(where: { $0.name == "Imported Assets" })
+                ?? database.createBase(name: "Imported Assets", icon: "tray.and.arrow.down")
+            let existingTables = try database.tables(baseID: base.id)
+            let table: DBTable
+            if let existing = existingTables.first(where: { $0.name == "Assets" }) {
+                table = existing
+            } else {
+                table = try database.createTable(baseID: base.id, name: "Assets")
+            }
+            let fields = try database.fields(tableID: table.id)
+            let nameField: DBField
+            if let existing = fields.first(where: { $0.name == "Name" }) {
+                nameField = existing
+            } else {
+                nameField = try database.addField(tableID: table.id, name: "Name", type: .text, options: [], config: [:])
+            }
+            let pathField: DBField
+            if let existing = fields.first(where: { $0.name == "File Path" }) {
+                pathField = existing
+            } else {
+                pathField = try database.addField(tableID: table.id, name: "File Path", type: .attachment, options: [], config: [:])
+            }
+            let name = URL(fileURLWithPath: path).lastPathComponent
+            _ = try database.addRow(tableID: table.id, values: [nameField.id: name, pathField.id: path])
+            await loadAll()
+            selectedBaseID = base.id
+            selectedTableID = table.id
+            noticeMessage = "Imported asset '\(name)'."
+        } catch {
+            errorMessage = "Could not import asset: \(error.localizedDescription)"
+        }
+    }
+
     func renameSelectedBase(to name: String) async {
         guard let baseID = selectedBaseID else { return }
         do { try database.renameBase(baseID, name: name); await loadAll() }

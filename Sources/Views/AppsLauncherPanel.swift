@@ -95,13 +95,25 @@ struct AppsLauncherPanel: View {
     @ViewBuilder
     private func iconOnlyRow(_ kind: WorkspacePanelKind) -> some View {
         let isOpen = workspaceLayout.isOpenOrAnyTerminal(kind)
-        Image(systemName: kind.icon)
-            .font(.system(size: 24))
-            .foregroundStyle(isOpen ? theme.accent : theme.sidebarText)
-            .frame(width: 44, height: 44)
-            .contentShape(Rectangle())
-            .onTapGesture { openPanel(kind) }
-            .help(kind.staticDisplayName ?? kind.themeStorageKey)
+        ZStack(alignment: .topTrailing) {
+            Image(systemName: kind.icon)
+                .font(.system(size: 24))
+                .foregroundStyle(isOpen ? theme.accent : theme.sidebarText)
+                .frame(width: 44, height: 44)
+            if kind.appCategory == .swiftApps {
+                    betaDot
+                }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { openPanel(kind) }
+        .help(kind.staticDisplayName ?? kind.themeStorageKey)
+    }
+
+    private var betaDot: some View {
+        Circle()
+            .fill(Color.orange)
+            .frame(width: 8, height: 8)
+            .offset(x: 2, y: -2)
     }
 
     @ViewBuilder
@@ -179,9 +191,12 @@ struct AppsLauncherPanel: View {
     }
 
     private func sidebarRow(_ title: String, kind: WorkspacePanelKind, icon: String? = nil) -> some View {
-        HStack {
+        HStack(spacing: 8) {
             Label(title, systemImage: icon ?? kind.icon)
                 .foregroundStyle(theme.sidebarText)
+            if kind.appCategory == .swiftApps {
+                BetaTag()
+            }
             Spacer()
             if kind.isStudioApp && !StudioAddon.shared.isAvailable {
                 Image(systemName: "lock.fill")
@@ -250,15 +265,25 @@ struct AppsLauncherPanel: View {
     private func horizontalItem(_ item: HorizontalItem) -> some View {
         let isOpen = workspaceLayout.isOpen(item.kind)
         VStack(spacing: 4) {
-            Image(systemName: item.icon)
-                .font(.system(size: 22))
-                .foregroundStyle(isOpen ? theme.accent : theme.sidebarText)
-                .frame(width: 28, height: 28)
-            Text(item.name)
-                .font(.caption)
-                .foregroundStyle(theme.sidebarText)
-                .lineLimit(1)
-                .frame(maxWidth: .infinity)
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: item.icon)
+                    .font(.system(size: 22))
+                    .foregroundStyle(isOpen ? theme.accent : theme.sidebarText)
+                    .frame(width: 28, height: 28)
+                if item.kind.appCategory == .swiftApps {
+                    betaDot
+                }
+            }
+            HStack(spacing: 4) {
+                Text(item.name)
+                    .font(.caption)
+                    .foregroundStyle(theme.sidebarText)
+                    .lineLimit(1)
+                if item.kind.appCategory == .swiftApps {
+                    BetaTag()
+                }
+            }
+            .frame(maxWidth: .infinity)
         }
         .frame(maxWidth: .infinity)
         .contentShape(Rectangle())
@@ -280,5 +305,22 @@ struct AppsLauncherPanel: View {
             object: kind,
             userInfo: ["modifierFlags": flags]
         )
+    }
+}
+
+// MARK: - Beta Tag
+
+struct BetaTag: View {
+    var body: some View {
+        Text("Beta")
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(
+                Capsule()
+                    .fill(Color.orange)
+            )
+            .fixedSize()
     }
 }

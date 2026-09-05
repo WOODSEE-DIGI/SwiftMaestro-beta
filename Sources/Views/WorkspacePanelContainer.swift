@@ -31,7 +31,9 @@ struct WorkspacePanelContainer<Content: View>: View {
     var canvasTileID: UUID? = nil
 
     @State private var layout = WorkspaceLayoutState.shared
-    @Environment(PanelLayoutState.self) private var panelLayout
+    /// Per-panel layout state shared between the container header and the
+    /// panel content (e.g. the agent chat's Plans/Tasks side panels).
+    @State private var panelLayout = PanelLayoutState()
     @Environment(ThemeStore.self) private var theme
     @Environment(\.openWindow) private var openWindow
 
@@ -55,6 +57,7 @@ struct WorkspacePanelContainer<Content: View>: View {
                 // bottom edge instead.
                 .clipped()
         }
+        .environment(panelLayout)
     }
 
     // MARK: - Header

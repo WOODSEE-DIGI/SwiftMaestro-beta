@@ -1,5 +1,7 @@
+import AppKit
 import AVFoundation
 import Foundation
+import Vision
 
 // MARK: - Diagnostic Report Service
 //
@@ -45,6 +47,8 @@ struct DiagnosticReport: Codable, Sendable {
         var fileExtension: String   // never the filename
         var probe: String           // ffprobe summary (no paths)
         var avfoundationLoad: String
+        var securityScan: SecurityScanResult?
+        var ocrText: String?        // extracted text if the attachment is an image
     }
 }
 
@@ -64,7 +68,8 @@ final class DiagnosticReportService: Sendable {
         contactEmail: String?,
         includeCrashes: Bool,
         includeSelfHealing: Bool,
-        mediaPath: String?
+        mediaPath: String?,
+        includeOCR: Bool = true
     ) async -> DiagnosticReport {
         var report = DiagnosticReport(
             app: .init(
@@ -84,7 +89,7 @@ final class DiagnosticReportService: Sendable {
             report.selfHealing = await selfHealingSummary()
         }
         if let mediaPath, !mediaPath.isEmpty {
-            report.media = await mediaSection(path: mediaPath)
+            report.media = await mediaSection(path: mediaPath, includeOCR: includeOCR)
         }
 
         return report
@@ -162,9 +167,10 @@ final class DiagnosticReportService: Sendable {
         return parts.joined(separator: "\n\n")
     }
 
-    /// Media diagnosis for a user-supplied path: codec/container summary and
-    /// the AVFoundation load verdict. Filename is reduced to its extension.
-    private func mediaSection(path: String) async -> DiagnosticReport.MediaSection? {
+    /// Media diagnosis for a user-supplied path: codec/container summary,
+    /// AVFoundation load verdict, on-Mac security scan, and optional OCR.
+    /// Filename is reduced to its extension.
+    private func mediaSection(path: String, includeOCR: Bool) async -> DiagnosticReport.MediaSection? {
         let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
 
@@ -186,11 +192,37 @@ final class DiagnosticReportService: Sendable {
             avVerdict = "fails to load: \(error.localizedDescription)"
         }
 
+        let securityScan = await SecurityScanService.shared.scanFile(at: url.path)
+        let ocrText = includeOCR ? (await ocrText(from: url) ?? "") : nil
+
         return DiagnosticReport.MediaSection(
             fileExtension: url.pathExtension.lowercased(),
             probe: probeText,
-            avfoundationLoad: avVerdict
+            avfoundationLoad: avVerdict,
+            securityScan: securityScan,
+            ocrText: ocrText?.isEmpty == false ? ocrText : nil
         )
+    }
+
+    /// Extract readable text from an image using Apple's Vision framework.
+    private func ocrText(from url: URL) async -> String? {
+        guard let image = NSImage(contentsOf: url),
+              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            return nil
+        }
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+        do {
+            let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+            try handler.perform([request])
+            guard let observations = request.results, !observations.isEmpty else { return nil }
+            return observations
+                .compactMap { $0.topCandidates(1).first?.string }
+                .joined(separator: "\n")
+        } catch {
+            return "OCR failed: \(error.localizedDescription)"
+        }
     }
 
     // MARK: - Send
@@ -229,6 +261,11 @@ final class DiagnosticReportService: Sendable {
               let id = reply.id else {
             throw SendError.badResponse
         }
+        await SentTicketStore.shared.record(
+            referenceID: id,
+            title: String(report.userDescription.prefix(120)),
+            hadAttachment: report.media != nil
+        )
         return id
     }
 

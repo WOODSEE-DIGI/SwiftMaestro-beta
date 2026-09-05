@@ -15,31 +15,35 @@ struct WindowSizeConfigurator: NSViewRepresentable {
     let backgroundColor: Color?
 
     func makeNSView(context: Context) -> NSView {
-        let view = WindowObserverView()
-        view.configurator = self
-        view.environment = context.environment
-        view.configure = { [weak view] in
-            guard let view, let configurator = view.configurator,
-                  let environment = view.environment else { return }
-            let target = view.window ?? NSApp.mainWindow ?? NSApp.keyWindow
-            configurator.configure(window: target, environment: environment)
-        }
-        view.startTimer()
-        return view
+        WindowObserverView()
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
         guard let view = nsView as? WindowObserverView else { return }
-        // Refresh the captured values — the closure created in makeNSView
-        // would otherwise keep applying the ORIGINAL backgroundColor forever
-        // (the window stayed dark after a light/dark flip).
+
+        // Resolve any background color against the current environment now,
+        // but defer the actual window mutation so we don't re-enter SwiftUI
+        // layout/preference evaluation during this update pass.
+        view.pendingBackgroundColor = backgroundColor.map { color in
+            let resolved = color.resolve(in: context.environment)
+            return NSColor(
+                srgbRed: CGFloat(resolved.red),
+                green: CGFloat(resolved.green),
+                blue: CGFloat(resolved.blue),
+                alpha: CGFloat(resolved.opacity)
+            )
+        }
         view.configurator = self
-        view.environment = context.environment
-        view.configure?()
+
+        DispatchQueue.main.async { [weak view] in
+            view?.applyConfiguration()
+        }
     }
 
-    private func configure(window: NSWindow?, environment: EnvironmentValues) {
-        guard let window else { return }
+    fileprivate func configure(window: NSWindow?, backgroundColor: NSColor?) {
+        guard let window, !ConfiguredWindows.shared.contains(window) else { return }
+        ConfiguredWindows.shared.add(window)
+
         // SwiftUI's Settings scene builds a preferences-style window whose
         // styleMask omits `.resizable`, so `.windowResizability` alone never adds
         // resize handles. Insert it explicitly so the user can drag-resize.
@@ -63,46 +67,49 @@ struct WindowSizeConfigurator: NSViewRepresentable {
         }
 
         if let backgroundColor {
-            let resolved = backgroundColor.resolve(in: environment)
-            window.backgroundColor = NSColor(
-                srgbRed: CGFloat(resolved.red),
-                green: CGFloat(resolved.green),
-                blue: CGFloat(resolved.blue),
-                alpha: CGFloat(resolved.opacity))
+            window.backgroundColor = backgroundColor
         }
     }
 
     /// A lightweight NSView that re-runs its configuration closure whenever
-    /// it moves into (or out of) a window, and also retries a few times via a
-    /// short timer. SwiftUI's background representable may be created before
-    /// its host NSWindow is assigned, and the main/key window can also be the
-    /// correct target, so we check both paths.
+    /// it moves into a window. The actual window mutation is always deferred
+    /// to the next main-queue pass to avoid re-entrant SwiftUI updates during
+    /// `NSHostingView.viewDidMoveToWindow()`.
     private final class WindowObserverView: NSView {
-        var configure: (() -> Void)?
-        var configurator: WindowSizeConfigurator?
-        var environment: EnvironmentValues?
-        private var timer: Timer?
-        private var attempts = 0
+        fileprivate var configurator: WindowSizeConfigurator?
+        fileprivate var pendingBackgroundColor: NSColor?
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            configure?()
-        }
-
-        func startTimer() {
-            timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    self.attempts += 1
-                    self.configure?()
-                    if self.attempts >= 30 {
-                        self.timer?.invalidate()
-                        self.timer = nil
-                    }
-                }
+            DispatchQueue.main.async { [weak self] in
+                self?.applyConfiguration()
             }
         }
 
+        fileprivate func applyConfiguration() {
+            guard let configurator, let window else { return }
+            configurator.configure(window: window, backgroundColor: pendingBackgroundColor)
+        }
+    }
+}
+
+/// Tracks which windows have already been configured so the configurator is
+/// idempotent even if `updateNSView` or `viewDidMoveToWindow` fire multiple
+/// times. Weak references avoid keeping windows alive. All access is on the
+/// main actor because window configuration always happens there.
+@MainActor
+private final class ConfiguredWindows {
+    static let shared = ConfiguredWindows()
+    private let table = NSHashTable<NSWindow>.weakObjects()
+
+    private init() {}
+
+    func contains(_ window: NSWindow) -> Bool {
+        table.contains(window)
+    }
+
+    func add(_ window: NSWindow) {
+        table.add(window)
     }
 }
 #endif

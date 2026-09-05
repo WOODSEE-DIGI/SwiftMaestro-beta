@@ -9,10 +9,16 @@ import SwiftUI
 struct MaestroBooksView: View {
 
     private enum BooksPage: String, CaseIterable, Identifiable {
-        case invoices = "Invoices"
+        case pipeline = "Pipeline"
         case clients = "Clients"
+        case invoices = "Invoices"
         case products = "Products"
         case expenses = "Expenses"
+        case suppliers = "Suppliers"
+        case bills = "Bills"
+        case accounts = "Accounts"
+        case journal = "Journal"
+        case reminders = "Reminders"
         case template = "Template"
         case xero = "Xero"
         var id: String { rawValue }
@@ -23,8 +29,22 @@ struct MaestroBooksView: View {
     @State private var showNewInvoice = false
     @State private var newInvoiceClientID: Int64?
     @State private var showBusinessEditor = false
+    @State private var showEmailImportSettings = false
+    @State private var hasCompletedBooksSetup = LocaleSettings.shared.hasCompletedBooksSetup
+    @State private var showBlacklistReportSheet = false
+    @State private var invoiceListWidth: CGFloat = 260
 
     var body: some View {
+        if !hasCompletedBooksSetup {
+            BooksSetupOnboarding {
+                hasCompletedBooksSetup = true
+            }
+        } else {
+            mainBody
+        }
+    }
+
+    private var mainBody: some View {
         VStack(spacing: 0) {
             toolbar
             if viewModel.isDemo {
@@ -32,23 +52,34 @@ struct MaestroBooksView: View {
             }
             Divider()
             switch page {
-            case .invoices:
-                HStack(spacing: 0) {
-                    invoiceList
-                        .frame(width: 260)
-                    Divider()
-                    detailArea
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
+            case .pipeline:
+                PipelinePage(viewModel: viewModel)
             case .clients:
-                ClientsPage(viewModel: viewModel) { client in
-                    newInvoiceClientID = client.id
-                    showNewInvoice = true
-                }
+                ClientsPage(
+                    viewModel: viewModel,
+                    onNewInvoice: { client in
+                        newInvoiceClientID = client.id
+                        showNewInvoice = true
+                    })
+            case .invoices:
+                ResizablePanelHost(axis: .horizontal, panes: [
+                    ResizablePane(id: "invoiceList", length: $invoiceListWidth, minLength: 200, maxLength: 500) { invoiceList },
+                    ResizablePane(id: "invoiceDetail", length: nil) { detailArea }
+                ])
             case .products:
                 ProductsPage(viewModel: viewModel)
             case .expenses:
                 ExpensesPage(viewModel: viewModel)
+            case .suppliers:
+                SuppliersPage(viewModel: viewModel)
+            case .bills:
+                BillsPage(viewModel: viewModel)
+            case .accounts:
+                AccountsPage(viewModel: viewModel)
+            case .journal:
+                JournalPage(viewModel: viewModel)
+            case .reminders:
+                RemindersPage(viewModel: viewModel)
             case .template:
                 TemplatePage(viewModel: viewModel)
             case .xero:
@@ -56,7 +87,10 @@ struct MaestroBooksView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .task { await viewModel.reload() }
+        .task {
+            await viewModel.reload()
+            BooksEmailImportService.shared.startMonitoring()
+        }
         .sheet(isPresented: $showNewInvoice) {
             NewInvoiceSheet(
                 viewModel: viewModel, isPresented: $showNewInvoice,
@@ -64,6 +98,18 @@ struct MaestroBooksView: View {
         }
         .sheet(isPresented: $showBusinessEditor) {
             BusinessEditorSheet(viewModel: viewModel, isPresented: $showBusinessEditor)
+        }
+        .sheet(isPresented: $showEmailImportSettings) {
+            BooksEmailImportSettingsView()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .booksEmailImportCompleted)) { _ in
+            Task { await viewModel.reload() }
+        }
+        .sheet(isPresented: $showBlacklistReportSheet) {
+            if let invoice = viewModel.selectedInvoice,
+               let client = viewModel.selectedClient {
+                BlacklistReportSheet(invoice: invoice, client: client)
+            }
         }
     }
 
@@ -78,36 +124,7 @@ struct MaestroBooksView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: 480)
-
-            Divider().frame(height: 18)
-
-            if page == .invoices {
-                Button {
-                    newInvoiceClientID = nil
-                    showNewInvoice = true
-                } label: {
-                    Label("New Invoice", systemImage: "plus")
-                }
-
-                Button {
-                    Task {
-                        do { _ = try await viewModel.publishSelectedInvoice() }
-                        catch { viewModel.errorMessage = error.localizedDescription }
-                    }
-                } label: {
-                    Label("Publish PDF", systemImage: "doc.richtext")
-                }
-                .help("Render the A4 tax invoice PDF and file it in MaestroDAM")
-                .disabled(viewModel.selectedInvoice == nil || viewModel.isPublishing)
-
-                Button {
-                    viewModel.exportForXero()
-                } label: {
-                    Label("Export for Xero", systemImage: "square.and.arrow.up")
-                }
-                .help("Write Xero-compatible invoice + contact import CSVs")
-            }
+            .fixedSize()
 
             Spacer()
 
@@ -124,10 +141,38 @@ struct MaestroBooksView: View {
                     .lineLimit(1)
             }
 
+            Menu {
+                Button {
+                    viewModel.exportForXero()
+                } label: {
+                    Label("Export for Xero", systemImage: "square.and.arrow.up")
+                }
+                Button {
+                    viewModel.exportAccountantPack()
+                } label: {
+                    Label("Export Accountant Pack", systemImage: "briefcase")
+                }
+            } label: {
+                Label("Export", systemImage: "square.and.arrow.up")
+            }
+
+            Menu {
+                ForEach(BooksImportService.ImportSource.allCases, id: \.self) { source in
+                    Button {
+                        importFile(source: source)
+                    } label: {
+                        Text(source.rawValue)
+                    }
+                }
+            } label: {
+                Label("Import", systemImage: "square.and.arrow.down")
+            }
+
             Button {
                 Task { await toggleDemo() }
             } label: {
-                Label("Demo", systemImage: "theatermasks")
+                Label(viewModel.isDemo ? "Exit Demo" : "Demo",
+                      systemImage: "theatermasks")
                     .font(.caption.weight(.semibold))
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
@@ -144,6 +189,11 @@ struct MaestroBooksView: View {
                 Image(systemName: "building.2")
             }
             .help("Business details (letterhead)")
+
+            Button { showEmailImportSettings = true } label: {
+                Image(systemName: "envelope.badge")
+            }
+            .help("Email import for bills and receipts")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -175,14 +225,54 @@ struct MaestroBooksView: View {
         await viewModel.reload()
     }
 
+    private func importFile(source: BooksImportService.ImportSource) {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.commaSeparatedText, .plainText]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.message = "Import \(source.rawValue)"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task {
+            await viewModel.importFile(at: url, source: source)
+        }
+    }
+
     // MARK: Invoice list
 
     private var invoiceList: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("Invoices")
-                .font(.headline)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
+            HStack {
+                Text("Invoices")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    newInvoiceClientID = nil
+                    showNewInvoice = true
+                } label: {
+                    Label("New", systemImage: "plus")
+                }
+                .help("Create a new invoice")
+
+                Button {
+                    Task {
+                        do { _ = try await viewModel.publishSelectedInvoice() }
+                        catch { viewModel.errorMessage = error.localizedDescription }
+                    }
+                } label: {
+                    Label("PDF", systemImage: "doc.richtext")
+                }
+                .help("Render the selected invoice PDF")
+                .disabled(viewModel.selectedInvoice == nil || viewModel.isPublishing)
+
+                Button {
+                    viewModel.exportForXero()
+                } label: {
+                    Label("Xero", systemImage: "square.and.arrow.up")
+                }
+                .help("Export invoices + contacts for Xero")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
             Divider()
             if viewModel.invoices.isEmpty {
                 ContentUnavailableView(
@@ -292,6 +382,14 @@ struct MaestroBooksView: View {
                                 Label("PDF", systemImage: "doc.richtext")
                             }
                         }
+                        if let client = viewModel.selectedClient,
+                           BlacklistReportService.shared.isEligible(invoice: invoice, client: client) {
+                            Button {
+                                showBlacklistReportSheet = true
+                            } label: {
+                                Label("Report", systemImage: "exclamationmark.bubble")
+                            }
+                        }
                     }
 
                     Divider()
@@ -349,13 +447,18 @@ struct MaestroBooksView: View {
                             .font(.callout)
                             .foregroundStyle(.secondary)
                     }
+
+                    Divider()
+                    ReportingControl(invoice: invoice, client: viewModel.selectedClient) { value in
+                        Task { await viewModel.setInvoiceReportToBlacklist(value) }
+                    }
                 }
                 .padding(20)
             }
         } else {
             ContentUnavailableView(
                 "MaestroBooks",
-                systemImage: "dollarsign.doc",
+                systemImage: "doc.text",
                 description: Text("Select an invoice, or create one — publish A4 tax invoice PDFs straight into MaestroDAM, export to Xero anytime."))
         }
     }
@@ -368,6 +471,74 @@ struct MaestroBooksView: View {
             Text(BooksMoney.format(amount, currency: currency))
                 .font(bold ? .callout.weight(.bold) : .callout)
                 .frame(width: 130, alignment: .trailing)
+        }
+    }
+}
+
+// MARK: - Reporting Control
+
+/// Per-invoice override for p2p blacklist reporting. Shows the effective
+/// setting inherited from the client and lets the user pause/stop reporting.
+private struct ReportingControl: View {
+    let invoice: BooksInvoice
+    let client: BooksClient?
+    let onChange: (Bool?) -> Void
+
+    /// Effective reporting permission: client setting AND invoice override.
+    private var effective: Bool {
+        let clientAllows = client?.reportToBlacklist ?? true
+        let invoiceAllows = invoice.reportToBlacklist ?? true
+        return clientAllows && invoiceAllows
+    }
+
+    /// nil = inherit from client; true/false = explicit override.
+    @State private var override: Bool?
+
+    init(invoice: BooksInvoice, client: BooksClient?, onChange: @escaping (Bool?) -> Void) {
+        self.invoice = invoice
+        self.client = client
+        self.onChange = onChange
+        self._override = State(initialValue: invoice.reportToBlacklist)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("P2P Blacklist Reporting")
+                    .font(.headline)
+                Spacer()
+                if effective {
+                    Label("Active", systemImage: "checkmark.shield")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.green)
+                } else {
+                    Label("Paused", systemImage: "pause.circle")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.orange)
+                }
+            }
+
+            if let client, !client.reportToBlacklist {
+                Text("Reporting is disabled at the client level for \(client.name).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Picker("Invoice setting", selection: $override) {
+                Text("Inherit from client").tag(nil as Bool?)
+                Text("Allow reporting").tag(true as Bool?)
+                Text("Do not report this invoice").tag(false as Bool?)
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: override) { _, newValue in
+                onChange(newValue)
+            }
+
+            Text(effective
+                 ? "If this invoice remains unpaid past 60 days, it may be reported to the SwiftMaestro p2p network."
+                 : "This invoice will not be reported to the p2p network, regardless of how overdue it becomes.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }
@@ -1350,6 +1521,7 @@ private struct ExpensesPage: View {
     @State private var search = ""
     @State private var draft: BooksExpense?
     @State private var showDeleteConfirm = false
+    @State private var listWidth: CGFloat = 280
 
     private var filtered: [BooksExpense] {
         let query = search.trimmingCharacters(in: .whitespaces).lowercased()
@@ -1361,54 +1533,55 @@ private struct ExpensesPage: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            VStack(spacing: 0) {
-                HStack {
-                    Text("Expenses")
-                        .font(.headline)
-                    Spacer()
-                    Button { newExpense() } label: {
-                        Image(systemName: "plus")
-                    }
-                    .help("New expense")
+        ResizablePanelHost(axis: .horizontal, panes: [
+            ResizablePane(id: "expenseList", length: $listWidth, minLength: 200, maxLength: 500) { expenseList },
+            ResizablePane(id: "expenseEditor", length: nil) { editor }
+        ])
+    }
+
+    private var expenseList: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Expenses")
+                    .font(.headline)
+                Spacer()
+                Button { newExpense() } label: {
+                    Image(systemName: "plus")
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                TextField("Search", text: $search)
-                    .textFieldStyle(.roundedBorder)
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 8)
-                List(filtered, id: \.id) { expense in
-                    Button {
-                        draft = expense
-                    } label: {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(expense.supplier)
-                                Text(expense.expenseDescription)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                            Spacer()
-                            VStack(alignment: .trailing, spacing: 2) {
-                                Text(BooksMoney.format(expense.total,
-                                                       currency: expense.currency))
-                                    .font(.caption)
-                                Text(expense.status.displayName)
-                                    .font(.caption2)
-                                    .foregroundStyle(statusColor(expense.status))
-                            }
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
+                .help("New expense")
             }
-            .frame(width: 280)
-            Divider()
-            editor
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            TextField("Search", text: $search)
+                .textFieldStyle(.roundedBorder)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
+            List(filtered, id: \.id) { expense in
+                Button {
+                    draft = expense
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(expense.supplier)
+                            Text(expense.expenseDescription)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text(BooksMoney.format(expense.total,
+                                                   currency: expense.currency))
+                                .font(.caption)
+                            Text(expense.status.displayName)
+                                .font(.caption2)
+                                .foregroundStyle(statusColor(expense.status))
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
         }
     }
 
@@ -1434,6 +1607,13 @@ private struct ExpensesPage: View {
                         TextField("Notes (optional)", text: optionalBinding(\.notes))
                     }
                     .formStyle(.grouped)
+
+                    BooksImageAttachmentSection(
+                        relativePath: Binding<String?>(
+                            get: { draft?.imageURL },
+                            set: { draft?.imageURL = $0 }),
+                        recordType: "expense",
+                        recordID: current.id)
 
                     // Status flow (Xero-verbatim statuses, same as invoices).
                     HStack(spacing: 10) {
@@ -1490,11 +1670,57 @@ private struct ExpensesPage: View {
                     }
                 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .booksReceiptScanned)) { notification in
+                guard let text = notification.userInfo?["ocrText"] as? String else { return }
+                applyScannedReceipt(text)
+            }
         } else {
             ContentUnavailableView(
                 "Select an expense", systemImage: "creditcard",
                 description: Text("Or add one with the + button. "
                                   + "Expenses sync to Xero as bills."))
+        }
+    }
+
+    private func applyScannedReceipt(_ text: String) {
+        // Try to extract common receipt fields from the Vision Proxy response.
+        // The prompt asks for JSON; fall back to plain text appended to notes.
+        if let data = text.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let merchant = json["merchant"] as? String, !merchant.isEmpty {
+                draft?.supplier = merchant
+            }
+            if let total = json["total"] as? Double, total > 0 {
+                draft?.subtotal = total / (1 + (draft?.taxRate ?? 0))
+            }
+            if let tax = json["tax"] as? Double, tax >= 0 {
+                let subtotal = draft?.subtotal ?? 0
+                if subtotal > 0 {
+                    draft?.taxRate = tax / subtotal
+                }
+            }
+            if let dateString = json["date"] as? String, !dateString.isEmpty {
+                let parser = DateFormatter()
+                parser.dateFormat = "yyyy-MM-dd"
+                if let date = parser.date(from: dateString) {
+                    draft?.issueDate = date
+                }
+            }
+            if let items = json["items"] as? [[String: Any]], !items.isEmpty {
+                let summary = items.compactMap { item -> String? in
+                    guard let desc = item["description"] as? String else { return nil }
+                    let amount = item["amount"] as? Double
+                    return amount != nil ? "\(desc) — \(BooksMoney.format(amount!, currency: draft?.currency ?? "AUD"))" : desc
+                }.joined(separator: "\n")
+                if !summary.isEmpty {
+                    draft?.expenseDescription = items.first.flatMap { $0["description"] as? String } ?? "Receipt"
+                    draft?.notes = (draft?.notes ?? "") + "\n\nScanned items:\n" + summary
+                }
+            } else {
+                draft?.notes = (draft?.notes ?? "") + "\n\nScanned receipt:\n" + text
+            }
+        } else {
+            draft?.notes = (draft?.notes ?? "") + "\n\nScanned receipt:\n" + text
         }
     }
 
@@ -1565,190 +1791,6 @@ private struct ExpensesPage: View {
     }
 }
 
-// MARK: - Clients Page
-
-/// Client directory: searchable list + full edit form + the client's
-/// invoices. Deletion is refused while the client has invoices (accounting
-/// records keep their client snapshot forever).
-private struct ClientsPage: View {
-    var viewModel: BooksViewModel
-    var onNewInvoice: (BooksClient) -> Void
-
-    @State private var search = ""
-    @State private var draft: BooksClient?
-    @State private var showDeleteConfirm = false
-
-    private var filtered: [BooksClient] {
-        let query = search.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !query.isEmpty else { return viewModel.clients }
-        return viewModel.clients.filter {
-            $0.name.lowercased().contains(query)
-                || ($0.email?.lowercased().contains(query) ?? false)
-                || ($0.poCity?.lowercased().contains(query) ?? false)
-        }
-    }
-
-    var body: some View {
-        HStack(spacing: 0) {
-            VStack(spacing: 0) {
-                HStack {
-                    Text("Clients")
-                        .font(.headline)
-                    Spacer()
-                    Button { draft = .blank } label: {
-                        Image(systemName: "plus")
-                    }
-                    .help("New client")
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                TextField("Search", text: $search)
-                    .textFieldStyle(.roundedBorder)
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 8)
-                List(filtered, id: \.id) { client in
-                    Button {
-                        draft = client
-                    } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(client.name)
-                            Text([client.email, client.poCity]
-                                .compactMap { $0 }.filter { !$0.isEmpty }
-                                .joined(separator: " · "))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .frame(width: 260)
-            Divider()
-            editor
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-    }
-
-    @ViewBuilder
-    private var editor: some View {
-        if let current = draft {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Text(current.id == nil ? "New Client" : current.name)
-                            .font(.title3.weight(.bold))
-                        Spacer()
-                        if current.id != nil,
-                           let stored = viewModel.clients.first(where: { $0.id == current.id }) {
-                            Button {
-                                onNewInvoice(stored)
-                            } label: {
-                                Label("New Invoice", systemImage: "plus")
-                            }
-                        }
-                    }
-
-                    Form {
-                        TextField("Name", text: stringBinding(\.name))
-                        TextField("Email", text: optionalBinding(\.email))
-                        TextField("Phone", text: optionalBinding(\.phone))
-                        TextField("Tax number", text: optionalBinding(\.taxNumber))
-                        TextField("Address", text: optionalBinding(\.poAddressLine1))
-                        TextField("City", text: optionalBinding(\.poCity))
-                        TextField("State / region", text: optionalBinding(\.poRegion))
-                        TextField("Postcode", text: optionalBinding(\.poPostalCode))
-                        TextField("Country", text: optionalBinding(\.poCountry))
-                    }
-                    .formStyle(.grouped)
-
-                    HStack {
-                        if current.id != nil {
-                            Button("Delete", role: .destructive) {
-                                showDeleteConfirm = true
-                            }
-                        }
-                        Spacer()
-                        Button(current.id == nil ? "Create Client" : "Save") {
-                            var client = current
-                            Task {
-                                await viewModel.saveClient(&client)
-                                draft = client
-                            }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(current.name.trimmingCharacters(in: .whitespaces).isEmpty)
-                    }
-
-                    if let id = current.id {
-                        let clientInvoices = viewModel.invoices(forClient: id)
-                        if !clientInvoices.isEmpty {
-                            Divider()
-                            Text("Invoices")
-                                .font(.headline)
-                            ForEach(clientInvoices) { invoice in
-                                HStack {
-                                    Text(invoice.number)
-                                    Text(invoice.status.displayName)
-                                        .font(.caption)
-                                        .foregroundStyle(statusColor(invoice.status))
-                                    Spacer()
-                                    Text(InvoicePDFRenderer.dateString(invoice.issueDate))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                    }
-                }
-                .padding(20)
-            }
-            .confirmationDialog("Delete this client?", isPresented: $showDeleteConfirm) {
-                Button("Delete", role: .destructive) {
-                    guard let id = current.id else { return }
-                    Task {
-                        await viewModel.deleteClient(id: id)
-                        // Only clear the editor when the delete actually happened
-                        // (it is refused while the client has invoices).
-                        if !viewModel.clients.contains(where: { $0.id == id }) {
-                            draft = nil
-                        }
-                    }
-                }
-            }
-        } else {
-            ContentUnavailableView(
-                "Select a client", systemImage: "person.2",
-                description: Text("Or add one with the + button."))
-        }
-    }
-
-    private func statusColor(_ status: BooksInvoiceStatus) -> Color {
-        switch status {
-        case .draft: return .secondary
-        case .authorised: return .blue
-        case .paid: return .green
-        case .voided: return .red
-        }
-    }
-
-    private func stringBinding(_ keyPath: WritableKeyPath<BooksClient, String>) -> Binding<String> {
-        Binding(
-            get: { draft?[keyPath: keyPath] ?? "" },
-            set: { draft?[keyPath: keyPath] = $0 })
-    }
-
-    private func optionalBinding(_ keyPath: WritableKeyPath<BooksClient, String?>) -> Binding<String> {
-        Binding(
-            get: { draft?[keyPath: keyPath] ?? "" },
-            set: {
-                let trimmed = $0.trimmingCharacters(in: .whitespaces)
-                draft?[keyPath: keyPath] = trimmed.isEmpty ? nil : $0
-            })
-    }
-}
-
 // MARK: - Products Page
 
 /// Price list as a full page: searchable product/service list + edit form.
@@ -1759,6 +1801,7 @@ private struct ProductsPage: View {
     @State private var search = ""
     @State private var draft: BooksProduct?
     @State private var showDeleteConfirm = false
+    @State private var listWidth: CGFloat = 260
 
     private var filtered: [BooksProduct] {
         let query = search.trimmingCharacters(in: .whitespaces).lowercased()
@@ -1770,57 +1813,59 @@ private struct ProductsPage: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            VStack(spacing: 0) {
-                HStack {
-                    Text("Products & Services")
-                        .font(.headline)
-                    Spacer()
-                    Button {
-                        draft = BooksProduct(
-                            id: nil, name: "", details: nil, unitPrice: 0,
-                            accountCode: nil, taxType: nil,
-                            createdAt: Date(), updatedAt: Date())
-                    } label: {
-                        Image(systemName: "plus")
-                    }
-                    .help("New product / service")
+        ResizablePanelHost(axis: .horizontal, panes: [
+            ResizablePane(id: "productList", length: $listWidth, minLength: 200, maxLength: 500) { productList },
+            ResizablePane(id: "productEditor", length: nil) { editor }
+        ])
+    }
+
+    private var productList: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Products & Services")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    draft = BooksProduct(
+                        id: nil, name: "", details: nil, unitPrice: 0,
+                        accountCode: nil, taxType: nil,
+                        createdAt: Date(), updatedAt: Date())
+                } label: {
+                    Image(systemName: "plus")
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                TextField("Search", text: $search)
-                    .textFieldStyle(.roundedBorder)
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 8)
-                List(filtered, id: \.id) { product in
-                    Button {
-                        draft = product
-                    } label: {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(product.name)
-                                if let details = product.details, !details.isEmpty {
-                                    Text(details)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-                            }
-                            Spacer()
-                            Text(BooksMoney.format(product.unitPrice,
-                                                   currency: viewModel.seller.currency))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
+                .help("New product / service")
             }
-            .frame(width: 260)
-            Divider()
-            editor
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            TextField("Search", text: $search)
+                .textFieldStyle(.roundedBorder)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
+            List(filtered, id: \.id) { product in
+                Button {
+                    draft = product
+                } label: {
+                    HStack(spacing: 12) {
+                        BooksImageThumbnail(relativePath: product.imageURL, size: 40)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(product.name)
+                            if let details = product.details, !details.isEmpty {
+                                Text(details)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        Spacer()
+                        Text(BooksMoney.format(product.unitPrice,
+                                               currency: viewModel.seller.currency))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
         }
     }
 
@@ -1843,6 +1888,13 @@ private struct ProductsPage: View {
                                   text: optionalBinding(\.accountCode))
                     }
                     .formStyle(.grouped)
+
+                    BooksImageAttachmentSection(
+                        relativePath: Binding<String?>(
+                            get: { draft?.imageURL },
+                            set: { draft?.imageURL = $0 }),
+                        recordType: "product",
+                        recordID: current.id)
 
                     HStack {
                         if current.id != nil {

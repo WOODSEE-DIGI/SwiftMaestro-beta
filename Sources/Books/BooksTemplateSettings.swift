@@ -148,7 +148,7 @@ struct BooksTemplateSettings: Codable, Equatable, Sendable {
             poAddressLine1: "1 Example St", poAddressLine2: nil,
             poCity: "Sydney", poRegion: "NSW", poPostalCode: "2000",
             poCountry: "Australia", taxNumber: nil, notes: nil, xeroID: nil,
-            createdAt: now, updatedAt: now)
+            reportToBlacklist: true, createdAt: now, updatedAt: now)
         let invoice = BooksInvoice(
             id: nil, number: "INV-2026-0001", clientID: 0,
             issueDate: now, dueDate: now.addingTimeInterval(14 * 86400),
@@ -157,7 +157,8 @@ struct BooksTemplateSettings: Codable, Equatable, Sendable {
             taxLabel: seller.taxLabel, taxType: seller.taxType,
             accountCode: seller.defaultAccountCode,
             notes: "Thank you for your business.",
-            pdfPath: nil, xeroID: nil, createdAt: now, updatedAt: now)
+            pdfPath: nil, xeroID: nil, reportToBlacklist: nil,
+            createdAt: now, updatedAt: now)
         let items = [
             BooksLineItem(
                 id: nil, invoiceID: 0, position: 0,

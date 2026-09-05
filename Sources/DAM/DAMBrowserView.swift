@@ -60,6 +60,10 @@ struct DAMBrowserView: View {
             await viewModel.reload()
             await viewModel.refreshFolderTree()
             viewModel.startBackgroundEnrichment()
+            if let path = UserDefaults.standard.string(forKey: "crm.pendingDAMAssetPath") {
+                UserDefaults.standard.removeObject(forKey: "crm.pendingDAMAssetPath")
+                await viewModel.revealAsset(atPath: path)
+            }
         }
     }
 

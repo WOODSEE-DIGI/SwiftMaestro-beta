@@ -173,6 +173,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case mcp
     case storage
     case secrets
+    case businessVerification
     case whisper
     case shell
     case healing
@@ -194,9 +195,10 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .mcp: return String(localized: "MCP")
         case .storage: return String(localized: "Storage")
         case .secrets: return String(localized: "Secrets")
+        case .businessVerification: return String(localized: "Business Verify")
         case .whisper: return String(localized: "Whisper")
         case .shell: return String(localized: "Shell")
-        case .healing: return String(localized: "Self-Healing")
+        case .healing: return String(localized: "Swift Helper")
         case .about: return String(localized: "About")
         }
     }
@@ -215,9 +217,10 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .mcp: return "server.rack"
         case .storage: return "externaldrive"
         case .secrets: return "key.fill"
+        case .businessVerification: return "building.columns"
         case .whisper: return "mic.fill"
         case .shell: return "terminal"
-        case .healing: return "bandage"
+        case .healing: return "wrench.and.screwdriver"
         case .about: return "info.circle"
         }
     }
@@ -320,9 +323,10 @@ struct SettingsView: View {
         case .mcp: MCPSettingsTab()
         case .storage: StorageSettingsTab()
         case .secrets: SecretsSettingsTab()
+        case .businessVerification: BusinessVerificationSettingsTab()
         case .whisper: WhisperKitSettingsTab()
         case .shell: ShellSettingsTab()
-        case .healing: SelfHealingSettingsTab()
+        case .healing: SwiftHelperSettingsTab()
         case .about: AboutSettingsTab()
         }
     }

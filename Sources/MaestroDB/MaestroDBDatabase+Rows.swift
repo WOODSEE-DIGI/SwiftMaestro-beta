@@ -111,6 +111,15 @@ extension MaestroDBDatabase {
         Self.postDidChange()
     }
 
+    /// Removes every row from a table (used when refreshing a linked/base snapshot).
+    func clearTable(_ tableID: String) throws {
+        try dbQueue.write { db in
+            try db.execute(sql: "DELETE FROM db_cell WHERE row_id IN (SELECT id FROM db_row WHERE table_id = ?)", arguments: [tableID])
+            try db.execute(sql: "DELETE FROM db_row WHERE table_id = ?", arguments: [tableID])
+        }
+        Self.postDidChange()
+    }
+
     /// Persist a full-row order after a drag/reorder or kanban card move.
     func setRowPositions(_ orderedIDs: [String]) throws {
         try dbQueue.write { db in
