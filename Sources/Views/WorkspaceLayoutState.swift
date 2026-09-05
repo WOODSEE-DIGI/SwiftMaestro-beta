@@ -1450,10 +1450,24 @@ final class WorkspaceLayoutState {
 
     /// Rearrange the main canvas's tiles into the canonical layout:
     /// Agents over Apps launcher in the left column, agent chats center,
-    /// everything else in the right column. Repositions only — nothing opens
-    /// or closes. Other canvas windows are untouched.
+    /// everything else in the right column. Removes any agent-chat tile whose
+    /// agent no longer exists and ensures the navigator chat is present so the
+    /// workspace never resets to an empty or "Agent Not Found" state.
     func resetToDefaultLayout() {
         let canvasID = CanvasTile.mainCanvasID
+
+        // Self-healing: drop agent-chat tiles that point to deleted or stale agents.
+        if let workspace = MaestroTools.workspace {
+            canvasTiles.removeAll { tile in
+                tile.kinds.contains { kind in
+                    if case .agentChat(let id) = kind {
+                        return workspace.agent(id: id) == nil
+                    }
+                    return false
+                }
+            }
+        }
+
         var agentsTile: CanvasTile?
         var launcherTile: CanvasTile?
         var chatTiles: [CanvasTile] = []
@@ -1464,6 +1478,17 @@ final class WorkspaceLayoutState {
             else if tile.kinds.contains(.appLauncher) { launcherTile = tile }
             else if tile.kinds.contains(where: { if case .agentChat = $0 { return true } else { return false } }) { chatTiles.append(tile) }
             else { otherTiles.append(tile) }
+        }
+
+        // If no valid chat tile remains, open the navigator chat so the workspace isn't empty.
+        if chatTiles.isEmpty, let navigatorID = MaestroTools.workspace?.navigator.id {
+            let chatTile = CanvasTile(
+                kinds: [.agentChat(navigatorID)],
+                col: 0, row: 0, colSpan: 5, rowSpan: 8,
+                z: nextZ(), canvasID: canvasID
+            )
+            canvasTiles.append(chatTile)
+            chatTiles.append(chatTile)
         }
 
         let hasChrome = agentsTile != nil || launcherTile != nil
