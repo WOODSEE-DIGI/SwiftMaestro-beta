@@ -365,7 +365,7 @@ Reactive pub/sub message broker for agent-to-agent communication. Persistent pol
 - Disk space and RAM scale with the model you choose (see [Models](#models)).
 
 ## Install (beta)
-1. Download **[SwiftMaestro-0.1.2-beta.dmg](https://swiftmaestro.com/download/SwiftMaestro-0.1.2-beta.dmg)** from the SwiftMaestro website.
+1. Download **[SwiftMaestro-0.5.5.dmg](https://swiftmaestro.com/download.html)** from the SwiftMaestro website.
 2. Open the `.dmg` and drag **SwiftMaestro** to **Applications**.
 3. Launch it. Because it's Developer ID signed, it opens cleanly on first launch.
 
@@ -467,8 +467,13 @@ By default models are stored under `~/Library/Application Support/SwiftMaestro/m
 | 1 | ✅ Complete | Native macOS app — multi-agent chat, streaming, secure storage, model picker, notarised DMG |
 | 2 | ✅ Complete | On-device tools — memory, file I/O, document indexing, Reminders/Calendar/Notes/Contacts, Apple Shortcuts, speech-to-text, image input, vision proxy |
 | 3 | ✅ Complete | Per-agent model overrides, mid-generation steering, thinking display, multi-model residency, SQLite, shell, WhatsApp bridge |
-| 4 | 🚧 In Progress | Advanced memory — context store, fact graph, learning engine, knowledge promotion |
-| 5 | 📋 Planned | Personalised on-device fine-tuning (LoRA) |
+| 4 | ✅ Complete | Advanced memory — durable memory store, fact graph, context recall, knowledge promotion, agent memory tools |
+| 5 | ✅ Complete | MaestroDB — built-in relational database with agent tools, CSV import/export, linked rows, grid + kanban views |
+| 6 | ✅ Complete | Plan editor, attach-to-session, self-contained DMG with bundled WhisperKit + gphoto2 stack |
+| 7 | 🚧 In Progress | MaestroBooks — invoicing, expenses, clients, products, PDF generation, and Xero accounting sync. Currently debugging core bookkeeping workflows. |
+| 8 | 📋 Planned | Financial and crypto market investigation tools (Blocky + Stocky) |
+| 9 | 📋 Planned | Find your local elected representatives and their voting records vs media spin |
+| 10 | 📋 Planned | Personalised on-device fine-tuning (LoRA) |
 
 ---
 
