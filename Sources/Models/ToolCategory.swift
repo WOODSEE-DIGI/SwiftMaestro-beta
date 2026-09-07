@@ -25,11 +25,11 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     case time
     case notes
     case kanban
-    /// The whiteboard feature. rawValue is "whiteboard"; the legacy "canvas"
-    /// rawValue (from before the Canvas→Whiteboard rename) still decodes to
-    /// this case via the custom init below, so per-agent enabled-category sets
-    /// persisted by older builds keep working.
-    case whiteboard
+    /// The Excalidraw drawing/whiteboard feature. rawValue is "excalidraw";
+    /// legacy rawValues "canvas" and "whiteboard" still decode to this case
+    /// via the custom init below, so per-agent enabled-category sets persisted
+    /// by older builds keep working.
+    case excalidraw
     case numbers
     case maps
     case photos
@@ -56,12 +56,12 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
 
     var id: String { rawValue }
 
-    /// Legacy-alias decode: builds that predate the Canvas→Whiteboard rename
-    /// persisted `"canvas"` into per-agent enabled-category sets. Map it onto
-    /// `.whiteboard` so those agents keep their whiteboard tools after upgrade.
+    /// Legacy-alias decode: older builds persisted `"canvas"` (Canvas→Whiteboard
+    /// rename) or `"whiteboard"` (Whiteboard→Excalidraw rename). Map both onto
+    /// `.excalidraw` so those agents keep their drawing tools after upgrade.
     init?(rawValue: String) {
-        if rawValue == "canvas" {
-            self = .whiteboard
+        if rawValue == "canvas" || rawValue == "whiteboard" {
+            self = .excalidraw
             return
         }
         guard let match = Self.allCases.first(where: { $0.rawValue == rawValue }) else {
@@ -90,7 +90,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .workspace, .memory, .messaging, .bus, .rules, .time, .mcp:
             return false
         case .file, .documents, .books, .shell, .server, .index, .system, .sqlite,
-             .notes, .kanban, .whiteboard, .numbers, .maps, .photos, .stocks, .news,
+             .notes, .kanban, .excalidraw, .numbers, .maps, .photos, .stocks, .news,
              .mail, .whatsapp, .discord, .web, .browser, .scraping, .bluesky, .patreon, .vault, .database, .dam,
              .blockchain, .overlayBuilder, .calendar, .reminders, .contacts, .mediaPlayer:
             return true
@@ -116,7 +116,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .time: return "Time"
         case .notes: return "Notes"
         case .kanban: return "Kanban"
-        case .whiteboard: return "Excalidraw"
+        case .excalidraw: return "Excalidraw"
         case .numbers: return "Numbers"
         case .maps: return "Maps"
         case .photos: return "Photos"
@@ -161,7 +161,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .time: return "clock"
         case .notes: return "note.text"
         case .kanban: return "rectangle.split.3x1"
-        case .whiteboard: return "rectangle.3.group"
+        case .excalidraw: return "rectangle.3.group"
         case .numbers: return "tablecells"
         case .maps: return "map"
         case .photos: return "photo.stack"
@@ -251,11 +251,11 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
                 "list_kanban_boards", "create_kanban_board", "list_kanban_cards",
                 "create_kanban_card", "move_kanban_card", "update_kanban_card", "delete_kanban_card",
             ]
-        case .whiteboard:
+        case .excalidraw:
             return [
-                "whiteboard_list_boards", "whiteboard_create_board", "whiteboard_delete_board",
-                "whiteboard_list_elements", "whiteboard_add_shape", "whiteboard_add_text",
-                "whiteboard_connect", "whiteboard_clear",
+                "excalidraw_list_boards", "excalidraw_create_board", "excalidraw_delete_board",
+                "excalidraw_list_elements", "excalidraw_add_shape", "excalidraw_add_text",
+                "excalidraw_connect", "excalidraw_clear",
             ]
         case .numbers:
             return [
@@ -376,7 +376,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         switch self {
         case .notes: return [.notesMD, .appleNotes]
         case .kanban: return [.kanban]
-        case .whiteboard: return [.canvas]
+        case .excalidraw: return [.canvas]
         case .numbers: return [.numbers]
         case .maps: return [.maps]
         case .photos: return [.photos]
@@ -413,13 +413,13 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .navigator:
             return [
                 .workspace, .memory, .bus, .system, .rules, .time, .web, .browser, .scraping, .vault, .documents, .books,
-                .notes, .kanban, .whiteboard, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky, .patreon, .database, .dam, .blockchain,
+                .notes, .kanban, .excalidraw, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky, .patreon, .database, .dam, .blockchain,
                 .overlayBuilder, .calendar, .reminders, .contacts,
             ]
         case .project:
             return [
                 .file, .documents, .books, .shell, .server, .index, .memory, .messaging, .bus, .system, .mcp, .sqlite, .web, .browser, .scraping, .vault,
-                .notes, .kanban, .whiteboard, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky, .patreon, .database, .dam, .blockchain,
+                .notes, .kanban, .excalidraw, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky, .patreon, .database, .dam, .blockchain,
                 .overlayBuilder, .calendar, .reminders, .contacts,
             ]
         case .swiftHelper:
@@ -459,7 +459,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             // Apple-app / social panels: visible so the user can opt in,
             // but not enabled by default for the coding role.
             base += [
-                .notes, .kanban, .whiteboard, .numbers, .maps, .photos, .stocks,
+                .notes, .kanban, .excalidraw, .numbers, .maps, .photos, .stocks,
                 .news, .mail, .whatsapp, .discord, .bluesky, .patreon, .database,
                 .dam, .blockchain, .overlayBuilder, .calendar, .reminders, .contacts,
             ]

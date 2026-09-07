@@ -1139,16 +1139,16 @@ final class WorkspaceLayoutState {
         }
     }
 
-    /// New tile for a panel placed in the best free area of `canvasID`.
-    /// Returns nil when the canvas genuinely has no room even at the tile's
-    /// minimum span — callers then keep/return the panel as a floating window
-    /// instead of overlapping (HARD RULE: docked tiles never overlap).
+    /// New tile for a panel placed in the best *existing* free area of `canvasID`.
+    /// This deliberately does NOT shrink existing tiles to make room; panels
+    /// only dock into space the user has already cleared. Returns nil when the
+    /// canvas has no usable free area — callers then keep/return the panel as a
+    /// floating window instead of overlapping (HARD RULE: docked tiles never overlap).
     private func newTile(_ kind: WorkspacePanelKind, canvasID: UUID = CanvasTile.mainCanvasID) -> CanvasTile? {
         let preferred = preferredSpan(for: kind)
         var tile = CanvasTile(kinds: [kind], col: 0, row: 0,
                               colSpan: preferred.colSpan, rowSpan: preferred.rowSpan,
                               z: nextZ(), canvasID: canvasID)
-        makeRoomIfNeeded(minColSpan: tile.minColSpan, minRowSpan: tile.minRowSpan, canvasID: canvasID)
         guard let spot = bestPlacement(preferred: preferred,
                                        minColSpan: tile.minColSpan,
                                        minRowSpan: tile.minRowSpan,

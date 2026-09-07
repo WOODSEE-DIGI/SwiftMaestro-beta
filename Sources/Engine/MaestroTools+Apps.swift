@@ -39,11 +39,11 @@ extension MaestroTools {
                 handler: { call in await updateKanbanCard(call) }),
             ToolDefinition(name: "delete_kanban_card", spec: appsToolSpecs[10], category: ToolCategory.kanban.rawValue,
                 handler: { call in await deleteKanbanCard(call) }),
-            ToolDefinition(name: "whiteboard_list_boards", spec: appsToolSpecs[11], category: ToolCategory.whiteboard.rawValue,
+            ToolDefinition(name: "excalidraw_list_boards", spec: appsToolSpecs[11], category: ToolCategory.excalidraw.rawValue,
                 handler: { _ in await listWhiteboardBoards() }),
-            ToolDefinition(name: "whiteboard_create_board", spec: appsToolSpecs[12], category: ToolCategory.whiteboard.rawValue,
+            ToolDefinition(name: "excalidraw_create_board", spec: appsToolSpecs[12], category: ToolCategory.excalidraw.rawValue,
                 handler: { call in await createWhiteboardBoard(call) }),
-            ToolDefinition(name: "whiteboard_delete_board", spec: appsToolSpecs[13], category: ToolCategory.whiteboard.rawValue,
+            ToolDefinition(name: "excalidraw_delete_board", spec: appsToolSpecs[13], category: ToolCategory.excalidraw.rawValue,
                 handler: { call in await deleteWhiteboardBoard(call) }),
             ToolDefinition(name: "list_apple_note_folders", spec: appsToolSpecs[14], category: ToolCategory.notes.rawValue,
                 handler: { _ in await listAppleNoteFolders() }),
@@ -69,15 +69,15 @@ extension MaestroTools {
                 handler: { call in await writeNumbersCell(call) }),
             ToolDefinition(name: "export_numbers_document", spec: appsToolSpecs[25], category: ToolCategory.numbers.rawValue,
                 handler: { call in await exportNumbersDocument(call) }),
-            ToolDefinition(name: "whiteboard_list_elements", spec: appsToolSpecs[26], category: ToolCategory.whiteboard.rawValue,
+            ToolDefinition(name: "excalidraw_list_elements", spec: appsToolSpecs[26], category: ToolCategory.excalidraw.rawValue,
                 handler: { call in await whiteboardListElements(call) }),
-            ToolDefinition(name: "whiteboard_add_shape", spec: appsToolSpecs[27], category: ToolCategory.whiteboard.rawValue,
+            ToolDefinition(name: "excalidraw_add_shape", spec: appsToolSpecs[27], category: ToolCategory.excalidraw.rawValue,
                 handler: { call in await whiteboardAddShape(call) }),
-            ToolDefinition(name: "whiteboard_add_text", spec: appsToolSpecs[28], category: ToolCategory.whiteboard.rawValue,
+            ToolDefinition(name: "excalidraw_add_text", spec: appsToolSpecs[28], category: ToolCategory.excalidraw.rawValue,
                 handler: { call in await whiteboardAddText(call) }),
-            ToolDefinition(name: "whiteboard_connect", spec: appsToolSpecs[29], category: ToolCategory.whiteboard.rawValue,
+            ToolDefinition(name: "excalidraw_connect", spec: appsToolSpecs[29], category: ToolCategory.excalidraw.rawValue,
                 handler: { call in await whiteboardConnect(call) }),
-            ToolDefinition(name: "whiteboard_clear", spec: appsToolSpecs[30], category: ToolCategory.whiteboard.rawValue,
+            ToolDefinition(name: "excalidraw_clear", spec: appsToolSpecs[30], category: ToolCategory.excalidraw.rawValue,
                 handler: { call in await whiteboardClear(call) }),
         ])
     }
@@ -167,16 +167,16 @@ extension MaestroTools {
                 ], required: ["board", "card"]),
 
             // MARK: Whiteboard boards (Excalidraw scene files)
-            rawSpec("whiteboard_list_boards",
-                "List Excalidraw whiteboard boards (name, created/modified dates). Use whiteboard_list_elements "
+            rawSpec("excalidraw_list_boards",
+                "List Excalidraw whiteboard boards (name, created/modified dates). Use excalidraw_list_elements "
                 + "to see the shapes, text, and workflow arrows on a board.",
                 properties: [:], required: []),
-            rawSpec("whiteboard_create_board",
-                "Create a new empty Excalidraw whiteboard board. Add workflow shapes with whiteboard_add_shape and connect them with whiteboard_connect.",
+            rawSpec("excalidraw_create_board",
+                "Create a new empty Excalidraw whiteboard board. Add workflow shapes with excalidraw_add_shape and connect them with excalidraw_connect.",
                 properties: [
                     "name": ["type": "string", "description": "Board name."],
                 ], required: ["name"]),
-            rawSpec("whiteboard_delete_board",
+            rawSpec("excalidraw_delete_board",
                 "Delete an Excalidraw whiteboard board by name (or id).",
                 properties: [
                     "name": ["type": "string", "description": "Board name (or id)."],
@@ -258,14 +258,14 @@ extension MaestroTools {
                 ], required: ["document", "path", "format"]),
 
             // MARK: Whiteboard elements (Excalidraw workflow diagrams)
-            rawSpec("whiteboard_list_elements",
+            rawSpec("excalidraw_list_elements",
                 "List the elements on an Excalidraw whiteboard board: shapes, text, and arrows, "
                 + "with ids, types, positions and sizes. Omit 'board' to use the most recently "
-                + "modified board. Use the ids with whiteboard_connect.",
+                + "modified board. Use the ids with excalidraw_connect.",
                 properties: [
                     "board": ["type": "string", "description": "Board name (or id). Omit for the most recently modified board."],
                 ], required: []),
-            rawSpec("whiteboard_add_shape",
+            rawSpec("excalidraw_add_shape",
                 "Add a shape element to an Excalidraw whiteboard board and return its element id. "
                 + "For process workflows, prefer rectangle (steps), diamond (decisions) and "
                 + "roundedRectangle (start/end). Positions are Excalidraw canvas coordinates with "
@@ -281,7 +281,7 @@ extension MaestroTools {
                     "width": ["type": "number", "description": "Width in canvas points (default 150)."],
                     "height": ["type": "number", "description": "Height in canvas points (default 150)."],
                 ], required: ["shape"]),
-            rawSpec("whiteboard_add_text",
+            rawSpec("excalidraw_add_text",
                 "Add a text element to an Excalidraw whiteboard board and return its element id. "
                 + "Use for titles/labels on workflows. Opens the Excalidraw panel so the user sees it.",
                 properties: [
@@ -291,9 +291,9 @@ extension MaestroTools {
                     "x": ["type": "number", "description": "Canvas x of the element's top-left."],
                     "y": ["type": "number", "description": "Canvas y of the element's top-left."],
                 ], required: ["text"]),
-            rawSpec("whiteboard_connect",
+            rawSpec("excalidraw_connect",
                 "Draw a workflow arrow between two elements on an Excalidraw whiteboard board. "
-                + "'from' and 'to' accept element ids (from whiteboard_add_shape/whiteboard_list_elements) "
+                + "'from' and 'to' accept element ids (from excalidraw_add_shape/excalidraw_list_elements) "
                 + "or exact text labels. The arrow points from the source to the target element. "
                 + "Opens the Excalidraw panel so the user sees it.",
                 properties: [
@@ -302,7 +302,7 @@ extension MaestroTools {
                     "to": ["type": "string", "description": "Target element id or its exact text label."],
                     "label": ["type": "string", "description": "Optional label on the arrow (e.g. a decision's 'yes'/'no')."],
                 ], required: ["from", "to"]),
-            rawSpec("whiteboard_clear",
+            rawSpec("excalidraw_clear",
                 "Remove ALL elements from an Excalidraw whiteboard board.",
                 properties: [
                     "board": ["type": "string", "description": "Board name (or id). Omit for the most recently modified board."],
@@ -675,7 +675,7 @@ extension MaestroTools {
     static func listWhiteboardBoards() async -> String {
         await MainActor.run {
             let boards = ExcalidrawStore.shared.listBoards()
-            guard !boards.isEmpty else { return "No whiteboard boards yet. Use whiteboard_create_board to make one." }
+            guard !boards.isEmpty else { return "No whiteboard boards yet. Use excalidraw_create_board to make one." }
             let iso = ISO8601DateFormatter()
             return jsonString(["boards": boards.map { board -> [String: Any] in
                 [
@@ -691,7 +691,7 @@ extension MaestroTools {
     static func createWhiteboardBoard(_ call: ToolCall) async -> String {
         guard let args = decodeArgs(call, as: WhiteboardBoardArgs.self),
               let name = args.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty
-        else { return errorJSON("whiteboard_create_board requires 'name'") }
+        else { return errorJSON("excalidraw_create_board requires 'name'") }
         return await MainActor.run {
             do {
                 try ExcalidrawStore.shared.saveBoard(name: name, data: emptyExcalidrawSceneJSON())
@@ -705,7 +705,7 @@ extension MaestroTools {
     static func deleteWhiteboardBoard(_ call: ToolCall) async -> String {
         guard let args = decodeArgs(call, as: WhiteboardBoardArgs.self),
               let key = args.name?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty
-        else { return errorJSON("whiteboard_delete_board requires 'name'") }
+        else { return errorJSON("excalidraw_delete_board requires 'name'") }
         return await MainActor.run {
             guard let board = findWhiteboardBoard(key) else {
                 return errorJSON("no whiteboard board matching \"\(key)\".")
@@ -959,7 +959,7 @@ extension MaestroTools {
         let args = decodeArgs(call, as: WhiteboardBoardKeyArgs.self)
         return await MainActor.run {
             guard let board = resolveWhiteboard(args?.board ?? nil, createIfNone: false) else {
-                return errorJSON("No whiteboard boards yet. Add a shape with whiteboard_add_shape (a board is auto-created) or create one with whiteboard_create_board.")
+                return errorJSON("No whiteboard boards yet. Add a shape with excalidraw_add_shape (a board is auto-created) or create one with excalidraw_create_board.")
             }
             let elements = liveElements(in: readScene(for: board))
             return jsonString([
@@ -984,7 +984,7 @@ extension MaestroTools {
     static func whiteboardAddShape(_ call: ToolCall) async -> String {
         guard let args = decodeArgs(call, as: WhiteboardAddShapeArgs.self),
               let shapeName = args.shape, !shapeName.isEmpty
-        else { return errorJSON("whiteboard_add_shape requires 'shape'") }
+        else { return errorJSON("excalidraw_add_shape requires 'shape'") }
         guard excalidrawType(for: shapeName) != nil else {
             return errorJSON("unknown shape '\(shapeName)' — use rectangle, roundedRectangle, circle, ellipse, diamond, star, cloud, or heart.")
         }
@@ -1027,7 +1027,7 @@ extension MaestroTools {
     static func whiteboardAddText(_ call: ToolCall) async -> String {
         guard let args = decodeArgs(call, as: WhiteboardAddTextArgs.self),
               let text = args.text, !text.isEmpty
-        else { return errorJSON("whiteboard_add_text requires 'text'") }
+        else { return errorJSON("excalidraw_add_text requires 'text'") }
         return await MainActor.run {
             guard let board = resolveWhiteboard(args.board, createIfNone: true) else {
                 return errorJSON("no board found for '\(args.board ?? "")'.")
@@ -1058,10 +1058,10 @@ extension MaestroTools {
         guard let args = decodeArgs(call, as: WhiteboardConnectArgs.self),
               let fromKey = args.from, !fromKey.isEmpty,
               let toKey = args.to, !toKey.isEmpty
-        else { return errorJSON("whiteboard_connect requires 'from' and 'to'") }
+        else { return errorJSON("excalidraw_connect requires 'from' and 'to'") }
         return await MainActor.run {
             guard let board = resolveWhiteboard(args.board, createIfNone: false) else {
-                return errorJSON("No whiteboard boards yet — add shapes first with whiteboard_add_shape.")
+                return errorJSON("No whiteboard boards yet — add shapes first with excalidraw_add_shape.")
             }
             var scene = readScene(for: board)
             let elements = liveElements(in: scene)
@@ -1080,10 +1080,10 @@ extension MaestroTools {
             }
 
             guard let fromEl = findElement(fromKey) else {
-                return errorJSON("no element matching '\(fromKey)' on board '\(board.name)'. Use whiteboard_list_elements to see ids and labels.")
+                return errorJSON("no element matching '\(fromKey)' on board '\(board.name)'. Use excalidraw_list_elements to see ids and labels.")
             }
             guard let toEl = findElement(toKey) else {
-                return errorJSON("no element matching '\(toKey)' on board '\(board.name)'. Use whiteboard_list_elements to see ids and labels.")
+                return errorJSON("no element matching '\(toKey)' on board '\(board.name)'. Use excalidraw_list_elements to see ids and labels.")
             }
             let fromID = (fromEl["id"] as? String) ?? ""
             let toID = (toEl["id"] as? String) ?? ""

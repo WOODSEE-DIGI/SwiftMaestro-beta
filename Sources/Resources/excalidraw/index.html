@@ -16,16 +16,25 @@
     }
   </style>
   <script>
-    // Theme: force dark mode for SwiftMaestro integration
+    // Theme: default to dark mode for SwiftMaestro integration
     try {
+      function setTheme(theme) {
+        if (theme === "dark") {
+          document.documentElement.classList.add("dark");
+        } else {
+          document.documentElement.classList.remove("dark");
+        }
+      }
       var theme = window.localStorage.getItem("excalidraw-theme");
       if (!theme || theme === "system") {
         theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
       }
-      if (theme === "dark") {
-        document.documentElement.classList.add("dark");
-      }
+      setTheme(theme || "dark");
     } catch (e) {}
+  </script>
+  <script>
+    // Excalidraw uses this to reuse the current tab for library installation.
+    window.name = "_excalidraw";
   </script>
   <script>
     // SwiftMaestro bridge — Excalidraw ↔ native communication
@@ -42,12 +51,13 @@
       },
       // Load a file from a file:// URL
       loadFile: function(url) {
-        try {
-          var xhr = new XMLHttpRequest();
-          xhr.open("GET", url, false); // synchronous for simplicity
-          xhr.send();
-          if (xhr.status === 200) {
-            var data = JSON.parse(xhr.responseText);
+        fetch(url)
+          .then(function(response) {
+            if (!response.ok) throw new Error("HTTP " + response.status);
+            return response.text();
+          })
+          .then(function(text) {
+            var data = JSON.parse(text);
             // Use Excalidraw API to load the scene
             if (window.excalidrawAPI) {
               window.excalidrawAPI.updateScene({
@@ -59,11 +69,12 @@
                 { fitToViewport: true, viewportZoomFactor: 0.8 }
               );
             }
-            this.postMessage("fileLoaded", { url: url });
-          }
-        } catch (e) {
-          console.error("Load file failed:", e);
-        }
+            window.__swiftmaestro.postMessage("fileLoaded", { url: url });
+          })
+          .catch(function(e) {
+            console.error("Load file failed:", e);
+            window.__swiftmaestro.postMessage("console", { level: "error", message: "Load file failed: " + (e && e.message ? e.message : String(e)) });
+          });
       },
       // Get current scene data as JSON string
       getSceneData: function() {
@@ -101,7 +112,9 @@
   <script>
     // After Excalidraw loads, capture the API reference
     // Excalidraw exposes window.excalidrawAPI when the component mounts
+    var _excalidrawCheckCount = 0;
     var _excalidrawCheck = setInterval(function() {
+      _excalidrawCheckCount++;
       var app = document.querySelector(".excalidraw");
       if (app && app.__excalidrawAPI) {
         window.excalidrawAPI = app.__excalidrawAPI;
@@ -110,10 +123,6 @@
 
         // Notify Swift that the editor is ready
         if (window.webkit && window.webkit.messageHandlers.excalidrawBridge) {
-          // Auto-save on changes (debounced)
-          var saveTimeout;
-          var originalElements = null;
-
           // Watch for element changes
           var observer = new MutationObserver(function() {
             window.__swiftmaestro.postMessage("edited", {});
@@ -122,6 +131,12 @@
             childList: true, subtree: true, attributes: true
           });
         }
+      } else if (_excalidrawCheckCount > 300) {
+        // Give up after ~30s and report that the editor never initialized.
+        clearInterval(_excalidrawCheck);
+        var msg = "Excalidraw editor did not initialize after 30s. Check JS console for errors.";
+        console.error(msg);
+        window.__swiftmaestro.postMessage("console", { level: "error", message: msg });
       }
     }, 100);
 

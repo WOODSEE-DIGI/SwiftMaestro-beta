@@ -38,37 +38,78 @@ final class ExcalidrawStore {
     func startServer() async throws {
         guard !isServerRunning else { return }
 
-        let params = NWParameters()
+        let params = NWParameters.tcp
+        // Loopback-only + reuse avoids IPv6 dual-stack bind conflicts that were
+        // producing NECP_CLIENT_ACTION_ADD_FLOW EEXIST errors in the sandbox.
+        params.requiredInterfaceType = .loopback
         params.allowLocalEndpointReuse = true
 
         let listener = try NWListener(using: params, on: .any)
         self.listener = listener
 
-        listener.stateUpdateHandler = { [weak self] state in
-            Task { @MainActor in
-                switch state {
-                case .ready:
-                    self?.isServerRunning = true
-                case .failed, .cancelled:
-                    self?.isServerRunning = false
-                    self?.listener = nil
-                default:
-                    break
+        return try await withCheckedThrowingContinuation { continuation in
+            final class Box: @unchecked Sendable {
+                private var resumed = false
+                private let continuation: CheckedContinuation<Void, Error>
+                init(_ continuation: CheckedContinuation<Void, Error>) { self.continuation = continuation }
+                func resume(with result: Result<Void, Error>) {
+                    guard !resumed else { return }
+                    resumed = true
+                    switch result {
+                    case .success: continuation.resume()
+                    case .failure(let error): continuation.resume(throwing: error)
+                    }
+                }
+                var hasResumed: Bool { resumed }
+            }
+            let box = Box(continuation)
+
+            listener.stateUpdateHandler = { [weak self] state in
+                Task { @MainActor in
+                    switch state {
+                    case .ready:
+                        self?.isServerRunning = true
+                        if let port = listener.port, port.rawValue != 0 {
+                            self?.serverURL = URL(string: "http://localhost:\(port.rawValue)")!
+                            NSLog("[ExcalidrawStore] serving on \(self?.serverURL?.absoluteString ?? "?")")
+                        } else {
+                            NSLog("[ExcalidrawStore] listener ready but port is invalid")
+                        }
+                        box.resume(with: .success(()))
+                    case .failed(let error):
+                        NSLog("[ExcalidrawStore] listener failed: \(error.localizedDescription)")
+                        self?.isServerRunning = false
+                        self?.listener = nil
+                        box.resume(with: .failure(error))
+                    case .cancelled:
+                        self?.isServerRunning = false
+                        self?.listener = nil
+                        box.resume(with: .failure(CancellationError()))
+                    default:
+                        break
+                    }
                 }
             }
-        }
 
-        listener.newConnectionHandler = { [weak self] connection in
-            Task { @MainActor in
-                self?.handleConnection(connection)
+            listener.newConnectionHandler = { [weak self] connection in
+                Task { @MainActor in
+                    self?.handleConnection(connection)
+                }
             }
-        }
 
-        listener.start(queue: .global(qos: .userInitiated))
+            listener.start(queue: .global(qos: .userInitiated))
 
-        // Read the actual port once the listener is ready
-        if let port = listener.port {
-            serverURL = URL(string: "http://localhost:\(port.rawValue)")!
+            // Safety net: if the listener never reports a terminal state, fail after 2s.
+            Task { @MainActor in
+                try await Task.sleep(nanoseconds: 2_000_000_000)
+                if !box.hasResumed {
+                    let timeout = ExcalidrawStoreError.serverTimeout
+                    NSLog("[ExcalidrawStore] \(timeout.localizedDescription)")
+                    self.listener?.cancel()
+                    self.listener = nil
+                    box.resume(with: .failure(timeout))
+                }
+            }
         }
     }
 
@@ -170,7 +211,7 @@ final class ExcalidrawStore {
     }
 
     static func httpResponse(status: Int, mimeType: String, body: Data) -> Data {
-        var response = "HTTP/1.1 \(status) OK\r\n"
+        var response = "HTTP/1.1 \(status) \(reasonPhrase(for: status))\r\n"
         response += "Content-Type: \(mimeType)\r\n"
         response += "Content-Length: \(body.count)\r\n"
         response += "Access-Control-Allow-Origin: *\r\n"
@@ -180,6 +221,18 @@ final class ExcalidrawStore {
         var data = response.data(using: .utf8) ?? Data()
         data.append(body)
         return data
+    }
+
+    private static func reasonPhrase(for status: Int) -> String {
+        switch status {
+        case 200: return "OK"
+        case 204: return "No Content"
+        case 400: return "Bad Request"
+        case 404: return "Not Found"
+        case 405: return "Method Not Allowed"
+        case 500: return "Internal Server Error"
+        default: return "Unknown"
+        }
     }
 
     static func mimeType(for path: String) -> String {
@@ -248,6 +301,19 @@ extension ExcalidrawStore {
     /// Deletes a board.
     func deleteBoard(url: URL) throws {
         try FileManager.default.removeItem(at: url)
+    }
+}
+
+// MARK: - Errors
+
+enum ExcalidrawStoreError: LocalizedError {
+    case serverTimeout
+
+    var errorDescription: String? {
+        switch self {
+        case .serverTimeout:
+            return "Excalidraw local server did not start within 2 seconds."
+        }
     }
 }
 

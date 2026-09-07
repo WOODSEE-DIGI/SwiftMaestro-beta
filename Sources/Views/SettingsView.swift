@@ -3257,9 +3257,12 @@ struct AboutSettingsTab: View {
                     Text("Links")
                         .font(.headline)
 
-                    Link("Website — swiftmaestro.com", destination: URL(string: "https://swiftmaestro.com")!)
-                    Link("GitHub — WOODSEE-DIGI/SwiftMaestro", destination: URL(string: "https://github.com/WOODSEE-DIGI/SwiftMaestro")!)
-                    Link("Git — <private-git-host>", destination: URL(string: "https://<private-git-host>")!)
+                    if let website = URL(string: "https://swiftmaestro.com") {
+                        Link("Website — swiftmaestro.com", destination: website)
+                    }
+                    if let github = URL(string: "https://github.com/WOODSEE-DIGI/SwiftMaestro") {
+                        Link("GitHub — WOODSEE-DIGI/SwiftMaestro", destination: github)
+                    }
                 }
 
                 Divider()
