@@ -101,7 +101,7 @@
   </script>
   <!-- Force Excalidraw to load fonts and dynamic chunks from the local bundle. -->
   <script>
-    window.EXCALIDRAW_ASSET_PATH = ["/"];
+    window.EXCALIDRAW_ASSET_PATH = "/";
   </script>
   <link rel="stylesheet" href="/assets/index-cnPW3WX-.css">
   <link rel="modulepreload" href="/assets/mermaid-to-excalidraw-D-aVQaad.js">
@@ -110,31 +110,42 @@
 <body>
   <div id="root"></div>
   <script>
-    // After Excalidraw loads, capture the API reference
-    // Excalidraw exposes window.excalidrawAPI when the component mounts
+    // Capture script/module loading failures before the Excalidraw bundle runs.
+    window.addEventListener("error", function(event) {
+      var msg = "Resource error: " + (event.target && event.target.src ? event.target.src : (event.message || "unknown"));
+      console.error(msg);
+      if (window.__swiftmaestro) {
+        window.__swiftmaestro.postMessage("console", { level: "error", message: msg });
+      }
+    }, true);
+
+    // After Excalidraw loads, capture the API reference.
+    // Excalidraw exposes __excalidrawAPI on the rendered .excalidraw element.
     var _excalidrawCheckCount = 0;
     var _excalidrawCheck = setInterval(function() {
       _excalidrawCheckCount++;
+      var root = document.getElementById("root");
       var app = document.querySelector(".excalidraw");
       if (app && app.__excalidrawAPI) {
         window.excalidrawAPI = app.__excalidrawAPI;
         clearInterval(_excalidrawCheck);
         window.__swiftmaestro.postMessage("ready", {});
 
-        // Notify Swift that the editor is ready
-        if (window.webkit && window.webkit.messageHandlers.excalidrawBridge) {
-          // Watch for element changes
-          var observer = new MutationObserver(function() {
-            window.__swiftmaestro.postMessage("edited", {});
-          });
-          observer.observe(document.getElementById("root"), {
-            childList: true, subtree: true, attributes: true
-          });
-        }
+        // Watch for element changes
+        var observer = new MutationObserver(function() {
+          window.__swiftmaestro.postMessage("edited", {});
+        });
+        observer.observe(root, { childList: true, subtree: true, attributes: true });
+      } else if (_excalidrawCheckCount === 100) {
+        // 10s: log intermediate state to help diagnose slow/failed mounts.
+        var msg = "Excalidraw still mounting... root children=" + (root ? root.childElementCount : "null") + ", .excalidraw found=" + !!app + ", api found=" + !!(app && app.__excalidrawAPI);
+        console.warn(msg);
+        window.__swiftmaestro.postMessage("console", { level: "warn", message: msg });
       } else if (_excalidrawCheckCount > 300) {
         // Give up after ~30s and report that the editor never initialized.
         clearInterval(_excalidrawCheck);
-        var msg = "Excalidraw editor did not initialize after 30s. Check JS console for errors.";
+        var diagnostics = "root children=" + (root ? root.childElementCount : "null") + ", .excalidraw found=" + !!app + ", api found=" + !!(app && app.__excalidrawAPI);
+        var msg = "Excalidraw editor did not initialize after 30s (" + diagnostics + "). Check JS console for errors.";
         console.error(msg);
         window.__swiftmaestro.postMessage("console", { level: "error", message: msg });
       }
