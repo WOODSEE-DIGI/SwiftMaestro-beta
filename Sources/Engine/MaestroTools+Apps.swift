@@ -270,10 +270,11 @@ extension MaestroTools {
                 + "For process workflows, prefer rectangle (steps), diamond (decisions) and "
                 + "roundedRectangle (start/end). Positions are Excalidraw canvas coordinates with "
                 + "the element's top-left at x/y; omit them to auto-place below existing content. "
+                + "The shape parameter MUST be one of the allowed values; unsupported names become a rectangle. "
                 + "Opens the Excalidraw panel so the user sees it.",
                 properties: [
                     "board": ["type": "string", "description": "Board name (or id). Omit for the most recently modified board (auto-creates one if none exist)."],
-                    "shape": ["type": "string", "description": "rectangle, roundedRectangle, circle, ellipse, diamond, star, cloud, or heart (heart = ellipse)."],
+                    "shape": ["type": "string", "description": "Required. One of: rectangle, roundedRectangle, circle, ellipse, diamond, star, cloud, heart. Unsupported values are drawn as a rectangle."],
                     "text": ["type": "string", "description": "Label text inside the shape."],
                     "color": ["type": "string", "description": "Hex color like #3498DB (default blue)."],
                     "x": ["type": "number", "description": "Canvas x of the element's top-left."],
@@ -982,12 +983,17 @@ extension MaestroTools {
     }
 
     static func whiteboardAddShape(_ call: ToolCall) async -> String {
-        guard let args = decodeArgs(call, as: WhiteboardAddShapeArgs.self),
-              let shapeName = args.shape, !shapeName.isEmpty
-        else { return errorJSON("excalidraw_add_shape requires 'shape'") }
-        guard excalidrawType(for: shapeName) != nil else {
-            return errorJSON("unknown shape '\(shapeName)' — use rectangle, roundedRectangle, circle, ellipse, diamond, star, cloud, or heart.")
+        guard let args = decodeArgs(call, as: WhiteboardAddShapeArgs.self) else {
+            return errorJSON("excalidraw_add_shape received invalid arguments: \(argDiagnostics(call))")
         }
+        let rawShape = args.shape?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let (shapeName, warning): (String, String?) = {
+            if rawShape.isEmpty { return ("rectangle", "no 'shape' provided; defaulted to rectangle") }
+            if excalidrawType(for: rawShape) == nil {
+                return ("rectangle", "unknown shape '\(rawShape)'; defaulted to rectangle. Use rectangle, roundedRectangle, circle, ellipse, diamond, star, cloud, or heart.")
+            }
+            return (rawShape, nil)
+        }()
         return await MainActor.run {
             guard let board = resolveWhiteboard(args.board, createIfNone: true) else {
                 return errorJSON("no board found for '\(args.board ?? "")'.")
@@ -1015,12 +1021,14 @@ extension MaestroTools {
             elements.append(el)
             scene["elements"] = elements
             writeScene(scene, for: board, surface: true)
-            return jsonString([
+            var result: [String: Any] = [
                 "status": "added", "id": id,
                 "type": el["type"] ?? "", "x": el["x"] ?? 0, "y": el["y"] ?? 0,
                 "width": el["width"] ?? 0, "height": el["height"] ?? 0,
                 "board": board.name,
-            ])
+            ]
+            if let warning { result["warning"] = warning }
+            return jsonString(result)
         }
     }
 
