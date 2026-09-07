@@ -49,11 +49,26 @@
           console.error("Bridge postMessage failed:", e);
         }
       },
-      // Load a file from a file:// URL
+      // Queue of board URLs to load once the Excalidraw API is available.
+      _pendingLoads: [],
+      // Load a board from a localhost URL.
       loadFile: function(url) {
-        fetch(url)
+        var self = this;
+        if (!window.excalidrawAPI) {
+          console.warn("loadFile called before excalidrawAPI ready; queueing", url);
+          self.postMessage("console", { level: "warn", message: "loadFile queued (API not ready): " + url });
+          self._pendingLoads.push(url);
+          return;
+        }
+        // Bust caches and avoid reusing a stale failed response.
+        var busted = url + (url.indexOf("?") >= 0 ? "&" : "?") + "_=" + Date.now();
+        fetch(busted)
           .then(function(response) {
             if (!response.ok) throw new Error("HTTP " + response.status);
+            var ct = response.headers.get("content-type") || "";
+            if (ct.indexOf("application/json") < 0 && ct.indexOf("text/plain") < 0) {
+              throw new Error("Unexpected content-type: " + ct);
+            }
             return response.text();
           })
           .then(function(text) {
@@ -68,13 +83,21 @@
                 data.elements || [],
                 { fitToViewport: true, viewportZoomFactor: 0.8 }
               );
+              self.postMessage("fileLoaded", { url: url, elements: (data.elements || []).length });
+            } else {
+              throw new Error("excalidrawAPI disappeared after fetch");
             }
-            window.__swiftmaestro.postMessage("fileLoaded", { url: url });
           })
           .catch(function(e) {
             console.error("Load file failed:", e);
-            window.__swiftmaestro.postMessage("console", { level: "error", message: "Load file failed: " + (e && e.message ? e.message : String(e)) });
+            self.postMessage("console", { level: "error", message: "Load file failed: " + (e && e.message ? e.message : String(e)) });
           });
+      },
+      // Drain any load requests that arrived before the API was ready.
+      _drainPendingLoads: function() {
+        while (this._pendingLoads.length && window.excalidrawAPI) {
+          this.loadFile(this._pendingLoads.shift());
+        }
       },
       // Get current scene data as JSON string
       getSceneData: function() {
@@ -90,6 +113,7 @@
             files: appState.files || {}
           });
         }
+        this.postMessage("console", { level: "error", message: "getSceneData: excalidrawAPI not available" });
         return null;
       }
     };
@@ -130,6 +154,7 @@
       if (api) {
         clearInterval(_excalidrawCheck);
         window.__swiftmaestro.postMessage("ready", {});
+        window.__swiftmaestro._drainPendingLoads();
 
         // Watch for element changes
         var observer = new MutationObserver(function() {
