@@ -135,13 +135,15 @@ final class ExcalidrawStore {
             }
 
             let request = String(data: data, encoding: .utf8) ?? ""
-            let response = self.processRequest(request)
-            connection.send(content: response, completion: .contentProcessed { _ in
-                connection.cancel()
-                Task { @MainActor in
-                    self.connections.removeAll { $0 === connection }
-                }
-            })
+            Task { @MainActor in
+                let response = self.processRequest(request)
+                connection.send(content: response, completion: .contentProcessed { _ in
+                    connection.cancel()
+                    Task { @MainActor in
+                        self.connections.removeAll { $0 === connection }
+                    }
+                })
+            }
         }
     }
 
@@ -194,6 +196,18 @@ final class ExcalidrawStore {
         if let queryIndex = cleanPath.firstIndex(of: "?") {
             cleanPath = String(cleanPath[cleanPath.startIndex..<queryIndex])
         }
+
+        // Serve persisted .excalidraw boards through the local server so the
+        // WKWebView can fetch them without hitting file:// sandbox restrictions.
+        let boardPrefix = "board/"
+        if cleanPath.hasPrefix(boardPrefix) {
+            let name = String(cleanPath.dropFirst(boardPrefix.count))
+            let sanitized = (name as NSString)
+                .replacingOccurrences(of: "..", with: "")
+                .replacingOccurrences(of: "/", with: "_")
+            return boardsDirectory.appendingPathComponent("\(sanitized).excalidraw").path
+        }
+
         return (assetsPath as NSString).appendingPathComponent(cleanPath)
     }
 
@@ -296,6 +310,15 @@ extension ExcalidrawStore {
     /// Loads board data from disk.
     func loadBoard(url: URL) throws -> String {
         return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    /// Returns a localhost URL that serves the given board file through the
+    /// embedded Excalidraw server. Returns nil if the server is not running.
+    func serverURL(for boardURL: URL) -> URL? {
+        guard let base = serverURL else { return nil }
+        let name = boardURL.deletingPathExtension().lastPathComponent
+        let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
+        return base.appendingPathComponent("board/\(encoded).excalidraw")
     }
 
     /// Deletes a board.

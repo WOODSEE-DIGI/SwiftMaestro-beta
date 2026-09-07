@@ -277,10 +277,10 @@ extension MaestroTools {
                     "shape": ["type": "string", "description": "Required. One of: rectangle, roundedRectangle, circle, ellipse, diamond, star, cloud, heart. Unsupported values are drawn as a rectangle."],
                     "text": ["type": "string", "description": "Label text inside the shape."],
                     "color": ["type": "string", "description": "Hex color like #3498DB (default blue)."],
-                    "x": ["type": "number", "description": "Canvas x of the element's top-left."],
-                    "y": ["type": "number", "description": "Canvas y of the element's top-left."],
-                    "width": ["type": "number", "description": "Width in canvas points (default 150)."],
-                    "height": ["type": "number", "description": "Height in canvas points (default 150)."],
+                    "x": ["type": "string", "description": "Canvas x of the element's top-left (numeric string)."],
+                    "y": ["type": "string", "description": "Canvas y of the element's top-left (numeric string)."],
+                    "width": ["type": "string", "description": "Width in canvas points, e.g. '150'."],
+                    "height": ["type": "string", "description": "Height in canvas points, e.g. '150'."],
                 ], required: ["shape"]),
             rawSpec("excalidraw_add_text",
                 "Add a text element to an Excalidraw whiteboard board and return its element id. "
@@ -289,8 +289,8 @@ extension MaestroTools {
                     "board": ["type": "string", "description": "Board name (or id). Omit for the most recently modified board (auto-creates one if none exist)."],
                     "text": ["type": "string", "description": "The text content."],
                     "color": ["type": "string", "description": "Text hex color like #3498DB (default)."],
-                    "x": ["type": "number", "description": "Canvas x of the element's top-left."],
-                    "y": ["type": "number", "description": "Canvas y of the element's top-left."],
+                    "x": ["type": "string", "description": "Canvas x of the element's top-left (numeric string)."],
+                    "y": ["type": "string", "description": "Canvas y of the element's top-left (numeric string)."],
                 ], required: ["text"]),
             rawSpec("excalidraw_connect",
                 "Draw a workflow arrow between two elements on an Excalidraw whiteboard board. "
@@ -734,18 +734,26 @@ extension MaestroTools {
         let shape: String?
         let text: String?
         let color: String?
-        let x: Double?
-        let y: Double?
-        let width: Double?
-        let height: Double?
+        let x: String?
+        let y: String?
+        let width: String?
+        let height: String?
+
+        var parsedX: Double? { x.flatMap(Double.init) }
+        var parsedY: Double? { y.flatMap(Double.init) }
+        var parsedWidth: Double? { width.flatMap(Double.init) }
+        var parsedHeight: Double? { height.flatMap(Double.init) }
     }
 
     private struct WhiteboardAddTextArgs: Codable {
         let board: String?
         let text: String?
         let color: String?
-        let x: Double?
-        let y: Double?
+        let x: String?
+        let y: String?
+
+        var parsedX: Double? { x.flatMap(Double.init) }
+        var parsedY: Double? { y.flatMap(Double.init) }
     }
 
     private struct WhiteboardConnectArgs: Codable {
@@ -1008,7 +1016,7 @@ extension MaestroTools {
             var scene = readScene(for: board)
             var elements = liveElements(in: scene)
             let pos: (x: Double, y: Double)
-            if let x = args.x, let y = args.y {
+            if let x = args.parsedX, let y = args.parsedY {
                 pos = (x, y)
             } else {
                 pos = nextFreePoint(in: elements)
@@ -1018,7 +1026,7 @@ extension MaestroTools {
                 text: args.text,
                 color: args.color,
                 x: pos.x, y: pos.y,
-                width: args.width, height: args.height
+                width: args.parsedWidth, height: args.parsedHeight
             )
             let id = el["id"] as? String ?? ""
             // If a label was added, record it as a bound element for canonical form.
@@ -1050,7 +1058,7 @@ extension MaestroTools {
             var scene = readScene(for: board)
             var elements = liveElements(in: scene)
             let pos: (x: Double, y: Double)
-            if let x = args.x, let y = args.y {
+            if let x = args.parsedX, let y = args.parsedY {
                 pos = (x, y)
             } else {
                 pos = nextFreePoint(in: elements)

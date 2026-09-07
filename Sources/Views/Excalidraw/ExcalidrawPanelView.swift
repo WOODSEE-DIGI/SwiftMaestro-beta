@@ -441,16 +441,19 @@ private struct ExcalidrawWebView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: WKWebView, context: Context) {
+        // If the local server URL changed (first start or restart), reset the
+        // loaded-file tracker so we re-issue the board load through the new URL.
+        if context.coordinator.lastSeenServerURL != store.serverURL {
+            context.coordinator.lastSeenServerURL = store.serverURL
+            context.coordinator.lastLoadedFileURL = nil
+        }
+
         // If the local server started after makeNSView, load it now.
         loadServerURLIfNeeded(into: nsView, coordinator: context.coordinator)
 
-        // Handle file URL changes
-        if let fileURL = currentFileURL, context.coordinator.lastLoadedFileURL != fileURL {
-            context.coordinator.lastLoadedFileURL = fileURL
-            let escaped = fileURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-            let js = "window.__swiftmaestro_loadFile('\(escaped)')"
-            nsView.evaluateJavaScript(js)
-        }
+        // Handle file URL changes, loading through the local HTTP server so the
+        // WKWebView can fetch the board without file:// sandbox issues.
+        loadCurrentBoard(into: nsView, coordinator: context.coordinator)
     }
 
     private func loadServerURLIfNeeded(into webView: WKWebView, coordinator: Coordinator) {
@@ -461,6 +464,19 @@ private struct ExcalidrawWebView: NSViewRepresentable {
         coordinator.lastLoadedServerURL = serverURL
         let request = URLRequest(url: serverURL.appendingPathComponent("/"))
         webView.load(request)
+    }
+
+    /// Loads the current board file through the local HTTP server. The board's
+    /// file:// URL is translated to `http://localhost:<port>/board/<name>` so the
+    /// webview can fetch it without hitting sandbox restrictions.
+    private func loadCurrentBoard(into webView: WKWebView, coordinator: Coordinator) {
+        guard let fileURL = currentFileURL,
+              coordinator.lastLoadedFileURL != fileURL,
+              let serverBoardURL = store.serverURL(for: fileURL)
+        else { return }
+        coordinator.lastLoadedFileURL = fileURL
+        let escaped = serverBoardURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        webView.evaluateJavaScript("window.__swiftmaestro_loadFile('\(escaped)')")
     }
 
     func makeCoordinator() -> Coordinator {
@@ -485,10 +501,11 @@ private struct ExcalidrawWebView: NSViewRepresentable {
                     coordinator.parent.currentFileURL = boardURL
                     coordinator.parent.fileName = boardURL.deletingPathExtension().lastPathComponent
                     coordinator.parent.isEdited = false
-                    // Setting currentFileURL triggers updateNSView to load the new file.
+                    coordinator.lastLoadedFileURL = nil
+                    coordinator.parent.loadCurrentBoard(into: webView, coordinator: coordinator)
                 } else if coordinator.parent.currentFileURL?.standardizedFileURL == boardURL.standardizedFileURL {
-                    let escaped = boardURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-                    webView.evaluateJavaScript("window.__swiftmaestro_loadFile('\(escaped)')")
+                    coordinator.lastLoadedFileURL = nil
+                    coordinator.parent.loadCurrentBoard(into: webView, coordinator: coordinator)
                 }
             }
         }
@@ -592,6 +609,7 @@ private struct ExcalidrawWebView: NSViewRepresentable {
         var bridge: ExcalidrawBridge?
         var lastLoadedFileURL: URL?
         var lastLoadedServerURL: URL?
+        var lastSeenServerURL: URL?
         var externalModificationObserver: NSObjectProtocol?
 
         init(_ parent: ExcalidrawWebView) {
@@ -603,11 +621,8 @@ private struct ExcalidrawWebView: NSViewRepresentable {
             let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
             webView.evaluateJavaScript("document.documentElement.classList.toggle('dark', \(isDark))")
 
-            // If we have a file to load, send it
-            if let fileURL = parent.currentFileURL {
-                let escaped = fileURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-                webView.evaluateJavaScript("window.__swiftmaestro_loadFile('\(escaped)')")
-            }
+            // If we have a file to load, send it via the local HTTP server.
+            parent.loadCurrentBoard(into: webView, coordinator: self)
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
