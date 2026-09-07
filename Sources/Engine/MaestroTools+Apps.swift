@@ -79,6 +79,10 @@ extension MaestroTools {
                 handler: { call in await whiteboardConnect(call) }),
             ToolDefinition(name: "excalidraw_clear", spec: appsToolSpecs[30], category: ToolCategory.excalidraw.rawValue,
                 handler: { call in await whiteboardClear(call) }),
+            ToolDefinition(name: "excalidraw_text_to_diagram", spec: appsToolSpecs[31], category: ToolCategory.excalidraw.rawValue,
+                handler: { call in await excalidrawTextToDiagram(call) }),
+            ToolDefinition(name: "excalidraw_wireframe_to_code", spec: appsToolSpecs[32], category: ToolCategory.excalidraw.rawValue,
+                handler: { call in await excalidrawWireframeToCode(call) }),
         ])
     }
 
@@ -307,6 +311,24 @@ extension MaestroTools {
                 "Remove ALL elements from an Excalidraw whiteboard board.",
                 properties: [
                     "board": ["type": "string", "description": "Board name (or id). Omit for the most recently modified board."],
+                ], required: []),
+            rawSpec("excalidraw_text_to_diagram",
+                "Generate a complete Excalidraw diagram from a natural-language description using "
+                + "SwiftMaestro's local AI. This is the same Maestro-backed flow as the Excalidraw "
+                + "panel's 'Text to diagram' menu item. The agent will create a new board, draw the "
+                + "diagram, and surface it in the Excalidraw panel. Use this for any request that "
+                + "asks for a diagram, flowchart, mind map, or visual explanation.",
+                properties: [
+                    "prompt": ["type": "string", "description": "Description of the diagram to generate. Be specific about elements, layout, and labels."],
+                ], required: ["prompt"]),
+            rawSpec("excalidraw_wireframe_to_code",
+                "Convert an Excalidraw board into a self-contained HTML/CSS implementation using "
+                + "SwiftMaestro's local AI. This is the same Maestro-backed flow as the Excalidraw "
+                + "panel's 'Wireframe to code' menu item. Reads the specified board (or the most "
+                + "recently modified board if omitted) and returns generated code.",
+                properties: [
+                    "board": ["type": "string", "description": "Board name (or id). Omit for the most recently modified board."],
+                    "instructions": ["type": "string", "description": "Optional extra instructions, e.g. 'use Tailwind CSS' or 'make it a React component'."],
                 ], required: []),
         ]
     }
@@ -1185,6 +1207,72 @@ extension MaestroTools {
             scene["elements"] = []
             writeScene(scene, for: board, surface: true)
             return jsonString(["status": "cleared", "board": board.name, "removed": removed])
+        }
+    }
+
+    // MARK: - High-level Excalidraw AI tools
+
+    private struct ExcalidrawTextToDiagramArgs: Codable {
+        let prompt: String?
+    }
+
+    private struct ExcalidrawWireframeToCodeArgs: Codable {
+        let board: String?
+        let instructions: String?
+    }
+
+    @MainActor
+    static func excalidrawTextToDiagram(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: ExcalidrawTextToDiagramArgs.self),
+              let prompt = args.prompt?.trimmingCharacters(in: .whitespacesAndNewlines), !prompt.isEmpty
+        else { return errorJSON("excalidraw_text_to_diagram requires 'prompt'") }
+
+        guard let engine = MaestroTools.engine,
+              let catalog = MaestroTools.catalog else {
+            return errorJSON("Excalidraw AI is not available: engine or catalog not initialized.")
+        }
+        let assistant = ExcalidrawAIAssistant(engine: engine, catalog: catalog)
+        do {
+            let board = try await assistant.generateDiagram(from: prompt)
+            NotificationCenter.default.post(
+                name: .excalidrawBoardExternallyModified, object: nil,
+                userInfo: ["boardURL": board.url, "shouldOpen": true])
+            _ = WorkspaceLayoutState.shared.open(.canvas)
+            return jsonString([
+                "status": "created",
+                "board": board.name,
+                "id": board.url.lastPathComponent,
+                "message": "Generated diagram in board '\(board.name)'."
+            ])
+        } catch {
+            return errorJSON("Failed to generate diagram: \(error.localizedDescription)")
+        }
+    }
+
+    @MainActor
+    static func excalidrawWireframeToCode(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: ExcalidrawWireframeToCodeArgs.self) else {
+            return errorJSON("excalidraw_wireframe_to_code received invalid arguments")
+        }
+        guard let engine = MaestroTools.engine,
+              let catalog = MaestroTools.catalog else {
+            return errorJSON("Excalidraw AI is not available: engine or catalog not initialized.")
+        }
+        guard let board = resolveWhiteboard(args.board, createIfNone: false) else {
+            return errorJSON("No Excalidraw board found. Create or draw one first.")
+        }
+        do {
+            let sceneJSON = try ExcalidrawStore.shared.loadBoard(url: board.url)
+            let assistant = ExcalidrawAIAssistant(engine: engine, catalog: catalog)
+            let code = try await assistant.generateCode(from: sceneJSON, instructions: args.instructions)
+            return jsonString([
+                "status": "generated",
+                "board": board.name,
+                "code": code,
+                "length": code.count,
+            ])
+        } catch {
+            return errorJSON("Failed to generate code: \(error.localizedDescription)")
         }
     }
 

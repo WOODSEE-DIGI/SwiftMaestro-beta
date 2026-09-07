@@ -164,24 +164,6 @@ class ChatViewModel: ObservableObject {
         MaestroTools.workspace?.setWorkingDirectory(workingDirectory, for: agent.id)
     }
 
-    /// Build the generation backend for a model. Local models run fully
-    /// in-process via mlx-swift-lm; remote models (LM Studio, Ollama, online
-    /// OpenAI-compatible endpoints like Kimi/Moonshot or Qwen/DashScope) use
-    /// HTTP. API keys travel as `secret://` references and resolve from the
-    /// Keychain only at the HTTP boundary.
-    static func makeBackend(
-        for model: MaestroModel, engine: MLXInferenceEngine, sessionKey: String
-    ) -> GenerationBackend {
-        if let remoteURL = model.remoteBaseURL {
-            let config = LMStudioConfig(
-                baseURL: remoteURL,
-                apiKey: model.remoteAPIKeyRef ?? "",
-                requestTimeout: model.remoteRequestTimeout ?? 120)
-            return RemoteLMStudioBackend(config: config, model: model)
-        }
-        return InProcessMLXBackend(engine: engine, model: model, sessionKey: sessionKey)
-    }
-
     func send(engine: MLXInferenceEngine, catalog: ModelCatalog, model: MaestroModel?) {
         guard !isStreaming else { return }
         // Retain engine reference for memory pressure compaction.
@@ -374,12 +356,12 @@ class ChatViewModel: ObservableObject {
                         }
                     }
 
-                    let backend = ChatViewModel.makeBackend(
+                    let backend = MLXInferenceEngine.makeBackend(
                         for: effectiveModel, engine: engine, sessionKey: agentID.uuidString)
                     return (backend, effectiveModel.huggingFaceID, effectiveModel.tunedMaxTokens)
                 }
             }
-            let primaryBackend = ChatViewModel.makeBackend(
+            let primaryBackend = MLXInferenceEngine.makeBackend(
                 for: model, engine: engine, sessionKey: agentID)
 
             do {

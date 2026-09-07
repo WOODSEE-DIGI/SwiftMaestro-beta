@@ -99,6 +99,9 @@ enum MaestroTools {
     /// Shared workspace layout state (panel grid). Set at app launch.
     @MainActor static weak var workspaceLayout: WorkspaceLayoutState?
 
+    /// Shared inference engine. Set at app launch.
+    @MainActor static weak var engine: MLXInferenceEngine?
+
     /// Shared model catalog. Set at app launch.
     @MainActor static weak var catalog: ModelCatalog?
 

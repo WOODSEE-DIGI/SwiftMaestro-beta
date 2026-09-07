@@ -66,7 +66,7 @@ final class ExcalidrawAIAssistant {
             throw ExcalidrawAIError.noBoardCreated
         }
 
-        let backend = ChatViewModel.makeBackend(
+        let backend = MLXInferenceEngine.makeBackend(
             for: model,
             engine: engine,
             sessionKey: "excalidraw-ai-\(UUID().uuidString)")
@@ -80,10 +80,10 @@ final class ExcalidrawAIAssistant {
 
         let systemPrompt = """
         You are an expert diagram designer inside SwiftMaestro's Excalidraw editor.
-        The user has described a diagram. Build it on the Excalidraw board named \"\(boardName)\".
+        The user has described a diagram. Build it on the Excalidraw board named "\(boardName)".
 
         Rules:
-        - Always pass board: \"\(boardName)\" to every excalidraw tool call.
+        - Always pass board: "\(boardName)" to every excalidraw tool call.
         - Use excalidraw_create_board only if that exact board does not exist.
         - Use excalidraw_add_shape for nodes. Shape guide:
           - rectangle = process/step
@@ -92,7 +92,7 @@ final class ExcalidrawAIAssistant {
           - ellipse = terminator, cloud, or loose concept
           - circle = small state/bullet
         - Use excalidraw_add_text for titles or annotations that should NOT be inside a shape.
-        - Use excalidraw_connect for arrows between nodes. Label decision arrows with \"yes\"/\"no\" when appropriate.
+        - Use excalidraw_connect for arrows between nodes. Label decision arrows with "yes"/"no" when appropriate.
         - Layout the diagram in a clean top-to-bottom or left-to-right flow.
         - Keep labels concise (1-4 words). Use short phrases.
         - If the request is a flowchart, start with a roundedRectangle, then rectangles, diamonds for decisions, and a roundedRectangle for end.
@@ -144,7 +144,7 @@ final class ExcalidrawAIAssistant {
             throw ExcalidrawAIError.noModel
         }
 
-        let backend = ChatViewModel.makeBackend(
+        let backend = MLXInferenceEngine.makeBackend(
             for: model,
             engine: engine,
             sessionKey: "excalidraw-code-\(UUID().uuidString)")

@@ -58,7 +58,7 @@ actor BusWorker {
                   let model = MaestroTools.catalog?.effectiveModel(for: agent)
                     ?? MaestroTools.catalog?.selectedModel
             else { return nil as WorkerConfig? }
-            let backend = ChatViewModel.makeBackend(
+            let backend = MLXInferenceEngine.makeBackend(
                 for: model, engine: engine, sessionKey: agentID.uuidString)
             let id = UUID()
             return WorkerConfig(

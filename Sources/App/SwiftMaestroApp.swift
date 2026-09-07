@@ -154,6 +154,8 @@ struct SwiftMaestroApp: App {
             SwiftMaestroDefaultsMigration.applyIfNeeded()
             let engine = MLXInferenceEngine()
             let catalog = ModelCatalog()
+            MaestroTools.engine = engine
+            MaestroTools.catalog = catalog
             let agent = ACPAgent(engine: engine, catalog: catalog)
             Task {
                 // Warm the FTS memory index in the background so headless agent
@@ -319,8 +321,9 @@ struct SwiftMaestroApp: App {
                     // spawn the user-enabled MCP servers (permissioned by MCP flags).
                     engine.mcpService = mcpService
                     await mcpService.startEnabledServers()
-                    // Expose the model catalog so tools (bus worker, etc.) can resolve
-                    // an agent's effective model without coupling to the UI.
+                    // Expose the inference engine and model catalog so tools can run
+                    // headless agent workflows without coupling to the UI.
+                    MaestroTools.engine = engine
                     MaestroTools.catalog = catalog
                     // Create the persistent bus worker service and keep it alive.
                     let worker = BusWorker(engine: engine, mcpService: mcpService)

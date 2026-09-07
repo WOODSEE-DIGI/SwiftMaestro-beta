@@ -55,6 +55,27 @@ enum EngineError: LocalizedError {
     }
 }
 
+// MARK: - Backend Factory
+
+extension MLXInferenceEngine {
+    /// Build the generation backend for a model. Local models run fully
+    /// in-process via mlx-swift-lm; remote models (LM Studio, Ollama, online
+    /// OpenAI-compatible endpoints) use HTTP. API keys travel as `secret://`
+    /// references and resolve from the Keychain only at the HTTP boundary.
+    static func makeBackend(
+        for model: MaestroModel, engine: MLXInferenceEngine, sessionKey: String
+    ) -> GenerationBackend {
+        if let remoteURL = model.remoteBaseURL {
+            let config = LMStudioConfig(
+                baseURL: remoteURL,
+                apiKey: model.remoteAPIKeyRef ?? "",
+                requestTimeout: model.remoteRequestTimeout ?? 120)
+            return RemoteLMStudioBackend(config: config, model: model)
+        }
+        return InProcessMLXBackend(engine: engine, model: model, sessionKey: sessionKey)
+    }
+}
+
 // MARK: - Generation Output
 
 enum GenerationOutput: Sendable {
