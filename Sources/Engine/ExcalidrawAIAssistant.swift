@@ -1,6 +1,9 @@
 import Foundation
 import MLXLMCommon
+import os.log
 import SwiftMaestroKit
+
+private let logger = Logger(subsystem: "com.woodseedigi.swiftmaestro", category: "ExcalidrawAIAssistant")
 
 // MARK: - Errors
 
@@ -92,10 +95,12 @@ final class ExcalidrawAIAssistant {
           - ellipse = terminator, cloud, or loose concept
           - circle = small state/bullet
         - Use excalidraw_add_text for titles or annotations that should NOT be inside a shape.
-        - Use excalidraw_connect for arrows between nodes. Label decision arrows with "yes"/"no" when appropriate.
+        - MANDATORY: Use excalidraw_connect for arrows between related nodes. A flowchart or diagram without arrows is incomplete. Connect every logical relationship.
+        - For decision diamonds, draw two outgoing arrows labeled "yes" and "no" when appropriate.
         - Layout the diagram in a clean top-to-bottom or left-to-right flow.
         - Keep labels concise (1-4 words). Use short phrases.
         - If the request is a flowchart, start with a roundedRectangle, then rectangles, diamonds for decisions, and a roundedRectangle for end.
+        - Do not stop until you have added all shapes AND all connecting arrows.
         - After building the diagram, respond with a single sentence naming the diagram and confirming completion. Do not ask follow-up questions.
         """
 
@@ -125,11 +130,25 @@ final class ExcalidrawAIAssistant {
         }
 
         // Refresh to pick up any changes the agent wrote.
-        if let updated = ExcalidrawStore.shared.listBoards()
-            .first(where: { $0.url.standardizedFileURL == board.url.standardizedFileURL }) {
-            return updated
+        guard let updated = ExcalidrawStore.shared.listBoards()
+            .first(where: { $0.url.standardizedFileURL == board.url.standardizedFileURL })
+        else {
+            throw ExcalidrawAIError.noBoardCreated
         }
-        throw ExcalidrawAIError.noBoardCreated
+
+        // Fallback: if the agent forgot to draw arrows, connect the shapes
+        // in reading order so the diagram isn't just a pile of boxes.
+        let addedArrows = MaestroTools.autoConnectExcalidrawBoard(updated)
+        if addedArrows > 0 {
+            logger.info("ExcalidrawAI auto-connected \(addedArrows) shape(s) with arrows.")
+        }
+
+        // Return the refreshed board so callers see the arrows.
+        if let refreshed = ExcalidrawStore.shared.listBoards()
+            .first(where: { $0.url.standardizedFileURL == board.url.standardizedFileURL }) {
+            return refreshed
+        }
+        return updated
     }
 
     // MARK: - Wireframe to code

@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(AppKit)
+import AppKit
+#endif
 import MLXLMCommon
 import SwiftMaestroKit
 
@@ -859,6 +862,26 @@ extension MaestroTools {
         return (max(60, chars * fontSize * 0.6), fontSize * 1.5)
     }
 
+    #if canImport(AppKit)
+    /// Measure text as it would render with the system font, optionally constrained
+    /// to a maximum width (for wrapping).
+    private static func measureText(_ text: String, fontSize: Double, maxWidth: Double) -> (width: Double, height: Double) {
+        let font = NSFont.systemFont(ofSize: CGFloat(fontSize))
+        let attrs: [NSAttributedString.Key: Any] = [.font: font]
+        let clampedWidth = maxWidth.isFinite ? CGFloat(maxWidth) : CGFloat(10_000)
+        let size = (text as NSString).boundingRect(
+            with: CGSize(width: clampedWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: attrs
+        ).size
+        return (Double(size.width), Double(size.height))
+    }
+    #else
+    private static func measureText(_ text: String, fontSize: Double, maxWidth: Double) -> (width: Double, height: Double) {
+        textExtents(text, fontSize: fontSize)
+    }
+    #endif
+
     /// Default placement for agent-added elements: under the lowest existing
     /// content so workflow steps stack downward predictably.
     @MainActor
@@ -885,7 +908,7 @@ extension MaestroTools {
 
     /// Build a fully-qualified Excalidraw element dictionary for a shape.
     private static func shapeElement(
-        shape: String, text: String?, color: String?,
+        shape: String, color: String?,
         x: Double?, y: Double?, width: Double?, height: Double?
     ) -> [String: Any] {
         let strokeColor = color ?? "#3498DB"
@@ -917,16 +940,68 @@ extension MaestroTools {
             "version": 1,
             "customData": NSNull(),
         ]
-        if let text, !text.isEmpty {
-            el["label"] = [
-                "text": text,
-                "fontSize": 20,
-                "fontFamily": 1,
-                "textAlign": "center",
-                "verticalAlign": "middle",
-            ]
-        }
         return el
+    }
+
+    /// Build a text element bound to a shape (label), sized to fit inside the
+    /// shape with wrapping and always using dark text for readability.
+    private static func labelElement(
+        text: String,
+        for shape: [String: Any],
+        hPadding: Double = 20.0,
+        vPadding: Double = 16.0
+    ) -> [String: Any]? {
+        guard let containerID = shape["id"] as? String,
+              let sx = shape["x"] as? Double,
+              let sy = shape["y"] as? Double,
+              let sw = shape["width"] as? Double,
+              let sh = shape["height"] as? Double
+        else { return nil }
+        let fontSize = 20.0
+        let maxTextWidth = max(40, sw - hPadding * 2)
+        // Use the full available width so Excalidraw's hand-drawn font has room
+        // and text wrapping is predictable.
+        let textWidth = maxTextWidth
+        let extents = measureText(text, fontSize: fontSize, maxWidth: textWidth)
+        let textHeight = extents.height
+        let tx = sx + (sw - textWidth) / 2
+        let ty = sy + (sh - textHeight) / 2
+        return [
+            "id": newElementID(),
+            "type": "text",
+            "x": tx,
+            "y": ty,
+            "width": textWidth,
+            "height": textHeight,
+            "angle": 0,
+            "strokeColor": "#1e1e1e",
+            "backgroundColor": "transparent",
+            "fillStyle": "solid",
+            "strokeWidth": 2,
+            "strokeStyle": "solid",
+            "roughness": 1,
+            "opacity": 100,
+            "groupIds": [],
+            "frameId": NSNull(),
+            "seed": Int.random(in: 0..<Int.max),
+            "versionNonce": Int.random(in: 0..<Int.max),
+            "isDeleted": false,
+            "boundElements": NSNull(),
+            "updated": Int(Date().timeIntervalSince1970 * 1000),
+            "link": NSNull(),
+            "locked": false,
+            "version": 1,
+            "customData": NSNull(),
+            "text": text,
+            "originalText": text,
+            "fontSize": fontSize,
+            "fontFamily": 1,
+            "textAlign": "center",
+            "verticalAlign": "middle",
+            "containerId": containerID,
+            "lineHeight": 1.25,
+            "baseline": 18,
+        ]
     }
 
     /// Build a text element.
@@ -988,8 +1063,18 @@ extension MaestroTools {
         return (x + w / 2, y + h / 2)
     }
 
-    private static func elementLabel(_ el: [String: Any]) -> String {
-        if let label = el["label"] as? [String: Any], let text = label["text"] as? String { return text }
+    private static func elementLabel(_ el: [String: Any], in elements: [[String: Any]]? = nil) -> String {
+        // Resolve label from a bound text element if available.
+        if let elements,
+           let boundElements = el["boundElements"] as? [[String: Any]] {
+            for ref in boundElements where (ref["type"] as? String) == "text" {
+                if let id = ref["id"] as? String,
+                   let textEl = elements.first(where: { ($0["id"] as? String) == id }),
+                   let text = textEl["text"] as? String, !text.isEmpty {
+                    return text
+                }
+            }
+        }
         return (el["text"] as? String) ?? ""
     }
 
@@ -1011,7 +1096,7 @@ extension MaestroTools {
                         "width": Int(el["width"] as? Double ?? 0),
                         "height": Int(el["height"] as? Double ?? 0),
                     ]
-                    let label = elementLabel(el)
+                    let label = elementLabel(el, in: elements)
                     if !label.isEmpty { d["text"] = label }
                     return d
                 },
@@ -1045,17 +1130,37 @@ extension MaestroTools {
             }
             var el = shapeElement(
                 shape: shapeName,
-                text: args.text,
                 color: args.color,
                 x: pos.x, y: pos.y,
                 width: args.parsedWidth, height: args.parsedHeight
             )
             let id = el["id"] as? String ?? ""
-            // If a label was added, record it as a bound element for canonical form.
-            if el["label"] != nil {
-                el["boundElements"] = [["type": "text", "id": "\(id)-label"]]
+            var addedElements: [[String: Any]] = [el]
+            if let labelText = args.text, !labelText.isEmpty {
+                // Size the shape to comfortably fit the wrapped label.
+                // Excalidraw's hand-drawn font is wider than the system font, so
+                // we apply a safety factor and let the label fill the shape.
+                let fontSize = 20.0
+                let hPadding = 24.0
+                let vPadding = 18.0
+                let maxWrapWidth = 340.0
+                let widthSafety = 1.6
+                let unwrapped = measureText(labelText, fontSize: fontSize, maxWidth: 10_000)
+                let targetTextWidth = min(unwrapped.width * widthSafety, maxWrapWidth)
+                let wrapped = measureText(labelText, fontSize: fontSize, maxWidth: targetTextWidth)
+                let requestedWidth = args.parsedWidth ?? 0
+                let requestedHeight = args.parsedHeight ?? 0
+                let targetWidth = max(requestedWidth, targetTextWidth + hPadding * 2)
+                let targetHeight = max(requestedHeight, wrapped.height + vPadding * 2)
+                el["width"] = targetWidth
+                el["height"] = targetHeight
+                if let label = labelElement(text: labelText, for: el, hPadding: hPadding, vPadding: vPadding) {
+                    let labelID = label["id"] as? String ?? ""
+                    el["boundElements"] = [["type": "text", "id": labelID]]
+                    addedElements = [el, label]
+                }
             }
-            elements.append(el)
+            elements.append(contentsOf: addedElements)
             scene["elements"] = elements
             writeScene(scene, for: board, surface: true)
             var result: [String: Any] = [
@@ -1116,11 +1221,11 @@ extension MaestroTools {
                 if let byID = candidates.first(where: { ($0["id"] as? String)?.caseInsensitiveCompare(key) == .orderedSame }) {
                     return byID
                 }
-                if let exact = candidates.first(where: { !elementLabel($0).isEmpty && elementLabel($0) == key }) {
+                if let exact = candidates.first(where: { !elementLabel($0, in: elements).isEmpty && elementLabel($0, in: elements) == key }) {
                     return exact
                 }
                 return candidates.first {
-                    !elementLabel($0).isEmpty && elementLabel($0).localizedCaseInsensitiveContains(key)
+                    !elementLabel($0, in: elements).isEmpty && elementLabel($0, in: elements).localizedCaseInsensitiveContains(key)
                 }
             }
 
@@ -1208,6 +1313,76 @@ extension MaestroTools {
             writeScene(scene, for: board, surface: true)
             return jsonString(["status": "cleared", "board": board.name, "removed": removed])
         }
+    }
+
+    /// Fallback that auto-connects shapes on an Excalidraw board when the AI
+    /// agent forgot to draw arrows. Connects shapes in top-to-bottom, then
+    /// left-to-right reading order. Returns the number of arrows added.
+    @MainActor
+    static func autoConnectExcalidrawBoard(_ board: ExcalidrawBoard) -> Int {
+        var scene = readScene(for: board)
+        let elements = liveElements(in: scene)
+        let arrows = elements.filter { ($0["type"] as? String) == "arrow" }
+        let shapes = elements.filter { ($0["type"] as? String) != "arrow" }
+        guard arrows.isEmpty, shapes.count > 1 else { return 0 }
+
+        let sorted = shapes.sorted {
+            let c0 = elementCenter($0)
+            let c1 = elementCenter($1)
+            if abs(c0.y - c1.y) < 30 { return c0.x < c1.x }
+            return c0.y < c1.y
+        }
+
+        var allElements = elements
+        var added = 0
+        for i in 0..<(sorted.count - 1) {
+            guard let fromID = sorted[i]["id"] as? String,
+                  let toID = sorted[i + 1]["id"] as? String else { continue }
+            let s = elementCenter(sorted[i])
+            let e = elementCenter(sorted[i + 1])
+            let dx = e.x - s.x
+            let dy = e.y - s.y
+            let arrow: [String: Any] = [
+                "id": newElementID(),
+                "type": "arrow",
+                "x": s.x,
+                "y": s.y,
+                "width": abs(dx),
+                "height": abs(dy),
+                "angle": 0,
+                "strokeColor": "#1e1e1e",
+                "backgroundColor": "transparent",
+                "fillStyle": "solid",
+                "strokeWidth": 2,
+                "strokeStyle": "solid",
+                "roughness": 1,
+                "opacity": 100,
+                "groupIds": [],
+                "frameId": NSNull(),
+                "seed": Int.random(in: 0..<Int.max),
+                "versionNonce": Int.random(in: 0..<Int.max),
+                "isDeleted": false,
+                "boundElements": NSNull(),
+                "updated": Int(Date().timeIntervalSince1970 * 1000),
+                "link": NSNull(),
+                "locked": false,
+                "version": 1,
+                "customData": NSNull(),
+                "points": [[0, 0], [dx, dy]],
+                "lastCommittedPoint": NSNull(),
+                "startBinding": ["elementId": fromID],
+                "endBinding": ["elementId": toID],
+                "start": ["id": fromID],
+                "end": ["id": toID],
+            ]
+            allElements.append(arrow)
+            added += 1
+        }
+
+        guard added > 0 else { return 0 }
+        scene["elements"] = allElements
+        writeScene(scene, for: board, surface: true)
+        return added
     }
 
     // MARK: - High-level Excalidraw AI tools

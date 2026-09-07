@@ -51,6 +51,42 @@
       },
       // Queue of board URLs to load once the Excalidraw API is available.
       _pendingLoads: [],
+      // Compute a bounding box for a list of Excalidraw elements.
+      _elementBounds: function(elements) {
+        if (!elements || !elements.length) return null;
+        var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (var i = 0; i < elements.length; i++) {
+          var el = elements[i];
+          var w = el.width || 0;
+          var h = el.height || 0;
+          minX = Math.min(minX, el.x);
+          minY = Math.min(minY, el.y);
+          maxX = Math.max(maxX, el.x + w);
+          maxY = Math.max(maxY, el.y + h);
+        }
+        return { minX: minX, minY: minY, maxX: maxX, maxY: maxY, width: maxX - minX, height: maxY - minY };
+      },
+      // Center the given elements in the viewport and zoom to fit with padding.
+      _centerElements: function(elements) {
+        var bounds = this._elementBounds(elements);
+        if (!bounds || !window.excalidrawAPI) return;
+        var container = document.querySelector('.excalidraw') || document.body;
+        var padding = 80;
+        var availW = Math.max(100, container.clientWidth - padding * 2);
+        var availH = Math.max(100, container.clientHeight - padding * 2);
+        var zoom = Math.min(1.0, Math.min(availW / bounds.width, availH / bounds.height));
+        var cx = (bounds.minX + bounds.maxX) / 2;
+        var cy = (bounds.minY + bounds.maxY) / 2;
+        var scrollX = container.clientWidth / 2 - cx * zoom;
+        var scrollY = container.clientHeight / 2 - cy * zoom;
+        window.excalidrawAPI.updateScene({
+          appState: {
+            scrollX: scrollX,
+            scrollY: scrollY,
+            zoom: { value: zoom }
+          }
+        });
+      },
       // Load a board from a localhost URL.
       loadFile: function(url) {
         var self = this;
@@ -73,17 +109,18 @@
           })
           .then(function(text) {
             var data = JSON.parse(text);
+            var elements = data.elements || [];
             // Use Excalidraw API to load the scene
             if (window.excalidrawAPI) {
               window.excalidrawAPI.updateScene({
-                elements: data.elements || [],
+                elements: elements,
                 appState: data.appState || {}
               });
-              window.excalidrawAPI.scrollToContent(
-                data.elements || [],
-                { fitToViewport: true, viewportZoomFactor: 0.8 }
-              );
-              self.postMessage("fileLoaded", { url: url, elements: (data.elements || []).length });
+              // Defer centering so Excalidraw has laid out the canvas.
+              setTimeout(function() {
+                self._centerElements(elements);
+              }, 50);
+              self.postMessage("fileLoaded", { url: url, elements: elements.length });
             } else {
               throw new Error("excalidrawAPI disappeared after fetch");
             }

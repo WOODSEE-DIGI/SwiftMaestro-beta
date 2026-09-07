@@ -170,8 +170,10 @@ final class ExcalidrawStore {
         // Map URL path to local file
         let filePath = resolveFilePath(path)
         let fileManager = FileManager.default
+        let fileExists = fileManager.fileExists(atPath: filePath)
+        NSLog("[ExcalidrawStore] request path=%@ resolved=%@ exists=%@", path, filePath, fileExists ? "YES" : "NO")
 
-        guard fileManager.fileExists(atPath: filePath) else {
+        guard fileExists else {
             // SPA fallback: serve index.html for any missing route
             let indexPath = (assetsPath as NSString).appendingPathComponent("index.html")
             guard fileManager.fileExists(atPath: indexPath) else {
@@ -258,7 +260,7 @@ final class ExcalidrawStore {
         case "js":   return "application/javascript"
         case "mjs":  return "application/javascript"
         case "css":  return "text/css"
-        case "json": return "application/json"
+        case "json", "excalidraw": return "application/json"
         case "png":  return "image/png"
         case "jpg", "jpeg": return "image/jpeg"
         case "gif":  return "image/gif"

@@ -475,8 +475,10 @@ private struct ExcalidrawWebView: NSViewRepresentable {
               let serverBoardURL = store.serverURL(for: fileURL)
         else { return }
         coordinator.lastLoadedFileURL = fileURL
-        let escaped = serverBoardURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-        webView.evaluateJavaScript("window.__swiftmaestro_loadFile('\(escaped)')")
+        // serverBoardURL is already percent-encoded for the path; do not
+        // encode it again or fetch() will treat the whole URL as a relative
+        // path and hit the SPA fallback (text/html).
+        webView.evaluateJavaScript("window.__swiftmaestro_loadFile('\(serverBoardURL.absoluteString)')")
     }
 
     func makeCoordinator() -> Coordinator {
