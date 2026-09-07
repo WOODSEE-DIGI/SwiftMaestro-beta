@@ -696,7 +696,14 @@ extension MaestroTools {
         return await MainActor.run {
             do {
                 try ExcalidrawStore.shared.saveBoard(name: name, data: emptyExcalidrawSceneJSON())
-                return jsonString(["status": "created", "name": name])
+                guard let board = findWhiteboardBoard(name) else {
+                    return errorJSON("created board '\(name)' but could not locate it for display.")
+                }
+                NotificationCenter.default.post(
+                    name: .excalidrawBoardExternallyModified, object: nil,
+                    userInfo: ["boardURL": board.url, "shouldOpen": true])
+                _ = WorkspaceLayoutState.shared.open(.canvas)
+                return jsonString(["status": "created", "name": name, "id": board.url.lastPathComponent])
             } catch {
                 return errorJSON("failed to create board '\(name)': \(error.localizedDescription)")
             }
@@ -795,7 +802,7 @@ extension MaestroTools {
             try ExcalidrawStore.shared.saveBoard(name: board.name, data: String(data: data, encoding: .utf8) ?? emptyExcalidrawSceneJSON())
             NotificationCenter.default.post(
                 name: .excalidrawBoardExternallyModified, object: nil,
-                userInfo: ["boardURL": board.url])
+                userInfo: ["boardURL": board.url, "shouldOpen": surface])
             if surface {
                 _ = WorkspaceLayoutState.shared.open(.canvas)
             }

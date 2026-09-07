@@ -467,21 +467,29 @@ private struct ExcalidrawWebView: NSViewRepresentable {
         let coordinator = Coordinator(self)
         // Watch for agent-tool edits to a board on disk. If they touch the
         // board currently open in THIS webview, reload it so the user sees
-        // the live update.
+        // the live update. If `shouldOpen` is true, switch this webview to
+        // the affected board first — this lets agent-created boards replace
+        // whatever blank/existing board was already open.
         coordinator.externalModificationObserver = NotificationCenter.default.addObserver(
             forName: .excalidrawBoardExternallyModified,
             object: nil,
             queue: .main
         ) { [weak coordinator] note in
             guard let boardURL = note.userInfo?["boardURL"] as? URL else { return }
+            let shouldOpen = note.userInfo?["shouldOpen"] as? Bool ?? false
             Task { @MainActor in
                 guard let coordinator,
-                      let current = coordinator.parent.currentFileURL,
-                      current.standardizedFileURL == boardURL.standardizedFileURL,
                       let webView = coordinator.bridge?.webView
                 else { return }
-                let escaped = boardURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-                webView.evaluateJavaScript("window.__swiftmaestro_loadFile('\(escaped)')")
+                if shouldOpen, coordinator.parent.currentFileURL?.standardizedFileURL != boardURL.standardizedFileURL {
+                    coordinator.parent.currentFileURL = boardURL
+                    coordinator.parent.fileName = boardURL.deletingPathExtension().lastPathComponent
+                    coordinator.parent.isEdited = false
+                    // Setting currentFileURL triggers updateNSView to load the new file.
+                } else if coordinator.parent.currentFileURL?.standardizedFileURL == boardURL.standardizedFileURL {
+                    let escaped = boardURL.absoluteString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+                    webView.evaluateJavaScript("window.__swiftmaestro_loadFile('\(escaped)')")
+                }
             }
         }
         return coordinator
