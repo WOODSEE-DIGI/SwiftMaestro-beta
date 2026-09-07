@@ -120,14 +120,14 @@
     }, true);
 
     // After Excalidraw loads, capture the API reference.
-    // Excalidraw exposes __excalidrawAPI on the rendered .excalidraw element.
+    // The bundled app is patched to expose window.excalidrawAPI.
     var _excalidrawCheckCount = 0;
     var _excalidrawCheck = setInterval(function() {
       _excalidrawCheckCount++;
       var root = document.getElementById("root");
       var app = document.querySelector(".excalidraw");
-      if (app && app.__excalidrawAPI) {
-        window.excalidrawAPI = app.__excalidrawAPI;
+      var api = window.excalidrawAPI;
+      if (api) {
         clearInterval(_excalidrawCheck);
         window.__swiftmaestro.postMessage("ready", {});
 
@@ -138,13 +138,13 @@
         observer.observe(root, { childList: true, subtree: true, attributes: true });
       } else if (_excalidrawCheckCount === 100) {
         // 10s: log intermediate state to help diagnose slow/failed mounts.
-        var msg = "Excalidraw still mounting... root children=" + (root ? root.childElementCount : "null") + ", .excalidraw found=" + !!app + ", api found=" + !!(app && app.__excalidrawAPI);
+        var msg = "Excalidraw still mounting... root children=" + (root ? root.childElementCount : "null") + ", .excalidraw found=" + !!app + ", window.excalidrawAPI found=" + !!api;
         console.warn(msg);
         window.__swiftmaestro.postMessage("console", { level: "warn", message: msg });
       } else if (_excalidrawCheckCount > 300) {
         // Give up after ~30s and report that the editor never initialized.
         clearInterval(_excalidrawCheck);
-        var diagnostics = "root children=" + (root ? root.childElementCount : "null") + ", .excalidraw found=" + !!app + ", api found=" + !!(app && app.__excalidrawAPI);
+        var diagnostics = "root children=" + (root ? root.childElementCount : "null") + ", .excalidraw found=" + !!app + ", window.excalidrawAPI found=" + !!api;
         var msg = "Excalidraw editor did not initialize after 30s (" + diagnostics + "). Check JS console for errors.";
         console.error(msg);
         window.__swiftmaestro.postMessage("console", { level: "error", message: msg });

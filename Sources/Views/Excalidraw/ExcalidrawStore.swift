@@ -201,11 +201,13 @@ final class ExcalidrawStore {
         // WKWebView can fetch them without hitting file:// sandbox restrictions.
         let boardPrefix = "board/"
         if cleanPath.hasPrefix(boardPrefix) {
-            let name = String(cleanPath.dropFirst(boardPrefix.count))
+            var name = String(cleanPath.dropFirst(boardPrefix.count))
+            // URL-decode so %20 and similar characters become real spaces.
+            name = name.removingPercentEncoding ?? name
             let sanitized = (name as NSString)
                 .replacingOccurrences(of: "..", with: "")
                 .replacingOccurrences(of: "/", with: "_")
-            return boardsDirectory.appendingPathComponent("\(sanitized).excalidraw").path
+            return boardsDirectory.appendingPathComponent(sanitized).path
         }
 
         return (assetsPath as NSString).appendingPathComponent(cleanPath)
