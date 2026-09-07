@@ -320,7 +320,10 @@ extension ExcalidrawStore {
         guard let base = serverURL else { return nil }
         let name = boardURL.deletingPathExtension().lastPathComponent
         let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
-        return base.appendingPathComponent("board/\(encoded).excalidraw")
+        // appendingPathComponent treats the argument as a single path segment and
+        // would encode the slash; build the full path as a string instead.
+        let path = "board/\(encoded).excalidraw"
+        return URL(string: path, relativeTo: base)?.absoluteURL
     }
 
     /// Deletes a board.
