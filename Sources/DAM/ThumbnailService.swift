@@ -123,6 +123,7 @@ actor ThumbnailService {
         case noRepresentation
         case noInnerRAW
         case timedOut
+        case fileNotFound
     }
 
     /// The grid requests this size; loupe/filmstrip will use a larger one.
@@ -162,7 +163,16 @@ actor ThumbnailService {
     /// Returns a thumbnail for the file, generating and caching on first use.
     /// - Parameter pixelSize: longest edge in points (rendered at 2x).
     func thumbnail(for url: URL, pixelSize: CGFloat = gridPixelSize) async throws -> NSImage {
-        let key = Self.cacheKey(for: url, size: Int(pixelSize))
+        let fileURL = url.standardizedFileURL
+
+        // Avoid invoking ImageIO/QuickLook for files that no longer exist.
+        // This eliminates console spam from missing catalog entries and
+        // keeps decoder slots free for real files.
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            throw ThumbnailError.fileNotFound
+        }
+
+        let key = Self.cacheKey(for: fileURL, size: Int(pixelSize))
 
         if let cached = Self.memoryCache.object(forKey: key as NSString) {
             return cached
@@ -177,7 +187,7 @@ actor ThumbnailService {
         }
 
         let task = Task<NSImage, Error>.detached(priority: .utility) {
-            let image = try await Self.render(url: url, pixelSize: pixelSize, key: key)
+            let image = try await Self.render(url: fileURL, pixelSize: pixelSize, key: key)
             // Cache on the render side: if the awaiting caller is cancelled
             // (view teardown), the completed render is still kept.
             let cost = max(1, Int(image.size.width * image.size.height * 4))
@@ -455,7 +465,7 @@ actor ThumbnailService {
     ) async throws -> NSImage {
         try await decodeSlots.acquire()
         do {
-            let image = try performRawDecode(url, pixelSize: pixelSize, key: key, isPackagedEIP: isPackagedEIP)
+            let image = try await performRawDecode(url, pixelSize: pixelSize, key: key, isPackagedEIP: isPackagedEIP)
             await decodeSlots.release()
             return image
         } catch {
@@ -465,6 +475,17 @@ actor ThumbnailService {
     }
 
     private nonisolated static func performRawDecode(
+        _ url: URL, pixelSize: CGFloat, key: String, isPackagedEIP: Bool
+    ) async throws -> NSImage {
+        // LibRaw's parsers can overflow the 512 KB stacks Swift concurrency
+        // uses, producing EXC_BAD_ACCESS at the stack guard. Run the actual
+        // decode on a dedicated thread with an 8 MB stack.
+        try await runOnLargeStack {
+            try performRawDecodeImpl(url, pixelSize: pixelSize, key: key, isPackagedEIP: isPackagedEIP)
+        }
+    }
+
+    private nonisolated static func performRawDecodeImpl(
         _ url: URL, pixelSize: CGFloat, key: String, isPackagedEIP: Bool
     ) throws -> NSImage {
         var decodeURL = url
@@ -487,6 +508,25 @@ actor ThumbnailService {
             try? jpeg.write(to: cacheURL, options: .atomic)
         }
         return image
+    }
+
+    /// Runs a throwing closure on a dedicated thread with an 8 MB stack.
+    /// Suspends the caller until the closure returns.
+    private nonisolated static func runOnLargeStack<T>(
+        _ operation: @escaping @Sendable () throws -> T
+    ) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            let thread = Thread {
+                do {
+                    let value = try operation()
+                    continuation.resume(returning: value)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+            thread.stackSize = 8 * 1024 * 1024
+            thread.start()
+        }
     }
 
     // MARK: - EIP (packaged RAW) extraction

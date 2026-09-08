@@ -185,6 +185,7 @@ private struct FilmstripCell: View {
     let isSelected: Bool
 
     @State private var image: NSImage?
+    @State private var loadFailed = false
 
     var body: some View {
         ZStack {
@@ -195,6 +196,10 @@ private struct FilmstripCell: View {
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
+            } else if loadFailed {
+                Image(systemName: "doc")
+                    .font(.title2)
+                    .foregroundStyle(.secondary)
             } else {
                 ProgressView()
                     .controlSize(.small)
@@ -207,8 +212,13 @@ private struct FilmstripCell: View {
         )
         .help(asset.filename)
         .task {
-            image = try? await ThumbnailService.shared.thumbnail(
-                for: URL(fileURLWithPath: asset.path))
+            do {
+                image = try await ThumbnailService.shared.thumbnail(
+                    for: URL(fileURLWithPath: asset.path))
+            } catch {
+                guard !Task.isCancelled else { return }
+                loadFailed = true
+            }
         }
     }
 }

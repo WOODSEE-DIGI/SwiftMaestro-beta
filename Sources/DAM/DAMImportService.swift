@@ -51,7 +51,7 @@ actor DAMImportService {
     /// - Parameter progress: called on progress milestones with
     ///   `(filesScanned, rowsWritten)` — safe to call from any context.
     @discardableResult
-    func importFolder(
+    nonisolated func importFolder(
         at url: URL,
         database: DAMDatabase = .shared,
         progress: (@Sendable (_ scanned: Int, _ written: Int) -> Void)? = nil
@@ -468,7 +468,7 @@ actor DAMImportService {
     /// tag was applied. When the same tag name appears with different
     /// color indices across files, the majority wins — that matches the
     /// system definition.
-    func enrichAll(
+    nonisolated func enrichAll(
         database: DAMDatabase = .shared,
         progress: (@Sendable (_ enriched: Int, _ total: Int) -> Void)? = nil
     ) async throws {
