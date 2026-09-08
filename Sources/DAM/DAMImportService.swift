@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Foundation
 import GRDB
 import ImageIO
@@ -56,8 +57,9 @@ actor DAMImportService {
         progress: (@Sendable (_ scanned: Int, _ written: Int) -> Void)? = nil
     ) async throws -> Int {
         var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
-              isDirectory.boolValue else {
+        let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+        NSLog("[DAMImport] fileExists for %@: exists=%@ isDirectory=%@", url.path, exists ? "true" : "false", isDirectory.boolValue ? "true" : "false")
+        guard exists, isDirectory.boolValue else {
             throw ImportError.notAFolder
         }
 
@@ -66,12 +68,18 @@ actor DAMImportService {
         // contents. This is critical for iCloud Drive folders where files
         // may be cloud-only and the enumerator hangs without authorization.
         let accessed = url.startAccessingSecurityScopedResource()
+        NSLog("[DAMImport] startAccessingSecurityScopedResource for %@ returned %@", url.path, accessed ? "true" : "false")
         defer {
             if accessed { url.stopAccessingSecurityScopedResource() }
         }
 
+        // Quick sanity check: can we even list the top-level directory?
+        let topLevel = (try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? []
+        NSLog("[DAMImport] top-level contents of %@: %d items", url.path, topLevel.count)
+
         // Phase 1: Fast scan — enumerate by extension, minimal I/O.
         let count = try Self.scanAndImport(at: url, database: database, progress: progress)
+        NSLog("[DAMImport] importFolder finished for %@ — %d rows written", url.path, count)
 
         return count
     }
@@ -121,27 +129,41 @@ actor DAMImportService {
     ) throws -> Int {
         // No includingPropertiesForKeys — avoids blocking on iCloud files.
         // Extension-based detection is fast and sufficient for cataloging.
+        // Descend into package directories (e.g. .dsbundle sample libraries)
+        // so their audio files are cataloged. The extension whitelist below
+        // still filters out non-catalogable files inside those bundles.
         guard let enumerator = FileManager.default.enumerator(
             at: url,
             includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+            options: [.skipsHiddenFiles]
         ) else {
             throw ImportError.notAFolder
         }
 
         var scanned = 0
+        var skipped = 0
         var written = 0
         var pending: [(url: URL, uti: UTType)] = []
         pending.reserveCapacity(500)
 
-        for case let fileURL as URL in enumerator {
-            try Task.checkCancellation()
-
-            // Skip directories — they have no extension or an empty one.
+        // Shared per-file logic for both the URL enumerator and the path fallback.
+        let processFile: (URL) throws -> Void = { fileURL in
             let ext = fileURL.pathExtension.lowercased()
-            guard !ext.isEmpty,
-                  let utiID = extensionCache[ext],
-                  let uti = UTType(utiID) else { continue }
+            let uti: UTType
+            if !ext.isEmpty,
+               let utiID = extensionCache[ext],
+               let cached = UTType(utiID) {
+                uti = cached
+            } else if !ext.isEmpty,
+                      let dynamic = UTType(filenameExtension: ext),
+                      catalogedTypes.contains(where: { dynamic.conforms(to: $0) }) {
+                // Fallback for extensions not in the static cache (e.g.
+                // niche audio formats or new RAW variants).
+                uti = dynamic
+            } else {
+                skipped += 1
+                return
+            }
 
             scanned += 1
             pending.append((fileURL, uti))
@@ -159,6 +181,27 @@ actor DAMImportService {
             }
         }
 
+        for case let fileURL as URL in enumerator {
+            try Task.checkCancellation()
+            try processFile(fileURL)
+        }
+
+        // Fallback: some security-scoped / external-volume URLs return an
+        // empty URL enumerator even though the directory is readable. The
+        // path-based enumerator often works in that case.
+        if scanned == 0 {
+            NSLog("[DAMImport] URL enumerator found 0 catalogable files; trying path-based fallback for %@", url.path)
+            if let pathEnumerator = FileManager.default.enumerator(atPath: url.path) {
+                for case let relativePath as String in pathEnumerator {
+                    try Task.checkCancellation()
+                    let fileURL = url.appendingPathComponent(relativePath)
+                    try processFile(fileURL)
+                }
+            } else {
+                NSLog("[DAMImport] path-based enumerator is also nil for %@", url.path)
+            }
+        }
+
         // Process remaining batch
         if !pending.isEmpty {
             written += try processBatch(pending, to: database)
@@ -166,6 +209,7 @@ actor DAMImportService {
 
         // Final progress callback
         progress?(scanned, written)
+        NSLog("[DAMImport] scanAndImport finished for %@ — scanned=%ld skipped=%ld written=%ld", url.path, scanned, skipped, written)
         return written
     }
 
@@ -313,6 +357,7 @@ actor DAMImportService {
         var lat: Double?
         var lon: Double?
         var orient = 1
+        var duration: Double?
 
         let ext = (path as NSString).pathExtension.lowercased()
         if let utiID = extensionCache[ext],
@@ -359,6 +404,16 @@ actor DAMImportService {
             }
         }
 
+        // Audio-only metadata: duration from AVFoundation.
+        if let utiID = extensionCache[ext],
+           let uti = UTType(utiID),
+           uti.conforms(to: .audio) {
+            let asset = AVURLAsset(url: url)
+            if let cmTime = try? await asset.load(.duration), CMTimeGetSeconds(cmTime).isFinite {
+                duration = CMTimeGetSeconds(cmTime)
+            }
+        }
+
         // Capture into Sendable tuple before DB closure
         let update = (
             fileSize: fileSize, modDate: modDate, xattr: tags.names,
@@ -366,7 +421,7 @@ actor DAMImportService {
             w: w, h: h, orient: orient,
             capDate: capDate, camMake: camMake, camModel: camModel,
             lens: lens, isoVal: isoVal, aper: aper, shut: shut,
-            focal: focal, lat: lat, lon: lon
+            focal: focal, lat: lat, lon: lon, duration: duration
         )
 
         // Update DB
@@ -391,6 +446,7 @@ actor DAMImportService {
             if let v = update.focal { a.focalLength = v }
             if let v = update.lat { a.gpsLat = v }
             if let v = update.lon { a.gpsLon = v }
+            if let v = update.duration { a.duration = v }
             try a.update(db)
         }
 

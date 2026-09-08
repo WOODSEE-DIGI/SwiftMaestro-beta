@@ -129,6 +129,60 @@ struct DAMTaggingTests {
         #expect(untagged.map(\.id) == [untaggedId])
     }
 
+    // MARK: - Generative tag parsing
+
+    @Test func tagListParsing() {
+        let raw = """
+            1. Golden Retriever
+            2. Beach, Sunset
+            - Sand; ocean
+            """
+        let tags = DAMTaggingService.parseTagList(from: raw)
+        #expect(tags == ["golden retriever", "beach", "sunset", "sand", "ocean"])
+    }
+
+    @Test func tagListParsingFiltersStopWords() {
+        let raw = "Image, photo, the, a, dog, of, and"
+        let tags = DAMTaggingService.parseTagList(from: raw)
+        #expect(tags == ["dog"])
+    }
+
+    // MARK: - Folder & collection enumeration
+
+    @Test func assetsInFolderRecursive() throws {
+        let db = try DAMDatabase.makeForTesting()
+        _ = try insertAsset(db, path: "/photos/2024/cat.jpg")
+        _ = try insertAsset(db, path: "/photos/2024/january/dog.jpg")
+        _ = try insertAsset(db, path: "/photos/2023/old.jpg")
+
+        let recursive = try db.assets(inFolder: "/photos/2024", recursive: true)
+        #expect(recursive.count == 2)
+
+        let direct = try db.assets(inFolder: "/photos/2024", recursive: false)
+        #expect(direct.count == 1)
+    }
+
+    @Test func assetsInCollection() throws {
+        let db = try DAMDatabase.makeForTesting()
+        let assetA = try insertAsset(db, path: "/tmp/coll-a.jpg")
+        let assetB = try insertAsset(db, path: "/tmp/coll-b.jpg")
+        _ = try insertAsset(db, path: "/tmp/other.jpg")
+
+        let collectionId = try db.dbQueue.write { conn -> Int64 in
+            var collection = DAMCollection(
+                id: nil, name: "Favorites", kind: .manual, predicateJSON: nil, parentId: nil)
+            try collection.insert(conn)
+            let id = try #require(collection.id)
+            try DAMCollectionAsset(collectionId: id, assetId: assetA, position: 0).insert(conn)
+            try DAMCollectionAsset(collectionId: id, assetId: assetB, position: 1).insert(conn)
+            return id
+        }
+
+        let members = try db.assets(inCollectionId: collectionId)
+        #expect(members.count == 2)
+        #expect(Set(members.map(\.id)) == Set([assetA, assetB]))
+    }
+
     // MARK: - OCR token normalization (pure functions)
 
     @Test func ocrTokenNormalization() {
@@ -153,5 +207,20 @@ struct DAMTaggingTests {
         }
         // |∩|=2, |∪|=4 → 0.5
         #expect(abs(score - 0.5) < 0.0001)
+    }
+
+    // MARK: - Audio AI tagging helpers
+
+    @Test func audioTagExtractionFromTranscript() {
+        let text = "Meeting with Sarah about the Q3 budget in Sydney. We discussed marketing plans."
+        let tags = DAMTaggingService.extractTags(from: text)
+        #expect(tags.contains("sarah"))
+        #expect(tags.contains("sydney"))
+        #expect(tags.contains("budget"))
+        #expect(tags.contains("marketing"))
+        #expect(tags.contains("plans"))
+        #expect(!tags.contains("the"))
+        #expect(!tags.contains("with"))
+        #expect(!tags.contains("we"))
     }
 }

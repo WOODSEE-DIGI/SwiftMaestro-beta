@@ -280,6 +280,16 @@ private final class StaticFileServer {
         // Default to index.html
         if path == "/" { path = "/index.html" }
 
+        // Serve the bundled favicon for any directory that doesn't provide its own.
+        if path == "/favicon.ico" {
+            let directoryFavicon = (directory as NSString).appendingPathComponent("favicon.ico")
+            if !FileManager.default.fileExists(atPath: directoryFavicon),
+               let bundledURL = Bundle.main.url(forResource: "favicon", withExtension: "png"),
+               let bundledData = try? Data(contentsOf: bundledURL) {
+                return Self.httpResponse(status: 200, contentType: "image/png", data: bundledData)
+            }
+        }
+
         // Resolve the file path
         let filePath = (directory as NSString).appendingPathComponent(path)
 
@@ -324,8 +334,27 @@ private final class StaticFileServer {
         case 405: reason = "Method Not Allowed"
         default: reason = "Error"
         }
-        let response = "HTTP/1.1 \(status) \(reason)\r\nContent-Type: text/plain\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n\(body)"
-        return response.data(using: .utf8) ?? Data()
+        return httpResponse(status: status, reason: reason, contentType: "text/plain", data: body.data(using: .utf8) ?? Data())
+    }
+
+    nonisolated private static func httpResponse(status: Int, reason: String? = nil, contentType: String, data: Data) -> Data {
+        let reasonString: String
+        if let reason {
+            reasonString = reason
+        } else {
+            switch status {
+            case 200: reasonString = "OK"
+            case 400: reasonString = "Bad Request"
+            case 403: reasonString = "Forbidden"
+            case 404: reasonString = "Not Found"
+            case 405: reasonString = "Method Not Allowed"
+            default: reasonString = "Error"
+            }
+        }
+        let header = "HTTP/1.1 \(status) \(reasonString)\r\nContent-Type: \(contentType)\r\nContent-Length: \(data.count)\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n"
+        var response = header.data(using: .utf8) ?? Data()
+        response.append(data)
+        return response
     }
 
     nonisolated private static func mimeType(for path: String) -> String {

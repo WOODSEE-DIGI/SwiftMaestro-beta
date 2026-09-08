@@ -449,8 +449,11 @@ final class DAMViewModel {
             let children: [DAMFolderNode] = node.children.keys.sorted().compactMap { key in
                 node.children[key].flatMap { convert(key, $0, path: path + "/" + key) }
             }
+            // Aggregate the direct count with all descendants so every folder
+            // in the sidebar shows the total assets under it, not just its leaf.
+            let totalCount = node.count + children.reduce(0) { $0 + $1.count }
             return DAMFolderNode(
-                path: path, name: name, count: node.count,
+                path: path, name: name, count: totalCount,
                 children: children.isEmpty ? nil : children)
         }
         return root.children.keys.sorted().compactMap { key in
@@ -538,10 +541,10 @@ final class DAMViewModel {
         importScanned = 0
         importWritten = 0
 
-        // Launch the import on a detached task. The progress callback
-        // hops to @MainActor to update the UI counters. We use
-        // withCheckedContinuation so the MainActor stays free to process
-        // the progress callback Tasks during the scan.
+        // Launch the import on a detached task so the MainActor stays free
+        // to process progress callbacks. Awaiting task.value on the
+        // MainActor suspends this method until completion without blocking
+        // the actor, so UI updates interleave naturally.
         let task = Task.detached(priority: .userInitiated) { [database] in
             try await DAMImportService.shared.importFolder(at: url, database: database) {
                 scanned, written in
@@ -553,43 +556,30 @@ final class DAMViewModel {
         }
         importTask = task
 
-        await withCheckedContinuation { continuation in
-            Task.detached {
-                let result: Result<Int, Error>
-                do {
-                    let count = try await task.value
-                    result = .success(count)
-                } catch {
-                    result = .failure(error)
-                }
-                await MainActor.run {
-                    switch result {
-                    case .success(let written):
-                        self.importScanned = written
-                        self.importWritten = written
-                    case .failure(let error) where error is CancellationError:
-                        self.errorMessage = "Import cancelled."
-                    case .failure(let error):
-                        self.errorMessage = "Import failed: \(error.localizedDescription)"
-                    }
-                    self.isImporting = false
-                    self.importTask = nil
-                    continuation.resume()
-                }
-            }
+        do {
+            let count = try await task.value
+            importScanned = count
+            importWritten = count
+        } catch is CancellationError {
+            errorMessage = "Import cancelled."
+        } catch {
+            errorMessage = "Import failed: \(error.localizedDescription)"
         }
+
+        isImporting = false
+        importTask = nil
 
         await reload()
         await refreshFolderTree()
 
         // Background enrichment: read xattr tags for all cataloged files
         // that are missing them. Runs after the UI is responsive.
-        Task.detached(priority: .utility) {
-            try? await DAMImportService.shared.enrichAll { enriched, total in
+        Task.detached(priority: .utility) { [weak self] in
+            try? await DAMImportService.shared.enrichAll { _, _ in
                 // Optionally update a status indicator here
             }
-            await MainActor.run {
-                Task { await self.reload() }
+            await MainActor.run { [weak self] in
+                Task { await self?.reload() }
             }
         }
     }
@@ -739,6 +729,67 @@ final class DAMViewModel {
             }
         } catch {
             errorMessage = "Failed to update rating: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - Generative AI tagging
+
+    /// True for catalog rows that support AI tagging: images (vision proxy)
+    /// and audio (WhisperKit transcription + NLP keyword extraction).
+    private static func isTaggableAsset(_ asset: DAMAsset) -> Bool {
+        let url = URL(fileURLWithPath: asset.path)
+        return DAMFileKind.isStandardImage(url)
+            || DAMFileKind.isCameraRAW(url)
+            || DAMFileKind.isAudio(url)
+    }
+
+    /// Generate AI tags for the current selection. Unsupported assets are
+    /// ignored; images go to the vision proxy and audio goes to WhisperKit.
+    func generateTags(for ids: Set<DAMAsset.ID>) async {
+        let assets = await assets(for: ids)
+        let taggable = assets.filter(Self.isTaggableAsset)
+        guard !taggable.isEmpty else {
+            errorMessage = "No image or audio assets selected."
+            return
+        }
+        errorMessage = "Generating tags for \(taggable.count) asset(s)…"
+        do {
+            _ = try await DAMTaggingService.shared.generateTags(for: taggable) { _ in }
+            errorMessage = "Tag generation complete."
+            await reload()
+        } catch is CancellationError {
+            errorMessage = "Tag generation cancelled."
+        } catch {
+            errorMessage = "Tag generation failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Generate AI tags for every image/audio asset in the selected folder.
+    func generateTagsForSelectedFolder() async {
+        guard let folder = selectedFolder else {
+            errorMessage = "No folder selected."
+            return
+        }
+        await generateTagsForFolder(folder)
+    }
+
+    /// Generate AI tags for every image/audio asset in a specific folder.
+    func generateTagsForFolder(_ folder: String) async {
+        do {
+            let assets = try database.assets(inFolder: folder, recursive: true)
+            let taggable = assets.filter(Self.isTaggableAsset)
+            guard !taggable.isEmpty else {
+                errorMessage = "No image or audio assets found in \(folder)."
+                return
+            }
+            errorMessage = "Generating tags for \(taggable.count) asset(s) in folder…"
+            _ = try await DAMTaggingService.shared.generateTags(for: taggable) { _ in }
+            errorMessage = "Tag generation complete for \(folder)."
+            await reload()
+        } catch is CancellationError {
+            errorMessage = "Tag generation cancelled."
+        } catch {
+            errorMessage = "Tag generation failed: \(error.localizedDescription)"
         }
     }
 

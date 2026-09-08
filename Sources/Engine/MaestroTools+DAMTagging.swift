@@ -37,6 +37,10 @@ extension MaestroTools {
                 name: "dam_relearn", spec: damTaggingToolSpecs[5],
                 category: ToolCategory.dam.rawValue,
                 handler: { _ in await damRelearn() }),
+            ToolDefinition(
+                name: "dam_ai_generate_tags", spec: damTaggingToolSpecs[6],
+                category: ToolCategory.dam.rawValue,
+                handler: { call in await damAIGenerateTags(call) }),
         ])
     }
 
@@ -99,6 +103,19 @@ extension MaestroTools {
                 + "Background-scale operation: cost grows with tagged × "
                 + "untagged counts. Returns the number of new suggestions.",
                 properties: [:], required: []),
+            rawSpec("dam_ai_generate_tags",
+                "Generate AI tags/captions for specific assets, a folder, or "
+                + "a collection using the configured vision-language model. "
+                + "Applies tags directly (source: ai) and stores a caption "
+                + "plus keywords on each asset. Use this when the user wants "
+                + "tags for individual files, a directory, or an album instead "
+                + "of the full-catalog index.",
+                properties: [
+                    "paths": ["type": "string", "description": "JSON array of absolute file paths."],
+                    "folder": ["type": "string", "description": "Absolute folder path; tags all image assets inside (recursive)."],
+                    "collection_id": ["type": "integer", "description": "Catalog collection/album id; tags all image assets in it."],
+                ],
+                required: []),
         ]
     }
 
@@ -109,6 +126,11 @@ extension MaestroTools {
     private struct ResolveArgs: Codable { let suggestion_id: Int?; let action: String? }
     private struct FindSimilarArgs: Codable {
         let path: String?; let limit: Int?; let min_confidence: Double?
+    }
+    private struct AIGenerateTagsArgs: Codable {
+        let paths: String?
+        let folder: String?
+        let collection_id: Int?
     }
 
     // MARK: - Handlers
@@ -225,6 +247,50 @@ extension MaestroTools {
             return "Relearn cancelled."
         } catch {
             return "Error during relearn: \(error.localizedDescription)"
+        }
+    }
+
+    private static func damAIGenerateTags(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: AIGenerateTagsArgs.self) else {
+            return "Error: invalid arguments."
+        }
+        let hasPaths = args.paths != nil
+        let hasFolder = args.folder != nil && !(args.folder?.isEmpty ?? true)
+        let hasCollection = args.collection_id != nil
+        guard hasPaths || hasFolder || hasCollection else {
+            return "Error: specify at least one of paths, folder, or collection_id."
+        }
+
+        do {
+            if let pathsJSON = args.paths,
+               let paths = try? JSONDecoder().decode([String].self, from: Data(pathsJSON.utf8)),
+               !paths.isEmpty {
+                let database = DAMDatabase.shared
+                var assets: [DAMAsset] = []
+                for path in paths {
+                    if let asset = try? database.asset(withPath: path) {
+                        assets.append(asset)
+                    }
+                }
+                let result = try await DAMTaggingService.shared.generateTags(for: assets)
+                return "Generated tags for \(result.tagged) of \(result.processed) assets "
+                    + "(\(result.skipped) skipped, \(result.failed) failed)."
+            }
+            if let folder = args.folder, !folder.isEmpty {
+                let result = try await DAMTaggingService.shared.generateTags(forFolder: folder)
+                return "Generated tags for \(result.tagged) of \(result.processed) assets "
+                    + "in \(folder) (\(result.skipped) skipped, \(result.failed) failed)."
+            }
+            if let collectionId = args.collection_id {
+                let result = try await DAMTaggingService.shared.generateTags(forCollectionId: Int64(collectionId))
+                return "Generated tags for \(result.tagged) of \(result.processed) assets "
+                    + "in collection #\(collectionId) (\(result.skipped) skipped, \(result.failed) failed)."
+            }
+            return "Error: no tagging scope resolved."
+        } catch is CancellationError {
+            return "Tag generation cancelled."
+        } catch {
+            return "Error generating tags: \(error.localizedDescription)"
         }
     }
 

@@ -154,6 +154,74 @@ final class DAMTaggingViewModel {
         indexTask?.cancel()
     }
 
+    // MARK: - Generative AI tagging (scoped)
+
+    private(set) var isGenerating = false
+    private(set) var generateCurrent = 0
+    private(set) var generateTotal = 0
+    private(set) var generateProgress = ""
+
+    /// Generate tags for a list of assets.
+    @discardableResult
+    func generateTags(for assets: [DAMAsset]) async -> DAMTaggingService.GenerateResult? {
+        guard !assets.isEmpty, !isGenerating else { return nil }
+        isGenerating = true
+        defer { isGenerating = false }
+        generateTotal = assets.count
+        generateCurrent = 0
+        generateProgress = "Starting…"
+        do {
+            let result = try await service.generateTags(for: assets) { [weak self] progress in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.generateCurrent = progress.current
+                    self.generateTotal = progress.total
+                    self.generateProgress = progress.currentFile.isEmpty
+                        ? "Generated \(progress.current) of \(progress.total)"
+                        : "\(progress.current)/\(progress.total) — \(progress.currentFile)"
+                }
+            }
+            statusMessage = "Generated tags for \(result.tagged) of \(result.processed) assets "
+                + "(\(result.skipped) skipped, \(result.failed) failed)."
+            return result
+        } catch is CancellationError {
+            statusMessage = "Tag generation cancelled."
+        } catch {
+            statusMessage = "Tag generation failed: \(error.localizedDescription)"
+        }
+        generateProgress = ""
+        return nil
+    }
+
+    /// Generate tags for every image asset in a folder.
+    @discardableResult
+    func generateTags(forFolder path: String) async -> DAMTaggingService.GenerateResult? {
+        let assets = (try? database.assets(inFolder: path, recursive: true)) ?? []
+        return await generateTags(for: assets)
+    }
+
+    /// Generate tags for every image asset in a collection/album.
+    @discardableResult
+    func generateTags(forCollectionId collectionId: Int64) async -> DAMTaggingService.GenerateResult? {
+        let assets = (try? database.assets(inCollectionId: collectionId)) ?? []
+        return await generateTags(for: assets)
+    }
+
+    /// Remove all AI-generated tags and captions from a set of assets.
+    /// User tags, EXIF/XMP metadata, and ratings are preserved.
+    func clearAITags(for assets: [DAMAsset]) async {
+        let ids = assets.compactMap { $0.id }
+        guard !ids.isEmpty else { return }
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try DAMDatabase.shared.clearAITags(for: ids)
+            }.value
+            statusMessage = "Cleared AI tags for \(ids.count) asset(s)."
+        } catch {
+            statusMessage = "Failed to clear AI tags: \(error.localizedDescription)"
+        }
+    }
+
     // MARK: - Manual tagging (learn-on-tag)
 
     /// Apply comma-separated tags to a set of assets (source `user`), then

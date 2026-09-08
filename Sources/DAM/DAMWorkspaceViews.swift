@@ -303,6 +303,7 @@ struct MetadataPanelView: View {
     @State private var keywordMode: DAMViewModel.KeywordApplyMode = .add
     @State private var tagging = DAMTaggingViewModel()
     @State private var assetSuggestions: [DAMTagSuggestion] = []
+    @State private var engine = MediaPlayerEngine.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -320,6 +321,9 @@ struct MetadataPanelView: View {
                 if let asset = viewModel.primaryAsset {
                     VStack(alignment: .leading, spacing: 14) {
                         fileProperties(asset)
+                        if isPlayable(asset) {
+                            playbackSection(asset)
+                        }
                         keywordEditor(asset)
                         aiTagging(asset)
                         additionalText(asset)
@@ -343,6 +347,67 @@ struct MetadataPanelView: View {
         }
         // Once per panel appearance: the catalog-wide indexing counters.
         .task { await tagging.refreshCounts() }
+    }
+
+    /// True for audio/video assets that can be played by the built-in player.
+    private func isPlayable(_ asset: DAMAsset) -> Bool {
+        let url = URL(fileURLWithPath: asset.path)
+        return DAMFileKind.isAudio(url) || DAMFileKind.isVideo(url)
+    }
+
+    /// Inline playback controls for the selected audio/video asset. Loads the
+    /// file into the shared MediaPlayerEngine and stays inside MaestroDAM —
+    /// no separate app required.
+    @ViewBuilder
+    private func playbackSection(_ asset: DAMAsset) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Playback")
+                .font(.subheadline.weight(.semibold))
+
+            let isLoaded = engine.currentURL?.path == asset.path
+
+            if isLoaded {
+                MediaPlayerProgressBar(
+                    currentTime: engine.currentTime,
+                    duration: engine.duration ?? 0,
+                    isSeeking: engine.isSeeking,
+                    onSeek: { engine.seek(to: $0) }
+                )
+
+                MediaPlayerTransportView(
+                    isPlaying: engine.isPlaying,
+                    hasItem: engine.hasItem,
+                    onPlayPause: { engine.togglePlayPause() },
+                    onSkipBack: { engine.skipBackward() },
+                    onSkipForward: { engine.skipForward() },
+                    onSeekBackward15: { engine.seekRelative(-15) },
+                    onSeekForward15: { engine.seekRelative(15) }
+                )
+            } else {
+                HStack(spacing: 8) {
+                    Button {
+                        Task {
+                            let url = URL(fileURLWithPath: asset.path)
+                            await engine.load(url: url)
+                            engine.play()
+                        }
+                    } label: {
+                        Label("Play", systemImage: "play.circle")
+                    }
+
+                    if FileManager.default.fileExists(atPath: "/Applications/VLC.app") {
+                        Button {
+                            let url = URL(fileURLWithPath: asset.path)
+                            let vlc = URL(fileURLWithPath: "/Applications/VLC.app")
+                            NSWorkspace.shared.open([url], withApplicationAt: vlc, configuration: NSWorkspace.OpenConfiguration())
+                        } label: {
+                            Label("Open in VLC", systemImage: "play.tv")
+                        }
+                    }
+                }
+                .controlSize(.small)
+            }
+        }
     }
 
     /// Reload the pending AI suggestions for the current primary selection.
@@ -427,8 +492,9 @@ struct MetadataPanelView: View {
     }
 
     /// AI tagging, living on the Metadata page (its proper home): indexing
-    /// controls for the catalog-wide analysis pass, and accept/reject of the
-    /// pending suggestions for the CURRENT selection. Accepted suggestions
+    /// controls for the catalog-wide analysis pass, accept/reject of the
+    /// pending suggestions for the CURRENT selection, and scoped generative
+    /// tagging for selections, folders, and albums. Accepted suggestions
     /// become real tags (mirrored to userKeywords) and new exemplars — the
     /// engine learns as you confirm.
     @ViewBuilder
@@ -453,7 +519,84 @@ struct MetadataPanelView: View {
                 }
             }
 
-            if tagging.isIndexing {
+            HStack {
+                Spacer()
+                Menu {
+                    Button {
+                        Task {
+                            let assets = await viewModel.assets(for: viewModel.selection)
+                            if await tagging.generateTags(for: assets) != nil {
+                                await viewModel.reload()
+                                await refreshSuggestions()
+                                await tagging.refreshCounts()
+                            }
+                        }
+                    } label: {
+                        Label(
+                            viewModel.selection.count <= 1
+                                ? "Generate Tags for Selection"
+                                : "Generate Tags for \(viewModel.selection.count) Selected",
+                            systemImage: "sparkles")
+                    }
+                    .disabled(viewModel.selection.isEmpty || tagging.isGenerating)
+
+                    if let folder = viewModel.selectedFolder {
+                        Button {
+                            Task {
+                                _ = await tagging.generateTags(forFolder: folder)
+                                await viewModel.reload()
+                                await refreshSuggestions()
+                                await tagging.refreshCounts()
+                            }
+                        } label: {
+                            Label("Generate Tags for Folder", systemImage: "folder.badge.sparkles")
+                        }
+                        .disabled(tagging.isGenerating)
+                    }
+                } label: {
+                    Label("Generate Tags", systemImage: "sparkles")
+                        .font(.caption)
+                }
+                .controlSize(.small)
+                .disabled(tagging.isGenerating)
+                .help("Generate AI tags for the selection or current folder")
+
+                Button(role: .destructive) {
+                    Task {
+                        let assets = await viewModel.assets(for: viewModel.selection)
+                        await tagging.clearAITags(for: assets)
+                        await viewModel.reload()
+                        await refreshSuggestions()
+                        await tagging.reload()
+                        await tagging.refreshCounts()
+                    }
+                } label: {
+                    Label("Clear AI Tags", systemImage: "eraser")
+                        .font(.caption)
+                }
+                .controlSize(.small)
+                .disabled(viewModel.selection.isEmpty || tagging.isGenerating)
+                .help("Remove all AI-generated tags and captions from the selection")
+            }
+
+            Toggle(
+                "Use LLM for audio captions",
+                isOn: Binding(
+                    get: { DAMTaggingService.useLLMForAudioCaptions },
+                    set: { DAMTaggingService.useLLMForAudioCaptions = $0 }
+                )
+            )
+            .controlSize(.small)
+            .font(.caption)
+            .help("Slower but writes polished captions and better tags from audio transcripts")
+
+            if tagging.isGenerating {
+                Text(tagging.generateProgress.isEmpty
+                     ? "Generating tags…"
+                     : tagging.generateProgress)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else if tagging.isIndexing {
                 Text(tagging.indexProgress.isEmpty ? "Indexing…" : tagging.indexProgress)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -598,6 +741,13 @@ enum DAMContextMenu {
             Button { copyPaths(assets) } label: {
                 Label(assets.count > 1 ? "Copy \(assets.count) Paths" : "Copy Path",
                       systemImage: "doc.on.doc")
+            }
+            Divider()
+            Button {
+                Task { await viewModel.generateTags(for: ids) }
+            } label: {
+                Label(ids.count > 1 ? "Generate Tags for \(ids.count)" : "Generate Tags",
+                      systemImage: "sparkles")
             }
             Divider()
             ForEach(0...5, id: \.self) { stars in

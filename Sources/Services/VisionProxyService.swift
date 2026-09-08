@@ -19,6 +19,10 @@ import Vision
 @MainActor
 final class VisionProxyService {
 
+    /// Shared instance. The app injects this into the environment and also
+    /// wires it to DAM generative tagging so both paths use the same config.
+    static let shared = VisionProxyService()
+
     /// Current provider and behavior settings. Persisted to UserDefaults.
     var config: ModelCatalog.VisionProxyConfiguration {
         didSet {
@@ -31,6 +35,9 @@ final class VisionProxyService {
     private weak var engine: MLXInferenceEngine?
     private var pythonProcess: Process?
     private var isServerStarting = false
+    /// Cached indicator that the Python server has been started and passed its
+    /// first health check. Reset when the process terminates or is stopped.
+    private var pythonServerStarted = false
 
     init(engine: MLXInferenceEngine? = nil) {
         self.engine = engine
@@ -179,7 +186,20 @@ final class VisionProxyService {
     /// Start the Python vision proxy server if it is not already running.
     func startPythonServer() async throws {
         guard config.provider == .pythonServer else { return }
-        guard await !isPythonServerRunning else { return }
+
+        // If we already have a live server process and it has passed its first
+        // health check, there's no need to keep polling the health endpoint
+        // (which spams CFNetwork "connection refused" logs while Flask boots).
+        if pythonServerStarted, let process = pythonProcess, process.isRunning {
+            return
+        }
+
+        // A stale process reference should not block a restart.
+        if let process = pythonProcess, !process.isRunning {
+            pythonProcess = nil
+            pythonServerStarted = false
+        }
+
         guard !isServerStarting else { return }
         isServerStarting = true
         defer { isServerStarting = false }
@@ -224,19 +244,28 @@ final class VisionProxyService {
                 guard let self else { return }
                 if self.pythonProcess === task {
                     self.pythonProcess = nil
+                    self.pythonServerStarted = false
                 }
             }
         }
         try process.run()
         pythonProcess = process
 
+        // Give Flask a beat to bind before we start health-polling; this cuts
+        // down the number of "connection refused" log lines dramatically.
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+
         // Wait for the /health endpoint to respond (up to 60 seconds).
         let deadline = Date(timeIntervalSinceNow: 60)
         while Date() < deadline {
-            if await isPythonServerRunning { return }
+            if await isPythonServerRunning {
+                pythonServerStarted = true
+                return
+            }
             try await Task.sleep(nanoseconds: 500_000_000)
         }
         process.terminate()
+        pythonServerStarted = false
         throw VisionProxyError.serverStartTimeout
     }
 
@@ -246,6 +275,7 @@ final class VisionProxyService {
             process.terminate()
         }
         pythonProcess = nil
+        pythonServerStarted = false
     }
 
     private func captionWithPythonServer(

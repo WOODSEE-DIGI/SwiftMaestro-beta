@@ -3219,8 +3219,8 @@ struct MCPServerEntry: Identifiable, Codable {
 // MARK: - About / Updates tab
 
 struct AboutSettingsTab: View {
-    @Environment(SparkleUpdaterService.self) private var updater
     @Environment(ThemeStore.self) private var theme
+    @AppStorage("featureTips.disabled") private var tipsDisabled = false
 
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
@@ -3228,6 +3228,18 @@ struct AboutSettingsTab: View {
 
     private var buildVersion: String {
         Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "Unknown"
+    }
+
+    private var tipsEnabled: Bool {
+        get { !tipsDisabled }
+        nonmutating set { tipsDisabled = !newValue }
+    }
+
+    private var tipsEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { tipsEnabled },
+            set: { tipsEnabled = $0 }
+        )
     }
 
     var body: some View {
@@ -3245,7 +3257,7 @@ struct AboutSettingsTab: View {
                 }
 
                 Button("Check for Updates…") {
-                    updater.checkForUpdates()
+                    SparkleUpdaterService.shared.checkForUpdates()
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.regular)
@@ -3271,12 +3283,9 @@ struct AboutSettingsTab: View {
                     Text("Hints")
                         .font(.headline)
 
-                    Toggle("Show feature tips", isOn: Binding(
-                        get: { FeatureTip.tipsEnabled },
-                        set: { FeatureTip.tipsEnabled = $0 }
-                    ))
+                    Toggle("Show feature tips", isOn: tipsEnabledBinding)
 
-                    if FeatureTip.tipsEnabled {
+                    if tipsEnabled {
                         Button("Reset all tips") {
                             FeatureTip.resetAll()
                         }

@@ -295,6 +295,7 @@ struct DAMBrowserView: View {
                             .foregroundStyle(.secondary)
                     }
                     .tag(node.path)
+                    .contextMenu { folderContextMenu(for: node) }
                 }
             }
             .listStyle(.sidebar)
@@ -396,6 +397,15 @@ struct DAMBrowserView: View {
             viewModel: viewModel,
             assets: viewModel.assets.filter { effective.contains($0.id ?? -1) },
             ids: effective)
+    }
+
+    @ViewBuilder
+    private func folderContextMenu(for node: DAMFolderNode) -> some View {
+        Button {
+            Task { await viewModel.generateTagsForFolder(node.path) }
+        } label: {
+            Label("Generate Tags for Folder", systemImage: "folder.badge.sparkles")
+        }
     }
 
     private var statusBar: some View {

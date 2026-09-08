@@ -13,6 +13,10 @@ typealias WKModelState = ArgmaxCore.ModelState
 @Observable
 @MainActor
 final class WhisperKitService: @unchecked Sendable {
+    /// Shared instance. The app uses this both for environment injection and
+    /// for file-based transcription from background services like DAM tagging.
+    static let shared = WhisperKitService()
+
     var modelState: WKModelState = .unloaded
     var isRecording: Bool = false
     var currentText: String = ""

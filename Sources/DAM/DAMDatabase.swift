@@ -438,6 +438,43 @@ final class DAMDatabase: Sendable {
         try assetCount(folder: folder, minRating: 0)
     }
 
+    /// All assets inside a folder. When `recursive` is true the subtree
+    /// (all descendants) is returned; otherwise only direct children.
+    func assets(inFolder path: String, recursive: Bool = true) throws -> [DAMAsset] {
+        try dbQueue.read { db in
+            var request = DAMAsset.all()
+            if recursive {
+                request = request.filter(
+                    DAMAsset.Columns.folder == path
+                    || (DAMAsset.Columns.folder >= path + "/"
+                        && DAMAsset.Columns.folder < path + "0")
+                )
+            } else {
+                request = request.filter(DAMAsset.Columns.folder == path)
+            }
+            return try request.order(DAMAsset.Columns.filename.asc).fetchAll(db)
+        }
+    }
+
+    /// All assets belonging to a collection/album, in position order.
+    func assets(inCollectionId collectionId: Int64) throws -> [DAMAsset] {
+        try dbQueue.read { db in
+            try DAMAsset.fetchAll(db, sql: """
+                SELECT a.* FROM asset a
+                JOIN collectionAsset ca ON ca.assetId = a.id
+                WHERE ca.collectionId = ?
+                ORDER BY ca.position, a.filename
+                """, arguments: [collectionId])
+        }
+    }
+
+    /// All collections/albums in the catalog.
+    func allCollections() throws -> [DAMCollection] {
+        try dbQueue.read { db in
+            try DAMCollection.fetchAll(db)
+        }
+    }
+
     /// Distinct folders with their direct asset counts — the data behind
     /// the folder tree sidebar.
     func folderCounts() throws -> [(folder: String, count: Int)] {

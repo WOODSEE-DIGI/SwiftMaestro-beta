@@ -149,7 +149,8 @@ struct DAMTag: Codable, FetchableRecord, PersistableRecord, TableRecord,
 }
 
 /// One node in the DAM folder tree (sidebar). Built from the catalog's
-/// distinct folder paths; `count` is assets directly in this folder.
+/// distinct folder paths; `count` is the total assets in this folder and
+/// all descendants.
 struct DAMFolderNode: Identifiable, Hashable, Sendable {
     var id: String { path }
     let path: String

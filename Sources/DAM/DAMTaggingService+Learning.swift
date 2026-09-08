@@ -377,13 +377,22 @@ extension DAMTaggingService {
     }
 }
 
-enum DAMTaggingError: Error, LocalizedError {
+enum DAMTaggingError: Error, LocalizedError, Equatable {
     case assetNotFound(String)
+    case visionProxyUnavailable
+    case visionProxyDisabled
+    case generationFailed(String)
 
     var errorDescription: String? {
         switch self {
         case .assetNotFound(let path):
             return "Asset not in the MaestroDAM catalog: \(path)"
+        case .visionProxyUnavailable:
+            return "Vision proxy is not available."
+        case .visionProxyDisabled:
+            return "Vision proxy is disabled. Enable it in Settings → Vision Proxy."
+        case .generationFailed(let reason):
+            return "Tag generation failed: \(reason)"
         }
     }
 }

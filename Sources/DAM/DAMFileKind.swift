@@ -73,6 +73,22 @@ enum DAMFileKind {
         isLibRAWOnly(url) || isZIPPackage(url)
     }
 
+    /// Audio formats — anything the system types as `public.audio`.
+    static func isAudio(_ url: URL) -> Bool {
+        guard let uti = UTType(filenameExtension: url.pathExtension.lowercased()) else {
+            return false
+        }
+        return uti.conforms(to: .audio)
+    }
+
+    /// Video formats — anything the system types as `public.movie`.
+    static func isVideo(_ url: URL) -> Bool {
+        guard let uti = UTType(filenameExtension: url.pathExtension.lowercased()) else {
+            return false
+        }
+        return uti.conforms(to: .movie)
+    }
+
     // MARK: - Document families (MaestroDocs engine)
 
     private static func ext(_ url: URL) -> String {

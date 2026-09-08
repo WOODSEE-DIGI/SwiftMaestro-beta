@@ -147,13 +147,15 @@ final class MediaPlayerEngine {
                 }
             }
 
-        // Observe item end.
+        // Observe item end. Seek back to the start so the file can be
+        // replayed without reloading.
         itemObserver = NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime, object: item)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 guard let self else { return }
                 self.isPlaying = false
-                self.currentTime = 0
+                self.player.seek(to: CMTime(seconds: 0, preferredTimescale: 600),
+                                 toleranceBefore: .zero, toleranceAfter: .zero)
             }
 
         player.replaceCurrentItem(with: item)
@@ -171,9 +173,18 @@ final class MediaPlayerEngine {
         }
     }
 
-    /// Start or resume playback.
+    /// Start or resume playback. If the item already played to the end,
+    /// seek back to the beginning first so it can be replayed.
     func play() {
         guard currentURL != nil else { return }
+        if let item = player.currentItem,
+           item.status == .readyToPlay,
+           item.duration.isNumeric,
+           item.duration.seconds > 0,
+           currentTime >= item.duration.seconds - 0.05 {
+            player.seek(to: CMTime(seconds: 0, preferredTimescale: 600),
+                        toleranceBefore: .zero, toleranceAfter: .zero)
+        }
         player.play()
         player.rate = rate
         isPlaying = true

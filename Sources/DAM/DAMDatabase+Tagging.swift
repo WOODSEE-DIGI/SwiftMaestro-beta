@@ -233,6 +233,48 @@ extension DAMDatabase {
         }
     }
 
+    /// Remove every AI-sourced tag from a set of assets, clear the AI caption
+    /// and keyword columns, and rebuild the `userKeywords` mirror from the
+    /// remaining tags. User/XMP/EXIF tags are left untouched.
+    func clearAITags(for assetIds: [Int64]) throws {
+        guard !assetIds.isEmpty else { return }
+        let idsCSV = assetIds.map { String($0) }.joined(separator: ",")
+        try dbQueue.write { db in
+            // 1. Detach AI tags.
+            try db.execute(sql: """
+                DELETE FROM assetTag
+                WHERE assetId IN (\(idsCSV))
+                  AND tagId IN (SELECT id FROM tag WHERE source = ?)
+                """, arguments: [DAMTagSource.ai.rawValue])
+
+            // 2. Clear AI-only fields on the asset row.
+            try db.execute(sql: """
+                UPDATE asset
+                SET aiCaption = NULL, aiKeywords = NULL
+                WHERE id IN (\(idsCSV))
+                """)
+
+            // 3. Rebuild userKeywords from remaining tag-tree tags.
+            for id in assetIds {
+                guard var asset = try DAMAsset.fetchOne(db, key: id) else { continue }
+                let remaining = try String.fetchAll(db, sql: """
+                    SELECT t.name FROM tag t
+                    JOIN assetTag at ON at.tagId = t.id
+                    WHERE at.assetId = ?
+                    ORDER BY t.name
+                    """, arguments: [id])
+                let old = asset.userKeywords
+                asset.userKeywords = remaining.isEmpty ? nil : remaining.joined(separator: ", ")
+                if asset.userKeywords != old {
+                    try asset.update(db)
+                    try recordAudit(db, assetId: id, field: "userKeywords",
+                                    oldValue: old, newValue: asset.userKeywords,
+                                    source: DAMTagSource.user.rawValue)
+                }
+            }
+        }
+    }
+
     // MARK: Suggestion queue
 
     /// Insert a suggestion, or raise the confidence of an existing pending

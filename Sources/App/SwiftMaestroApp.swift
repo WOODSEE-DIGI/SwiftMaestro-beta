@@ -144,7 +144,7 @@ struct SwiftMaestroApp: App {
     @State private var messageStore = AgentMessageStore()
     @State private var theme: ThemeStore
     @State private var skinStore: SkinStore
-    @State private var whisperService = WhisperKitService()
+    @State private var whisperService = WhisperKitService.shared
 
     init() {
         // ACP agent mode: when launched with --acp, run as a headless JSON-RPC
@@ -179,7 +179,7 @@ struct SwiftMaestroApp: App {
             service: whisperService
         )
     }
-    @State private var visionProxyService = VisionProxyService()
+    @State private var visionProxyService = VisionProxyService.shared
     @State private var notesViewModel = NotesViewModel()
     @State private var eventKitStore = EventKitStore()
     @State private var appleNotesService = AppleNotesService()
@@ -225,7 +225,6 @@ struct SwiftMaestroApp: App {
                 .environment(whatsAppService)
                 .environment(discordService)
                 .environment(pluginService)
-                .environment(sparkleUpdater)
                 .environment(webBrowserStore)
                 .task {
                     appDelegate.mcpService = mcpService
@@ -575,7 +574,6 @@ struct SwiftMaestroApp: App {
                 .environment(skinStore)
                 .environment(whisperService)
                 .environment(\.mcpClientService, mcpService)
-                .environment(sparkleUpdater)
                 // The Settings → Apps tab lists installed plugins, so it needs the
                 // same PluginService the main window uses (the single @State instance
                 // already populated by loadPlugins() at launch).
