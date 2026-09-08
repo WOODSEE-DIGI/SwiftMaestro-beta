@@ -82,11 +82,36 @@ enum DAMFileKind {
     }
 
     /// Video formats — anything the system types as `public.movie`.
+    /// `.ts` is ambiguous (MPEG-TS transport stream vs TypeScript), so we
+    /// verify the MPEG-TS sync byte to avoid cataloging source code as video.
     static func isVideo(_ url: URL) -> Bool {
-        guard let uti = UTType(filenameExtension: url.pathExtension.lowercased()) else {
+        let ext = url.pathExtension.lowercased()
+        if ext == "ts" { return isMPEGTransportStream(url) }
+        guard let uti = UTType(filenameExtension: ext) else { return false }
+        return uti.conforms(to: .movie)
+    }
+
+    /// MPEG-TS files start with the sync byte `0x47` repeated every 188 bytes.
+    /// TypeScript files start with text, so a single-byte check is enough to
+    /// disambiguate the two common uses of the `.ts` extension.
+    private static func isMPEGTransportStream(_ url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url),
+              let first = try? handle.read(upToCount: 1)?.first else {
             return false
         }
-        return uti.conforms(to: .movie)
+        try? handle.close()
+        return first == 0x47
+    }
+
+    /// Normalized catalog kind used for toolbar type filtering. Keeps the
+    /// database filter exact (and fast) instead of matching substrings in UTI.
+    static func kind(for url: URL) -> String {
+        if isStandardImage(url) { return "image" }
+        if isCameraRAW(url) || isLibRAWOnly(url) { return "raw" }
+        if isVideo(url) { return "movie" }
+        if isAudio(url) { return "audio" }
+        if isPDF(url) { return "pdf" }
+        return "unknown"
     }
 
     // MARK: - Document families (MaestroDocs engine)

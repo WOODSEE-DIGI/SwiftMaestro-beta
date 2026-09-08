@@ -40,12 +40,6 @@ actor DAMImportService {
         case cancelled
     }
 
-    /// File kinds the DAM catalogs in the scaffold. Extended later
-    /// (sidecars, project files, fonts…).
-    private static let catalogedTypes: [UTType] = [
-        .image, .rawImage, .movie, .audio, .pdf
-    ]
-
     /// Imports every catalogable file under `url` (recursive), upserting by
     /// path. Returns the number of rows written.
     /// - Parameter progress: called on progress milestones with
@@ -86,10 +80,6 @@ actor DAMImportService {
 
     // MARK: - Synchronous scan loop
 
-    /// Well-known UTI identifiers for cataloged types. Built once so the
-    /// inner scan loop doesn't reconstruct them per file.
-    private static let catalogedUTIs: [String] = catalogedTypes.map(\.identifier)
-
     /// Whether a file extension belongs to a cataloged type. Used as a fast
     /// fallback when `resourceValues` can't read the UTI (e.g. iCloud
     /// cloud-only stubs whose metadata hasn't been downloaded yet).
@@ -105,7 +95,7 @@ actor DAMImportService {
               "rw2", "rwl", "srw", "pef", "iiq", "3fr", "fff", "dng",
               "erf", "mef", "mos", "mrw", "sr2", "srf", "x3f"], .rawImage),
             (["mp4", "mov", "avi", "mkv", "m4v", "mpg", "mpeg", "wmv",
-              "flv", "webm", "3gp", "mts", "m2ts", "ts"], .movie),
+              "flv", "webm", "3gp", "mts", "m2ts"], .movie),
             (["mp3", "m4a", "aac", "wav", "aiff", "aif", "flac", "ogg",
               "wma", "opus", "caf"], .audio),
             (["pdf"], .pdf),
@@ -155,12 +145,18 @@ actor DAMImportService {
                let cached = UTType(utiID) {
                 uti = cached
             } else if !ext.isEmpty,
-                      let dynamic = UTType(filenameExtension: ext),
-                      catalogedTypes.contains(where: { dynamic.conforms(to: $0) }) {
+                      let dynamic = UTType(filenameExtension: ext) {
                 // Fallback for extensions not in the static cache (e.g.
-                // niche audio formats or new RAW variants).
+                // niche audio formats or new RAW variants). Guard against
+                // ambiguous extensions like `.ts` (TypeScript vs MPEG-TS)
+                // by using the content-aware DAMFileKind classifier.
                 uti = dynamic
             } else {
+                skipped += 1
+                return
+            }
+
+            guard DAMFileKind.kind(for: fileURL) != "unknown" else {
                 skipped += 1
                 return
             }
@@ -229,6 +225,7 @@ actor DAMImportService {
             filename: url.lastPathComponent,
             folder: url.deletingLastPathComponent().path,
             uti: uti.identifier,
+            kind: DAMFileKind.kind(for: url),
             fileSize: nil, fileModDate: nil,
             width: nil, height: nil, duration: nil,
             rating: 0, colorLabel: .none, flag: .none,
@@ -800,6 +797,7 @@ actor DAMImportService {
                     existing.gpsLon = asset.gpsLon ?? existing.gpsLon
                     existing.xattrKeywords = asset.xattrKeywords ?? existing.xattrKeywords
                     existing.tagColors = asset.tagColors ?? existing.tagColors
+                    existing.kind = asset.kind ?? existing.kind
                     existing.indexedAt = asset.indexedAt
                     try existing.update(db)
                 } else {

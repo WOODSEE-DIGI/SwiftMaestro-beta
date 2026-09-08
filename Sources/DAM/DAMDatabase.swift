@@ -264,6 +264,31 @@ final class DAMDatabase: Sendable {
             }
         }
 
+        // v9 — normalized `kind` column for reliable type filtering. The old
+        // UTI-substring filter matched `public.movie` for TypeScript `.ts`
+        // files because the static extension cache treated `.ts` as video.
+        // kind stores exact values (image/raw/movie/audio/pdf/unknown) and is
+        // populated content-aware for ambiguous extensions.
+        migrator.registerMigration("v9-asset-kind") { db in
+            try db.alter(table: "asset") { t in
+                t.add(column: "kind", .text)
+            }
+            try db.create(index: "idx_asset_kind", on: "asset", columns: ["kind"])
+
+            // The `.ts` extension collides with TypeScript source code. Old
+            // imports treated every `.ts` as `public.movie`, so TypeScript files
+            // appeared in the Video filter. Re-classify only `.ts` rows here by
+            // reading the MPEG-TS sync byte; non-video `.ts` becomes 'unknown'.
+            let tsRows = try DAMAsset
+                .filter(Column("filename").like("%.ts"))
+                .fetchAll(db)
+            for var asset in tsRows {
+                let url = URL(fileURLWithPath: asset.path)
+                asset.kind = (DAMFileKind.kind(for: url) == "movie") ? "movie" : "unknown"
+                try asset.update(db)
+            }
+        }
+
         return migrator
     }()
 
@@ -357,7 +382,11 @@ final class DAMDatabase: Sendable {
                 )
             }
             if let fileType {
-                request = request.filter(Column("uti").like("%\(fileType)%"))
+                let pattern = "%\(fileType)%"
+                request = request.filter(
+                    Column("kind") == fileType
+                    || (Column("kind") == nil && Column("uti").like(pattern))
+                )
             }
             if let tagged {
                 if tagged {
@@ -410,7 +439,11 @@ final class DAMDatabase: Sendable {
                 )
             }
             if let fileType {
-                request = request.filter(Column("uti").like("%\(fileType)%"))
+                let pattern = "%\(fileType)%"
+                request = request.filter(
+                    Column("kind") == fileType
+                    || (Column("kind") == nil && Column("uti").like(pattern))
+                )
             }
             if let tagged {
                 if tagged {
@@ -558,7 +591,10 @@ final class DAMDatabase: Sendable {
             args.append("%\":\(tagColor)}")    // end-dict: "tag":7}
         }
         if let fileType {
-            clauses.append("a.uti LIKE ?")
+            // New rows use the exact normalized kind; legacy rows fall back to
+            // the fuzzy UTI match until a rescan populates kind.
+            clauses.append("(a.kind = ? OR (a.kind IS NULL AND a.uti LIKE ?))")
+            args.append(fileType)
             args.append("%\(fileType)%")
         }
         if let tagged {

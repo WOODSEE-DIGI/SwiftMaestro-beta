@@ -41,6 +41,7 @@ struct DAMAsset: Codable, FetchableRecord, PersistableRecord, TableRecord,
     /// before migration v3 (backfill fills them).
     var folder: String?
     var uti: String?
+    var kind: String?
     var fileSize: Int64?
     var fileModDate: Date?
 
@@ -93,7 +94,7 @@ struct DAMAsset: Codable, FetchableRecord, PersistableRecord, TableRecord,
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, path, filename, folder, uti, fileSize, fileModDate, width, height,
+        case id, path, filename, folder, uti, kind, fileSize, fileModDate, width, height,
              duration, rating, colorLabel, flag, captureDate, cameraMake,
              cameraModel, lensModel, iso, aperture, shutterSpeed, focalLength,
              gpsLat, gpsLon, orientation, perceptualHash, xattrKeywords, tagColors,
