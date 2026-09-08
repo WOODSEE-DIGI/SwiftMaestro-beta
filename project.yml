@@ -248,6 +248,7 @@ targets:
       - sdk: IOKit.framework
       - sdk: WebKit.framework
       - sdk: QuickLookThumbnailing.framework
+      - sdk: Quartz.framework
     scheme:
       testTargets:
         - SwiftMaestroTests

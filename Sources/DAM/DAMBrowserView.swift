@@ -32,6 +32,9 @@ struct DAMBrowserView: View {
     /// of the selected image above the list (persisted across launches).
     @AppStorage("dam.metadataViewMode") private var metadataViewMode: MetadataViewMode = .list
 
+    /// Local spacebar monitor for the Finder-style Quick Look preview panel.
+    @State private var quickLookMonitor: Any?
+
     /// Metadata workspace viewing options.
     private enum MetadataViewMode: String {
         case list, preview
@@ -64,6 +67,24 @@ struct DAMBrowserView: View {
                 UserDefaults.standard.removeObject(forKey: "crm.pendingDAMAssetPath")
                 await viewModel.revealAsset(atPath: path)
             }
+        }
+        .onAppear {
+            quickLookMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak viewModel] event in
+                guard event.keyCode == 49 else { return event }
+                guard event.modifierFlags.intersection(.deviceIndependentFlagsMask).isSubset(of: [.numericPad, .function]) else { return event }
+                guard let viewModel, viewModel.selection.count == 1,
+                      let asset = viewModel.assets.first(where: { $0.id == viewModel.selection.first }),
+                      FileManager.default.fileExists(atPath: asset.path)
+                else { return event }
+                DAMQuickLookController.shared.toggle(URL(fileURLWithPath: asset.path))
+                return nil
+            }
+        }
+        .onDisappear {
+            if let quickLookMonitor {
+                NSEvent.removeMonitor(quickLookMonitor)
+            }
+            DAMQuickLookController.shared.close()
         }
     }
 
