@@ -173,7 +173,10 @@ actor ThumbnailService {
             throw ThumbnailError.fileNotFound
         }
 
-        let key = Self.cacheKey(for: fileURL, size: Int(pixelSize))
+        // Bust old video thumbnails so the new AVFoundation poster-frame path
+        // regenerates them consistently with the preview pane. Images keep v2.
+        let version = DAMFileKind.isVideo(fileURL) ? "v3-video" : "v2"
+        let key = Self.cacheKey(for: fileURL, size: Int(pixelSize), version: version)
 
         if let cached = Self.memoryCache.object(forKey: key as NSString) {
             return cached
@@ -476,7 +479,14 @@ actor ThumbnailService {
         // Request 2x the UI size so the image looks crisp on retina displays.
         generator.maximumSize = CGSize(width: pixelSize * 2, height: pixelSize * 2)
 
-        let cgImage = try await generator.image(at: .zero).image
+        // Use 1 second in (or the midpoint for sub-second clips) rather than
+        // the very first frame, which is often black/blank and mismatches the
+        // filmstrip thumbnails QuickLook used to generate.
+        let duration = try await asset.load(.duration).seconds
+        let targetSeconds = duration.isFinite && duration > 1 ? 1.0 : duration / 2
+        let targetTime = CMTime(seconds: targetSeconds, preferredTimescale: 600)
+
+        let cgImage = try await generator.image(at: targetTime).image
         let image = NSImage(
             cgImage: cgImage,
             size: NSSize(width: cgImage.width, height: cgImage.height)
@@ -646,10 +656,12 @@ actor ThumbnailService {
     /// The `v2` prefix busts entries written before the embedded-preview
     /// minimum-size rule (which cached fuzzy 160px DNG thumbs) — those
     /// stale files are simply never read again.
-    private nonisolated static func cacheKey(for url: URL, size: Int) -> String {
+    private nonisolated static func cacheKey(
+        for url: URL, size: Int, version: String = "v2"
+    ) -> String {
         let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey])
             .contentModificationDate?.timeIntervalSince1970) ?? 0
-        let raw = "v2|\(url.path)|\(size)|\(mtime)"
+        let raw = "\(version)|\(url.path)|\(size)|\(mtime)"
         // Paths can exceed filename limits — hash the key to a fixed-length name.
         var hash: UInt64 = 5381
         for byte in raw.utf8 { hash = ((hash << 5) &+ hash) &+ UInt64(byte) }
