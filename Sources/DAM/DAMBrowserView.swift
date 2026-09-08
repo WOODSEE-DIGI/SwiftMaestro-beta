@@ -76,7 +76,7 @@ struct DAMBrowserView: View {
                       let asset = viewModel.assets.first(where: { $0.id == viewModel.selection.first }),
                       FileManager.default.fileExists(atPath: asset.path)
                 else { return event }
-                DAMQuickLookController.shared.toggle(URL(fileURLWithPath: asset.path))
+                DAMQuickLookPanelController.shared.toggle(for: URL(fileURLWithPath: asset.path))
                 return nil
             }
         }
@@ -84,7 +84,7 @@ struct DAMBrowserView: View {
             if let quickLookMonitor {
                 NSEvent.removeMonitor(quickLookMonitor)
             }
-            DAMQuickLookController.shared.close()
+            DAMQuickLookPanelController.shared.close()
         }
     }
 
