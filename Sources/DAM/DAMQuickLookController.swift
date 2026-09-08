@@ -7,49 +7,48 @@ import Quartz
 // single tap of the spacebar shows the same floating preview Finder uses for
 // images, videos, PDFs, audio, and documents.
 
-final class DAMQuickLookController: NSObject, QLPreviewPanelDataSource, QLPreviewPanelDelegate, @unchecked Sendable {
+@MainActor
+final class DAMQuickLookController: NSObject, QLPreviewPanelDataSource, QLPreviewPanelDelegate {
 
-    nonisolated(unsafe) static let shared = DAMQuickLookController()
+    static let shared = DAMQuickLookController()
 
-    private var previewURL: URL?
+    // The data source methods are called by AppKit on the main thread, but
+    // the Objective-C protocol is not annotated as MainActor, so they are
+    // declared `nonisolated`. The URL is only ever set/read on the main
+    // thread; it is explicitly unchecked to satisfy the compiler.
+    nonisolated(unsafe) private var previewURL: URL?
 
     /// Present the system Quick Look panel for `url`.
     func show(_ url: URL) {
-        Task { @MainActor [self] in
-            previewURL = url
-            guard let panel = QLPreviewPanel.shared() else { return }
-            panel.dataSource = self
-            panel.delegate = self
-            panel.reloadData()
-            panel.makeKeyAndOrderFront(nil)
-        }
+        previewURL = url
+        guard let panel = QLPreviewPanel.shared() else { return }
+        panel.dataSource = self
+        panel.delegate = self
+        panel.reloadData()
+        panel.makeKeyAndOrderFront(nil)
     }
 
     /// Dismiss the Quick Look panel if it is open.
     func close() {
-        Task { @MainActor [self] in
-            QLPreviewPanel.shared()?.orderOut(nil)
-        }
+        QLPreviewPanel.shared()?.orderOut(nil)
     }
 
     /// Toggle the panel for the given URL.
     func toggle(_ url: URL) {
-        Task { @MainActor [self] in
-            if QLPreviewPanel.shared()?.isVisible == true {
-                close()
-            } else {
-                show(url)
-            }
+        if QLPreviewPanel.shared()?.isVisible == true {
+            close()
+        } else {
+            show(url)
         }
     }
 
     // MARK: - QLPreviewPanelDataSource
 
-    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
+    nonisolated func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
         previewURL != nil ? 1 : 0
     }
 
-    func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem {
+    nonisolated func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem {
         guard let previewURL else { return NSURL() }
         return previewURL as NSURL
     }
