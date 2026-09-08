@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Foundation
 import ImageIO
 import QuickLookThumbnailing
@@ -309,7 +310,14 @@ actor ThumbnailService {
             }
         }
 
-        // Everything else (PDF/video/docs): QuickLook, concurrency-capped.
+        // Video: generate a poster frame with AVFoundation. This is faster
+        // and more reliable than QuickLook for large preview sizes, and it
+        // works for formats QL may only iconify (e.g. some .MOV variants).
+        if DAMFileKind.isVideo(url) {
+            return try await videoThumbnailAndCache(url, pixelSize: pixelSize, key: key)
+        }
+
+        // Everything else (PDF/docs): QuickLook, concurrency-capped.
         // NO LibRaw fallback — feeding non-RAW bytes to LibRaw's parsers can
         // crash the process (EXC_BAD_ACCESS; seen in production).
         return try await quickLookAndCache(url, pixelSize: pixelSize, key: key)
@@ -452,6 +460,28 @@ actor ThumbnailService {
             try? jpeg.write(to: cacheURL, options: .atomic)
         }
 
+        return image
+    }
+
+    // MARK: - Video poster-frame engine
+
+    /// Generates a poster frame for video files using AVAssetImageGenerator.
+    /// Runs off-actor; writes the resulting JPEG to disk cache.
+    private nonisolated static func videoThumbnailAndCache(
+        _ url: URL, pixelSize: CGFloat, key: String
+    ) async throws -> NSImage {
+        let asset = AVAsset(url: url)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        // Request 2x the UI size so the image looks crisp on retina displays.
+        generator.maximumSize = CGSize(width: pixelSize * 2, height: pixelSize * 2)
+
+        let cgImage = try await generator.image(at: .zero).image
+        let image = NSImage(
+            cgImage: cgImage,
+            size: NSSize(width: cgImage.width, height: cgImage.height)
+        )
+        writeDiskCache(image, key: key)
         return image
     }
 

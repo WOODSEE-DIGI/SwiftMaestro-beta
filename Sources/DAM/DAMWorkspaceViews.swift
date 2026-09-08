@@ -396,10 +396,16 @@ struct MetadataPanelView: View {
             } else {
                 HStack(spacing: 8) {
                     Button {
-                        Task {
-                            let url = URL(fileURLWithPath: asset.path)
-                            await engine.load(url: url)
-                            engine.play()
+                        let url = URL(fileURLWithPath: asset.path)
+                        if DAMFileKind.isVideo(url) {
+                            // Video preview is the Quick Look panel (same as
+                            // the spacebar shortcut in the browser).
+                            DAMQuickLookPanelController.shared.toggle(for: url)
+                        } else {
+                            Task {
+                                await engine.load(url: url)
+                                engine.play()
+                            }
                         }
                     } label: {
                         Label("Play", systemImage: "play.circle")
