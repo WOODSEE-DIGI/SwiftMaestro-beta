@@ -126,6 +126,28 @@ struct DAMAsset: Codable, FetchableRecord, PersistableRecord, TableRecord,
     var sortDate: Date { captureDate ?? fileModDate ?? .distantPast }
     var sortSize: Int64 { fileSize ?? -1 }
     var sortType: String { uti ?? "" }
+    var sortDuration: Double { duration ?? 0 }
+    var sortExtension: String { (path as NSString).pathExtension }
+
+    /// Duration formatted as MM:SS or HH:MM:SS for audio/video rows.
+    var formattedDuration: String {
+        guard let duration, duration > 0 else { return "—" }
+        let total = Int(duration)
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let seconds = total % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
+        } else {
+            return String(format: "%d:%02d", minutes, seconds)
+        }
+    }
+
+    /// File extension in uppercase, or "—" when absent.
+    var formattedExtension: String {
+        let ext = (path as NSString).pathExtension.uppercased()
+        return ext.isEmpty ? "—" : ext
+    }
 }
 
 /// A node in the hierarchical tag tree (`/People/Family/Alex`).

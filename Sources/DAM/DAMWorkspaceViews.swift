@@ -232,6 +232,14 @@ struct ListWorkspaceView: View {
 
     @State private var sortOrder: [KeyPathComparator<DAMAsset>] = []
 
+    // MARK: - Column visibility
+    @AppStorage("dam.listColumn.type") private var showTypeColumn = true
+    @AppStorage("dam.listColumn.rating") private var showRatingColumn = true
+    @AppStorage("dam.listColumn.keywords") private var showKeywordsColumn = true
+    @AppStorage("dam.listColumn.folder") private var showFolderColumn = true
+    @AppStorage("dam.listColumn.duration") private var showDurationColumn = true
+    @AppStorage("dam.listColumn.extension") private var showExtensionColumn = true
+
     private var sortedAssets: [DAMAsset] {
         sortOrder.isEmpty ? viewModel.assets : viewModel.assets.sorted(using: sortOrder)
     }
@@ -243,7 +251,106 @@ struct ListWorkspaceView: View {
         )
     }
 
+    @ViewBuilder
     var body: some View {
+        if #available(macOS 14.4, *) {
+            customizableTable
+        } else {
+            standardTable
+        }
+    }
+
+    /// macOS 14.4+ supports conditional `TableColumn` declarations, so we can
+    /// let the user show/hide columns and persist the choices in AppStorage.
+    @available(macOS 14.4, *)
+    private var customizableTable: some View {
+        ZStack(alignment: .topTrailing) {
+            Table(sortedAssets, selection: selectionBinding, sortOrder: $sortOrder) {
+                TableColumn("Name", value: \.filename) { asset in
+                    Text(asset.filename)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .width(min: 140, ideal: 240)
+
+                TableColumn("Date", value: \.sortDate) { asset in
+                    Text((asset.captureDate ?? asset.fileModDate)?
+                        .formatted(date: .abbreviated, time: .shortened) ?? "—")
+                }
+                .width(150)
+
+                TableColumn("Size", value: \.sortSize) { asset in
+                    Text(asset.formattedSize.isEmpty ? "—" : asset.formattedSize)
+                }
+                .width(80)
+
+                if showExtensionColumn {
+                    TableColumn("Ext", value: \.sortExtension) { asset in
+                        Text(asset.formattedExtension)
+                            .lineLimit(1)
+                    }
+                    .width(60)
+                }
+
+                if showTypeColumn {
+                    TableColumn("Type", value: \.sortType) { asset in
+                        Text(UTType(asset.uti ?? "")?.localizedDescription
+                             ?? (asset.path as NSString).pathExtension.uppercased())
+                            .lineLimit(1)
+                    }
+                    .width(110)
+                }
+
+                if showDurationColumn {
+                    TableColumn("Duration", value: \.sortDuration) { asset in
+                        Text(asset.formattedDuration)
+                            .monospacedDigit()
+                    }
+                    .width(80)
+                }
+
+                if showRatingColumn {
+                    TableColumn("Rating", value: \.rating) { asset in
+                        Text(asset.rating == 0 ? "—" : String(repeating: "★", count: asset.rating))
+                            .foregroundStyle(.yellow)
+                    }
+                    .width(70)
+                }
+
+                if showKeywordsColumn {
+                    TableColumn("Keywords") { asset in
+                        Text(asset.userKeywords ?? asset.xattrKeywords ?? "")
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                }
+
+                if showFolderColumn {
+                    TableColumn("Folder") { asset in
+                        Text(asset.folder ?? "")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.head)
+                    }
+                }
+            }
+            .contextMenu(forSelectionType: DAMAsset.ID.self) { ids in
+                DAMContextMenu.items(
+                    viewModel: viewModel,
+                    assets: viewModel.assets.filter { ids.contains($0.id ?? -1) },
+                    ids: ids)
+            }
+
+            columnPicker
+                .padding(.top, 6)
+                .padding(.trailing, 16)
+        }
+    }
+
+    /// Fallback for macOS 14.0–14.3: all columns are always visible because
+    /// conditional TableColumn builder support requires macOS 14.4.
+    private var standardTable: some View {
         Table(sortedAssets, selection: selectionBinding, sortOrder: $sortOrder) {
             TableColumn("Name", value: \.filename) { asset in
                 Text(asset.filename)
@@ -263,12 +370,24 @@ struct ListWorkspaceView: View {
             }
             .width(80)
 
+            TableColumn("Ext", value: \.sortExtension) { asset in
+                Text(asset.formattedExtension)
+                    .lineLimit(1)
+            }
+            .width(60)
+
             TableColumn("Type", value: \.sortType) { asset in
                 Text(UTType(asset.uti ?? "")?.localizedDescription
                      ?? (asset.path as NSString).pathExtension.uppercased())
                     .lineLimit(1)
             }
             .width(110)
+
+            TableColumn("Duration", value: \.sortDuration) { asset in
+                Text(asset.formattedDuration)
+                    .monospacedDigit()
+            }
+            .width(80)
 
             TableColumn("Rating", value: \.rating) { asset in
                 Text(asset.rating == 0 ? "—" : String(repeating: "★", count: asset.rating))
@@ -296,6 +415,24 @@ struct ListWorkspaceView: View {
                 assets: viewModel.assets.filter { ids.contains($0.id ?? -1) },
                 ids: ids)
         }
+    }
+
+    @available(macOS 14.4, *)
+    private var columnPicker: some View {
+        Menu {
+            Toggle("Extension", isOn: $showExtensionColumn)
+            Toggle("Type", isOn: $showTypeColumn)
+            Toggle("Duration", isOn: $showDurationColumn)
+            Toggle("Rating", isOn: $showRatingColumn)
+            Toggle("Keywords", isOn: $showKeywordsColumn)
+            Toggle("Folder", isOn: $showFolderColumn)
+        } label: {
+            Image(systemName: "tablecells.badge.ellipsis")
+                .font(.caption)
+        }
+        .menuStyle(.borderlessButton)
+        .frame(width: 28, height: 20)
+        .help("Show or hide list columns")
     }
 }
 
