@@ -135,7 +135,6 @@ pkgbuild \
     --identifier "com.woodseedigi.swiftmaestro.full" \
     --version "$VERSION" \
     --install-location "/" \
-    --scripts "$(dirname "$0")/pkg-scripts" \
     "$UNSIGNED_PKG"
 
 # Sign the installer with the Developer ID Installer certificate.
