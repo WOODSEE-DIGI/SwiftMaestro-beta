@@ -741,6 +741,7 @@ final class DAMViewModel {
         return DAMFileKind.isStandardImage(url)
             || DAMFileKind.isCameraRAW(url)
             || DAMFileKind.isAudio(url)
+            || DAMFileKind.isVideo(url)
     }
 
     /// Generate AI tags for the current selection. Unsupported assets are
@@ -749,7 +750,7 @@ final class DAMViewModel {
         let assets = await assets(for: ids)
         let taggable = assets.filter(Self.isTaggableAsset)
         guard !taggable.isEmpty else {
-            errorMessage = "No image or audio assets selected."
+            errorMessage = "No image, audio, or video assets selected."
             return
         }
         errorMessage = "Generating tags for \(taggable.count) asset(s)…"

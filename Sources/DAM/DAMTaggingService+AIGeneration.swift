@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Foundation
 import OSLog
 
@@ -130,6 +131,8 @@ extension DAMTaggingService {
                     tags = try await generateTags(for: asset, prompt: prompt)
                 } else if Self.isAudioAsset(asset) {
                     tags = try await generateAudioTags(for: asset)
+                } else if Self.isVideoAsset(asset) {
+                    tags = try await generateVideoTags(for: asset)
                 } else {
                     result.processed += 1
                     result.skipped += 1
@@ -191,21 +194,32 @@ extension DAMTaggingService {
         DAMFileKind.isAudio(URL(fileURLWithPath: asset.path))
     }
 
+    /// True for video files from which we can extract an audio track for
+    /// WhisperKit transcription.
+    static func isVideoAsset(_ asset: DAMAsset) -> Bool {
+        DAMFileKind.isVideo(URL(fileURLWithPath: asset.path))
+    }
+
     /// Generate AI tags for a single audio asset by transcribing it with
     /// WhisperKit and extracting nouns / named entities from the transcript.
     /// The full transcript is stored in `ocrText` for search.
     @discardableResult
     func generateAudioTags(for asset: DAMAsset) async throws -> [String] {
-        guard let assetId = asset.id else { return [] }
         guard Self.isAudioAsset(asset) else { return [] }
+        return try await generateAudioTags(for: asset, audioURL: URL(fileURLWithPath: asset.path))
+    }
 
-        let url = URL(fileURLWithPath: asset.path)
+    /// Generate AI tags from an audio file (the asset's own file, or an
+    /// extracted audio track from a video). Shared implementation for audio
+    /// and video assets.
+    private func generateAudioTags(for asset: DAMAsset, audioURL: URL) async throws -> [String] {
+        guard let assetId = asset.id else { return [] }
 
         // WhisperKitService is @MainActor; the `await` hops to it for the
         // transcription call (it loads the model lazily and caches it).
         let transcription: String?
         do {
-            transcription = try await WhisperKitService.shared.transcribeAudioFile(at: url)
+            transcription = try await WhisperKitService.shared.transcribeAudioFile(at: audioURL)
         } catch {
             // Decode failures, no-speech, or missing model all fall back to
             // filename/folder context so short stems and SFX are still tagged.
@@ -219,8 +233,8 @@ extension DAMTaggingService {
         if let usefulTranscription {
             sourceText = usefulTranscription
         } else {
-            // Non-speech audio (e.g. stems, beeps, sound effects): derive
-            // context from the filename and parent folders.
+            // Non-speech audio (e.g. stems, beeps, sound effects) or video
+            // with no usable audio: derive context from filename and folders.
             sourceText = Self.sourceTextForAudioAsset(asset)
         }
         guard !sourceText.isEmpty else { return [] }
@@ -273,6 +287,48 @@ extension DAMTaggingService {
         }
 
         return tags
+    }
+
+    /// Generate AI tags for a single video asset by extracting its audio track,
+    /// transcribing it with WhisperKit, and deriving keywords/caption.
+    @discardableResult
+    func generateVideoTags(for asset: DAMAsset) async throws -> [String] {
+        guard let assetId = asset.id else { return [] }
+        guard Self.isVideoAsset(asset) else { return [] }
+
+        let videoURL = URL(fileURLWithPath: asset.path)
+        let audioURL = try await extractAudioTrack(from: videoURL)
+        defer { try? FileManager.default.removeItem(at: audioURL) }
+
+        return try await generateAudioTags(for: asset, audioURL: audioURL)
+    }
+
+    /// Extracts the audio track from a video into a temporary M4A file using
+    /// AVAssetExportSession. The caller is responsible for deleting the temp
+    /// file when done.
+    private func extractAudioTrack(from videoURL: URL) async throws -> URL {
+        let asset = AVAsset(url: videoURL)
+        guard try await asset.load(.isExportable) else {
+            throw DAMTaggingError.generationFailed("Video is not exportable")
+        }
+        let session = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A)
+        guard let session else {
+            throw DAMTaggingError.generationFailed("Could not create audio export session")
+        }
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("m4a")
+        session.outputURL = outputURL
+        session.outputFileType = .m4a
+        session.timeRange = CMTimeRange(start: .zero, duration: asset.duration)
+
+        await session.export()
+        switch session.status {
+        case .completed:
+            return outputURL
+        default:
+            throw session.error ?? DAMTaggingError.generationFailed("Audio export failed with status \(session.status.rawValue)")
+        }
     }
 
     /// Decode an image for the vision proxy at a size that balances detail
