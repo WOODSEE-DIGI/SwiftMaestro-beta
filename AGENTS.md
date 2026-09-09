@@ -110,22 +110,33 @@ xcodebuild -project SwiftMaestro.xcodeproj -scheme SwiftMaestro -configuration D
   -  destination "platform=macOS" build
 ```
 
-## Release (DMG + upload) — MANDATORY
+## Release (PKG + upload) — MANDATORY
 
 The ONLY sanctioned release path is `./scripts/release.sh` (optionally `UPLOAD=1`).
-The ONLY sanctioned upload method for the ~28 GB full DMG is the MinIO client
+The ONLY sanctioned upload method for the ~28 GB full installer is the MinIO client
 (`mc`) multipart upload via `upload-to-onidel.sh` (wired into release.sh).
 
-- **NEVER** upload the DMG via curl/single-PUT, presigned URLs, SFTP/lftp,
+- **NEVER** upload the installer via curl/single-PUT, presigned URLs, SFTP/lftp,
   rclone, the Onidel web UI, or any hand-rolled method — they time out or
   break on 28 GB and have wasted hours repeatedly. `mc cp` uses S3 multipart
-  under the hood and has shipped every full DMG since 0.2.2 without failing.
+  under the hood and has shipped every full installer since 0.2.2 without failing.
 - If an `mc` upload genuinely fails, RETRY `mc` — do not switch methods.
-- Do not "invent" a light/beta DMG variant to dodge the upload size; the full
-  28 GB DMG is the only release artifact (package-light.sh is retired).
+- Do not "invent" a light/beta installer variant to dodge the upload size; the full
+  ~28 GB PKG is the only first-install artifact.
 - The 1984-hosting appcast SFTP step in release.sh skips itself cleanly when
   `SM_SFTP_USER`/`SM_SFTP_HOST` are unset — do not work around it with another
   transfer method.
+- `release.sh` now runs `./scripts/release-check.sh` first. It will refuse to
+  build if the working tree is dirty, if `Sources/Resources/Info.plist` version
+  is not strictly greater than the latest git tag, or if stale release artifacts
+  already exist in `dist/`. **Do not bypass this with `SKIP_RELEASE_CHECK=1`
+  unless you are manually retrying after a failure.**
+- The .pkg installers place bundled models in `/Library/Application Support/
+  SwiftMaestro/models`. The Sparkle update archives are app-only, so binary
+  deltas are small and no longer OOM `generate_appcast`.
+- Before every release, bump both `CFBundleShortVersionString` and
+  `CFBundleVersion` in `Sources/Resources/Info.plist`, commit, and tag only
+  after the upload succeeds.
 
 ### Fast-upload runbook (follow exactly)
 
@@ -135,13 +146,13 @@ The ONLY sanctioned upload method for the ~28 GB full DMG is the MinIO client
 ./scripts/release.sh            # build + sign + package + appcast
 UPLOAD=1 ./scripts/release.sh   # same + upload
 
-# 2. If a DMG already exists and only the upload is needed:
-<website-repo>/upload-to-onidel.sh dist/SwiftMaestro-X.Y.Z-full.dmg
+# 2. If a PKG already exists and only the upload is needed:
+<website-repo>/upload-to-onidel.sh dist/SwiftMaestro-X.Y.Z-full.pkg
 <website-repo>/upload-to-onidel.sh --appcast dist/appcast.xml
 ```
 
-**Order matters: DMG first, appcast SECOND.** A live appcast pointing at a
-missing DMG = 404 for every updater.
+**Order matters: PKG first, appcast SECOND.** A live appcast pointing at a
+missing installer = 404 for every updater.
 
 **Verify an upload is actually moving before declaring it stalled:**
 - Run `mc --debug cp ...` and count `partNumber=... 200 OK` lines, OR
@@ -153,10 +164,9 @@ missing DMG = 404 for every updater.
 - Expected rate on the user's fibre: ~5 MB/s (28 GB ≈ 90–100 min).
 
 **Known landmines:**
-- `generate_appcast` mounts the DMG with hdiutil — it CANNOT run while an
-  upload of the same file is in flight ("hdiutil: attach failed - Resource
-  busy"). Sign with `sign_update -f` + hand-built appcast XML instead, or
-  simply generate the appcast after the upload finishes.
+- `generate_appcast` now works on small app-only `.zip` archives, so it can run
+  in parallel with an upload. Still, never run two `mc cp` processes for the
+  same object.
 - Never run two `mc cp` processes for the same object — they split the uplink
   and orphan multipart sessions.
 - Kill stale `diskimages-helper`/`hdiutil` processes before retrying

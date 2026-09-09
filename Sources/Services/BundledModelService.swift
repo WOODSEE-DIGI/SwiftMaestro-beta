@@ -147,18 +147,45 @@ final class BundledModelService: @unchecked Sendable {
         [gemmaModel, whisperModel, swiftHelperModel, coderModel]
     }
 
-    /// URL to the bundled model directory inside the app bundle.
-    private func bundledURL(for model: BundledModelDescriptor) -> URL? {
+    /// True if `url` exists and is a directory.
+    private func directoryExists(at url: URL) -> Bool {
+        var isDir: ObjCBool = false
+        return fm.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
+    }
+
+    /// Shared system-wide model directory installed by the .pkg installer.
+    /// Models shipped in the installer live here so the app bundle can stay
+    /// small and Sparkle deltas only cover code changes.
+    private var sharedModelsDir: URL {
+        URL(fileURLWithPath: "/Library/Application Support/SwiftMaestro/models")
+    }
+
+    /// URL to the bundled model directory inside the app bundle (legacy/dev).
+    private func inBundleURL(for model: BundledModelDescriptor) -> URL? {
         Bundle.main.resourceURL?
             .appendingPathComponent("models", isDirectory: true)
             .appendingPathComponent(model.bundleSubpath, isDirectory: true)
     }
 
-    /// True if the model directory is present in the app bundle.
+    /// URL to the bundled model directory in the shared installer location.
+    private func sharedURL(for model: BundledModelDescriptor) -> URL {
+        sharedModelsDir.appendingPathComponent(model.bundleSubpath, isDirectory: true)
+    }
+
+    /// Best available source URL for a bundled model: in-bundle first, then the
+    /// shared .pkg install location.
+    private func bundledURL(for model: BundledModelDescriptor) -> URL? {
+        if let inBundle = inBundleURL(for: model), directoryExists(at: inBundle) {
+            return inBundle
+        }
+        let shared = sharedURL(for: model)
+        return directoryExists(at: shared) ? shared : nil
+    }
+
+    /// True if the model directory is present in either the app bundle or the
+    /// shared installer location.
     private func hasBundledModel(_ model: BundledModelDescriptor) -> Bool {
-        guard let url = bundledURL(for: model) else { return false }
-        var isDir: ObjCBool = false
-        return fm.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
+        bundledURL(for: model) != nil
     }
 
     /// True if the model is already installed in the user's model location.

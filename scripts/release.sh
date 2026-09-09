@@ -2,21 +2,27 @@
 # Full release pipeline for SwiftMaestro.
 #
 # Builds a Developer ID-signed Release app and produces:
-#   - SwiftMaestro-<VERSION>-full.dmg   (app + Gemma 4 + WhisperKit)
-#   - SwiftMaestro-<VERSION>-light.dmg  (app + WhisperKit, no Gemma 4)
-#   - SwiftMaestro-<VERSION>-full.zip   (Sparkle update archive)
-#   - SwiftMaestro-<VERSION>-light.zip  (Sparkle update archive)
-#   - *.delta patches                    (Sparkle binary deltas from prior versions)
+#   - SwiftMaestro-<VERSION>-full.pkg   (signed .pkg installer: app + Gemma 4 + WhisperKit)
+#   - SwiftMaestro-<VERSION>-light.pkg  (signed .pkg installer: app + WhisperKit, no Gemma 4)
+#   - SwiftMaestro-<VERSION>-full.zip   (app-only Sparkle update archive)
+#   - SwiftMaestro-<VERSION>-light.zip  (app-only Sparkle update archive)
+#   - *.delta patches                    (Sparkle binary deltas between app-only zips)
 #   - appcast.xml                        (full-installer Sparkle feed)
 #   - appcast-light.xml                  (light-installer Sparkle feed)
-# signs the DMGs, and generates separate full/light Sparkle appcasts with delta updates enabled.
+# signs the pkgs, and generates separate full/light Sparkle appcasts with deltas.
+#
+# The .pkg installers place bundled models in /Library/Application Support/
+# SwiftMaestro/models; the app copies/hardlinks them into the user's model
+# directory on first launch. The Sparkle update archives are app-only, so deltas
+# are small and generate_appcast no longer OOMs.
 # Notarization is OFF by default (NOTARIZE=1 opts in).
 #
 # Env overrides:
 #   VERSION=<x.y.z>            (default reads from app Info.plist)
 #   DOWNLOAD_URL_PREFIX=<url>  (default https://s3.ap-southeast-2.onidel.cloud/swiftmaestro-releases/)
 #   NOTARIZE=1                 (opt in to notarization — skipped by default)
-#   UPLOAD=1                   (upload: DMGs + appcast → Onidel; appcast → 1984 same-origin)
+#   UPLOAD=1                   (upload: pkgs + zips + appcast → Onidel; appcast → 1984 same-origin)
+#   SKIP_RELEASE_CHECK=1       (skip ./scripts/release-check.sh — only for manual retries)
 #   SPARKLE_ARCHIVE_CACHE=<dir> (default ./.sparkle-archive-cache; stores prior zips for deltas)
 #   ARCHIVE_CACHE_MAX=<n>      (default 3; number of prior full/light zips to retain for deltas)
 #   ONIDEL_UPLOAD / DEPLOY_SCRIPT  (override upload helper paths)
@@ -29,6 +35,13 @@ APP_NAME="SwiftMaestro"
 DOWNLOAD_URL_PREFIX="${DOWNLOAD_URL_PREFIX:-https://s3.ap-southeast-2.onidel.cloud/swiftmaestro-releases/}"
 APP_PATH="build/Release/${APP_NAME}.app"
 DIST_DIR="dist"
+
+# Pre-flight: enforce version bump, clean working tree, and no conflicting
+# artifacts BEFORE the multi-hour build/upload begins. This is the guard that
+# prevents shipping the same version twice or building on top of stale dist/.
+if [ "${SKIP_RELEASE_CHECK:-0}" != "1" ]; then
+    ./scripts/release-check.sh || exit 1
+fi
 
 # Pre-flight: a release whose model download links are broken is not worth
 # shipping — fresh installs would fail to fetch models on first run. Validates
@@ -59,33 +72,50 @@ rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR"
 OUTPUT_DIR="$PWD/$DIST_DIR"
 
-# Archive cache for Sparkle delta generation. Binary-delta updates require
-# previous version app archives to be present when generate_appcast runs. The
-# cache lives outside dist/ so it persists across release runs.
+# The internal SSD can fill up during packaging (DMG/PKG staging + output).
+# Prefer an external work volume when one is available so a full disk doesn't
+# kill a multi-hour release.
+if [ -z "${RELEASE_TMPDIR:-}" ]; then
+    for candidate in "/Volumes/SR2_2TB/.swiftmaestro-release-tmp" "/Volumes/16TB Striped/.swiftmaestro-release-tmp"; do
+        mount_point="$(dirname "$candidate")"
+        if [ -d "$mount_point" ]; then
+            free_gb="$(df -g "$mount_point" 2>/dev/null | awk 'NR==2 {print $4}')"
+            if [ -n "${free_gb:-}" ] && [ "$free_gb" -ge 150 ]; then
+                mkdir -p "$candidate"
+                RELEASE_TMPDIR="$candidate"
+                break
+            fi
+        fi
+    done
+fi
+if [ -n "${RELEASE_TMPDIR:-}" ]; then
+    export RELEASE_TMPDIR
+    echo "Using release temp directory: $RELEASE_TMPDIR"
+fi
+
+# Archive cache for Sparkle delta generation. The update archives are now
+# app-only (no models), so binary deltas are small and no longer OOM.
 SPARKLE_ARCHIVE_CACHE="${SPARKLE_ARCHIVE_CACHE:-$PWD/.sparkle-archive-cache}"
 ARCHIVE_CACHE_MAX="${ARCHIVE_CACHE_MAX:-3}"
 mkdir -p "$SPARKLE_ARCHIVE_CACHE"
 
-# Build the full installer.
+# Build the full installer (.pkg + app-only Sparkle .zip).
 echo ""
 echo "--- Building full installer ---"
-OUTPUT_DIR="$OUTPUT_DIR" ./scripts/package-full.sh
+OUTPUT_DIR="$OUTPUT_DIR" ./scripts/package-full-pkg.sh
 
-# Cache the full archive for future delta generation and prune old entries.
+# Cache the full update archive for delta generation and prune old entries.
 cp "$DIST_DIR/${APP_NAME}-${VERSION}-full.zip" "$SPARKLE_ARCHIVE_CACHE/"
 ls -t "$SPARKLE_ARCHIVE_CACHE"/SwiftMaestro-*-full.zip 2>/dev/null | tail -n +$((ARCHIVE_CACHE_MAX + 1)) | while IFS= read -r old; do
     [ -n "$old" ] && rm -f "$old"
 done
 
-# Build the light installer (app + WhisperKit, no Gemma 4) — the variant for
-# Macs under 32 GB that run chat on online models or a networked LM Studio
-# host. Revived as a supported product line 2026-08-22 (was retired as the
-# "-beta" DMG on 2026-08-15 when only the full installer shipped).
+# Build the light installer (.pkg + app-only Sparkle .zip).
 echo ""
 echo "--- Building light installer ---"
-OUTPUT_DIR="$OUTPUT_DIR" DOWNLOAD_URL_PREFIX="$DOWNLOAD_URL_PREFIX" ./scripts/package-light.sh
+OUTPUT_DIR="$OUTPUT_DIR" ./scripts/package-light-pkg.sh
 
-# Cache the light archive for future delta generation and prune old entries.
+# Cache the light update archive for delta generation and prune old entries.
 cp "$DIST_DIR/${APP_NAME}-${VERSION}-light.zip" "$SPARKLE_ARCHIVE_CACHE/"
 ls -t "$SPARKLE_ARCHIVE_CACHE"/SwiftMaestro-*-light.zip 2>/dev/null | tail -n +$((ARCHIVE_CACHE_MAX + 1)) | while IFS= read -r old; do
     [ -n "$old" ] && rm -f "$old"
@@ -197,12 +227,13 @@ echo "Light appcast preview:"
 grep -E "<enclosure|<title|sparkle:version|sparkle:channel" "$DIST_DIR/appcast-light.xml" | head -40
 
 # Upload pipeline (UPLOAD=1):
-#   DMGs (full + beta) → Onidel Object Storage (Sydney) via upload-to-onidel.sh
-#   appcast.xml        → Onidel Object Storage (Sydney) via upload-to-onidel.sh
-#   appcast.xml        → 1984 shared hosting (same-origin for website JavaScript)
-#   Website HTML/CSS   → 1984 shared hosting via deploy.sh (SFTP)
+#   PKGs (full + light) → Onidel Object Storage (Sydney) via upload-to-onidel.sh
+#   ZIPs + deltas       → Onidel Object Storage (Sydney) via upload-to-onidel.sh
+#   appcast.xml         → Onidel Object Storage (Sydney) via upload-to-onidel.sh
+#   appcast.xml         → 1984 shared hosting (same-origin for website JavaScript)
+#   Website HTML/CSS    → 1984 shared hosting via deploy.sh (SFTP)
 #
-# DMGs are large (28GB) and must NOT go to the 1984 shared host.
+# The large PKGs must NOT go to the 1984 shared host.
 if [ "${UPLOAD:-0}" = "1" ]; then
     ONIDEL_UPLOAD="${ONIDEL_UPLOAD:-$HOME/GitHub/FUSV/Websites/swiftmaestro-site/upload-to-onidel.sh}"
     DEPLOY_SCRIPT="${DEPLOY_SCRIPT:-$HOME/GitHub/FUSV/Websites/swiftmaestro-site/deploy.sh}"
@@ -213,9 +244,9 @@ if [ "${UPLOAD:-0}" = "1" ]; then
     fi
 
     echo ""
-    echo "--- Uploading DMGs and Sparkle update archives to Onidel Object Storage (Sydney) ---"
-    "$ONIDEL_UPLOAD" "$DIST_DIR/${APP_NAME}-${VERSION}-full.dmg"
-    "$ONIDEL_UPLOAD" "$DIST_DIR/${APP_NAME}-${VERSION}-light.dmg"
+    echo "--- Uploading installers and Sparkle update archives to Onidel Object Storage (Sydney) ---"
+    "$ONIDEL_UPLOAD" "$DIST_DIR/${APP_NAME}-${VERSION}-full.pkg"
+    "$ONIDEL_UPLOAD" "$DIST_DIR/${APP_NAME}-${VERSION}-light.pkg"
     "$ONIDEL_UPLOAD" "$DIST_DIR/${APP_NAME}-${VERSION}-full.zip"
     "$ONIDEL_UPLOAD" "$DIST_DIR/${APP_NAME}-${VERSION}-light.zip"
 

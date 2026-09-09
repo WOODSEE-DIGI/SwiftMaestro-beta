@@ -1,0 +1,182 @@
+#!/bin/bash
+# Package a signed .pkg installer for the full SwiftMaestro product line.
+#
+# Installs:
+#   - SwiftMaestro.app into /Applications
+#   - bundled models into /Library/Application Support/SwiftMaestro/models/
+#
+# Also produces an app-only .zip archive for Sparkle delta updates. The .zip
+# does NOT contain models, so Sparkle binary deltas stay small.
+#
+# Env overrides:
+#   VERSION=<x.y.z>          (default reads from app Info.plist)
+#   MODEL_PATH=<path>        (default <model-directory>/models/swiftmaestro-models/gemma-4-26B-A4B-it-MLX-8bit)
+#   WHISPER_MODEL_PATH=<path> (default ~/Library/Application Support/SwiftMaestro/WhisperKit/models/argmaxinc/whisperkit-coreml/openai_whisper-large-v3)
+#   MECHANIC_MODEL_PATH=<path> (default: SwiftMaestro-Mechanic-4bit, falling back to Qwen3-4B-Instruct-2507-4bit)
+#   CODER_MODEL_PATH=<path>  (default <model-directory>/models/swiftmaestro-models/DeepSeek-Coder-V2-Lite-Instruct-4bit-mlx)
+#   TEAM_ID=<team>           (default 3BMZ2ULZ54)
+#   APP_SIGN_IDENTITY=<name> (default "Developer ID Application")
+#   INSTALLER_SIGN_IDENTITY=<name> (default "Developer ID Installer")
+#   NOTARY_PROFILE=<name>    (default SwiftMaestroNotary)
+#   NOTARIZE=1               (opt in to notarization — skipped by default)
+#   ENTITLEMENTS=<path>      (default Sources/Resources/SwiftMaestro.entitlements)
+#   SKIP_SPARKLE_ZIP=1       (skip the app-only Sparkle update archive)
+set -euo pipefail
+
+OUTPUT_DIR="${OUTPUT_DIR:-$PWD}"
+APP_NAME="SwiftMaestro"
+MODEL_PATH="${MODEL_PATH:-$HOME/Ai-models/models/swiftmaestro-models/gemma-4-26B-A4B-it-MLX-8bit}"
+WHISPER_MODEL_PATH="${WHISPER_MODEL_PATH:-$HOME/Library/Application Support/SwiftMaestro/WhisperKit/models/argmaxinc/whisperkit-coreml/openai_whisper-large-v3}"
+MECHANIC_MODEL_PATH="${MECHANIC_MODEL_PATH:-}"
+if [ -z "$MECHANIC_MODEL_PATH" ]; then
+    for candidate in \
+        "$HOME/Ai-models/models/swiftmaestro-models/SwiftMaestro-Mechanic-4bit" \
+        "$HOME/Ai-models/models/swiftmaestro-models/Qwen3-4B-Instruct-2507-4bit"; do
+        if [ -d "$candidate" ]; then MECHANIC_MODEL_PATH="$candidate"; break; fi
+    done
+fi
+CODER_MODEL_PATH="${CODER_MODEL_PATH:-$HOME/Ai-models/models/swiftmaestro-models/DeepSeek-Coder-V2-Lite-Instruct-4bit-mlx}"
+TEAM_ID="${TEAM_ID:-3BMZ2ULZ54}"
+APP_SIGN_IDENTITY="${APP_SIGN_IDENTITY:-Developer ID Application}"
+INSTALLER_SIGN_IDENTITY="${INSTALLER_SIGN_IDENTITY:-Developer ID Installer}"
+NOTARY_PROFILE="${NOTARY_PROFILE:-SwiftMaestroNotary}"
+ENTITLEMENTS="${ENTITLEMENTS:-Sources/Resources/SwiftMaestro.entitlements}"
+APP_PATH="build/Release/${APP_NAME}.app"
+
+if [ ! -d "$APP_PATH" ]; then
+    echo "App not found at $APP_PATH — run ./scripts/build.sh first."
+    exit 1
+fi
+
+VERSION="${VERSION:-$(defaults read "$PWD/$APP_PATH/Contents/Info.plist" CFBundleShortVersionString)}"
+PKG="$OUTPUT_DIR/${APP_NAME}-${VERSION}-full.pkg"
+ZIP="$OUTPUT_DIR/${APP_NAME}-${VERSION}-full.zip"
+
+if [ ! -d "$MODEL_PATH" ]; then
+    echo "Model not found at $MODEL_PATH"
+    exit 1
+fi
+
+if [ ! -d "$WHISPER_MODEL_PATH" ]; then
+    echo "Whisper model not found at $WHISPER_MODEL_PATH"
+    exit 1
+fi
+
+if [ ! -f "$ENTITLEMENTS" ]; then
+    echo "Entitlements file not found at $ENTITLEMENTS"
+    exit 1
+fi
+
+MODEL_NAME="$(basename "$MODEL_PATH")"
+WHISPER_MODEL_NAME="$(basename "$WHISPER_MODEL_PATH")"
+
+echo "=== Packaging full installer $PKG (bundled: $MODEL_NAME + $WHISPER_MODEL_NAME) ==="
+
+if [ -n "${RELEASE_TMPDIR:-}" ]; then
+    STAGE="$(mktemp -d "$RELEASE_TMPDIR/tmp.XXXXXX")"
+else
+    STAGE="$(mktemp -d)"
+fi
+APP_STAGE="$STAGE/Applications/${APP_NAME}.app"
+MODELS_STAGE="$STAGE/Library/Application Support/SwiftMaestro/models"
+
+# Copy the signed app into the staging area.
+mkdir -p "$(dirname "$APP_STAGE")"
+cp -R "$APP_PATH" "$APP_STAGE"
+
+# Stage bundled models in the shared system location. The app will read this
+# location on first launch and hardlink/copy the models into the user's model
+# directory if they are not already present.
+mkdir -p "$MODELS_STAGE"
+
+echo "Staging Gemma 4 model into installer ($MODEL_NAME)…"
+ditto "$MODEL_PATH" "$MODELS_STAGE/swiftmaestro-models/$MODEL_NAME"
+
+echo "Staging Whisper model into installer ($WHISPER_MODEL_NAME)…"
+ditto "$WHISPER_MODEL_PATH" "$MODELS_STAGE/whisperkit/$WHISPER_MODEL_NAME"
+
+if [ -n "$MECHANIC_MODEL_PATH" ] && [ -d "$MECHANIC_MODEL_PATH" ]; then
+    echo "Staging Mechanic model into installer (~2.5GB)…"
+    ditto "$MECHANIC_MODEL_PATH" "$MODELS_STAGE/swiftmaestro-models/$(basename "$MECHANIC_MODEL_PATH")"
+else
+    echo "WARNING: Mechanic model not found — skipping"
+fi
+
+if [ -d "$CODER_MODEL_PATH" ]; then
+    echo "Staging Coder model into installer (~8GB)…"
+    ditto "$CODER_MODEL_PATH" "$MODELS_STAGE/swiftmaestro-models/$(basename "$CODER_MODEL_PATH")"
+else
+    echo "WARNING: Coder model not found at $CODER_MODEL_PATH — skipping"
+fi
+
+# Bundle Homebrew dylibs (libusb, libraw + transitive deps) into the app bundle.
+echo "Bundling Homebrew dylibs…"
+APP_PATH="$APP_STAGE" SIGN_IDENTITY="$APP_SIGN_IDENTITY" ENTITLEMENTS="$ENTITLEMENTS" \
+    "$(dirname "$0")/bundle-dylibs.sh"
+
+# Audit and re-sign the app bundle after dylib bundling.
+echo "Auditing dependency closure…"
+"$(dirname "$0")/audit-dependencies.sh" "$APP_STAGE"
+
+echo "Re-signing app bundle…"
+codesign --force --sign "$APP_SIGN_IDENTITY" \
+    --entitlements "$ENTITLEMENTS" \
+    --options runtime --timestamp \
+    "$APP_STAGE"
+
+echo "Verifying app bundle signature…"
+codesign --verify --strict --verbose=2 "$APP_STAGE"
+
+# Build the unsigned component package from the staged payload.
+UNSIGNED_PKG="$STAGE/${APP_NAME}-${VERSION}-full-unsigned.pkg"
+echo "Building installer package…"
+pkgbuild \
+    --root "$STAGE" \
+    --identifier "com.woodseedigi.swiftmaestro.full" \
+    --version "$VERSION" \
+    --install-location "/" \
+    --scripts "$(dirname "$0")/pkg-scripts" \
+    "$UNSIGNED_PKG"
+
+# Sign the installer with the Developer ID Installer certificate.
+echo "Signing installer package…"
+productsign --sign "$INSTALLER_SIGN_IDENTITY" --timestamp "$UNSIGNED_PKG" "$PKG"
+
+# Verify the installer signature.
+pkgutil --check-signature "$PKG" >/dev/null || {
+    echo "ERROR: installer package signature check failed"
+    exit 1
+}
+
+# Produce an app-only zip for Sparkle updates. This must NOT include models,
+# otherwise generate_appcast will OOM again trying to diff 37 GB archives.
+if [ "${SKIP_SPARKLE_ZIP:-0}" != "1" ]; then
+    echo "Creating app-only Sparkle update archive $(basename "$ZIP")…"
+    rm -f "$ZIP"
+    ditto -c -k --sequesterRsrc "$APP_STAGE" "$ZIP"
+else
+    echo "SKIP_SPARKLE_ZIP=1 — skipping Sparkle update archive."
+fi
+
+# Optional notarization of the installer.
+if [ "${NOTARIZE:-0}" = "1" ]; then
+    echo "Submitting installer for notarization…"
+    SUBMIT_OUT="$(xcrun notarytool submit "$PKG" --keychain-profile "$NOTARY_PROFILE" --wait 2>&1 || true)"
+    echo "$SUBMIT_OUT"
+    SUBMISSION_ID="$(echo "$SUBMIT_OUT" | awk '/id:/{print $2; exit}')"
+    if ! echo "$SUBMIT_OUT" | grep -q "status: Accepted"; then
+        echo "ERROR: notarization failed"
+        [ -n "$SUBMISSION_ID" ] && xcrun notarytool log "$SUBMISSION_ID" --keychain-profile "$NOTARY_PROFILE" || true
+        exit 1
+    fi
+    echo "Stapling notarization ticket…"
+    xcrun stapler staple "$PKG"
+fi
+
+# Clean up the staging area but leave the output artifacts.
+rm -rf "$STAGE"
+
+echo ""
+echo "Done:"
+ls -lh "$PKG"
+[ -f "$ZIP" ] && ls -lh "$ZIP"
