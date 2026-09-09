@@ -72,23 +72,10 @@ rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR"
 OUTPUT_DIR="$PWD/$DIST_DIR"
 
-# The internal SSD can fill up during packaging (DMG/PKG staging + output).
-# Prefer an external work volume when one is available so a full disk doesn't
-# kill a multi-hour release.
-if [ -z "${RELEASE_TMPDIR:-}" ]; then
-    for candidate in "/Volumes/SR2_2TB/.swiftmaestro-release-tmp" "/Volumes/16TB Striped/.swiftmaestro-release-tmp"; do
-        mount_point="$(dirname "$candidate")"
-        if [ -d "$mount_point" ]; then
-            free_gb="$(df -g "$mount_point" 2>/dev/null | awk 'NR==2 {print $4}')"
-            if [ -n "${free_gb:-}" ] && [ "$free_gb" -ge 150 ]; then
-                mkdir -p "$candidate"
-                RELEASE_TMPDIR="$candidate"
-                break
-            fi
-        fi
-    done
-fi
+# The packaging temp directory defaults to the system temp folder. If you want
+# to use a different volume, set RELEASE_TMPDIR before running this script.
 if [ -n "${RELEASE_TMPDIR:-}" ]; then
+    mkdir -p "$RELEASE_TMPDIR"
     export RELEASE_TMPDIR
     echo "Using release temp directory: $RELEASE_TMPDIR"
 fi
