@@ -1,5 +1,4 @@
 import AppKit
-import AVFoundation
 import Foundation
 import ImageIO
 import QuickLookThumbnailing
@@ -173,10 +172,18 @@ actor ThumbnailService {
             throw ThumbnailError.fileNotFound
         }
 
-        // Bust old video thumbnails so the new AVFoundation poster-frame path
-        // regenerates them consistently with the preview pane. Images keep v2.
-        let version = DAMFileKind.isVideo(fileURL) ? "v3-video" : "v2"
-        let key = Self.cacheKey(for: fileURL, size: Int(pixelSize), version: version)
+        // QuickLook's video thumbnail path is reliable up to ~1024 px; larger
+        // sizes often fail/timeout and were producing blank "No Preview" panes.
+        // Cap video previews here so the filmstrip and the metadata preview pane
+        // both use the same successful path.
+        let effectiveSize: CGFloat
+        if DAMFileKind.isVideo(fileURL) {
+            effectiveSize = min(pixelSize, 1024)
+        } else {
+            effectiveSize = pixelSize
+        }
+
+        let key = Self.cacheKey(for: fileURL, size: Int(effectiveSize))
 
         if let cached = Self.memoryCache.object(forKey: key as NSString) {
             return cached
@@ -191,7 +198,7 @@ actor ThumbnailService {
         }
 
         let task = Task<NSImage, Error>.detached(priority: .utility) {
-            let image = try await Self.render(url: fileURL, pixelSize: pixelSize, key: key)
+            let image = try await Self.render(url: fileURL, pixelSize: effectiveSize, key: key)
             // Cache on the render side: if the awaiting caller is cancelled
             // (view teardown), the completed render is still kept.
             let cost = max(1, Int(image.size.width * image.size.height * 4))
@@ -313,14 +320,7 @@ actor ThumbnailService {
             }
         }
 
-        // Video: generate a poster frame with AVFoundation. This is faster
-        // and more reliable than QuickLook for large preview sizes, and it
-        // works for formats QL may only iconify (e.g. some .MOV variants).
-        if DAMFileKind.isVideo(url) {
-            return try await videoThumbnailAndCache(url, pixelSize: pixelSize, key: key)
-        }
-
-        // Everything else (PDF/docs): QuickLook, concurrency-capped.
+        // Everything else (PDF/video/docs): QuickLook, concurrency-capped.
         // NO LibRaw fallback — feeding non-RAW bytes to LibRaw's parsers can
         // crash the process (EXC_BAD_ACCESS; seen in production).
         return try await quickLookAndCache(url, pixelSize: pixelSize, key: key)
@@ -463,35 +463,6 @@ actor ThumbnailService {
             try? jpeg.write(to: cacheURL, options: .atomic)
         }
 
-        return image
-    }
-
-    // MARK: - Video poster-frame engine
-
-    /// Generates a poster frame for video files using AVAssetImageGenerator.
-    /// Runs off-actor; writes the resulting JPEG to disk cache.
-    private nonisolated static func videoThumbnailAndCache(
-        _ url: URL, pixelSize: CGFloat, key: String
-    ) async throws -> NSImage {
-        let asset = AVAsset(url: url)
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        // Request 2x the UI size so the image looks crisp on retina displays.
-        generator.maximumSize = CGSize(width: pixelSize * 2, height: pixelSize * 2)
-
-        // Use 1 second in (or the midpoint for sub-second clips) rather than
-        // the very first frame, which is often black/blank and mismatches the
-        // filmstrip thumbnails QuickLook used to generate.
-        let duration = try await asset.load(.duration).seconds
-        let targetSeconds = duration.isFinite && duration > 1 ? 1.0 : duration / 2
-        let targetTime = CMTime(seconds: targetSeconds, preferredTimescale: 600)
-
-        let cgImage = try await generator.image(at: targetTime).image
-        let image = NSImage(
-            cgImage: cgImage,
-            size: NSSize(width: cgImage.width, height: cgImage.height)
-        )
-        writeDiskCache(image, key: key)
         return image
     }
 
@@ -656,12 +627,10 @@ actor ThumbnailService {
     /// The `v2` prefix busts entries written before the embedded-preview
     /// minimum-size rule (which cached fuzzy 160px DNG thumbs) — those
     /// stale files are simply never read again.
-    private nonisolated static func cacheKey(
-        for url: URL, size: Int, version: String = "v2"
-    ) -> String {
+    private nonisolated static func cacheKey(for url: URL, size: Int) -> String {
         let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey])
             .contentModificationDate?.timeIntervalSince1970) ?? 0
-        let raw = "\(version)|\(url.path)|\(size)|\(mtime)"
+        let raw = "v2|\(url.path)|\(size)|\(mtime)"
         // Paths can exceed filename limits — hash the key to a fixed-length name.
         var hash: UInt64 = 5381
         for byte in raw.utf8 { hash = ((hash << 5) &+ hash) &+ UInt64(byte) }
