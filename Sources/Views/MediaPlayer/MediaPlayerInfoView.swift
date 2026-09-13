@@ -6,6 +6,7 @@ import SwiftUI
 // BTOP+ retro monospace readout format.
 
 struct MediaPlayerInfoView: View {
+    @Environment(ThemeStore.self) private var theme
     let mediaInfo: MediaInfo
 
     var body: some View {
@@ -13,17 +14,17 @@ struct MediaPlayerInfoView: View {
             // Header
             HStack {
                 Image(systemName: "info.circle")
-                    .foregroundStyle(RetroPalette.green.opacity(0.6))
+                    .foregroundStyle(theme.accent.opacity(0.6))
                 Text("MEDIA INFO")
                     .font(.caption2.monospaced())
-                    .foregroundStyle(RetroPalette.green.opacity(0.6))
+                    .foregroundStyle(theme.accent.opacity(0.6))
                 Spacer()
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
 
             Divider()
-                .background(RetroPalette.green.opacity(0.2))
+                .background(theme.accent.opacity(0.2))
 
             // Info grid
             VStack(alignment: .leading, spacing: 4) {
@@ -38,7 +39,7 @@ struct MediaPlayerInfoView: View {
                 }
 
                 if mediaInfo.title != nil || mediaInfo.artist != nil {
-                    Divider().background(RetroPalette.green.opacity(0.15))
+                    Divider().background(theme.accent.opacity(0.15))
                 }
 
                 infoRow(label: "FORMAT", value: mediaInfo.displayFormat)
@@ -54,11 +55,11 @@ struct MediaPlayerInfoView: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
         }
-        .background(RetroPalette.background)
+        .background(theme.background)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(RetroPalette.green.opacity(0.35), lineWidth: 1)
+                .strokeBorder(theme.accent.opacity(0.35), lineWidth: 1)
         )
     }
 
@@ -66,11 +67,11 @@ struct MediaPlayerInfoView: View {
         HStack(alignment: .top) {
             Text(label)
                 .font(.caption2.monospaced())
-                .foregroundStyle(RetroPalette.green.opacity(0.5))
+                .foregroundStyle(theme.accent.opacity(0.5))
                 .frame(width: 85, alignment: .trailing)
             Text(value)
                 .font(.caption2.monospaced())
-                .foregroundStyle(RetroPalette.green.opacity(0.9))
+                .foregroundStyle(theme.accent.opacity(0.9))
                 .lineLimit(2)
             Spacer()
         }
@@ -81,6 +82,7 @@ struct MediaPlayerInfoView: View {
 
 /// Compact now-playing display showing artwork, title, and artist.
 struct MediaPlayerNowPlayingCard: View {
+    @Environment(ThemeStore.self) private var theme
     let mediaInfo: MediaInfo
     let isPlaying: Bool
 
@@ -95,24 +97,24 @@ struct MediaPlayerNowPlayingCard: View {
                     .clipShape(RoundedRectangle(cornerRadius: 4))
             } else {
                 RoundedRectangle(cornerRadius: 4)
-                    .fill(RetroPalette.dim)
+                    .fill(theme.secondaryBackground)
                     .frame(width: 48, height: 48)
                     .overlay(
                         Image(systemName: "music.note")
                             .font(.title3)
-                            .foregroundStyle(RetroPalette.green.opacity(0.4))
+                            .foregroundStyle(theme.accent.opacity(0.4))
                     )
             }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(mediaInfo.displayTitle)
                     .font(.caption.monospaced())
-                    .foregroundStyle(RetroPalette.green)
+                    .foregroundStyle(theme.accent)
                     .lineLimit(1)
 
                 Text(mediaInfo.displayArtist)
                     .font(.caption2.monospaced())
-                    .foregroundStyle(RetroPalette.dim)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
 
@@ -123,7 +125,7 @@ struct MediaPlayerNowPlayingCard: View {
                 HStack(spacing: 3) {
                     ForEach(0..<3, id: \.self) { i in
                         RoundedRectangle(cornerRadius: 1)
-                            .fill(RetroPalette.green)
+                            .fill(theme.accent)
                             .frame(width: 3, height: CGFloat.random(in: 6...16))
                             .animation(
                                 .easeInOut(duration: 0.4)
@@ -137,11 +139,11 @@ struct MediaPlayerNowPlayingCard: View {
             }
         }
         .padding(8)
-        .background(RetroPalette.background)
+        .background(theme.background)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(RetroPalette.green.opacity(0.35), lineWidth: 1)
+                .strokeBorder(theme.accent.opacity(0.35), lineWidth: 1)
         )
     }
 }

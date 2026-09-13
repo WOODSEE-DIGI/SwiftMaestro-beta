@@ -6,6 +6,7 @@ import SwiftUI
 // retro aesthetic: rounded glyph buttons with glow on press.
 
 struct MediaPlayerTransportView: View {
+    @Environment(ThemeStore.self) private var theme
     let isPlaying: Bool
     let hasItem: Bool
     let onPlayPause: () -> Void
@@ -60,11 +61,11 @@ struct MediaPlayerTransportView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(RetroPalette.background)
+        .background(theme.background)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(RetroPalette.green.opacity(0.35), lineWidth: 1)
+                .strokeBorder(theme.accent.opacity(0.35), lineWidth: 1)
         )
     }
 }
@@ -72,6 +73,7 @@ struct MediaPlayerTransportView: View {
 // MARK: - Transport Button
 
 private struct TransportButton: View {
+    @Environment(ThemeStore.self) private var theme
     let icon: String
     let size: CGFloat
     let enabled: Bool
@@ -84,18 +86,18 @@ private struct TransportButton: View {
         Button(action: action) {
             Image(systemName: icon)
                 .font(.system(size: size, weight: .medium))
-                .foregroundStyle(enabled ? buttonColor : RetroPalette.dim)
+                .foregroundStyle(enabled ? buttonColor : theme.secondaryBackground)
                 .frame(width: size + 20, height: size + 20)
                 .background(
                     isPressed
-                        ? RetroPalette.green.opacity(0.15)
+                        ? theme.accent.opacity(0.15)
                         : Color.clear
                 )
                 .clipShape(Circle())
                 .overlay(
                     Circle()
                         .strokeBorder(
-                            isPressed ? RetroPalette.green.opacity(0.6) : Color.clear,
+                            isPressed ? theme.accent.opacity(0.6) : Color.clear,
                             lineWidth: 1
                         )
                 )
@@ -111,6 +113,6 @@ private struct TransportButton: View {
     }
 
     private var buttonColor: Color {
-        isPrimary ? RetroPalette.green : RetroPalette.green.opacity(0.8)
+        isPrimary ? theme.accent : theme.accent.opacity(0.8)
     }
 }

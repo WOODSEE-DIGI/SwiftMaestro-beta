@@ -138,6 +138,7 @@ actor DAMLightroomImporter {
                     uti: utiFor(filename: filename,
                                 format: value("fileformat", in: row, columns: columns)),
                     fileSize: nil, fileModDate: nil,
+                    volumeId: nil, relativePath: nil, isAvailable: true, lastVerifiedAt: Date(),
                     width: intValue("width", in: row, columns: columns),
                     height: intValue("height", in: row, columns: columns),
                     duration: nil, rating: 0, colorLabel: .none, flag: .none,

@@ -6,31 +6,43 @@ import SwiftUI
 // context menu actions, and BTOP+ retro styling.
 
 struct MediaPlayerPlaylistView: View {
+    @Environment(ThemeStore.self) private var theme
     @Bindable var queue: MediaPlayerQueue
     let onPlayEntry: (Int) -> Void
     /// Open the file picker (wired to the parent view's fileImporter).
     var onOpenFiles: () -> Void = {}
+    /// Open the playlist import picker (M3U/M3U8, PLS, iTunes/Music XML).
+    var onImportPlaylist: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Header
             HStack {
                 Image(systemName: "list.bullet")
-                    .foregroundStyle(RetroPalette.green.opacity(0.6))
+                    .foregroundStyle(theme.accent.opacity(0.6))
                 Text("PLAYLIST")
                     .font(.caption2.monospaced())
-                    .foregroundStyle(RetroPalette.green.opacity(0.6))
+                    .foregroundStyle(theme.accent.opacity(0.6))
                 Spacer()
                 Text("\(queue.count) TRACKS")
                     .font(.caption2.monospaced())
-                    .foregroundStyle(RetroPalette.green.opacity(0.4))
+                    .foregroundStyle(theme.accent.opacity(0.4))
+                Button {
+                    onImportPlaylist()
+                } label: {
+                    Image(systemName: "music.note.list.badge.plus")
+                        .font(.caption2)
+                        .foregroundStyle(theme.accent)
+                }
+                .buttonStyle(.plain)
+                .help("Import playlist from Apple Music, iTunes, or an M3U/PLS file")
                 if !queue.isEmpty {
                     Button {
                         queue.clear()
                     } label: {
                         Image(systemName: "trash")
                             .font(.caption2)
-                            .foregroundStyle(RetroPalette.red.opacity(0.7))
+                            .foregroundStyle(.red.opacity(0.7))
                     }
                     .buttonStyle(.plain)
                 }
@@ -39,7 +51,7 @@ struct MediaPlayerPlaylistView: View {
             .padding(.vertical, 6)
 
             Divider()
-                .background(RetroPalette.green.opacity(0.2))
+                .background(theme.accent.opacity(0.2))
 
             // Track list
             if queue.isEmpty {
@@ -48,11 +60,11 @@ struct MediaPlayerPlaylistView: View {
                 trackList
             }
         }
-        .background(RetroPalette.background)
+        .background(theme.background)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(RetroPalette.green.opacity(0.35), lineWidth: 1)
+                .strokeBorder(theme.accent.opacity(0.35), lineWidth: 1)
         )
     }
 
@@ -63,27 +75,42 @@ struct MediaPlayerPlaylistView: View {
             Spacer()
             Image(systemName: "music.note.list")
                 .font(.system(size: 32))
-                .foregroundStyle(RetroPalette.dim)
+                .foregroundStyle(.secondary)
             Text("No tracks")
                 .font(.caption.monospaced())
-                .foregroundStyle(RetroPalette.dim)
+                .foregroundStyle(.secondary)
             Button {
                 onOpenFiles()
             } label: {
                 Text("Open files…")
                     .font(.caption.monospaced())
-                    .foregroundStyle(RetroPalette.green)
+                    .foregroundStyle(theme.accent)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 6)
                     .overlay(
                         RoundedRectangle(cornerRadius: 6)
-                            .strokeBorder(RetroPalette.green.opacity(0.5), lineWidth: 1)
+                            .strokeBorder(theme.accent.opacity(0.5), lineWidth: 1)
                     )
             }
             .buttonStyle(.plain)
+            Button {
+                onImportPlaylist()
+            } label: {
+                Text("Import playlist…")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(theme.accent)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(theme.accent.opacity(0.5), lineWidth: 1)
+                    )
+            }
+            .buttonStyle(.plain)
+            .help("Import an M3U/M3U8, PLS, or iTunes/Music XML playlist")
             Text("or drag media anywhere on this panel")
                 .font(.caption2.monospaced())
-                .foregroundStyle(RetroPalette.dim.opacity(0.6))
+                .foregroundStyle(.secondary.opacity(0.6))
             Spacer()
         }
         .frame(maxWidth: .infinity)
@@ -126,12 +153,12 @@ struct MediaPlayerPlaylistView: View {
             if isCurrentTrack {
                 Image(systemName: "speaker.wave.2.fill")
                     .font(.caption2)
-                    .foregroundStyle(RetroPalette.green)
+                    .foregroundStyle(theme.accent)
                     .frame(width: 14)
             } else {
                 Text("\(index + 1)")
                     .font(.caption2.monospaced())
-                    .foregroundStyle(RetroPalette.dim)
+                    .foregroundStyle(.secondary)
                     .frame(width: 14)
             }
 
@@ -139,13 +166,13 @@ struct MediaPlayerPlaylistView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(entry.title)
                     .font(.caption.monospaced())
-                    .foregroundStyle(isCurrentTrack ? RetroPalette.green : .primary)
+                    .foregroundStyle(isCurrentTrack ? theme.accent : .primary)
                     .lineLimit(1)
 
                 if let artist = entry.artist {
                     Text(artist)
                         .font(.caption2.monospaced())
-                        .foregroundStyle(RetroPalette.dim)
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
             }
@@ -156,14 +183,14 @@ struct MediaPlayerPlaylistView: View {
             if let duration = entry.duration {
                 Text(formatDuration(duration))
                     .font(.caption2.monospaced())
-                    .foregroundStyle(RetroPalette.dim)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
         .background(
             isCurrentTrack
-                ? RetroPalette.green.opacity(0.08)
+                ? theme.accent.opacity(0.08)
                 : Color.clear
         )
         .contentShape(Rectangle())

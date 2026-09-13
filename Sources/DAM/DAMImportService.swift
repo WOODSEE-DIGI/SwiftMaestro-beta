@@ -72,7 +72,7 @@ actor DAMImportService {
         NSLog("[DAMImport] top-level contents of %@: %d items", url.path, topLevel.count)
 
         // Phase 1: Fast scan — enumerate by extension, minimal I/O.
-        let count = try Self.scanAndImport(at: url, database: database, progress: progress)
+        let count = try await Self.scanAndImport(at: url, database: database, progress: progress)
         NSLog("[DAMImport] importFolder finished for %@ — %d rows written", url.path, count)
 
         return count
@@ -116,7 +116,7 @@ actor DAMImportService {
         at url: URL,
         database: DAMDatabase,
         progress: (@Sendable (_ scanned: Int, _ written: Int) -> Void)?
-    ) throws -> Int {
+    ) async throws -> Int {
         // No includingPropertiesForKeys — avoids blocking on iCloud files.
         // Extension-based detection is fast and sufficient for cataloging.
         // Descend into package directories (e.g. .dsbundle sample libraries)
@@ -130,14 +130,35 @@ actor DAMImportService {
             throw ImportError.notAFolder
         }
 
+        // Collect URLs synchronously first; `FileManager.enumerator` is not
+        // available in async contexts, but batch processing needs to await
+        // the volume store.
+        var collectedURLs = enumerator.allObjects.compactMap { $0 as? URL }
+
+        // Fallback: some security-scoped / external-volume URLs return an
+        // empty URL enumerator even though the directory is readable. The
+        // path-based enumerator often works in that case.
+        if collectedURLs.isEmpty {
+            NSLog("[DAMImport] URL enumerator found 0 files; trying path-based fallback for %@", url.path)
+            if let pathEnumerator = FileManager.default.enumerator(atPath: url.path) {
+                collectedURLs = pathEnumerator.allObjects.compactMap { item in
+                    guard let relativePath = item as? String else { return nil }
+                    return url.appendingPathComponent(relativePath)
+                }
+            } else {
+                NSLog("[DAMImport] path-based enumerator is also nil for %@", url.path)
+            }
+        }
+
         var scanned = 0
         var skipped = 0
         var written = 0
         var pending: [(url: URL, uti: UTType)] = []
         pending.reserveCapacity(500)
 
-        // Shared per-file logic for both the URL enumerator and the path fallback.
-        let processFile: (URL) throws -> Void = { fileURL in
+        for fileURL in collectedURLs {
+            try Task.checkCancellation()
+
             let ext = fileURL.pathExtension.lowercased()
             let uti: UTType
             if !ext.isEmpty,
@@ -153,12 +174,12 @@ actor DAMImportService {
                 uti = dynamic
             } else {
                 skipped += 1
-                return
+                continue
             }
 
             guard DAMFileKind.kind(for: fileURL) != "unknown" else {
                 skipped += 1
-                return
+                continue
             }
 
             scanned += 1
@@ -171,36 +192,15 @@ actor DAMImportService {
             }
 
             if pending.count >= 500 {
-                written += try processBatch(pending, to: database)
+                written += try await processBatch(pending, to: database)
                 pending.removeAll(keepingCapacity: true)
                 progress?(scanned, written)
             }
         }
 
-        for case let fileURL as URL in enumerator {
-            try Task.checkCancellation()
-            try processFile(fileURL)
-        }
-
-        // Fallback: some security-scoped / external-volume URLs return an
-        // empty URL enumerator even though the directory is readable. The
-        // path-based enumerator often works in that case.
-        if scanned == 0 {
-            NSLog("[DAMImport] URL enumerator found 0 catalogable files; trying path-based fallback for %@", url.path)
-            if let pathEnumerator = FileManager.default.enumerator(atPath: url.path) {
-                for case let relativePath as String in pathEnumerator {
-                    try Task.checkCancellation()
-                    let fileURL = url.appendingPathComponent(relativePath)
-                    try processFile(fileURL)
-                }
-            } else {
-                NSLog("[DAMImport] path-based enumerator is also nil for %@", url.path)
-            }
-        }
-
         // Process remaining batch
         if !pending.isEmpty {
-            written += try processBatch(pending, to: database)
+            written += try await processBatch(pending, to: database)
         }
 
         // Final progress callback
@@ -216,10 +216,12 @@ actor DAMImportService {
     /// get nil for that field.
     private nonisolated static func makeAsset(
         from url: URL, uti: UTType
-    ) -> DAMAsset {
+    ) async -> DAMAsset {
         // Minimal catalog entry — zero file I/O. The background enrichAll
         // pass fills in size, tags, EXIF after the fast scan completes.
-        DAMAsset(
+        let volume = await DAMVolumeStore.shared.volumeInfo(for: url)
+        let relativePath = await DAMVolumeStore.shared.relativePath(for: url)
+        return DAMAsset(
             id: nil,
             path: url.path,
             filename: url.lastPathComponent,
@@ -227,6 +229,10 @@ actor DAMImportService {
             uti: uti.identifier,
             kind: DAMFileKind.kind(for: url),
             fileSize: nil, fileModDate: nil,
+            volumeId: volume?.id,
+            relativePath: relativePath,
+            isAvailable: true,
+            lastVerifiedAt: Date(),
             width: nil, height: nil, duration: nil,
             rating: 0, colorLabel: .none, flag: .none,
             captureDate: nil, cameraMake: nil, cameraModel: nil, lensModel: nil,
@@ -300,6 +306,7 @@ actor DAMImportService {
         }
 
         let tags = readXattrTags(at: url)
+        let starRating = readXattrStarRating(at: url)
 
         // Apply consensus to override stale per-file xattr colors.
         // Uses the cached consensus from enrichAll's Phase 2 if available;
@@ -401,12 +408,15 @@ actor DAMImportService {
             }
         }
 
-        // Audio-only metadata: duration from AVFoundation.
-        if let utiID = extensionCache[ext],
-           let uti = UTType(utiID),
-           uti.conforms(to: .audio) {
-            let asset = AVURLAsset(url: url)
-            if let cmTime = try? await asset.load(.duration), CMTimeGetSeconds(cmTime).isFinite {
+        // Audio/video duration from AVFoundation. The list view's Duration
+        // column relies on this for both movie and audio rows.
+        let kind = DAMFileKind.kind(for: url)
+        let mediaUTI = UTType(filenameExtension: ext)
+        if kind == "audio" || kind == "movie" ||
+           mediaUTI?.conforms(to: .audio) == true ||
+           mediaUTI?.conforms(to: .movie) == true {
+            let mediaAsset = AVURLAsset(url: url)
+            if let cmTime = try? await mediaAsset.load(.duration), CMTimeGetSeconds(cmTime).isFinite {
                 duration = CMTimeGetSeconds(cmTime)
             }
         }
@@ -418,7 +428,8 @@ actor DAMImportService {
             w: w, h: h, orient: orient,
             capDate: capDate, camMake: camMake, camModel: camModel,
             lens: lens, isoVal: isoVal, aper: aper, shut: shut,
-            focal: focal, lat: lat, lon: lon, duration: duration
+            focal: focal, lat: lat, lon: lon, duration: duration,
+            rating: starRating
         )
 
         // Update DB
@@ -444,6 +455,7 @@ actor DAMImportService {
             if let v = update.lat { a.gpsLat = v }
             if let v = update.lon { a.gpsLon = v }
             if let v = update.duration { a.duration = v }
+            if let v = update.rating, v > 0 { a.rating = v }
             try a.update(db)
         }
 
@@ -469,6 +481,24 @@ actor DAMImportService {
         database: DAMDatabase = .shared,
         progress: (@Sendable (_ enriched: Int, _ total: Int) -> Void)? = nil
     ) async throws {
+        // Run the quick, high-value Spotlight backfills FIRST so duration and
+        // rating KPIs populate quickly. The heavier per-file xattr/EXIF pass
+        // can take a long time on large catalogs; if it runs first, these
+        // backfills may never be reached before a crash or quit.
+
+        // Phase A: Duration backfill from Spotlight — catches video/audio
+        // files whose kind was mis-classified or where the previous per-file
+        // AVFoundation fallback never finished.
+        try await Self.backfillDurations(database: database)
+
+        // Phase B: Star-rating backfill — Finder/Photos ratings that were
+        // never imported because the catalog predates rating extraction.
+        try await Self.backfillRatings(database: database)
+
+        // Phase C: Finder xattr star-rating backfill — catches ratings from
+        // Finder, Photos export, Lightroom export, Capture One export, etc.
+        try await Self.backfillFinderRatings(database: database)
+
         // Phase 1: Fast pass — file size + xattr tags only. Sub-ms per
         // file, processes all 473K in ~1-2 minutes. No ImageIO.
         // Enriches files missing EITHER xattrKeywords OR tagColors so that
@@ -488,6 +518,21 @@ actor DAMImportService {
         }
         if !paths.isEmpty {
             try Self.enrichBatch(paths: paths, database: database, progress: progress)
+        }
+
+        // Phase 1b: Media duration pass — fills the Duration column for audio
+        // and movie rows that were imported before duration extraction existed
+        // or where the initial read failed.
+        let mediaPaths: [String] = try await database.dbQueue.read { db in
+            try String.fetchAll(db, sql: """
+                SELECT path FROM asset
+                WHERE duration IS NULL
+                  AND (kind = 'audio' OR kind = 'movie')
+                ORDER BY path
+                """)
+        }
+        if !mediaPaths.isEmpty {
+            try await Self.enrichDurationBatch(paths: mediaPaths, database: database, progress: progress)
         }
 
         // Phase 2: Tag color consensus — fix stale per-file xattr colors.
@@ -610,7 +655,7 @@ actor DAMImportService {
     ) throws {
         var enriched = 0
         let total = paths.count
-        var batch: [(path: String, fileSize: Int64, modDate: Date?, xattr: String?, tagColors: String?)] = []
+        var batch: [(path: String, fileSize: Int64, modDate: Date?, xattr: String?, tagColors: String?, rating: Int?)] = []
         batch.reserveCapacity(1000)
 
         for path in paths {
@@ -630,8 +675,9 @@ actor DAMImportService {
                 continue
             }
 
-        let tags = readXattrTags(at: url)
-            batch.append((path, fileSize!, modDate, tags.names, tags.colors))
+            let tags = readXattrTags(at: url)
+            let rating = readXattrStarRating(at: url)
+            batch.append((path, fileSize!, modDate, tags.names, tags.colors, rating))
 
             if batch.count >= 1000 {
                 try writeSizeAndXattrBatch(batch, to: database)
@@ -648,9 +694,9 @@ actor DAMImportService {
         progress?(enriched, total)
     }
 
-    /// Fast write: file size, mod date, xattr tags, and tag colors.
+    /// Fast write: file size, mod date, xattr tags, tag colors, and star rating.
     private nonisolated static func writeSizeAndXattrBatch(
-        _ batch: [(path: String, fileSize: Int64, modDate: Date?, xattr: String?, tagColors: String?)],
+        _ batch: [(path: String, fileSize: Int64, modDate: Date?, xattr: String?, tagColors: String?, rating: Int?)],
         to database: DAMDatabase
     ) throws {
         try database.dbQueue.write { db in
@@ -662,16 +708,339 @@ actor DAMImportService {
                 asset.fileModDate = item.modDate
                 asset.xattrKeywords = item.xattr ?? asset.xattrKeywords
                 asset.tagColors = item.tagColors ?? asset.tagColors
+                if let rating = item.rating, rating > 0 {
+                    asset.rating = rating
+                }
                 try asset.update(db)
             }
         }
     }
+
+    /// Reads audio/video duration for media rows missing it and writes the
+    /// value back to the catalog. Uses `mdls` for a fast Spotlight-based batch
+    /// read, then falls back to AVFoundation for files Spotlight hasn't indexed.
+    private nonisolated static func enrichDurationBatch(
+        paths: [String],
+        database: DAMDatabase,
+        progress: (@Sendable (_ enriched: Int, _ total: Int) -> Void)?
+    ) async throws {
+        let total = paths.count
+        var enriched = 0
+        let batchSize = 500
+
+        var index = 0
+        while index < paths.count {
+            try Task.checkCancellation()
+            let chunk = Array(paths[index..<min(index + batchSize, paths.count)])
+            index += chunk.count
+
+            var updates: [(path: String, duration: Double)] = []
+            updates.reserveCapacity(chunk.count)
+
+            // Fast path: batch-read kMDItemDurationSeconds via mdls.
+            // mdls omits path lines when every requested file has the attribute,
+            // so fall back to pairing results with the input chunk order.
+            let args = ["-name", "kMDItemDurationSeconds"] + chunk
+            let (_, stdout, _) = await run("/usr/bin/mdls", arguments: args)
+            let lines = stdout.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            let hasPathLines = lines.contains { $0.hasPrefix("/") }
+            var currentPath: String?
+            var chunkIndex = 0
+            for line in lines {
+                if line.hasPrefix("/") {
+                    currentPath = line
+                    continue
+                }
+                guard line.contains("kMDItemDurationSeconds"),
+                      let eqIndex = line.firstIndex(of: "=") else { continue }
+                let valueStart = line.index(after: eqIndex)
+                let value = String(line[valueStart...]).trimmingCharacters(in: .whitespaces)
+                let path: String
+                if hasPathLines {
+                    guard let cp = currentPath else { continue }
+                    path = cp
+                } else {
+                    guard chunkIndex < chunk.count else { continue }
+                    path = chunk[chunkIndex]
+                    chunkIndex += 1
+                }
+                if value != "(null)", let duration = Double(value), duration > 0 {
+                    updates.append((path, duration))
+                }
+            }
+
+            // Fallback for files mdls couldn't index.
+            let foundPaths = Set(updates.map(\.path))
+            for path in chunk where !foundPaths.contains(path) {
+                try Task.checkCancellation()
+                let url = URL(fileURLWithPath: path)
+                let mediaAsset = AVURLAsset(url: url)
+                guard let cmTime = try? await mediaAsset.load(.duration),
+                      CMTimeGetSeconds(cmTime).isFinite,
+                      CMTimeGetSeconds(cmTime) > 0 else { continue }
+                updates.append((path, CMTimeGetSeconds(cmTime)))
+            }
+
+            if !updates.isEmpty {
+                try writeDurationBatch(updates, to: database)
+                enriched += updates.count
+            }
+            progress?(enriched, total)
+        }
+        progress?(enriched, total)
+    }
+
+    private nonisolated static func writeDurationBatch(
+        _ batch: [(path: String, duration: Double)],
+        to database: DAMDatabase
+    ) throws {
+        try database.dbQueue.write { db in
+            for item in batch {
+                guard var asset = try DAMAsset
+                    .filter(DAMAsset.Columns.path == item.path)
+                    .fetchOne(db) else { continue }
+                asset.duration = item.duration
+                try asset.update(db)
+            }
+        }
+    }
+
+    /// One-time backfill of Finder/Photos star ratings for already-cataloged
+    /// assets. Uses `mdfind` to locate only files with a Spotlight rating,
+    /// then `mdls` to read the value and writes it to the DB. Skipped once it
+    /// has completed successfully.
+    private nonisolated static func backfillRatings(
+        database: DAMDatabase = .shared
+    ) async throws {
+        let doneKey = "dam.ratingBackfill.completed"
+        guard !UserDefaults.standard.bool(forKey: doneKey) else { return }
+
+        let (_, stdout, _) = await run("/usr/bin/mdfind", arguments: ["kMDItemStarRating > 0"])
+        let paths = stdout.split(separator: "\n").map(String.init)
+        guard !paths.isEmpty else {
+            UserDefaults.standard.set(true, forKey: doneKey)
+            return
+        }
+
+        let batchSize = 500
+        var index = 0
+        while index < paths.count {
+            try Task.checkCancellation()
+            let chunk = Array(paths[index..<min(index + batchSize, paths.count)])
+            index += chunk.count
+
+            var updates: [(path: String, rating: Int)] = []
+            updates.reserveCapacity(chunk.count)
+
+            let args = ["-name", "kMDItemStarRating"] + chunk
+            let (_, mdlsOut, _) = await run("/usr/bin/mdls", arguments: args)
+            let lines = mdlsOut.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            let hasPathLines = lines.contains { $0.hasPrefix("/") }
+            var currentPath: String?
+            var chunkIndex = 0
+            for line in lines {
+                if line.hasPrefix("/") {
+                    currentPath = line
+                    continue
+                }
+                guard line.contains("kMDItemStarRating"),
+                      let eqIndex = line.firstIndex(of: "=") else { continue }
+                let value = String(line[line.index(after: eqIndex)...]).trimmingCharacters(in: .whitespaces)
+                let path: String
+                if hasPathLines {
+                    guard let cp = currentPath else { continue }
+                    path = cp
+                } else {
+                    guard chunkIndex < chunk.count else { continue }
+                    path = chunk[chunkIndex]
+                    chunkIndex += 1
+                }
+                if value != "(null)", let rating = Int(value), rating > 0 {
+                    updates.append((path, rating))
+                }
+            }
+
+            if !updates.isEmpty {
+                let batchUpdates = updates
+                try await database.dbQueue.write { db in
+                    for item in batchUpdates {
+                        guard var asset = try DAMAsset
+                            .filter(DAMAsset.Columns.path == item.path)
+                            .fetchOne(db) else { continue }
+                        asset.rating = item.rating
+                        try asset.update(db)
+                    }
+                }
+            }
+        }
+
+        UserDefaults.standard.set(true, forKey: doneKey)
+    }
+
+    /// One-time backfill of audio/video durations from Spotlight. Uses
+    /// `mdfind` to locate only files with a `kMDItemDurationSeconds` value,
+    /// then writes that value to the matching catalog rows.
+    private nonisolated static func backfillDurations(
+        database: DAMDatabase = .shared
+    ) async throws {
+        let doneKey = "dam.durationBackfill.completed"
+        guard !UserDefaults.standard.bool(forKey: doneKey) else { return }
+
+        let (_, stdout, _) = await run("/usr/bin/mdfind", arguments: ["kMDItemDurationSeconds > 0"])
+        let paths = stdout.split(separator: "\n").map(String.init)
+        guard !paths.isEmpty else {
+            UserDefaults.standard.set(true, forKey: doneKey)
+            return
+        }
+
+        let batchSize = 500
+        var index = 0
+        while index < paths.count {
+            try Task.checkCancellation()
+            let chunk = Array(paths[index..<min(index + batchSize, paths.count)])
+            index += chunk.count
+
+            var updates: [(path: String, duration: Double)] = []
+            updates.reserveCapacity(chunk.count)
+
+            let args = ["-name", "kMDItemDurationSeconds"] + chunk
+            let (_, mdlsOut, _) = await run("/usr/bin/mdls", arguments: args)
+            let lines = mdlsOut.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            let hasPathLines = lines.contains { $0.hasPrefix("/") }
+            var currentPath: String?
+            var chunkIndex = 0
+            for line in lines {
+                if line.hasPrefix("/") {
+                    currentPath = line
+                    continue
+                }
+                guard line.contains("kMDItemDurationSeconds"),
+                      let eqIndex = line.firstIndex(of: "=") else { continue }
+                let value = String(line[line.index(after: eqIndex)...]).trimmingCharacters(in: .whitespaces)
+                let path: String
+                if hasPathLines {
+                    guard let cp = currentPath else { continue }
+                    path = cp
+                } else {
+                    guard chunkIndex < chunk.count else { continue }
+                    path = chunk[chunkIndex]
+                    chunkIndex += 1
+                }
+                if value != "(null)", let duration = Double(value), duration > 0 {
+                    updates.append((path, duration))
+                }
+            }
+
+            if !updates.isEmpty {
+                let batchUpdates = updates
+                try await database.dbQueue.write { db in
+                    for item in batchUpdates {
+                        guard var asset = try DAMAsset
+                            .filter(DAMAsset.Columns.path == item.path)
+                            .fetchOne(db) else { continue }
+                        asset.duration = item.duration
+                        try asset.update(db)
+                    }
+                }
+            }
+        }
+
+        UserDefaults.standard.set(true, forKey: doneKey)
+    }
+
+    /// One-time backfill of Finder star ratings from the
+    /// `com.apple.metadata:kMDItemStarRating` extended attribute. This catches
+    /// ratings applied in Finder or written by apps like Photos, Lightroom, or
+    /// Capture One on export, which Spotlight does not always index.
+    private nonisolated static func backfillFinderRatings(
+        database: DAMDatabase = .shared
+    ) async throws {
+        let doneKey = "dam.finderRatingBackfill.completed"
+        guard !UserDefaults.standard.bool(forKey: doneKey) else { return }
+
+        let rows: [(id: Int64, path: String)] = try await database.dbQueue.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT id, path FROM asset
+                WHERE rating = 0
+                ORDER BY path
+                """).map { row in
+                (id: row["id"] as Int64, path: row["path"] as String)
+            }
+        }
+        guard !rows.isEmpty else {
+            UserDefaults.standard.set(true, forKey: doneKey)
+            return
+        }
+
+        let batchSize = 1000
+        var index = 0
+        var updated = 0
+        while index < rows.count {
+            try Task.checkCancellation()
+            let chunk = Array(rows[index..<min(index + batchSize, rows.count)])
+            index += chunk.count
+
+            var updates: [(id: Int64, rating: Int)] = []
+            for item in chunk {
+                let url = URL(fileURLWithPath: item.path)
+                guard let rating = readXattrStarRating(at: url), rating > 0 else { continue }
+                updates.append((item.id, rating))
+            }
+
+            if !updates.isEmpty {
+                let batchUpdates = updates
+                try await database.dbQueue.write { db in
+                    for item in batchUpdates {
+                        guard var asset = try DAMAsset.fetchOne(db, key: item.id) else { continue }
+                        asset.rating = item.rating
+                        try asset.update(db)
+                    }
+                }
+                updated += updates.count
+            }
+        }
+
+        UserDefaults.standard.set(true, forKey: doneKey)
+    }
+
+    /// Runs an external executable and returns its exit code and outputs.
+    private nonisolated static func run(
+        _ executable: String,
+        arguments: [String]
+    ) async -> (exitCode: Int32, stdout: String, stderr: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        return await withCheckedContinuation { continuation in
+            process.terminationHandler = { _ in
+                let stdout = String(data: stdoutPipe.fileHandleForReading.availableData, encoding: .utf8) ?? ""
+                let stderr = String(data: stderrPipe.fileHandleForReading.availableData, encoding: .utf8) ?? ""
+                continuation.resume(returning: (process.terminationStatus, stdout, stderr))
+            }
+            do {
+                try process.run()
+            } catch {
+                continuation.resume(returning: (255, "", String(describing: error)))
+            }
+        }
+    }
+
     private nonisolated static func processBatch(
         _ pending: [(url: URL, uti: UTType)],
         to database: DAMDatabase
-    ) throws -> Int {
+    ) async throws -> Int {
         guard !pending.isEmpty else { return 0 }
-        let batch = pending.map { makeAsset(from: $0.url, uti: $0.uti) }
+        var batch: [DAMAsset] = []
+        batch.reserveCapacity(pending.count)
+        for item in pending {
+            batch.append(await makeAsset(from: item.url, uti: item.uti))
+        }
         guard !batch.isEmpty else { return 0 }
         try writeBatch(batch, to: database)
         return batch.count
@@ -767,6 +1136,24 @@ actor DAMImportService {
         readXattrTags(at: url).names
     }
 
+    /// Reads a Finder/Photos star rating from `com.apple.metadata:kMDItemStarRating`
+    /// if one exists. Returns `nil` when the attribute is absent or unreadable.
+    nonisolated static func readXattrStarRating(at url: URL) -> Int? {
+        let attribute = "com.apple.metadata:kMDItemStarRating"
+        let length = getxattr(url.path, attribute, nil, 0, 0, XATTR_NOFOLLOW)
+        guard length > 0 else { return nil }
+        var data = Data(count: length)
+        let read = data.withUnsafeMutableBytes { buffer -> Int in
+            guard let base = buffer.baseAddress else { return -1 }
+            return getxattr(url.path, attribute, base, length, 0, XATTR_NOFOLLOW)
+        }
+        guard read > 0 else { return nil }
+        guard let raw = try? PropertyListSerialization.propertyList(
+            from: data, options: 0, format: nil
+        ) else { return nil }
+        return raw as? Int
+    }
+
     // MARK: - Writes
 
     /// Upserts a batch by path. Existing rows keep their ratings/labels/AI
@@ -781,6 +1168,13 @@ actor DAMImportService {
                     existing.fileSize = asset.fileSize
                     existing.fileModDate = asset.fileModDate
                     existing.folder = asset.folder ?? existing.folder
+                    // A rescan from a currently-mounted volume refreshes volume
+                    // identity and relative path; if the file moved volumes this
+                    // keeps the catalog accurate.
+                    existing.volumeId = asset.volumeId ?? existing.volumeId
+                    existing.relativePath = asset.relativePath ?? existing.relativePath
+                    existing.isAvailable = asset.isAvailable
+                    existing.lastVerifiedAt = asset.lastVerifiedAt
                     // Nil-coalescing: a rescan that skipped metadata decode
                     // (IIQ/EIP) must not erase previously extracted values.
                     existing.width = asset.width ?? existing.width

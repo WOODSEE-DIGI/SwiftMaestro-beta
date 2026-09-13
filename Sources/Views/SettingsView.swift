@@ -172,6 +172,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case clipper
     case mcp
     case storage
+    case imports
     case secrets
     case businessVerification
     case whisper
@@ -194,6 +195,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .clipper: return String(localized: "Clipper")
         case .mcp: return String(localized: "MCP")
         case .storage: return String(localized: "Storage")
+        case .imports: return String(localized: "Imports")
         case .secrets: return String(localized: "Secrets")
         case .businessVerification: return String(localized: "Business Verify")
         case .whisper: return String(localized: "Whisper")
@@ -216,6 +218,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .clipper: return "scissors"
         case .mcp: return "server.rack"
         case .storage: return "externaldrive"
+        case .imports: return "square.and.arrow.down"
         case .secrets: return "key.fill"
         case .businessVerification: return "building.columns"
         case .whisper: return "mic.fill"
@@ -322,6 +325,7 @@ struct SettingsView: View {
         case .clipper: ClipperSettingsTab()
         case .mcp: MCPSettingsTab()
         case .storage: StorageSettingsTab()
+        case .imports: DAMImportSettingsTab()
         case .secrets: SecretsSettingsTab()
         case .businessVerification: BusinessVerificationSettingsTab()
         case .whisper: WhisperKitSettingsTab()

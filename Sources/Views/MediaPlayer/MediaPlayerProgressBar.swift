@@ -3,10 +3,11 @@ import SwiftUI
 // MARK: - Media Player Progress Bar
 //
 // Segmented horizontal progress bar with position marker, time readout,
-// and scrub-on-click. Uses the RetroPalette from RetroAudioViews for
-// visual consistency.
+// and scrub-on-click. Now theme-aware: accent color replaces the fixed
+// matrix green.
 
 struct MediaPlayerProgressBar: View {
+    @Environment(ThemeStore.self) private var theme
     let currentTime: Double
     let duration: Double
     let isSeeking: Bool
@@ -29,7 +30,7 @@ struct MediaPlayerProgressBar: View {
                             RoundedRectangle(cornerRadius: 1.5)
                                 .fill(segProgress <= progress
                                       ? segmentColor(fraction: segProgress)
-                                      : RetroPalette.dim)
+                                      : theme.secondaryBackground)
                                 .frame(maxWidth: .infinity)
                                 .frame(height: barHeight)
                         }
@@ -57,33 +58,33 @@ struct MediaPlayerProgressBar: View {
             HStack {
                 Text(formatTime(currentTime))
                     .font(.caption2.monospaced())
-                    .foregroundStyle(RetroPalette.green.opacity(0.9))
+                    .foregroundStyle(theme.accent.opacity(0.9))
                 Spacer()
                 if isSeeking {
                     Text("SEEK")
                         .font(.caption2.monospaced())
-                        .foregroundStyle(RetroPalette.amber)
+                        .foregroundStyle(.orange)
                 }
                 Text(formatTime(duration))
                     .font(.caption2.monospaced())
-                    .foregroundStyle(RetroPalette.green.opacity(0.6))
+                    .foregroundStyle(theme.accent.opacity(0.6))
             }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
-        .background(RetroPalette.background)
+        .background(theme.background)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(RetroPalette.green.opacity(0.35), lineWidth: 1)
+                .strokeBorder(theme.accent.opacity(0.35), lineWidth: 1)
         )
     }
 
     private func segmentColor(fraction: Double) -> Color {
         switch fraction {
-        case ..<0.55: return RetroPalette.green
-        case ..<0.8:  return RetroPalette.amber
-        default:      return RetroPalette.red
+        case ..<0.55: return theme.accent
+        case ..<0.8:  return .orange
+        default:      return .red
         }
     }
 

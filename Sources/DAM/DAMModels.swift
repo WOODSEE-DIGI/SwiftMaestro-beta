@@ -17,7 +17,7 @@ enum DAMColorLabel: String, Codable, Sendable, CaseIterable {
 }
 
 /// Culling flag (darktable pick/reject parity).
-enum DAMFlag: String, Codable, Sendable {
+enum DAMFlag: String, Codable, Sendable, CaseIterable {
     case none, pick, reject
 }
 
@@ -44,6 +44,18 @@ struct DAMAsset: Codable, FetchableRecord, PersistableRecord, TableRecord,
     var kind: String?
     var fileSize: Int64?
     var fileModDate: Date?
+
+    /// The volume this asset lives on. When nil, the asset was cataloged
+    /// before volume tracking was added and is treated as always available.
+    var volumeId: Int64?
+    /// Path relative to the volume root, so the catalog can resolve the file
+    /// even if the volume's mount point changes (e.g. `/Volumes/SR2_2TB`).
+    var relativePath: String?
+    /// False when the volume is ejected or the file is otherwise unreachable.
+    /// Stored in the DB so offline browsing can show/hide or badge assets.
+    var isAvailable: Bool
+    /// Last time this row's availability was verified against the filesystem.
+    var lastVerifiedAt: Date?
 
     var width: Int?
     var height: Int?
@@ -91,14 +103,20 @@ struct DAMAsset: Codable, FetchableRecord, PersistableRecord, TableRecord,
         static let flag = Column("flag")
         static let captureDate = Column("captureDate")
         static let indexedAt = Column("indexedAt")
+        static let volumeId = Column("volumeId")
+        static let relativePath = Column("relativePath")
+        static let isAvailable = Column("isAvailable")
+        static let lastVerifiedAt = Column("lastVerifiedAt")
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, path, filename, folder, uti, kind, fileSize, fileModDate, width, height,
-             duration, rating, colorLabel, flag, captureDate, cameraMake,
-             cameraModel, lensModel, iso, aperture, shutterSpeed, focalLength,
-             gpsLat, gpsLon, orientation, perceptualHash, xattrKeywords, tagColors,
-             aiCaption, aiKeywords, ocrText, userKeywords, indexedAt, aiIndexedAt
+        case id, path, filename, folder, uti, kind, fileSize, fileModDate,
+             volumeId, relativePath, isAvailable, lastVerifiedAt,
+             width, height, duration, rating, colorLabel, flag, captureDate,
+             cameraMake, cameraModel, lensModel, iso, aperture, shutterSpeed,
+             focalLength, gpsLat, gpsLon, orientation, perceptualHash,
+             xattrKeywords, tagColors, aiCaption, aiKeywords, ocrText,
+             userKeywords, indexedAt, aiIndexedAt
     }
 
     mutating func didInsert(_ inserted: InsertionSuccess) {
@@ -180,6 +198,57 @@ struct DAMFolderNode: Identifiable, Hashable, Sendable {
     let name: String
     let count: Int
     var children: [DAMFolderNode]?
+}
+
+/// A physical or logical volume whose contents have been cataloged.
+/// MaestroDAM uses this to keep assets browsable when the drive is ejected
+/// and to run storage-health checks when it is connected.
+struct DAMVolume: Codable, FetchableRecord, PersistableRecord, TableRecord,
+                  Identifiable, Hashable, Sendable {
+    static let databaseTableName = "volume"
+
+    var id: Int64?
+    /// APFS/HFS+ volume UUID, or the bsd name if no UUID is available.
+    var uuid: String
+    /// Human-readable name (e.g. "SR2_2TB").
+    var name: String
+    /// BSD disk name (e.g. "disk3s1").
+    var bsdName: String?
+    /// Physical device model when known (e.g. "Samsung T7 Shield").
+    var deviceModel: String?
+    /// Total capacity in bytes.
+    var capacityBytes: Int64?
+    /// Free space in bytes, captured at last scan.
+    var freeBytes: Int64?
+    /// Detected media type: ssd, hdd, nvme, sd, network, other.
+    var mediaType: String?
+    /// True when the volume is currently mounted.
+    var isOnline: Bool
+    /// Last time the volume was seen mounted.
+    var lastSeenAt: Date?
+    /// Last SMART/diskutil health snapshot as JSON.
+    var healthJSON: String?
+    /// True if the health snapshot recommends replacing the drive.
+    var healthWarnReplace: Bool
+
+    enum Columns {
+        static let id = Column("id")
+        static let uuid = Column("uuid")
+        static let name = Column("name")
+        static let bsdName = Column("bsdName")
+        static let isOnline = Column("isOnline")
+        static let lastSeenAt = Column("lastSeenAt")
+        static let healthWarnReplace = Column("healthWarnReplace")
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, uuid, name, bsdName, deviceModel, capacityBytes, freeBytes,
+             mediaType, isOnline, lastSeenAt, healthJSON, healthWarnReplace
+    }
+
+    mutating func didInsert(_ inserted: InsertionSuccess) {
+        id = inserted.rowID
+    }
 }
 
 /// Join table: asset ↔ tag.

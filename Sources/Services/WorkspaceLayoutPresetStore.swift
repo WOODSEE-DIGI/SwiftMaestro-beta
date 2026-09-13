@@ -163,12 +163,12 @@ final class WorkspaceLayoutPresetStore {
         func tiles(agentID: UUID) -> [CanvasTile] {
             switch self {
             case .default:
-                // Agents (6 cols, 10 rows) + Apps (6 cols, 6 rows) left,
-                // Navigator chat (18 cols, 16 rows) center.
+                // Agents (4 cols, 10 rows) + Apps (4 cols, 6 rows) left,
+                // Navigator chat (20 cols, 16 rows) center.
                 return [
-                    CanvasTile(kinds: [.agents], col: 0, row: 0, colSpan: 6, rowSpan: 10, z: 1),
-                    CanvasTile(kinds: [.appLauncher], col: 0, row: 10, colSpan: 6, rowSpan: 6, z: 2),
-                    CanvasTile(kinds: [.agentChat(agentID)], col: 6, row: 0, colSpan: 18, rowSpan: 16, z: 3),
+                    CanvasTile(kinds: [.agents], col: 0, row: 0, colSpan: 4, rowSpan: 10, z: 1),
+                    CanvasTile(kinds: [.appLauncher], col: 0, row: 10, colSpan: 4, rowSpan: 6, z: 2),
+                    CanvasTile(kinds: [.agentChat(agentID)], col: 4, row: 0, colSpan: 20, rowSpan: 16, z: 3),
                 ]
             case .focus:
                 // Single full-screen chat, no chrome — maximum focus.

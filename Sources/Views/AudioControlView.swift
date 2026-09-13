@@ -5,6 +5,7 @@ import AVKit
 /// Native audio control panel: choose system input/output devices, mute them,
 /// and set their volume. Lives under "Swift Apps" in the sidebar.
 struct AudioControlView: View {
+    @Environment(ThemeStore.self) private var theme
     @Environment(WhisperKitService.self) private var whisper
     @State private var inputDevices: [AudioDevice] = []
     @State private var outputDevices: [AudioDevice] = []
@@ -196,7 +197,7 @@ struct AudioControlView: View {
                         .controlSize(.small)
                         if meter.isRunning {
                             Circle()
-                                .fill(RetroPalette.green)
+                                .fill(theme.accent)
                                 .frame(width: 8, height: 8)
                             Text("listening — mic check")
                                 .font(.caption2)

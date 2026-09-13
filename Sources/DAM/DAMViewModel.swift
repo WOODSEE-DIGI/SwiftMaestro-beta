@@ -79,6 +79,9 @@ final class DAMViewModel {
         didSet { UserDefaults.standard.set(workspace.rawValue, forKey: "dam.workspace") }
     }
     private(set) var folderTree: [DAMFolderNode] = []
+    /// Mounted local volumes shown in the Folders sidebar (e.g. Macintosh HD).
+    /// These are not catalog folders; they exist so Storage Map can scan them.
+    private(set) var volumeNodes: [DAMFolderNode] = []
     private(set) var totalAssetCount = 0
     private(set) var isImporting = false
     private(set) var importScanned = 0
@@ -209,25 +212,30 @@ final class DAMViewModel {
 
         // Observe agent-driven filter updates from dam_filter_view tool.
         NotificationCenter.default.addObserver(
-            forName: .damApplyFilters, object: nil, queue: .main
-        ) { [weak self] note in
-            // Extract values immediately on the nonisolated callback to avoid
-            // Sendable issues with the raw userInfo dictionary.
-            let search = note.userInfo?["search"] as? String
-            let tagColor = note.userInfo?["tag_color"] as? Int
-            let fileType = note.userInfo?["file_type"] as? String
-            let flag = note.userInfo?["flag"] as? String
-            let minRating = note.userInfo?["min_rating"] as? Int
-            let sort = note.userInfo?["sort"] as? String
-            let folder = note.userInfo?["folder"] as? String
-            let clear = note.userInfo?["clear"] as? Bool == true
-            Task { @MainActor [weak self] in
-                self?.applyFilterState(
-                    search: search, tagColor: tagColor, fileType: fileType,
-                    flag: flag, minRating: minRating, sort: sort,
-                    folder: folder, clear: clear)
-            }
-        }
+            self,
+            selector: #selector(handleApplyFilters(_:)),
+            name: .damApplyFilters,
+            object: nil
+        )
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self, name: .damApplyFilters, object: nil)
+    }
+
+    @objc private func handleApplyFilters(_ note: Notification) {
+        let search = note.userInfo?["search"] as? String
+        let tagColor = note.userInfo?["tag_color"] as? Int
+        let fileType = note.userInfo?["file_type"] as? String
+        let flag = note.userInfo?["flag"] as? String
+        let minRating = note.userInfo?["min_rating"] as? Int
+        let sort = note.userInfo?["sort"] as? String
+        let folder = note.userInfo?["folder"] as? String
+        let clear = note.userInfo?["clear"] as? Bool == true
+        applyFilterState(
+            search: search, tagColor: tagColor, fileType: fileType,
+            flag: flag, minRating: minRating, sort: sort,
+            folder: folder, clear: clear)
     }
 
     // MARK: - On-demand metadata enrichment
@@ -368,20 +376,31 @@ final class DAMViewModel {
     /// Rebuilds the folder-tree sidebar from the catalog's distinct folders.
     /// Called on appear and after each import — NOT on every reload (search
     /// keystrokes shouldn't re-query thousands of folders).
-    /// Also reads xattr Finder tag colors for each folder path.
+    ///
+    /// The tree and volumes are built on a background thread and assigned as
+    /// soon as possible. Finder tag colors are loaded asynchronously afterward
+    /// so xattr/Spotlight work doesn't block the sidebar from appearing.
     func refreshFolderTree() async {
         do {
-            let counts = try await Task.detached(priority: .userInitiated) { [database] in
-                try database.folderCounts()
+            let result = try await Task.detached(priority: .userInitiated) { [database] in
+                let counts = try database.folderCounts()
+                let tree = Self.buildTree(from: counts)
+                let volumes = Self.buildVolumeNodes()
+                return (tree: tree, volumes: volumes, folders: counts.map(\.folder))
             }.value
-            folderTree = Self.buildTree(from: counts)
 
-            // Read Finder tag colors for each folder (xattr on directories)
-            let folders = counts.map(\.folder)
-            let colors = await Task.detached(priority: .utility) {
-                Self.readFolderTagColors(for: folders)
-            }.value
-            folderTagColors = colors
+            folderTree = result.tree
+            volumeNodes = result.volumes
+
+            // Read Finder tag colors asynchronously so the tree is visible
+            // immediately; colors will fill in when the xattr scan finishes.
+            let folders = result.folders
+            Task.detached(priority: .utility) { [weak self] in
+                let colors = Self.readFolderTagColors(for: folders)
+                await MainActor.run { [weak self] in
+                    self?.folderTagColors = colors
+                }
+            }
         } catch {
             NSLog("[DAM] folder tree refresh failed: %@", String(describing: error))
         }
@@ -459,6 +478,47 @@ final class DAMViewModel {
         return root.children.keys.sorted().compactMap { key in
             root.children[key].flatMap { convert(key, $0, path: "/" + key) }
         }
+    }
+
+    /// Builds the list of mounted local volumes for the Folders sidebar.
+    /// Includes the root volume ("/") as "Macintosh HD" and any external
+    /// volumes. System/synthetic volumes and APFS snapshots are excluded.
+    nonisolated static func buildVolumeNodes() -> [DAMFolderNode] {
+        guard let urls = FileManager.default.mountedVolumeURLs(
+            includingResourceValuesForKeys: [.volumeNameKey],
+            options: []
+        ) else { return [] }
+
+        var nodes: [DAMFolderNode] = []
+        for url in urls {
+            let name = (try? url.resourceValues(forKeys: [.volumeNameKey]).volumeName)
+                ?? url.lastPathComponent
+            guard !damIsSnapshotVolume(name: name),
+                  !damIsSystemOrSyntheticVolume(name: name, url: url)
+            else { continue }
+
+            let displayName: String
+            let path = url.path
+            if path == "/" {
+                displayName = name.isEmpty ? "Macintosh HD" : name
+            } else {
+                displayName = name.isEmpty ? url.lastPathComponent : name
+            }
+            nodes.append(DAMFolderNode(
+                path: path,
+                name: displayName,
+                count: 0,
+                children: nil
+            ))
+        }
+
+        // Root volume first, then alphabetical.
+        nodes.sort {
+            if $0.path == "/" { return true }
+            if $1.path == "/" { return false }
+            return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+        return nodes
     }
 
     /// Next page for infinite scroll. Serialized: bottom-of-grid cells can

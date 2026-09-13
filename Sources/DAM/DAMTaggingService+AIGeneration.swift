@@ -40,6 +40,18 @@ extension DAMTaggingService {
         set { UserDefaults.standard.set(newValue, forKey: "dam.tagging.audioUseLLM") }
     }
 
+    /// Master switch for visual frame tagging of videos. When off, videos are
+    /// tagged from audio/filename only. Persisted in UserDefaults.
+    static var useVisionForVideoTags: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: "dam.tagging.useVisionForVideoTags") == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: "dam.tagging.useVisionForVideoTags")
+        }
+        set { UserDefaults.standard.set(newValue, forKey: "dam.tagging.useVisionForVideoTags") }
+    }
+
     /// Default prompt tuned for photo-library keywords. The model is asked
     /// to return ONLY a comma-separated list so downstream parsing is robust.
     static let defaultTagPrompt =
@@ -55,56 +67,65 @@ extension DAMTaggingService {
         guard let assetId = asset.id else { return [] }
         guard Self.isImageAsset(asset) else { return [] }
 
-        let imageData = try await imageDataForGeneration(path: asset.path)
-        guard !imageData.isEmpty else {
-            throw DAMTaggingError.generationFailed("Could not decode image for tagging.")
-        }
-
-        // VisionProxyService lives on the MainActor; the `await` hops to it
-        // for the caption call without transferring a reference across actors.
-        let captionPrompt = prompt ?? Self.defaultTagPrompt
-        guard let rawCaption = try await VisionProxyService.shared.caption(
-            imageData: imageData, prompt: captionPrompt) else {
-            throw DAMTaggingError.visionProxyDisabled
-        }
-
-        let trimmed = rawCaption.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return [] }
-
-        let tags = Self.parseTagList(from: trimmed).prefix(15).map { $0 }
-        guard !tags.isEmpty else { return [] }
-
-        let database = DAMDatabase.shared
-        try await database.dbQueue.write { db in
-            guard var row = try DAMAsset.fetchOne(db, key: assetId) else { return }
-            let oldCaption = row.aiCaption
-            let oldKeywords = row.aiKeywords
-            row.aiCaption = trimmed
-            row.aiKeywords = tags.joined(separator: ", ")
-            try row.update(db)
-            if oldCaption != trimmed {
-                try database.recordAudit(
-                    db, assetId: assetId, field: "aiCaption",
-                    oldValue: oldCaption, newValue: trimmed,
-                    source: DAMTagSource.ai.rawValue)
+        return try await DAMResourceLimiter.shared.withHeavyTask(
+            name: "Image AI tagging",
+            timeout: .infinity
+        ) {
+            let imageData = try await self.imageDataForGeneration(path: asset.path)
+            guard !imageData.isEmpty else {
+                throw DAMTaggingError.generationFailed("Could not decode image for tagging.")
             }
-            if oldKeywords != row.aiKeywords {
-                try database.recordAudit(
-                    db, assetId: assetId, field: "aiKeywords",
-                    oldValue: oldKeywords, newValue: row.aiKeywords,
-                    source: DAMTagSource.ai.rawValue)
+
+            let timeout = await DAMResourceLimiter.shared.currentLimit.operationTimeoutSeconds
+            let captionPrompt = prompt ?? Self.defaultTagPrompt
+            let rawCaption = try await DAMResourceLimiter.shared.withTimeout(
+                seconds: timeout
+            ) {
+                try await VisionProxyService.shared.caption(
+                    imageData: imageData, prompt: captionPrompt)
             }
+            guard let rawCaption else {
+                throw DAMTaggingError.visionProxyDisabled
+            }
+
+            let trimmed = rawCaption.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return [] }
+
+            let tags = Self.parseTagList(from: trimmed).prefix(15).map { $0 }
+            guard !tags.isEmpty else { return [] }
+
+            let database = DAMDatabase.shared
+            try await database.dbQueue.write { db in
+                guard var row = try DAMAsset.fetchOne(db, key: assetId) else { return }
+                let oldCaption = row.aiCaption
+                let oldKeywords = row.aiKeywords
+                row.aiCaption = trimmed
+                row.aiKeywords = tags.joined(separator: ", ")
+                try row.update(db)
+                if oldCaption != trimmed {
+                    try database.recordAudit(
+                        db, assetId: assetId, field: "aiCaption",
+                        oldValue: oldCaption, newValue: trimmed,
+                        source: DAMTagSource.ai.rawValue)
+                }
+                if oldKeywords != row.aiKeywords {
+                    try database.recordAudit(
+                        db, assetId: assetId, field: "aiKeywords",
+                        oldValue: oldKeywords, newValue: row.aiKeywords,
+                        source: DAMTagSource.ai.rawValue)
+                }
+            }
+
+            for tag in tags {
+                _ = try database.applyTag(name: tag, to: assetId, source: .ai)
+            }
+
+            // Make sure the newly-tagged asset is indexed so it can act as an
+            // exemplar for future learn-as-you-tag propagation.
+            _ = try await self.indexAsset(asset)
+
+            return tags
         }
-
-        for tag in tags {
-            _ = try database.applyTag(name: tag, to: assetId, source: .ai)
-        }
-
-        // Make sure the newly-tagged asset is indexed so it can act as an
-        // exemplar for future learn-as-you-tag propagation.
-        _ = try await indexAsset(asset)
-
-        return tags
     }
 
     /// Generate tags for a list of assets. Progress is reported per item.
@@ -289,18 +310,292 @@ extension DAMTaggingService {
         return tags
     }
 
-    /// Generate AI tags for a single video asset by extracting its audio track,
-    /// transcribing it with WhisperKit, and deriving keywords/caption.
+    // MARK: - Video visual tagging configuration
+
+    /// Config for how many frames to sample from a video. Defaults to one frame
+    /// per minute, with a minimum of 3 frames (for short clips) and a maximum
+    /// of 60 frames so very long videos don't spend minutes in the VLM.
+    struct VideoTaggingConfig: Sendable, Equatable {
+        var frameIntervalMinutes: Double
+        var maxFrames: Int
+        var minFrames: Int
+
+        static let `default` = VideoTaggingConfig(
+            frameIntervalMinutes: 1.0,
+            maxFrames: 60,
+            minFrames: 3
+        )
+    }
+
+    static var videoTaggingConfig: VideoTaggingConfig {
+        get {
+            let defaults = UserDefaults.standard
+            var config = VideoTaggingConfig.default
+            if defaults.object(forKey: "dam.tagging.videoFrameIntervalMinutes") != nil {
+                config.frameIntervalMinutes = defaults.double(forKey: "dam.tagging.videoFrameIntervalMinutes")
+            }
+            if defaults.object(forKey: "dam.tagging.videoMaxFrames") != nil {
+                config.maxFrames = defaults.integer(forKey: "dam.tagging.videoMaxFrames")
+            }
+            if defaults.object(forKey: "dam.tagging.videoMinFrames") != nil {
+                config.minFrames = defaults.integer(forKey: "dam.tagging.videoMinFrames")
+            }
+            return config
+        }
+        set {
+            let defaults = UserDefaults.standard
+            defaults.set(newValue.frameIntervalMinutes, forKey: "dam.tagging.videoFrameIntervalMinutes")
+            defaults.set(newValue.maxFrames, forKey: "dam.tagging.videoMaxFrames")
+            defaults.set(newValue.minFrames, forKey: "dam.tagging.videoMinFrames")
+        }
+    }
+
+    /// Computes the number of frames to extract from a video based on its
+    /// duration and the current `videoTaggingConfig`.
+    private static func frameCount(for asset: DAMAsset) -> Int {
+        let config = videoTaggingConfig
+        guard let duration = asset.duration, duration > 0 else {
+            return config.minFrames
+        }
+        let intervalSeconds = config.frameIntervalMinutes * 60.0
+        let count = Int(ceil(duration / intervalSeconds))
+        return max(config.minFrames, min(config.maxFrames, count))
+    }
+
+    /// Generate AI tags for a single video asset using both its audio track
+    /// (WhisperKit transcription) and representative video frames (on-device
+    /// Vision proxy). The two sources run in parallel and their tags/captions
+    /// are merged so silent videos and talking-head videos both get useful
+    /// keywords.
     @discardableResult
     func generateVideoTags(for asset: DAMAsset) async throws -> [String] {
         guard let assetId = asset.id else { return [] }
         guard Self.isVideoAsset(asset) else { return [] }
 
         let videoURL = URL(fileURLWithPath: asset.path)
-        let audioURL = try await extractAudioTrack(from: videoURL)
-        defer { try? FileManager.default.removeItem(at: audioURL) }
 
-        return try await generateAudioTags(for: asset, audioURL: audioURL)
+        // Run audio and visual tagging concurrently.
+        let audioTask = Task { () -> (tags: [String], caption: String?, transcript: String?) in
+            do {
+                let audioURL = try await extractAudioTrack(from: videoURL)
+                defer { try? FileManager.default.removeItem(at: audioURL) }
+                return try await generateVideoAudioSummary(for: asset, audioURL: audioURL)
+            } catch {
+                taggingLogger.error("Audio tagging failed for \(asset.filename, privacy: .public): \(error.localizedDescription)")
+                return (tags: [], caption: nil, transcript: nil)
+            }
+        }
+
+        let visualTask = Task { () -> (tags: [String], caption: String?) in
+            guard Self.useVisionForVideoTags else { return (tags: [], caption: nil) }
+            do {
+                return try await generateVideoVisualTags(for: asset, videoURL: videoURL)
+            } catch {
+                taggingLogger.error("Visual tagging failed for \(asset.filename, privacy: .public): \(error.localizedDescription)")
+                return (tags: [], caption: nil)
+            }
+        }
+
+        let audio = await audioTask.value
+        let visual = await visualTask.value
+
+        var allTags = Set(audio.tags)
+        allTags.formUnion(visual.tags)
+        guard !allTags.isEmpty else { return [] }
+
+        // Build a combined caption from both sources.
+        var captionParts: [String] = []
+        if let audioCaption = audio.caption, !audioCaption.isEmpty {
+            captionParts.append(audioCaption)
+        }
+        if let visualCaption = visual.caption, !visualCaption.isEmpty {
+            captionParts.append(visualCaption)
+        }
+        let caption = String(captionParts.joined(separator: " | ").prefix(500))
+
+        try await updateVideoAIData(
+            assetId: assetId,
+            caption: caption,
+            tags: Array(allTags).sorted(),
+            transcript: audio.transcript
+        )
+
+        return Array(allTags)
+    }
+
+    /// Returns tags and a caption derived from a video's audio track, without
+    /// writing to the database. Used by the combined video tagger.
+    private func generateVideoAudioSummary(
+        for asset: DAMAsset,
+        audioURL: URL
+    ) async throws -> (tags: [String], caption: String?, transcript: String?) {
+        guard Self.isVideoAsset(asset) else {
+            return (tags: [], caption: nil, transcript: nil)
+        }
+
+        let transcription: String?
+        do {
+            transcription = try await WhisperKitService.shared.transcribeAudioFile(at: audioURL)
+        } catch {
+            taggingLogger.error("WhisperKit failed for \(asset.filename, privacy: .public): \(error.localizedDescription)")
+            transcription = nil
+        }
+
+        let usefulTranscription = transcription.flatMap { Self.isUsefulTranscript($0) ? $0 : nil }
+        let isTranscribed = usefulTranscription != nil
+        let sourceText: String
+        if let usefulTranscription {
+            sourceText = usefulTranscription
+        } else {
+            sourceText = Self.sourceTextForAudioAsset(asset)
+        }
+
+        guard !sourceText.isEmpty else { return (tags: [], caption: nil, transcript: transcription) }
+
+        let caption: String
+        let tags: [String]
+        if isTranscribed, Self.useLLMForAudioCaptions,
+           let summary = try await Self.summarizeTranscriptWithLLM(sourceText) {
+            caption = summary.caption
+            tags = summary.tags.prefix(15).map { $0 }
+        } else {
+            tags = Self.extractTags(from: sourceText).prefix(15).map { $0 }
+            caption = isTranscribed ? Self.audioCaption(from: sourceText) : sourceText
+        }
+
+        return (tags: tags, caption: caption, transcript: transcription)
+    }
+
+    /// Extracts representative frames from a video, captions each one with the
+    /// on-device Vision proxy, and returns merged tags plus a combined caption.
+    /// Does not write to the database — the caller merges audio+visual results
+    /// and writes once. Gated by `DAMResourceLimiter` with dynamic frame caps
+    /// and per-frame timeouts.
+    private func generateVideoVisualTags(
+        for asset: DAMAsset,
+        videoURL: URL
+    ) async throws -> (tags: [String], caption: String?) {
+        guard Self.isVideoAsset(asset) else { return (tags: [], caption: nil) }
+
+        // Honour the resource limiter's dynamic cap (memory/thermal) but never
+        // go below the user's configured minimum.
+        let requestedCount = Self.frameCount(for: asset)
+        let cappedCount = await DAMResourceLimiter.shared.videoFrameCap(userMaxFrames: requestedCount)
+
+        let frameData = try await extractVideoFrames(from: videoURL, count: cappedCount)
+        guard !frameData.isEmpty else { return (tags: [], caption: nil) }
+
+        return try await DAMResourceLimiter.shared.withHeavyTask(
+            name: "Video visual tagging",
+            timeout: .infinity
+        ) {
+            let timeout = await DAMResourceLimiter.shared.currentLimit.operationTimeoutSeconds
+
+            var allTags = Set<String>()
+            var frameCaptions: [String] = []
+            let prompt = Self.videoFrameTagPrompt
+
+            for data in frameData {
+                try Task.checkCancellation()
+                guard !data.isEmpty else { continue }
+
+                let caption = try await DAMResourceLimiter.shared.withTimeout(
+                    seconds: timeout
+                ) {
+                    try await VisionProxyService.shared.caption(
+                        imageData: data, prompt: prompt
+                    )
+                }
+                guard let caption else { continue }
+                frameCaptions.append(caption)
+                let tags = Self.parseTagList(from: caption)
+                allTags.formUnion(tags)
+            }
+
+            guard !allTags.isEmpty else { return (tags: [], caption: nil) }
+
+            let visualCaption = String(frameCaptions.joined(separator: " ").prefix(500))
+            return (tags: Array(allTags).sorted(), caption: visualCaption)
+        }
+    }
+
+    /// Prompt used when captioning video frames. Asks for keywords so the
+    /// response can be parsed the same way as still-image tagging.
+    private static let videoFrameTagPrompt =
+        "Describe what is visible in this video frame. Return a concise comma-separated list of 5–15 keywords focusing on subjects, scenes, objects, actions, colors, and style. Return ONLY the comma-separated list."
+
+    /// Extracts `count` evenly-spaced representative frames from a video as
+    /// PNG data. Returns an empty array if no frames could be generated.
+    private func extractVideoFrames(from videoURL: URL, count: Int) async throws -> [Data] {
+        let asset = AVAsset(url: videoURL)
+        let duration = try await asset.load(.duration)
+        guard duration.isValid, duration > .zero else { return [] }
+
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+        generator.maximumSize = CGSize(width: 1280, height: 1280)
+
+        var frames: [Data] = []
+        for index in 1...count {
+            try Task.checkCancellation()
+            let fraction = Float64(index) / Float64(count + 1)
+            let time = CMTimeMultiplyByFloat64(duration, multiplier: fraction)
+            do {
+                let cgImage = try generator.copyCGImage(at: time, actualTime: nil)
+                if let data = cgImage.pngData() {
+                    frames.append(data)
+                }
+            } catch {
+                taggingLogger.error("Frame extraction failed at \(fraction) for \(videoURL.lastPathComponent, privacy: .public): \(error.localizedDescription)")
+            }
+        }
+        return frames
+    }
+
+    /// Writes the combined audio+visual caption, keywords, and transcript for
+    /// a video asset in one database transaction.
+    private func updateVideoAIData(
+        assetId: Int64,
+        caption: String,
+        tags: [String],
+        transcript: String?
+    ) async throws {
+        let database = DAMDatabase.shared
+        try await database.dbQueue.write { db in
+            guard var row = try DAMAsset.fetchOne(db, key: assetId) else { return }
+            let oldCaption = row.aiCaption
+            let oldKeywords = row.aiKeywords
+            let oldOCR = row.ocrText
+            row.aiCaption = caption
+            row.aiKeywords = tags.joined(separator: ", ")
+            let updatedOCR = [oldOCR, transcript].compactMap { $0 }.joined(separator: "\n")
+            row.ocrText = updatedOCR
+            try row.update(db)
+            if oldCaption != caption {
+                try database.recordAudit(
+                    db, assetId: assetId, field: "aiCaption",
+                    oldValue: oldCaption, newValue: caption,
+                    source: DAMTagSource.ai.rawValue)
+            }
+            if oldKeywords != row.aiKeywords {
+                try database.recordAudit(
+                    db, assetId: assetId, field: "aiKeywords",
+                    oldValue: oldKeywords, newValue: row.aiKeywords,
+                    source: DAMTagSource.ai.rawValue)
+            }
+            if oldOCR != updatedOCR {
+                try database.recordAudit(
+                    db, assetId: assetId, field: "ocrText",
+                    oldValue: oldOCR, newValue: updatedOCR,
+                    source: DAMTagSource.ai.rawValue)
+            }
+        }
+
+        for tag in tags {
+            _ = try database.applyTag(name: tag, to: assetId, source: .ai)
+        }
     }
 
     /// Extracts the audio track from a video into a temporary M4A file using

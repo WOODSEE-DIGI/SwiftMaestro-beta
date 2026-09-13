@@ -23,7 +23,7 @@ struct WebsiteTemplate: Sendable, Identifiable {
 
 enum WebsiteTemplates {
 
-    static let all: [WebsiteTemplate] = [blog, vlog, myspot, timble, memeLab, avatar, banner, linkBio]
+    static let all: [WebsiteTemplate] = [blog, vlog, myspot, timble, memeLab, avatar, banner, linkBio, neonText]
 
     // MARK: - Blog
 
@@ -433,6 +433,103 @@ enum WebsiteTemplates {
         canvasHeight: 500
     )
 
+
+    // MARK: - SwiftMaestro Neon Pink (title card / text generator)
+
+    static let neonText = WebsiteTemplate(
+        name: "SwiftMaestro Neon Pink",
+        icon: "sparkles",
+        description: "Neon pink title card: white text with a pink outer glow, editable inline and ready to export as PNG.",
+        html: """
+        <div class="controls">
+          <label class="toggle">
+            <input type="checkbox" id="transparentBg">
+            <span>Transparent background</span>
+          </label>
+        </div>
+        <div class="stage">
+          <h1 class="neon" contenteditable="true" spellcheck="false">SwiftMaestro</h1>
+          <p class="subtitle" contenteditable="true" spellcheck="false">Private AI. On Your Terms.</p>
+        </div>
+        <script>
+          document.getElementById('transparentBg').addEventListener('change', function() {
+            document.body.classList.toggle('transparent', this.checked);
+          });
+        </script>
+        """,
+        css: """
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+        body {
+          font-family: 'JetBrains Mono', monospace;
+          background: #0a0a0f;
+          min-height: 100vh;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          overflow: hidden;
+        }
+        body.transparent {
+          background: transparent;
+        }
+        .controls {
+          position: absolute;
+          top: 20px;
+          right: 20px;
+          z-index: 10;
+        }
+        .toggle {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          padding: 8px 12px;
+          background: rgba(10, 10, 15, 0.8);
+          border: 1px solid rgba(255, 46, 136, 0.4);
+          border-radius: 8px;
+          color: #ff8ab8;
+          font-size: 13px;
+          cursor: pointer;
+          user-select: none;
+        }
+        .toggle input {
+          accent-color: #ff2e88;
+        }
+        body.transparent .toggle {
+          background: rgba(0, 0, 0, 0.5);
+        }
+        .stage {
+          text-align: center;
+          padding: 40px;
+        }
+        .neon {
+          font-family: 'JetBrains Mono', monospace;
+          font-weight: 700;
+          font-size: 96px;
+          letter-spacing: 0.04em;
+          color: #fff;
+          text-shadow:
+            0 0 6px #ff2e88,
+            0 0 14px #ff2e88,
+            0 0 28px #ff00ff;
+          outline: none;
+          cursor: text;
+        }
+        .subtitle {
+          margin-top: 18px;
+          font-family: 'JetBrains Mono', monospace;
+          font-weight: 600;
+          font-size: 28px;
+          letter-spacing: 0.08em;
+          color: #00f0ff;
+          text-shadow: 0 0 8px rgba(0, 240, 255, 0.6);
+          outline: none;
+          cursor: text;
+        }
+        """,
+        canvasWidth: 1920,
+        canvasHeight: 400
+    )
 
     // MARK: - Link Bio (link-in-bio page)
 

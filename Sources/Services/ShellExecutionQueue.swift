@@ -1,24 +1,58 @@
 import Foundation
 
-// MARK: - Async Semaphore (unchanged)
+// MARK: - Async Semaphore
 actor AsyncSemaphore {
     private var count: Int
-    private let queue = DispatchQueue(label: "shell.semaphore")
     private var waiting: [CheckedContinuation<Void, Never>] = []
+    private var throwingWaiters: [CheckedContinuation<Void, Error>] = []
 
     init(value: Int) { self.count = value }
+    init(permits: Int) { self.count = permits }
 
-    func acquire() async {
-        if count > 0 { count -= 1 }
-        else { await withCheckedContinuation { waiting.append($0) } }
+    /// Cancellation-aware acquire.
+    func acquire() async throws {
+        if count > 0 {
+            count -= 1
+            return
+        }
+        try await withCheckedThrowingContinuation { continuation in
+            throwingWaiters.append(continuation)
+        }
     }
 
     func release() async {
-        if !waiting.isEmpty {
+        if !throwingWaiters.isEmpty {
+            let next = throwingWaiters.removeFirst()
+            next.resume()
+        } else if !waiting.isEmpty {
             let next = waiting.removeFirst()
             next.resume()
         } else {
             count += 1
+        }
+    }
+
+    /// Run an operation after acquiring a permit, releasing it afterward.
+    func withPermit<T>(operation: () async throws -> T) async throws -> T {
+        try await acquire()
+        defer { Task { await release() } }
+        return try await operation()
+    }
+
+    /// Adjust the permit count dynamically. Positive deltas resume waiters.
+    func setPermits(_ newValue: Int) {
+        let newCount = max(0, newValue)
+        let delta = newCount - count
+        count = newCount
+        let resumed = min(delta, throwingWaiters.count)
+        for _ in 0..<resumed {
+            let waiter = throwingWaiters.removeFirst()
+            waiter.resume()
+        }
+        let resumedLegacy = min(delta - resumed, waiting.count)
+        for _ in 0..<resumedLegacy {
+            let waiter = waiting.removeFirst()
+            waiter.resume()
         }
     }
 }
@@ -46,7 +80,7 @@ public actor ShellExecutionQueue {
     /// - Parameter work: An async closure that performs the actual shell work.
     /// - Returns: The value produced by `work`.
     public func execute<T>(_ work: @escaping () async throws -> T) async throws -> T {
-        await semaphore.acquire()
+        try await semaphore.acquire()
         incrementActiveCount()
         defer {
             Task { [weak self] in

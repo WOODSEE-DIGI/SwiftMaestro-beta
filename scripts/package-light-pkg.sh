@@ -94,6 +94,10 @@ else
     echo "WARNING: Coder model not found at $CODER_MODEL_PATH — skipping"
 fi
 
+# Strip AppleDouble sidecars and Finder metadata from the staged payload.
+find "$STAGE" -name '._*' -delete
+find "$STAGE" -name '.DS_Store' -delete
+
 # Bundle dylibs, audit, and re-sign the staged app.
 echo "Bundling Homebrew dylibs…"
 APP_PATH="$APP_STAGE" SIGN_IDENTITY="$APP_SIGN_IDENTITY" ENTITLEMENTS="$ENTITLEMENTS" \
@@ -111,14 +115,39 @@ codesign --force --sign "$APP_SIGN_IDENTITY" \
 echo "Verifying app bundle signature…"
 codesign --verify --strict --verbose=2 "$APP_STAGE"
 
-# Build and sign the installer package.
+# Build the unsigned component packages from the staged payload.
+#
+# IMPORTANT: each component uses a leaf install location. The previous build
+# used `--root "$STAGE" --install-location "/"` (stage contained
+# Applications/ + Library/...), and macOS 11+ rejects that as "Package
+# contains system volume install location content … installing to the system
+# volume is not possible" (error -6000). Split components avoid the sealed
+# system-volume root entirely.
+UNSIGNED_APP_PKG="$STAGE/${APP_NAME}-${VERSION}-app-unsigned.pkg"
+UNSIGNED_MODELS_PKG="$STAGE/${APP_NAME}-${VERSION}-models-unsigned.pkg"
 UNSIGNED_PKG="$STAGE/${APP_NAME}-${VERSION}-light-unsigned.pkg"
-echo "Building installer package…"
+
+echo "Building app component package…"
 pkgbuild \
-    --root "$STAGE" \
-    --identifier "com.woodseedigi.swiftmaestro.light" \
+    --root "$STAGE/Applications" \
+    --identifier "com.woodseedigi.swiftmaestro.app" \
     --version "$VERSION" \
-    --install-location "/" \
+    --install-location "/Applications" \
+    "$UNSIGNED_APP_PKG"
+
+echo "Building models component package…"
+pkgbuild \
+    --root "$MODELS_STAGE" \
+    --identifier "com.woodseedigi.swiftmaestro.models" \
+    --version "$VERSION" \
+    --install-location "/Library/Application Support/SwiftMaestro/models" \
+    "$UNSIGNED_MODELS_PKG"
+
+echo "Combining components into distribution package…"
+productbuild \
+    --package "$UNSIGNED_APP_PKG" \
+    --package "$UNSIGNED_MODELS_PKG" \
+    --version "$VERSION" \
     "$UNSIGNED_PKG"
 
 echo "Signing installer package…"

@@ -9,6 +9,7 @@ import CoreAudio
 // volume, playlist, and media info into a cohesive retro-themed layout.
 
 struct MediaPlayerView: View {
+    @Environment(ThemeStore.self) private var theme
     @Environment(WhisperKitService.self) private var whisper
     @State private var engine = MediaPlayerEngine.shared
     @State private var queue = MediaPlayerQueue.shared
@@ -21,6 +22,11 @@ struct MediaPlayerView: View {
     /// Visualization timer.
     @State private var vizTimer: Timer?
     @State private var showFilePicker = false
+    @State private var showPlaylistImportPicker = false
+    @State private var playlistImportError: String?
+    @State private var showPlaylistImportError = false
+    @State private var importedPlaylists: [ImportedPlaylist] = []
+    @State private var showPlaylistChooser = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -48,7 +54,7 @@ struct MediaPlayerView: View {
                     .padding(.bottom, 4)
 
                 // Waveform
-                MediaPlayerWaveformView(samples: engine.spectrumBands.map { $0 * 2 - 1 }, barColor: RetroPalette.green)
+                MediaPlayerWaveformView(samples: engine.spectrumBands.map { $0 * 2 - 1 }, barColor: theme.accent)
                     .frame(height: 60)
                     .padding(.horizontal, 8)
                     .padding(.bottom, 4)
@@ -61,13 +67,13 @@ struct MediaPlayerView: View {
                         .controlSize(.small)
                     Text("CONVERTING FOR PLAYBACK…")
                         .font(.caption2.monospaced())
-                        .foregroundStyle(RetroPalette.amber)
+                        .foregroundStyle(.orange)
                 }
                 .padding(.bottom, 4)
             } else if let prepError = engine.preparationError {
                 Text(prepError)
                     .font(.caption2.monospaced())
-                    .foregroundStyle(RetroPalette.red)
+                    .foregroundStyle(.red)
                     .lineLimit(2)
                     .padding(.horizontal, 8)
                     .padding(.bottom, 4)
@@ -110,7 +116,7 @@ struct MediaPlayerView: View {
                 } label: {
                     Image(systemName: "shuffle")
                         .font(.body.weight(.medium))
-                        .foregroundStyle(queue.shuffleEnabled ? RetroPalette.green : RetroPalette.dim)
+                        .foregroundStyle(queue.shuffleEnabled ? theme.accent : theme.secondaryBackground)
                         .frame(width: 28, height: 28)
                         .contentShape(Rectangle())
                 }
@@ -122,7 +128,7 @@ struct MediaPlayerView: View {
                 } label: {
                     Image(systemName: repeatIcon)
                         .font(.body.weight(.medium))
-                        .foregroundStyle(queue.repeatMode != .off ? RetroPalette.green : RetroPalette.dim)
+                        .foregroundStyle(queue.repeatMode != .off ? theme.accent : theme.secondaryBackground)
                         .frame(width: 28, height: 28)
                         .contentShape(Rectangle())
                 }
@@ -141,12 +147,12 @@ struct MediaPlayerView: View {
                 } label: {
                     Text("\(engine.rate, specifier: "%.2g")×")
                         .font(.caption.monospaced().weight(.medium))
-                        .foregroundStyle(RetroPalette.green)
+                        .foregroundStyle(theme.accent)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
                         .overlay(
                             RoundedRectangle(cornerRadius: 5)
-                                .strokeBorder(RetroPalette.green.opacity(0.4), lineWidth: 1)
+                                .strokeBorder(theme.accent.opacity(0.4), lineWidth: 1)
                         )
                         .contentShape(Rectangle())
                 }
@@ -211,7 +217,7 @@ struct MediaPlayerView: View {
                 } label: {
                     Text("OUT: \(activeOutputName)")
                         .font(.caption.monospaced().weight(.medium))
-                        .foregroundStyle(RetroPalette.green)
+                        .foregroundStyle(theme.accent)
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .frame(maxWidth: 160)
@@ -219,7 +225,7 @@ struct MediaPlayerView: View {
                         .padding(.vertical, 4)
                         .overlay(
                             RoundedRectangle(cornerRadius: 5)
-                                .strokeBorder(RetroPalette.green.opacity(0.4), lineWidth: 1)
+                                .strokeBorder(theme.accent.opacity(0.4), lineWidth: 1)
                         )
                         .contentShape(Rectangle())
                 }
@@ -242,7 +248,7 @@ struct MediaPlayerView: View {
                 } label: {
                     Image(systemName: "plus.circle.fill")
                         .font(.title3)
-                        .foregroundStyle(RetroPalette.green)
+                        .foregroundStyle(theme.accent)
                         .frame(width: 28, height: 28)
                         .contentShape(Rectangle())
                 }
@@ -253,16 +259,21 @@ struct MediaPlayerView: View {
             .padding(.bottom, 4)
 
             // Playlist
-            MediaPlayerPlaylistView(queue: queue, onPlayEntry: { idx in
-                if let url = queue.playIndex(idx) {
-                    Task {
-                        await engine.load(url: url)
-                        engine.play()
+            MediaPlayerPlaylistView(
+                queue: queue,
+                onPlayEntry: { idx in
+                    if let url = queue.playIndex(idx) {
+                        Task {
+                            await engine.load(url: url)
+                            engine.play()
+                        }
                     }
-                }
-            }, onOpenFiles: { showFilePicker = true })
+                },
+                onOpenFiles: { showFilePicker = true },
+                onImportPlaylist: { showPlaylistImportPicker = true }
+            )
         }
-        .background(RetroPalette.background)
+        .background(theme.background)
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             handleDrop(providers: providers)
         }
@@ -272,6 +283,27 @@ struct MediaPlayerView: View {
             allowsMultipleSelection: true
         ) { result in
             handleFileImport(result)
+        }
+        .fileImporter(
+            isPresented: $showPlaylistImportPicker,
+            allowedContentTypes: playlistImportTypes,
+            allowsMultipleSelection: false
+        ) { result in
+            handlePlaylistImport(result)
+        }
+        .sheet(isPresented: $showPlaylistChooser) {
+            PlaylistChooserSheet(playlists: importedPlaylists) { playlist in
+                MediaPlayerQueue.shared.append(contentsOf: playlist.tracks)
+            }
+        }
+        .alert(
+            "Playlist Import Failed",
+            isPresented: $showPlaylistImportError,
+            presenting: playlistImportError
+        ) { _ in
+            Button("OK") {}
+        } message: { error in
+            Text(error)
         }
         .onAppear {
             queue.load()
@@ -382,6 +414,15 @@ struct MediaPlayerView: View {
         return generic + byExtension.filter { seen.insert($0).inserted }
     }
 
+    private var playlistImportTypes: [UTType] {
+        [
+            UTType(filenameExtension: "m3u"),
+            UTType(filenameExtension: "m3u8"),
+            UTType(filenameExtension: "pls"),
+            .xml
+        ].compactMap { $0 }
+    }
+
     // MARK: - File Handling
 
     private func handleFileImport(_ result: Result<[URL], Error>) {
@@ -398,6 +439,30 @@ struct MediaPlayerView: View {
             }
         } else {
             queue.append(contentsOf: validURLs)
+        }
+    }
+
+    private func handlePlaylistImport(_ result: Result<[URL], Error>) {
+        guard case .success(let urls) = result, let url = urls.first else { return }
+        do {
+            let ext = url.pathExtension.lowercased()
+            if ext == "xml" {
+                let playlists = try MediaPlayerPlaylistImporter.playlists(fromXML: url)
+                guard !playlists.isEmpty else {
+                    throw MediaPlayerPlaylistImportError.noPlayableTracks
+                }
+                importedPlaylists = playlists
+                showPlaylistChooser = true
+            } else {
+                let tracks = try MediaPlayerPlaylistImporter.importPlaylist(from: url)
+                guard !tracks.isEmpty else {
+                    throw MediaPlayerPlaylistImportError.noPlayableTracks
+                }
+                MediaPlayerQueue.shared.append(contentsOf: tracks)
+            }
+        } catch {
+            playlistImportError = error.localizedDescription
+            showPlaylistImportError = true
         }
     }
 

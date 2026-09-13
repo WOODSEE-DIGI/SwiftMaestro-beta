@@ -111,7 +111,13 @@ enum DAMFileKind {
         if isVideo(url) { return "movie" }
         if isAudio(url) { return "audio" }
         if isPDF(url) { return "pdf" }
+        if isDocument(url) { return "document" }
         return "unknown"
+    }
+
+    /// Any document-like file the MaestroDocs engine can preview.
+    static func isDocument(_ url: URL) -> Bool {
+        isTextKitDocument(url) || isDelimitedText(url) || isXLSXFamily(url) || isEmbeddedPreviewCandidate(url)
     }
 
     // MARK: - Document families (MaestroDocs engine)

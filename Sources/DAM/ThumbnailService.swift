@@ -161,16 +161,19 @@ actor ThumbnailService {
     // MARK: - Public API
 
     /// Returns a thumbnail for the file, generating and caching on first use.
-    /// - Parameter pixelSize: longest edge in points (rendered at 2x).
-    func thumbnail(for url: URL, pixelSize: CGFloat = gridPixelSize) async throws -> NSImage {
+    /// - Parameters:
+    ///   - url: The file URL. For offline cataloged assets this can be the
+    ///     original absolute path; the disk cache is keyed by it.
+    ///   - modificationDate: Optional mtime to use for the cache key. Pass the
+    ///     cataloged `fileModDate` when the file may be offline so a previously
+    ///     cached thumbnail can still be retrieved.
+    ///   - pixelSize: longest edge in points (rendered at 2x).
+    func thumbnail(
+        for url: URL,
+        modificationDate: Date? = nil,
+        pixelSize: CGFloat = gridPixelSize
+    ) async throws -> NSImage {
         let fileURL = url.standardizedFileURL
-
-        // Avoid invoking ImageIO/QuickLook for files that no longer exist.
-        // This eliminates console spam from missing catalog entries and
-        // keeps decoder slots free for real files.
-        guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            throw ThumbnailError.fileNotFound
-        }
 
         // QuickLook's video thumbnail path is reliable up to ~1024 px; larger
         // sizes often fail/timeout and were producing blank "No Preview" panes.
@@ -183,7 +186,24 @@ actor ThumbnailService {
             effectiveSize = pixelSize
         }
 
-        let key = Self.cacheKey(for: fileURL, size: Int(effectiveSize))
+        let key = Self.cacheKey(for: fileURL, size: Int(effectiveSize), modificationDate: modificationDate)
+
+        // Offline catalog: if the caller supplied a modification date, try the
+        // disk cache before giving up on a missing file.
+        if modificationDate != nil,
+           !FileManager.default.fileExists(atPath: fileURL.path),
+           let cacheURL = try? Self.cacheDirectory().appendingPathComponent("\(key).jpg"),
+           let data = try? Data(contentsOf: cacheURL),
+           let image = NSImage(data: data) {
+            return image
+        }
+
+        // Avoid invoking ImageIO/QuickLook for files that no longer exist.
+        // This eliminates console spam from missing catalog entries and
+        // keeps decoder slots free for real files.
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            throw ThumbnailError.fileNotFound
+        }
 
         if let cached = Self.memoryCache.object(forKey: key as NSString) {
             return cached
@@ -627,9 +647,18 @@ actor ThumbnailService {
     /// The `v2` prefix busts entries written before the embedded-preview
     /// minimum-size rule (which cached fuzzy 160px DNG thumbs) — those
     /// stale files are simply never read again.
-    private nonisolated static func cacheKey(for url: URL, size: Int) -> String {
-        let mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey])
-            .contentModificationDate?.timeIntervalSince1970) ?? 0
+    private nonisolated static func cacheKey(
+        for url: URL,
+        size: Int,
+        modificationDate: Date? = nil
+    ) -> String {
+        let mtime: TimeInterval
+        if let modificationDate {
+            mtime = modificationDate.timeIntervalSince1970
+        } else {
+            mtime = (try? url.resourceValues(forKeys: [.contentModificationDateKey])
+                .contentModificationDate?.timeIntervalSince1970) ?? 0
+        }
         let raw = "v2|\(url.path)|\(size)|\(mtime)"
         // Paths can exceed filename limits — hash the key to a fixed-length name.
         var hash: UInt64 = 5381

@@ -390,20 +390,14 @@ struct SwiftMaestroApp: App {
                     // tool-call format / thinking support are known before any
                     // generation runs. This is fast (JSON reads only).
                     await catalog.refreshCapabilities()
-                    // Eagerly load the default model at startup so the first
-                    // message doesn't block on model init/download. Avoid surprise
-                    // downloads or OOM crashes: only auto-load models that are already
-                    // present and fit comfortably within half of the installed RAM.
-                    if let model = catalog.selectedModel,
-                       model.hasCompleteLocalWeights {
-                        let physicalGB = Int(ProcessInfo.processInfo.physicalMemory / 1_073_741_824)
-                        let safeAutoLoadGB = max(32, physicalGB / 2)
-                        if model.estimatedMemoryGB <= safeAutoLoadGB {
-                            Task.detached(priority: .userInitiated) {
-                                _ = try? await engine.loadModel(model)
-                            }
-                        }
-                    }
+                    // NOTE: We no longer eagerly auto-load the selected default
+                    // model at launch. MLX model-load failures can call
+                    // fatalError() from C++ (via ErrorHandler.dispatch) rather
+                    // than throwing Swift errors, which crashes the app before
+                    // the UI is usable. The first user message will load the
+                    // model on demand; until then the UI stays responsive and
+                    // the launch path stays safe.
+                    //
                     // Eagerly load WhisperKit so the mic button is ready.
                     whisperService.notesVaultURL = notesViewModel.vaultURL
                     whisperService.ensureModelLoaded()

@@ -82,16 +82,24 @@ final class SystemHealthWatchService: NSObject {
 
     private override init() {
         let defaults = UserDefaults.standard
-        isEnabled = defaults.object(forKey: Keys.enabled) as? Bool ?? true
-        ignoredProcesses = Set(defaults.stringArray(forKey: Keys.ignored) ?? [])
+        // Default disabled while macOS NotificationCenter is in a crash loop
+        // (NotificationCenter repeated crashes are a system bug, and any local
+        // notification from SwiftMaestro can trigger the broken renderer).
+        isEnabled = defaults.object(forKey: Keys.enabled) as? Bool ?? false
+        // Don't notify about crashes in the system Notification Center itself —
+        // those crashes are a macOS bug, and posting a notification for them
+        // can make the crash loop worse. Always merge the default into the
+        // saved set so the guard is never accidentally removed.
+        let saved = defaults.stringArray(forKey: Keys.ignored) ?? []
+        ignoredProcesses = Set(saved).union(["NotificationCenter"])
         super.init()
     }
 
     /// Called once at app launch: registers the notification category/delegate
     /// and starts the folder watch.
     func start() {
-        registerNotificationCategory()
         guard isEnabled else { return }
+        registerNotificationCategory()
         startWatching()
     }
 

@@ -289,6 +289,169 @@ final class DAMDatabase: Sendable {
             }
         }
 
+        // v10 — volume-aware offline catalogs and drive health tracking.
+        migrator.registerMigration("v10-volume-awareness") { db in
+            try db.create(table: "volume") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("uuid", .text).notNull().unique()
+                t.column("name", .text).notNull()
+                t.column("bsdName", .text)
+                t.column("deviceModel", .text)
+                t.column("capacityBytes", .integer)
+                t.column("freeBytes", .integer)
+                t.column("mediaType", .text)
+                t.column("isOnline", .boolean).notNull().defaults(to: false)
+                t.column("lastSeenAt", .datetime)
+                t.column("healthJSON", .text)
+                t.column("healthWarnReplace", .boolean).notNull().defaults(to: false)
+            }
+            try db.create(index: "idx_volume_uuid", on: "volume", columns: ["uuid"])
+
+            try db.alter(table: "asset") { t in
+                t.add(column: "volumeId", .integer)
+                t.add(column: "relativePath", .text)
+                t.add(column: "isAvailable", .boolean).notNull().defaults(to: true)
+                t.add(column: "lastVerifiedAt", .datetime)
+            }
+            try db.create(index: "idx_asset_volumeId", on: "asset", columns: ["volumeId"])
+            try db.create(index: "idx_asset_isAvailable", on: "asset", columns: ["isAvailable"])
+
+            // Existing assets on the boot volume keep their absolute path as
+            // the relative path and are treated as always available.
+            try db.execute(sql: """
+                UPDATE asset SET relativePath = substr(path, 2)
+                WHERE path LIKE '/Users/%' OR path LIKE '/private/%'
+                """)
+        }
+
+        // v11 — backfill volumeId / relativePath / isAvailable for assets that
+        // were cataloged before volume tracking existed, so the Volumes panel
+        // and offline catalog features work on existing libraries.
+        migrator.registerMigration("v11-volume-backfill") { db in
+            guard let mounted = FileManager.default.mountedVolumeURLs(
+                includingResourceValuesForKeys: [.volumeUUIDStringKey, .volumeNameKey, .volumeTotalCapacityKey, .volumeAvailableCapacityKey, .volumeIsInternalKey],
+                options: []
+            ) else { return }
+
+            let now = Date()
+            var volumeRoots: [(id: Int64, rootPath: String)] = []
+
+            // Insert or update a volume row for every mounted volume, then
+            // remember its local id so assets can be linked in one pass.
+            for url in mounted {
+                let values = try? url.resourceValues(forKeys: [.volumeUUIDStringKey, .volumeNameKey, .volumeTotalCapacityKey, .volumeAvailableCapacityKey, .volumeIsInternalKey, .volumeURLKey])
+                guard let uuid = values?.volumeUUIDString, !uuid.isEmpty else { continue }
+
+                let volumeURL = values?.volume ?? url
+                let rootPath = volumeURL.path
+                let name = values?.volumeName ?? url.lastPathComponent
+                // Skip APFS snapshot volumes (e.g. "8TB2@snap-149896") — they
+                // are read-only snapshots, not real catalog targets.
+                guard !damIsSnapshotVolume(name: name) else { continue }
+                let capacity = values?.volumeTotalCapacity.map(Int64.init)
+                let free = values?.volumeAvailableCapacity.map(Int64.init)
+                let isInternal = values?.volumeIsInternal ?? false
+                let mediaType = isInternal ? "internal" : "external"
+
+                if var existing = try DAMVolume.filter(DAMVolume.Columns.uuid == uuid).fetchOne(db) {
+                    existing.name = name
+                    existing.capacityBytes = capacity ?? existing.capacityBytes
+                    existing.freeBytes = free ?? existing.freeBytes
+                    existing.isOnline = true
+                    existing.lastSeenAt = now
+                    if existing.mediaType == nil { existing.mediaType = mediaType }
+                    try existing.update(db)
+                    volumeRoots.append((existing.id ?? -1, rootPath))
+                } else {
+                    var volume = DAMVolume(
+                        id: nil,
+                        uuid: uuid,
+                        name: name,
+                        bsdName: nil,
+                        deviceModel: nil,
+                        capacityBytes: capacity,
+                        freeBytes: free,
+                        mediaType: mediaType,
+                        isOnline: true,
+                        lastSeenAt: now,
+                        healthJSON: nil,
+                        healthWarnReplace: false
+                    )
+                    try volume.insert(db)
+                    volumeRoots.append((volume.id ?? -1, rootPath))
+                }
+            }
+
+            // Sort by longest root path first so nested mount points win.
+            let sortedRoots = volumeRoots.sorted { $0.rootPath.count > $1.rootPath.count }
+
+            // One SQL UPDATE per volume is far faster than row-by-row updates.
+            for (volumeId, rootPath) in sortedRoots where volumeId > 0 {
+                let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+                let startIndex = prefix.count + 1 // SQLite substr is 1-based
+                try db.execute(
+                    sql: """
+                        UPDATE asset
+                        SET volumeId = ?,
+                            relativePath = TRIM(SUBSTR(path, ?), '/'),
+                            isAvailable = 1,
+                            lastVerifiedAt = ?
+                        WHERE volumeId IS NULL
+                          AND (path = ? OR path LIKE ?)
+                        """,
+                    arguments: [volumeId, startIndex, now, rootPath, prefix + "%"]
+                )
+            }
+        }
+
+        // v12 — reclassify pre-existing assets whose kind is "unknown" but are
+        // actually documents (Word/Excel/Pages/etc.) now that DAMFileKind knows
+        // how to detect them.
+        migrator.registerMigration("v12-document-kind") { db in
+            let rows = try Row.fetchAll(db, sql: "SELECT id, path FROM asset WHERE kind = 'unknown' OR kind IS NULL")
+            var updates: [(Int64, String)] = []
+            for row in rows {
+                guard let id = row["id"] as? Int64,
+                      let path = row["path"] as? String else { continue }
+                let url = URL(fileURLWithPath: path)
+                let kind = DAMFileKind.kind(for: url)
+                if kind != "unknown" {
+                    updates.append((id, kind))
+                }
+            }
+            for (id, kind) in updates {
+                try db.execute(sql: "UPDATE asset SET kind = ? WHERE id = ?", arguments: [kind, id])
+            }
+        }
+
+        // v13 — clean up APFS snapshot volumes that were incorrectly cataloged
+        // before the snapshot filter existed, and reclassify any remaining
+        // unknown movie/audio assets so the duration backfill targets them.
+        migrator.registerMigration("v13-snapshot-cleanup") { db in
+            // Remove dangling asset references before deleting the rows.
+            try db.execute(sql: """
+                UPDATE asset
+                SET volumeId = NULL, relativePath = NULL
+                WHERE volumeId IN (SELECT id FROM volume WHERE name LIKE '%@snap-%')
+                """)
+            try db.execute(sql: "DELETE FROM volume WHERE name LIKE '%@snap-%'")
+
+            let rows = try Row.fetchAll(db, sql: "SELECT id, path FROM asset WHERE kind IS NULL OR kind = 'unknown'")
+            var updates: [(Int64, String)] = []
+            for row in rows {
+                guard let id = row["id"] as? Int64,
+                      let path = row["path"] as? String else { continue }
+                let url = URL(fileURLWithPath: path)
+                let kind = DAMFileKind.kind(for: url)
+                if kind != "unknown" {
+                    updates.append((id, kind))
+                }
+            }
+            for (id, kind) in updates {
+                try db.execute(sql: "UPDATE asset SET kind = ? WHERE id = ?", arguments: [kind, id])
+            }
+        }
+
         return migrator
     }()
 

@@ -7,30 +7,24 @@ import SwiftUI
 // monospace readouts. Shared by the Audio Control panel (live monitor + EQ
 // bank) and the Voice Notes recording UI (compact level bar).
 
-/// Retro palette (deliberate aesthetic — not theme-driven).
+/// Legacy matrix palette kept as a fallback for any non-theme-aware callers.
+/// New code should read colors from the injected `ThemeStore` instead.
 enum RetroPalette {
     static let green = Color(red: 0.20, green: 1.00, blue: 0.35)
     static let amber = Color(red: 1.00, green: 0.75, blue: 0.20)
     static let red = Color(red: 1.00, green: 0.30, blue: 0.25)
     static let dim = Color(red: 0.10, green: 0.16, blue: 0.10)
     static let background = Color(white: 0.055)
-
-    /// Segment color by vertical position (0 = bottom).
-    static func zone(fraction: Double) -> Color {
-        switch fraction {
-        case ..<0.55: return green
-        case ..<0.8: return amber
-        default: return red
-        }
-    }
 }
 
 // MARK: - Spectrum meter
 
 /// 24-band spectrum analyzer: each band is a column of segment cells filled
 /// bottom-up, with a slow-falling peak cap cell on top. Log-spaced lows →
-/// highs left → right.
+/// highs left → right. Now theme-aware: accent color replaces the fixed
+/// matrix green.
 struct RetroSpectrumMeter: View {
+    @Environment(ThemeStore.self) private var theme
     let spectrum: [Float]          // 0…1 per band
     var cellsPerBar: Int = 12
     /// Per-band falling peak caps (white marker above the bar) — nil hides them.
@@ -44,11 +38,11 @@ struct RetroSpectrumMeter: View {
             }
         }
         .padding(8)
-        .background(RetroPalette.background)
+        .background(theme.background)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(RetroPalette.green.opacity(0.35), lineWidth: 1)
+                .strokeBorder(theme.accent.opacity(0.35), lineWidth: 1)
         )
         .retroScanlines()
     }
@@ -56,6 +50,7 @@ struct RetroSpectrumMeter: View {
 
 /// One bar column: bottom-up filled segments, zone-colored by height.
 private struct RetroBarColumn: View {
+    @Environment(ThemeStore.self) private var theme
     let value: Float
     let cells: Int
     var cap: Float? = nil
@@ -71,13 +66,21 @@ private struct RetroBarColumn: View {
                 }()
                 RoundedRectangle(cornerRadius: 1.5)
                     .fill(isCap ? Color.white
-                          : filled ? RetroPalette.zone(fraction: fraction)
-                          : RetroPalette.dim)
+                          : filled ? zoneColor(fraction: fraction)
+                          : theme.secondaryBackground)
                     .frame(maxWidth: .infinity)
                     .frame(height: 7)
             }
         }
         .frame(maxHeight: .infinity)
+    }
+
+    private func zoneColor(fraction: Double) -> Color {
+        switch fraction {
+        case ..<0.55: return theme.accent
+        case ..<0.8:  return .orange
+        default:      return .red
+        }
     }
 }
 
@@ -85,6 +88,7 @@ private struct RetroBarColumn: View {
 
 /// Horizontal segmented VU bar with peak-hold marker and a dB readout.
 struct RetroLevelMeter: View {
+    @Environment(ThemeStore.self) private var theme
     let level: Float      // 0…1 RMS
     let peak: Float       // 0…1 peak-hold
     var segments: Int = 40
@@ -100,8 +104,8 @@ struct RetroLevelMeter: View {
                         && peak > 0.02
                     RoundedRectangle(cornerRadius: 1.5)
                         .fill(isPeak ? Color.white
-                              : filled ? RetroPalette.zone(fraction: fraction)
-                              : RetroPalette.dim)
+                              : filled ? zoneColor(fraction: fraction)
+                              : theme.secondaryBackground)
                         .frame(height: 14)
                 }
             }
@@ -109,22 +113,30 @@ struct RetroLevelMeter: View {
                 if let label {
                     Text(label)
                         .font(.caption2.monospaced())
-                        .foregroundStyle(RetroPalette.green.opacity(0.8))
+                        .foregroundStyle(theme.accent.opacity(0.8))
                 }
                 Spacer()
                 Text(dbText)
                     .font(.caption2.monospaced())
-                    .foregroundStyle(RetroPalette.green.opacity(0.8))
+                    .foregroundStyle(theme.accent.opacity(0.8))
             }
         }
         .padding(8)
-        .background(RetroPalette.background)
+        .background(theme.background)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(RetroPalette.green.opacity(0.35), lineWidth: 1)
+                .strokeBorder(theme.accent.opacity(0.35), lineWidth: 1)
         )
         .retroScanlines()
+    }
+
+    private func zoneColor(fraction: Double) -> Color {
+        switch fraction {
+        case ..<0.55: return theme.accent
+        case ..<0.8:  return .orange
+        default:      return .red
+        }
     }
 
     private var dbText: String {
@@ -179,6 +191,7 @@ struct RetroEQBank: View {
 
 /// One band: a vertical column of segments with a bright thumb that drags.
 private struct RetroEQSlider: View {
+    @Environment(ThemeStore.self) private var theme
     let frequency: Float
     @Binding var gain: Float   // −12…+12 dB
     let disabled: Bool
@@ -189,7 +202,7 @@ private struct RetroEQSlider: View {
         VStack(spacing: 3) {
             Text(String(format: "%+.0f", gain))
                 .font(.caption2.monospaced())
-                .foregroundStyle(RetroPalette.green)
+                .foregroundStyle(theme.accent)
                 .frame(height: 12)
 
             // The slider column: thumb position by gain (top = +12 dB).
@@ -228,11 +241,11 @@ private struct RetroEQSlider: View {
         // Fill toward center detent: segments between 0 dB and the thumb glow.
         let filled = (gain >= 0 && rowDB >= 0 && rowDB <= Double(gain))
             || (gain < 0 && rowDB <= 0 && rowDB >= Double(gain))
-        guard filled else { return RetroPalette.dim }
+        guard filled else { return theme.secondaryBackground }
         switch abs(rowDB) {
-        case ..<4: return RetroPalette.green
-        case ..<8: return RetroPalette.amber
-        default: return RetroPalette.red
+        case ..<4: return theme.accent
+        case ..<8: return .orange
+        default: return .red
         }
     }
 

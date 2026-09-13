@@ -90,6 +90,9 @@ targets:
           # the glob — they load from the bundle root.)
           - "Resources/Plugins/**"
           - "Resources/excalidraw/**"
+          # The Setup installer app is a separate target; don't compile it
+          # into SwiftMaestro.app.
+          - "Setup/**"
       - path: Sources/App
       - path: Sources/Views
       - path: Sources/ViewModels
@@ -249,6 +252,7 @@ targets:
       - sdk: WebKit.framework
       - sdk: QuickLookThumbnailing.framework
       - sdk: Quartz.framework
+      - sdk: Accelerate.framework
     scheme:
       testTargets:
         - SwiftMaestroTests
@@ -271,6 +275,40 @@ targets:
       # and C++ interop matches the app's objcxx mode.
       HEADER_SEARCH_PATHS: "$(inherited) $(SRCROOT)/Vendor/libusb/include $(SRCROOT)/Vendor/libraw/include $(SRCROOT)/Vendor/libjpeg/include $(SRCROOT)/Vendor/lcms2/include $(SRCROOT)/Sources"
       SWIFT_OBJC_INTEROP_MODE: objcxx
+
+  SwiftMaestroSetup:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/Setup
+    settings:
+      base:
+        PRODUCT_NAME: "SwiftMaestro Setup"
+        PRODUCT_BUNDLE_IDENTIFIER: com.woodseedigi.swiftmaestro.setup
+        SWIFT_VERSION: 6.3
+        MACOSX_DEPLOYMENT_TARGET: 14.0
+        ENABLE_HARDENED_RUNTIME: YES
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: "SwiftMaestro Setup"
+        INFOPLIST_KEY_LSApplicationCategoryType: "public.app-category.utilities"
+        INFOPLIST_KEY_NSHumanReadableCopyright: "© 2026 FUSV"
+        INFOPLIST_KEY_LSAppNapIsDisabled: YES
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
+        COMBINE_HIDPI_IMAGES: YES
+      configs:
+        Debug:
+          CODE_SIGN_STYLE: Automatic
+          CODE_SIGN_IDENTITY: "Apple Development"
+          DEVELOPMENT_TEAM: "3BMZ2ULZ54"
+          ENABLE_HARDENED_RUNTIME: NO
+        Release:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: "Developer ID Application"
+          DEVELOPMENT_TEAM: "3BMZ2ULZ54"
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+          OTHER_CODE_SIGN_FLAGS: "--timestamp --options runtime"
+    scheme:
+      gatherCoverageData: false
 
 defaultLanguage: Swift
 platforms: []

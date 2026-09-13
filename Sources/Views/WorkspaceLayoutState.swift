@@ -864,8 +864,22 @@ final class WorkspaceLayoutState {
     private static let minRatio: Double = 0.1
     private static let maxRatio: Double = 0.9
 
+    /// Debug builds start with a blank workspace every launch so heavy panels
+    /// (MaestroDAM, storage health scans, etc.) don't auto-restore and overload
+    /// the system while debugging. Release builds still remember the last layout.
+    #if DEBUG
+    private let isDebugNoPersistence = true
+    #else
+    private let isDebugNoPersistence = false
+    #endif
+
     init() {
-        load()
+        if isDebugNoPersistence {
+            // Start empty; ContentView.onAppear will open the default chat chrome.
+            isLoading = false
+        } else {
+            load()
+        }
     }
 
     // MARK: - Queries
@@ -946,20 +960,20 @@ final class WorkspaceLayoutState {
 
         if !canvasContains(.agents) {
             canvasTiles.append(CanvasTile(
-                kinds: [.agents], col: 0, row: 0, colSpan: 6, rowSpan: 10, z: nextZ()
+                kinds: [.agents], col: 0, row: 0, colSpan: 4, rowSpan: 10, z: nextZ()
             ))
             changed = true
         }
         if !canvasContains(.appLauncher) {
             canvasTiles.append(CanvasTile(
-                kinds: [.appLauncher], col: 0, row: 10, colSpan: 6, rowSpan: 6, z: nextZ()
+                kinds: [.appLauncher], col: 0, row: 10, colSpan: 4, rowSpan: 6, z: nextZ()
             ))
             changed = true
         }
         let chat = WorkspacePanelKind.agentChat(navigatorID)
         if !canvasContains(chat) {
             canvasTiles.append(CanvasTile(
-                kinds: [chat], col: 6, row: 0, colSpan: 18, rowSpan: 16, z: nextZ()
+                kinds: [chat], col: 4, row: 0, colSpan: 20, rowSpan: 16, z: nextZ()
             ))
             changed = true
         }
@@ -1130,7 +1144,7 @@ final class WorkspaceLayoutState {
     private func preferredSpan(for kind: WorkspacePanelKind) -> (colSpan: Int, rowSpan: Int) {
         switch kind {
         case .agentChat: return (10, 16)
-        case .agents, .appLauncher: return (6, 8)
+        case .agents, .appLauncher: return (4, 8)
         case .terminal: return (8, 8)
         case .webBrowser, .damBrowser, .maestroDocs, .maestroDB: return (10, 12)
         case .htmlBuilder: return (12, 16)
@@ -1942,6 +1956,7 @@ final class WorkspaceLayoutState {
     // MARK: - Persistence
 
     private func save() {
+        guard !isDebugNoPersistence else { return }
         let tilesData = try? JSONEncoder().encode(canvasTiles)
         UserDefaults.standard.set(tilesData, forKey: defaultsKey + ".canvasTiles")
         let windowsData = try? JSONEncoder().encode(canvasWindows)

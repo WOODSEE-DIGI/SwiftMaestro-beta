@@ -743,16 +743,14 @@ struct MetadataPanelView: View {
             .font(.caption)
             .help("Slower but writes polished captions and better tags from audio transcripts")
 
-            if tagging.isGenerating {
-                Text(tagging.generateProgress.isEmpty
-                     ? "Generating tags…"
-                     : tagging.generateProgress)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            } else if tagging.isIndexing {
-                Text(tagging.indexProgress.isEmpty ? "Indexing…" : tagging.indexProgress)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+            videoTaggingOptions
+
+            if tagging.isGenerating || tagging.isIndexing {
+                let message = tagging.isGenerating
+                    ? (tagging.generateProgress.isEmpty ? "Generating tags…" : tagging.generateProgress)
+                    : (tagging.indexProgress.isEmpty ? "Indexing catalog…" : tagging.indexProgress)
+                RetroScanIndicator(message: message)
+                    .padding(.vertical, 8)
             } else if tagging.backlogCount > 0 {
                 Text("\(tagging.backlogCount) assets waiting to be indexed")
                     .font(.caption2)
@@ -810,6 +808,67 @@ struct MetadataPanelView: View {
                 }
             }
         }
+    }
+
+    private var videoTaggingOptions: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle(
+                "Tag video frames visually",
+                isOn: Binding(
+                    get: { DAMTaggingService.useVisionForVideoTags },
+                    set: { DAMTaggingService.useVisionForVideoTags = $0 }
+                )
+            )
+            .controlSize(.small)
+            .font(.caption)
+            .help("Extract video frames and caption them with the on-device vision model")
+
+            if DAMTaggingService.useVisionForVideoTags {
+                HStack(spacing: 12) {
+                    Picker("Frame interval", selection: frameIntervalBinding) {
+                        Text("30 sec").tag(0.5)
+                        Text("1 min").tag(1.0)
+                        Text("2 min").tag(2.0)
+                        Text("5 min").tag(5.0)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 220)
+                    .accessibilityLabel("Frame interval")
+
+                    Stepper(
+                        value: maxFramesBinding,
+                        in: 10...120,
+                        step: 10
+                    ) {
+                        Text("Max \(DAMTaggingService.videoTaggingConfig.maxFrames) frames")
+                            .font(.caption)
+                    }
+                    .accessibilityLabel("Maximum frames")
+                }
+            }
+        }
+    }
+
+    private var frameIntervalBinding: Binding<Double> {
+        Binding(
+            get: { DAMTaggingService.videoTaggingConfig.frameIntervalMinutes },
+            set: { newValue in
+                var config = DAMTaggingService.videoTaggingConfig
+                config.frameIntervalMinutes = newValue
+                DAMTaggingService.videoTaggingConfig = config
+            }
+        )
+    }
+
+    private var maxFramesBinding: Binding<Int> {
+        Binding(
+            get: { DAMTaggingService.videoTaggingConfig.maxFrames },
+            set: { newValue in
+                var config = DAMTaggingService.videoTaggingConfig
+                config.maxFrames = newValue
+                DAMTaggingService.videoTaggingConfig = config
+            }
+        )
     }
 
     @ViewBuilder
@@ -908,6 +967,26 @@ enum DAMContextMenu {
                     Task { await viewModel.setRating(stars, for: ids) }
                 } label: {
                     Text(stars == 0 ? "No rating" : "\(stars) ★")
+                }
+            }
+
+            let playableURLs = assets.compactMap { asset -> URL? in
+                let url = URL(fileURLWithPath: asset.path)
+                return MediaPlayerFormat.canPlay(url) ? url : nil
+            }
+            if !playableURLs.isEmpty {
+                Divider()
+                Button {
+                    Task { @MainActor in
+                        MediaPlayerQueue.shared.append(contentsOf: playableURLs)
+                    }
+                } label: {
+                    Label(
+                        playableURLs.count > 1
+                            ? "Add \(playableURLs.count) to Media Player Playlist"
+                            : "Add to Media Player Playlist",
+                        systemImage: "music.note.list"
+                    )
                 }
             }
         }

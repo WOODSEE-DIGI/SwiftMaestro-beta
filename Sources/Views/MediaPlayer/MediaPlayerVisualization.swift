@@ -6,6 +6,7 @@ import SwiftUI
 // Extends the existing RetroSpectrumMeter with playback-aware state.
 
 struct MediaPlayerVisualization: View {
+    @Environment(ThemeStore.self) private var theme
     let spectrum: [Float]
     let caps: [Float]?
 
@@ -14,11 +15,11 @@ struct MediaPlayerVisualization: View {
             HStack {
                 Text("SPECTRUM")
                     .font(.caption2.monospaced())
-                    .foregroundStyle(RetroPalette.green.opacity(0.6))
+                    .foregroundStyle(theme.accent.opacity(0.6))
                 Spacer()
                 Text("24 BAND")
                     .font(.caption2.monospaced())
-                    .foregroundStyle(RetroPalette.green.opacity(0.4))
+                    .foregroundStyle(theme.accent.opacity(0.4))
             }
 
             RetroSpectrumMeter(spectrum: spectrum, cellsPerBar: 10, caps: caps)
@@ -30,6 +31,7 @@ struct MediaPlayerVisualization: View {
 
 /// Simple waveform display showing recent amplitude history.
 struct MediaPlayerWaveformView: View {
+    @Environment(ThemeStore.self) private var theme
     let samples: [Float]
     let barColor: Color
 
@@ -38,7 +40,7 @@ struct MediaPlayerWaveformView: View {
             HStack {
                 Text("WAVEFORM")
                     .font(.caption2.monospaced())
-                    .foregroundStyle(RetroPalette.green.opacity(0.6))
+                    .foregroundStyle(barColor.opacity(0.6))
                 Spacer()
             }
 
@@ -59,11 +61,11 @@ struct MediaPlayerWaveformView: View {
             }
         }
         .padding(8)
-        .background(RetroPalette.background)
+        .background(theme.background)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(RetroPalette.green.opacity(0.35), lineWidth: 1)
+                .strokeBorder(barColor.opacity(0.35), lineWidth: 1)
         )
     }
 }

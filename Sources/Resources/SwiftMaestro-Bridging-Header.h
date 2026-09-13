@@ -3,5 +3,6 @@
 
 #import "Tethering/Obsbot/IOKit/ObsbotIOKitController.h"
 #import "DAM/RAWPreviewDecoder.h"
+#import <mach/mach.h>
 
 #endif /* SwiftMaestro_Bridging_Header_h */

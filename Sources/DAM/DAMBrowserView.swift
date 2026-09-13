@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import GRDB
 import UniformTypeIdentifiers
 
 // MARK: - MaestroDAM Browser View
@@ -10,10 +11,6 @@ import UniformTypeIdentifiers
 //              modes: full-page list, or a large selection preview above the
 //              list (AI tagging lives in the metadata panel)
 //   Edit / Output — see DAMOutputWorkflow.swift
-//
-// Every page shows the persistent FilmstripBar browser strip at the bottom
-// (mounted below, outside the workspace switch, so it keeps its identity
-// across tab switches).
 //
 // Side panels are user-resizable via PanelResizeHandle (widths persisted in
 // @AppStorage); the preview image scales with the panel width using the
@@ -35,6 +32,36 @@ struct DAMBrowserView: View {
     /// Local spacebar monitor for the Finder-style Quick Look preview panel.
     @State private var quickLookMonitor: Any?
 
+    @State private var healthWarnings: [DAMVolume] = []
+
+    /// Home workspace viewing options.
+    @AppStorage("dam.homeViewMode") private var homeViewMode: HomeViewMode = .browser
+
+    private enum HomeViewMode: String, CaseIterable {
+        case browser = "browser"
+        case statistics = "statistics"
+        case storageMap = "storageMap"
+        case duplicates = "duplicates"
+
+        var label: String {
+            switch self {
+            case .browser: return "Browser"
+            case .statistics: return "Statistics"
+            case .storageMap: return "Storage Map"
+            case .duplicates: return "Duplicates"
+            }
+        }
+
+        var icon: String {
+            switch self {
+            case .browser: return "square.grid.2x2"
+            case .statistics: return "chart.bar"
+            case .storageMap: return "externaldrive.badge.icloud"
+            case .duplicates: return "doc.on.doc"
+            }
+        }
+    }
+
     /// Metadata workspace viewing options.
     private enum MetadataViewMode: String {
         case list, preview
@@ -49,19 +76,18 @@ struct DAMBrowserView: View {
             WorkspaceTabBar(viewModel: viewModel)
             Divider()
             workspaceContent
-            // Lightroom/Capture One-style persistent browser strip: the same
-            // loaded page with the same selection highlighted on every tool
-            // page. Mounted OUTSIDE the workspace switch so it keeps its
-            // identity across tab switches — no thumbnail reloads, scroll
-            // position preserved, and the auto-scroll-to-selection task
-            // re-centres the selected thumb whenever the selection moves.
-            Divider()
-            FilmstripBar(viewModel: viewModel, assets: viewModel.assets)
-                .frame(height: 128)
         }
         .task {
-            await viewModel.reload()
-            await viewModel.refreshFolderTree()
+            // Volume monitoring touches disk/DB and can be slow; don't block
+            // the folder tree and first asset page on it.
+            Task { await DAMVolumeStore.shared.startMonitoring() }
+
+            // Load the asset grid and folder tree in parallel so the sidebar
+            // appears as soon as the folder counts are ready.
+            async let reload = viewModel.reload()
+            async let tree = viewModel.refreshFolderTree()
+            _ = await (reload, tree)
+
             viewModel.startBackgroundEnrichment()
             if let path = UserDefaults.standard.string(forKey: "crm.pendingDAMAssetPath") {
                 UserDefaults.standard.removeObject(forKey: "crm.pendingDAMAssetPath")
@@ -109,6 +135,14 @@ struct DAMBrowserView: View {
             }
             .help("Show/hide the Folders tree")
 
+            Picker("View", selection: $homeViewMode) {
+                ForEach(HomeViewMode.allCases, id: \.self) { mode in
+                    Label(mode.label, systemImage: mode.icon).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 320)
+
             Menu {
                 Button { viewModel.importFolderWithPanel() } label: {
                     Label("Import Folder…", systemImage: "folder")
@@ -134,10 +168,9 @@ struct DAMBrowserView: View {
                 .buttonStyle(.borderless)
                 .foregroundStyle(.red)
 
-                Text(viewModel.lrcatProgress)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                RetroScanIndicator(message: viewModel.lrcatProgress.isEmpty ? "Importing catalog…" : viewModel.lrcatProgress)
+                    .scaleEffect(0.65)
+                    .frame(width: 180)
             } else if let summary = viewModel.lrcatSummary {
                 Text(summary)
                     .font(.caption)
@@ -154,10 +187,9 @@ struct DAMBrowserView: View {
                 .buttonStyle(.borderless)
                 .foregroundStyle(.red)
 
-                Text(viewModel.lightroomProgress)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                RetroScanIndicator(message: viewModel.lightroomProgress.isEmpty ? "Importing Lightroom metadata…" : viewModel.lightroomProgress)
+                    .scaleEffect(0.65)
+                    .frame(width: 180)
             } else if let summary = viewModel.lightroomSummary {
                 Text(summary)
                     .font(.caption)
@@ -174,10 +206,9 @@ struct DAMBrowserView: View {
                 .buttonStyle(.borderless)
                 .foregroundStyle(.red)
 
-                Text("Scanning \(viewModel.importScanned) files · \(viewModel.importWritten) cataloged")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                RetroScanIndicator(message: "Scanning \(viewModel.importScanned) files · \(viewModel.importWritten) cataloged")
+                    .scaleEffect(0.65)
+                    .frame(width: 180)
             }
 
             Spacer()
@@ -280,7 +311,7 @@ struct DAMBrowserView: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
-                .help("Rescan catalog folders")
+                .help("Rescan catalog folders and volumes")
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -293,33 +324,54 @@ struct DAMBrowserView: View {
             )) {
                 Label("All Assets", systemImage: "photo.on.rectangle.angled")
                     .tag("")
-                OutlineGroup(viewModel.folderTree, children: \.children) { node in
-                    HStack {
-                        Image(systemName: "folder")
-                            .foregroundStyle(.secondary)
-                        Text(node.name)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        // Colored tag dots for this folder
-                        if let colors = viewModel.folderTagColors[node.path] {
-                            HStack(spacing: 2) {
-                                ForEach(colors, id: \.self) { idx in
-                                    Circle()
-                                        .fill(DAMBrowserView.finderColor(for: idx))
-                                        .frame(width: 6, height: 6)
-                                }
-                            }
+
+                if !viewModel.folderTree.isEmpty {
+                    Section("Catalog") {
+                        OutlineGroup(viewModel.folderTree, children: \.children) { node in
+                            folderRow(for: node)
+                                .tag(node.path)
+                                .contextMenu { folderContextMenu(for: node) }
                         }
-                        Spacer()
-                        Text("\(node.count)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
                     }
-                    .tag(node.path)
-                    .contextMenu { folderContextMenu(for: node) }
+                }
+
+                if !viewModel.volumeNodes.isEmpty {
+                    Section("Volumes") {
+                        ForEach(viewModel.volumeNodes) { node in
+                            folderRow(for: node, icon: "internaldrive")
+                                .tag(node.path)
+                        }
+                    }
                 }
             }
             .listStyle(.sidebar)
+        }
+    }
+
+    @ViewBuilder
+    private func folderRow(for node: DAMFolderNode, icon: String = "folder") -> some View {
+        HStack {
+            Image(systemName: icon)
+                .foregroundStyle(.secondary)
+            Text(node.name)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            // Colored tag dots for this folder
+            if let colors = viewModel.folderTagColors[node.path] {
+                HStack(spacing: 2) {
+                    ForEach(colors, id: \.self) { idx in
+                        Circle()
+                            .fill(DAMBrowserView.finderColor(for: idx))
+                            .frame(width: 6, height: 6)
+                    }
+                }
+            }
+            Spacer()
+            if node.count > 0 {
+                Text("\(node.count)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -436,6 +488,7 @@ struct DAMBrowserView: View {
                 Text("· \(viewModel.selection.count) selected")
             }
             Spacer()
+            DAMResourceStatusView()
             if let folder = viewModel.selectedFolder {
                 Text(folder)
                     .lineLimit(1)
@@ -448,6 +501,36 @@ struct DAMBrowserView: View {
         .padding(.vertical, 6)
     }
 
+    // MARK: - Storage health banner
+
+    private var storageHealthBanner: some View {
+        Group {
+            if !healthWarnings.isEmpty {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                    Text("\(healthWarnings.count) drive\(healthWarnings.count == 1 ? "" : "s") need attention: \(healthWarnings.map(\.name).joined(separator: ", "))")
+                        .font(.caption)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color.red.opacity(0.15))
+            }
+        }
+        .task { await loadHealthWarnings() }
+    }
+
+    private func loadHealthWarnings() async {
+        healthWarnings = (try? await DAMDatabase.shared.dbQueue.read { db in
+            try DAMVolume
+                .filter(DAMVolume.Columns.healthWarnReplace == true && DAMVolume.Columns.isOnline == true)
+                .fetchAll(db)
+        }) ?? []
+    }
+
     // MARK: - Home: tree | grid | preview
 
     private var homeBody: some View {
@@ -458,13 +541,24 @@ struct DAMBrowserView: View {
                 PanelResizeHandle(width: $treeWidth, minWidth: 170, maxWidth: 400)
             }
             VStack(spacing: 0) {
-                breadcrumbBar
-                Divider()
-                gridContent
-                Divider()
-                statusBar
+                switch homeViewMode {
+                case .browser:
+                    storageHealthBanner
+                    breadcrumbBar
+                    Divider()
+                    gridContent
+                    Divider()
+                    statusBar
+                case .statistics:
+                    DAMStatisticsView(viewModel: viewModel)
+                case .storageMap:
+                    storageHealthBanner
+                    DAMStorageMapView(viewModel: viewModel)
+                case .duplicates:
+                    DAMDuplicateFinderView(viewModel: viewModel)
+                }
             }
-            if showPreviewPanel {
+            if homeViewMode == .browser, showPreviewPanel {
                 PanelResizeHandle(width: $previewWidth, minWidth: 240, maxWidth: 640, invert: true)
                 previewPanel
                     .frame(width: previewWidth)
@@ -480,16 +574,11 @@ struct DAMBrowserView: View {
     /// metadata.
     private var metadataBody: some View {
         HStack(spacing: 0) {
-            VStack(spacing: 0) {
-                if showFolderTree {
-                    folderTreePanel
-                        .frame(height: 280)
-                    Divider()
-                }
-                MetadataPanelView(viewModel: viewModel)
+            if showFolderTree {
+                folderTreePanel
+                    .frame(width: treeWidth)
+                PanelResizeHandle(width: $treeWidth, minWidth: 170, maxWidth: 400)
             }
-            .frame(width: metaSideWidth)
-            PanelResizeHandle(width: $metaSideWidth, minWidth: 260, maxWidth: 480)
             VStack(spacing: 0) {
                 metadataHeader
                 Divider()
@@ -502,6 +591,9 @@ struct DAMBrowserView: View {
                 Divider()
                 statusBar
             }
+            PanelResizeHandle(width: $metaSideWidth, minWidth: 260, maxWidth: 480, invert: true)
+            MetadataPanelView(viewModel: viewModel)
+                .frame(width: metaSideWidth)
         }
     }
 
@@ -728,7 +820,9 @@ private struct DAMPreviewImage: View {
             guard !Task.isCancelled else { return }
             do {
                 image = try await ThumbnailService.shared.thumbnail(
-                    for: URL(fileURLWithPath: asset.path), pixelSize: 1024)
+                    for: URL(fileURLWithPath: asset.path),
+                    modificationDate: asset.fileModDate,
+                    pixelSize: 1024)
             } catch {
                 guard !Task.isCancelled else { return }
                 loadFailed = true
@@ -792,7 +886,9 @@ private struct MetadataPreviewPane: View {
             guard !Task.isCancelled else { return }
             do {
                 image = try await ThumbnailService.shared.thumbnail(
-                    for: URL(fileURLWithPath: asset.path), pixelSize: 1600)
+                    for: URL(fileURLWithPath: asset.path),
+                    modificationDate: asset.fileModDate,
+                    pixelSize: 1600)
             } catch {
                 // Cancellation is not a failure — don't flash the doc icon.
                 guard !Task.isCancelled else { return }
@@ -839,19 +935,37 @@ private struct DAMThumbnailCell: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 8)
                     .fill(Color(nsColor: .controlBackgroundColor))
+                    .opacity(asset.isAvailable ? 1.0 : 0.65)
 
                 if let image {
                     Image(nsImage: image)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .opacity(asset.isAvailable ? 1.0 : 0.65)
                 } else if loadFailed {
-                    Image(systemName: "doc")
+                    Image(systemName: asset.isAvailable ? "doc" : "externaldrive.fill.badge.xmark")
                         .font(.largeTitle)
                         .foregroundStyle(.secondary)
                 } else {
                     ProgressView()
                         .controlSize(.small)
+                }
+
+                if !asset.isAvailable {
+                    VStack {
+                        Spacer()
+                        HStack {
+                            Spacer()
+                            Image(systemName: "externaldrive.badge.xmark")
+                                .font(.caption2)
+                                .foregroundStyle(.white)
+                                .padding(4)
+                                .background(Color.black.opacity(0.6))
+                                .clipShape(Circle())
+                                .padding(4)
+                        }
+                    }
                 }
             }
             .frame(height: 120)
@@ -899,7 +1013,8 @@ private struct DAMThumbnailCell: View {
         .task {
             do {
                 image = try await ThumbnailService.shared.thumbnail(
-                    for: URL(fileURLWithPath: asset.path))
+                    for: URL(fileURLWithPath: asset.path),
+                    modificationDate: asset.fileModDate)
             } catch {
                 loadFailed = true
             }
