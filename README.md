@@ -32,7 +32,19 @@ A native macOS AI assistant that runs large language models **fully on-device** 
 - **Plans & task checklists** — docked panels, resizable plan windows, and Markdown export.
 - **Behavioral rules** — add custom rules that guide the agent's behaviour, scoped globally or per-agent.
 - **Private by design** — no telemetry, no analytics. Secrets live in the macOS Keychain and are never written to chat history or the memory store.
-- **Distributed as a signed `.dmg`** — Developer ID signed for Apple Silicon Mac. Auto-updates via Sparkle with EdDSA verification.
+- **Distributed as a signed `.pkg`** — Developer ID signed for Apple Silicon Mac. Full installer bundles the app and default models; Sparkle app-only updates keep deltas small.
+
+---
+
+## What's New in 0.6.0
+
+- **MaestroDAM Storage Map** — interactive sunburst chart (baobab-style rings) visualises disk usage by folder, with click-to-drill, breadcrumb navigation, and a top-files list.
+- **Duplicate Finder** — find duplicates by exact hash, perceptual image hash, or version-set grouping, with smart keep rules and one-click cleanup.
+- **DAM Statistics & Health** — catalog size breakdowns, folder counts, per-volume health checks, and storage-fault summaries.
+- **Import from Final Cut & Lightroom** — bring in FCPXML events and Lightroom/Capture One ratings, labels, picks, and keywords. DaVinci Resolve keyword imports and Apple Photos favourite cross-checks are also supported.
+- **Media Player playlist import** — load M3U/M3U8, PLS, and iTunes/Apple Music XML playlists into the Media Player queue.
+- **SwiftMaestro Setup** — a dedicated setup app streamlines first installs, model downloads, and integrity verification.
+- **Resource-aware background work** — `DAMResourceLimiter` throttles heavy scans by CPU, memory, and thermals; `RetroScanIndicator` shows live progress across long operations.
 
 ---
 
@@ -106,7 +118,9 @@ SwiftMaestro is a **multi-panel workspace** with a tiling canvas. Each panel can
 
 **Maps** — Apple Maps with geocoding, reverse geocoding, and point-of-interest search. The AI can find locations, calculate distances, and open directions.
 
-**DAM (Digital Asset Management)** — Import, search, rate, tag, and filter your media library. Full-text search across assets with keyword management and filter views.
+**DAM (Digital Asset Management)** — Import, search, rate, tag, and filter your media library. Includes an interactive Storage Map sunburst, Duplicate Finder, DAM Statistics, Volume Health, and imports from Lightroom, Capture One, Final Cut Pro XML, and DaVinci Resolve. Full-text search across assets with keyword management and filter views.
+
+**Media Player** — Playback panel with real spectrum/VU metering, playlist queue, and import from M3U/M3U8, PLS, and iTunes/Apple Music XML.
 
 **Voice Notes** — Record voice notes with local WhisperKit transcription. Export transcriptions to Notes. Push-to-talk hotkey support.
 
