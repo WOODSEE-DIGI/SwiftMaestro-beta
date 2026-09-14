@@ -183,7 +183,7 @@ pkgutil --check-signature "$PKG" >/dev/null || {
 if [ "${SKIP_SPARKLE_ZIP:-0}" != "1" ]; then
     echo "Creating app-only Sparkle update archive $(basename "$ZIP")…"
     rm -f "$ZIP"
-    ditto -c -k --sequesterRsrc "$APP_STAGE" "$ZIP"
+    ditto -c -k --keepParent --sequesterRsrc "$APP_STAGE" "$ZIP"
 else
     echo "SKIP_SPARKLE_ZIP=1 — skipping Sparkle update archive."
 fi
