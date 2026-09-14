@@ -47,7 +47,13 @@ fi
 # shipping — fresh installs would fail to fetch models on first run. Validates
 # every catalog repo (config/tokenizer files + every safetensors shard) and
 # fails fast BEFORE the 30-minute build and 28 GB packaging begin.
-./scripts/validate-model-links.sh || exit 1
+# Set SKIP_MODEL_VALIDATION=1 to skip this step when restarting a release that
+# already passed validation (the script is otherwise stateless).
+if [ "${SKIP_MODEL_VALIDATION:-0}" = "1" ]; then
+    echo "Skipping model validation (SKIP_MODEL_VALIDATION=1)"
+else
+    ./scripts/validate-model-links.sh || exit 1
+fi
 
 # Always build the Release app from scratch so the latest code, Info.plist, and
 # bundled resources are included in the DMGs.
