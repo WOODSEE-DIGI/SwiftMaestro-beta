@@ -10,12 +10,58 @@ import Foundation
 /// `~/Library/Application Support/SwiftMaestro/plugins/<id>/`. Both use the
 /// exact same manifest format, so a bundled plugin and a hand-written one
 /// are indistinguishable to the rest of the app.
+/// How an extension integrates with SwiftBrowser.
+enum PluginExtensionType: String, Codable, Hashable, Sendable {
+    /// Existing behavior: opens as a workspace panel (sidebar icon).
+    case panel
+    /// Adds a button to SwiftBrowser's toolbar.
+    case browserAction = "browser-action"
+    /// Injects JS/CSS into matching web pages.
+    case contentScript = "content-script"
+}
+
+/// A content script entry from the manifest: which pages it runs on and what
+/// assets it injects.
+struct ContentScriptEntry: Codable, Hashable, Sendable {
+    /// URL match patterns, e.g. ["*://*.youtube.com/*"].
+    let matches: [String]
+    /// JS files relative to the extension root, injected in order.
+    let js: [String]
+    /// Optional CSS files relative to the extension root.
+    let css: [String]?
+    /// When to inject: "document_start", "document_end", "document_idle".
+    /// Defaults to "document_idle".
+    let runAt: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case matches, js, css
+        case runAt = "run_at"
+    }
+}
+
+/// Toolbar button configuration for a `browser-action` extension.
+struct ToolbarButtonConfig: Codable, Hashable, Sendable {
+    /// SF Symbol name shown on the toolbar button.
+    let icon: String
+    /// Short label shown next to or under the icon.
+    let label: String?
+    /// Tooltip on hover.
+    let tooltip: String?
+}
+
+/// Host-side integration hints for an extension.
+struct HostConfig: Codable, Hashable, Sendable {
+    /// If present, renders a toolbar button in SwiftBrowser.
+    let toolbar: ToolbarButtonConfig?
+}
+
 struct PluginManifest: Identifiable, Codable, Hashable, Sendable {
     let id: String
     let name: String
     /// SF Symbol name for the sidebar row / panel icon.
     let icon: String
     /// Entry HTML file, relative to this manifest's own folder (e.g. "index.html").
+    /// For `browser-action` extensions this is the optional popover page.
     let entry: String
     let version: String
     /// Bridge capabilities this plugin is granted, secure-by-default (empty =
@@ -25,19 +71,36 @@ struct PluginManifest: Identifiable, Codable, Hashable, Sendable {
     /// rejected by `PluginBridge`, not silently allowed.
     let capabilities: [PluginCapability]
 
+    // MARK: - Browser-extension fields
+
+    /// How this extension integrates with SwiftBrowser. Defaults to `.panel`
+    /// for backward compatibility with existing plugins.
+    let type: PluginExtensionType
+    /// Host-side UI integration (toolbar button, etc.).
+    let host: HostConfig?
+    /// Content scripts to inject into matching web pages.
+    let contentScripts: [ContentScriptEntry]?
+
     /// The folder this manifest was loaded from — NOT part of the JSON itself
     /// (manifests don't know their own location), populated by `PluginService`
-    /// after parsing so the rest of the app can resolve `entry` and any other
-    /// relative asset paths.
+    /// / `BrowserExtensionService` after parsing so the rest of the app can
+    /// resolve `entry` and any other relative asset paths.
     var contentRootURL: URL?
 
     private enum CodingKeys: String, CodingKey {
         case id, name, icon, entry, version, capabilities
+        case type
+        case host
+        case contentScripts = "content_scripts"
     }
 
     init(
         id: String, name: String, icon: String, entry: String, version: String,
-        capabilities: [PluginCapability] = [], contentRootURL: URL? = nil
+        capabilities: [PluginCapability] = [],
+        type: PluginExtensionType = .panel,
+        host: HostConfig? = nil,
+        contentScripts: [ContentScriptEntry]? = nil,
+        contentRootURL: URL? = nil
     ) {
         self.id = id
         self.name = name
@@ -45,6 +108,9 @@ struct PluginManifest: Identifiable, Codable, Hashable, Sendable {
         self.entry = entry
         self.version = version
         self.capabilities = capabilities
+        self.type = type
+        self.host = host
+        self.contentScripts = contentScripts
         self.contentRootURL = contentRootURL
     }
 
@@ -56,6 +122,9 @@ struct PluginManifest: Identifiable, Codable, Hashable, Sendable {
         entry = try container.decode(String.self, forKey: .entry)
         version = try container.decode(String.self, forKey: .version)
         capabilities = try container.decodeIfPresent([PluginCapability].self, forKey: .capabilities) ?? []
+        type = try container.decodeIfPresent(PluginExtensionType.self, forKey: .type) ?? .panel
+        host = try container.decodeIfPresent(HostConfig.self, forKey: .host)
+        contentScripts = try container.decodeIfPresent([ContentScriptEntry].self, forKey: .contentScripts)
         contentRootURL = nil
     }
 
@@ -67,39 +136,21 @@ struct PluginManifest: Identifiable, Codable, Hashable, Sendable {
         try container.encode(entry, forKey: .entry)
         try container.encode(version, forKey: .version)
         try container.encode(capabilities, forKey: .capabilities)
+        try container.encode(type, forKey: .type)
+        try container.encodeIfPresent(host, forKey: .host)
+        try container.encodeIfPresent(contentScripts, forKey: .contentScripts)
     }
 
     /// Full URL to the entry HTML file, if `contentRootURL` has been resolved.
     var entryURL: URL? {
         contentRootURL?.appendingPathComponent(entry)
     }
+
+    /// True if this manifest describes a SwiftBrowser extension rather than a
+    /// plain sidebar-panel plugin.
+    var isBrowserExtension: Bool {
+        type != .panel
+    }
 }
 
-/// A bridge capability a plugin can declare in its manifest to unlock the
-/// matching `swiftMaestro.*` JS function. `PluginBridge` checks this before
-/// honoring any request — an undeclared capability is a hard rejection, not
-/// a soft/ignored one, so a plugin's actual reach is exactly what its
-/// manifest states, auditable at a glance.
-enum PluginCapability: String, Codable, Hashable, Sendable {
-    /// Unlocks `swiftMaestro.fetch(url, options)` — a native URLSession-backed
-    /// HTTP proxy. Requests never go through the webview's own fetch/XHR
-    /// stack, so they aren't subject to a remote server's CORS policy (most
-    /// APIs a plugin would target, e.g. Mastodon instances, don't set
-    /// permissive CORS for arbitrary origins).
-    case network
-    /// Unlocks `swiftMaestro.getSecret(name)` / `setSecret(name, value)` —
-    /// Keychain-backed storage, namespaced per-plugin
-    /// (`plugin.<id>.<name>`), so one plugin can never read another's.
-    case secrets
-    /// Unlocks `swiftMaestro.callTool(name, arguments)` — dispatches through
-    /// the same native tool registry agents use (`MaestroTools.execute`),
-    /// letting a plugin's data be reachable by agents too (or vice versa).
-    /// Not required for a read/write-only plugin; opt in deliberately.
-    case tools
-    /// Unlocks `swiftMaestro.startOAuth(options)` — opens an authorize URL in
-    /// the default browser and captures the redirect on a loopback-only
-    /// listener (`OAuthLoopbackServer`), returning the authorization code.
-    /// The token exchange itself happens via `swiftMaestro.fetch`, so the
-    /// host never sees the client secret or the resulting tokens.
-    case oauth
-}
+

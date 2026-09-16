@@ -1657,6 +1657,7 @@ enum MaestroTools {
         case "html builder", "htmlbuilder", "html": return .htmlBuilder
         case "backup", "backups": return .backup
         case "pomodoro", "timer", "focus timer": return .pomodoro
+        case "reader", "rss", "rss reader", "feeds", "feed reader", "inoreader": return .rssReader
         default:
             // Display-name pass: match the app names users actually SEE (and
             // therefore the names they say to the agent — "MaestroDAM",
@@ -1706,6 +1707,7 @@ enum MaestroTools {
         (.htmlBuilder, "htmlbuilder"),
         (.backup, "backup"),
         (.pomodoro, "pomodoro"),
+        (.rssReader, "reader"),
         (.busMonitor, "busmonitor"),
         (.audioControl, "audiocontrol"),
         (.streamIngest, "streamingest"),

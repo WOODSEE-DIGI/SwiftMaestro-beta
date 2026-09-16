@@ -18,30 +18,91 @@ struct SimpleMemoryStore: Sendable {
         if let path = basePath {
             self.baseDir = path
         } else {
-            // Check iCloud Drive container first, fallback to ~/.ai-context/memory
-            let fileManager = FileManager.default
-            if let iCloudContainer = fileManager.url(forUbiquityContainerIdentifier: nil)?
-                .appendingPathComponent("Documents/SwiftMaestro/memory", isDirectory: true) {
-                try? fileManager.createDirectory(at: iCloudContainer, withIntermediateDirectories: true)
-                self.baseDir = iCloudContainer
-            } else {
-                let home = fileManager.homeDirectoryForCurrentUser
-                self.baseDir = home.appendingPathComponent(".ai-context/memory")
-            }
+            self.baseDir = Self.sharedMemoryRootURL()
         }
+    }
+
+    /// The canonical memory root for this machine.
+    /// Prefers the iCloud Drive container (`Documents/SwiftMaestro/memory`) so memory
+    /// syncs across devices; falls back to a local `~/.ai-context/memory` directory.
+    static func sharedMemoryRootURL() -> URL {
+        let fileManager = FileManager.default
+        if let iCloudContainer = fileManager.url(forUbiquityContainerIdentifier: nil)?
+            .appendingPathComponent("Documents/SwiftMaestro/memory", isDirectory: true) {
+            try? fileManager.createDirectory(at: iCloudContainer, withIntermediateDirectories: true)
+            return iCloudContainer.resolvingSymlinksInPath()
+        }
+        return fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent(".ai-context/memory", isDirectory: true)
+            .resolvingSymlinksInPath()
     }
 
     /// Create the shared `~/.ai-context/memory` subtree up front so a fresh,
     /// self-contained install has its data directory before the first write.
-    /// Idempotent: existing directories are left untouched.
+    /// Idempotent: existing directories are left untouched. Also creates or repairs
+    /// the `~/.ai-context/memory` symlink so it is portable across Macs (relative,
+    /// not absolute).
     static func ensureScaffold() {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let memory = home.appendingPathComponent(".ai-context/memory", isDirectory: true)
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser
+        let aiContext = home.appendingPathComponent(".ai-context", isDirectory: true)
+        try? fm.createDirectory(at: aiContext, withIntermediateDirectories: true)
+
+        let target = sharedMemoryRootURL()
+        let aiMemory = home.appendingPathComponent(".ai-context/memory", isDirectory: true)
+
+        // Make sure the real target exists before we symlink to it.
+        try? fm.createDirectory(at: target, withIntermediateDirectories: true)
+
+        // If we're using the iCloud container, keep ~/.ai-context/memory as a
+        // relative symlink so it survives on any Mac with the same Apple ID.
+        if target.resolvingSymlinksInPath() != aiMemory.resolvingSymlinksInPath() {
+            repairOrCreateAIMemorySymlink(aiMemory: aiMemory, target: target)
+        }
+
         for sub in ["conversations/swiftmaestro", "knowledge", "context", "skills"] {
-            try? FileManager.default.createDirectory(
-                at: memory.appendingPathComponent(sub, isDirectory: true),
+            try? fm.createDirectory(
+                at: aiMemory.appendingPathComponent(sub, isDirectory: true),
                 withIntermediateDirectories: true)
         }
+    }
+
+    private static func repairOrCreateAIMemorySymlink(aiMemory: URL, target: URL) {
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        let exists = fm.fileExists(atPath: aiMemory.path, isDirectory: &isDir)
+
+        if exists {
+            guard let attrs = try? fm.attributesOfItem(atPath: aiMemory.path),
+                  attrs[.type] as? FileAttributeType == .typeSymbolicLink else {
+                // Real directory or file — leave it alone.
+                return
+            }
+            // Resolve the current destination. If it's already relative and valid,
+            // keep it; otherwise replace it so it is portable.
+            if let dest = try? fm.destinationOfSymbolicLink(atPath: aiMemory.path),
+               !dest.hasPrefix("/"),
+               fm.fileExists(atPath: target.path) {
+                return
+            }
+            try? fm.removeItem(at: aiMemory)
+        }
+
+        let relative = relativePath(from: aiMemory.deletingLastPathComponent().path, to: target.path)
+        try? fm.createSymbolicLink(atPath: aiMemory.path, withDestinationPath: relative)
+    }
+
+    private static func relativePath(from base: String, to destination: String) -> String {
+        let baseComponents = URL(fileURLWithPath: base).standardizedFileURL.pathComponents
+        let destComponents = URL(fileURLWithPath: destination).standardizedFileURL.pathComponents
+        var common = 0
+        while common < min(baseComponents.count, destComponents.count)
+                && baseComponents[common] == destComponents[common] {
+            common += 1
+        }
+        let ups = Array(repeating: "..", count: baseComponents.count - common)
+        let remainder = Array(destComponents.dropFirst(common))
+        return (ups + remainder).joined(separator: "/")
     }
 
     // MARK: - Storage

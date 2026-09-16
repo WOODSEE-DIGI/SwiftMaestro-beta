@@ -41,7 +41,7 @@ struct PluginPanelView: View {
     }
 }
 
-private struct PluginWebView: NSViewRepresentable {
+struct PluginWebView: NSViewRepresentable {
     let manifest: PluginManifest
     let entryURL: URL
     @Binding var loadError: String?

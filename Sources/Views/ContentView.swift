@@ -81,47 +81,40 @@ struct ContentView: View {
                 WorkspaceSwitcherView()
             }
             ToolbarItem(placement: .automatic) {
-                HStack(spacing: 4) {
-                    Image(systemName: "square.stack.3d.up").foregroundStyle(.secondary)
-                    Text("Default").font(.caption).foregroundStyle(.secondary)
-                    // Menu with a custom label: toolbar pickers don't render
-                    // custom Label content in the closed state (the text
-                    // vanished), so the label is drawn explicitly here.
-                    Menu {
-                        ForEach(ModelVisibilityStore.shared.visibleModels(from: catalog.models)) { model in
-                            Button {
-                                catalog.selectedModelID = model.id
-                            } label: {
-                                Label {
-                                    Text(model.displayName)
-                                } icon: {
-                                    Image(nsImage: ChatView.badgeDotImage(model.providerBadge.colorName))
-                                }
+                Menu {
+                    ForEach(ModelVisibilityStore.shared.visibleModels(from: catalog.models)) { model in
+                        Button {
+                            catalog.selectedModelID = model.id
+                        } label: {
+                            Label {
+                                Text(model.displayName)
+                            } icon: {
+                                Image(nsImage: ChatView.badgeDotImage(model.providerBadge.colorName))
                             }
                         }
-                    } label: {
-                        HStack(spacing: 6) {
-                            if let selected = catalog.selectedModel {
-                                Image(nsImage: ChatView.badgeDotImage(selected.providerBadge.colorName))
-                                Text(selected.displayName)
-                                    .font(.caption)
-                                    .lineLimit(1)
-                            } else {
-                                Text("Select model")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Image(systemName: "chevron.up.chevron.down")
-                                .font(.caption2)
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        if let selected = catalog.selectedModel {
+                            Image(nsImage: ChatView.badgeDotImage(selected.providerBadge.colorName))
+                            Text(selected.displayName)
+                                .font(.caption)
+                                .lineLimit(1)
+                        } else {
+                            Text("Select model")
+                                .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color.secondary.opacity(0.12), in: .capsule)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
                     }
-                    .menuStyle(.borderlessButton)
-                    .frame(maxWidth: 220)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.secondary.opacity(0.12), in: .capsule)
                 }
+                .menuStyle(.borderlessButton)
+                .frame(maxWidth: 180)
                 .help("Global default model — used by any agent whose model is set to “Default (global)”.")
             }
             ToolbarItem(placement: .principal) {
@@ -140,51 +133,52 @@ struct ContentView: View {
                 .help("New project agent")
             }
             ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    // Saved presets
-                    let presetStore = WorkspaceLayoutPresetStore.shared
-                    ForEach(presetStore.presets) { preset in
-                        Button {
-                            presetStore.recall(preset.id)
-                        } label: {
-                            HStack {
-                                Text(preset.name)
-                                if presetStore.activePresetID == preset.id {
-                                    Image(systemName: "checkmark")
+                HStack(spacing: 2) {
+                    Menu {
+                        let presetStore = WorkspaceLayoutPresetStore.shared
+                        ForEach(presetStore.presets) { preset in
+                            Button {
+                                presetStore.recall(preset.id)
+                            } label: {
+                                HStack {
+                                    Text(preset.name)
+                                    if presetStore.activePresetID == preset.id {
+                                        Image(systemName: "checkmark")
+                                    }
                                 }
                             }
                         }
+                        Divider()
+                        Button("Save Current Layout…") {
+                            activeSheet = .savePreset
+                        }
+                        Button("Reset to Default") {
+                            workspaceLayout.resetToDefaultLayout()
+                        }
+                    } label: {
+                        Image(systemName: "rectangle.grid.2x2")
                     }
-                    Divider()
-                    Button("Save Current Layout…") {
-                        activeSheet = .savePreset
+                    .menuStyle(.borderlessButton)
+                    .help("Workspace layouts — save, recall, or reset")
+
+                    Button {
+                        workspaceLayout.cycleLayoutAlgorithm()
+                    } label: {
+                        Image(systemName: workspaceLayout.layoutAlgorithm.icon)
                     }
-                    Button("Reset to Default") {
-                        workspaceLayout.resetToDefaultLayout()
+                    .buttonStyle(.borderless)
+                    .help("Layout: \(workspaceLayout.layoutAlgorithm.displayName) — click to cycle")
+
+                    Button {
+                        workspaceLayout.isLocked.toggle()
+                    } label: {
+                        Image(systemName: workspaceLayout.isLocked ? "lock" : "lock.open")
                     }
-                } label: {
-                    Image(systemName: "rectangle.grid.2x2")
+                    .buttonStyle(.borderless)
+                    .help(workspaceLayout.isLocked
+                        ? "Workspace is locked — panels cannot be dragged"
+                        : "Workspace is unlocked — drag the grip to rearrange panels")
                 }
-                .help("Workspace layouts — save, recall, or reset")
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    workspaceLayout.cycleLayoutAlgorithm()
-                } label: {
-                    Image(systemName: workspaceLayout.layoutAlgorithm.icon)
-                }
-                .help("Layout: \(workspaceLayout.layoutAlgorithm.displayName) — click to cycle")
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    workspaceLayout.isLocked.toggle()
-                } label: {
-                    Image(systemName: workspaceLayout.isLocked ? "lock" : "lock.open")
-                    Text(workspaceLayout.isLocked ? "Locked" : "Unlocked")
-                }
-                .help(workspaceLayout.isLocked
-                    ? "Workspace is locked — panels cannot be dragged"
-                    : "Workspace is unlocked — drag the grip to rearrange panels")
             }
         }
         .frame(minWidth: 900, minHeight: 620)

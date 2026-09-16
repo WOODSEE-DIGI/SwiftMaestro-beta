@@ -20,12 +20,49 @@ actor PerceptualHashService {
 
     private init() {}
 
+    private static let hashTimeout: UInt64 = 30 * NSEC_PER_SEC
+
     /// Computes a 16-character hex pHash for an image file, or nil if the file
-    /// cannot be decoded as an image.
+    /// cannot be decoded as an image or takes too long (e.g. a corrupt file
+    /// that hangs ImageIO).
     func hash(for path: String) async -> String? {
-        guard FileManager.default.fileExists(atPath: path),
-              let cgImage = thumbnailCGImage(at: path, maxSize: dctSize)
-        else { return nil }
+        guard FileManager.default.fileExists(atPath: path) else { return nil }
+
+        do {
+            return try await withThrowingTaskGroup(of: String?.self) { group in
+                group.addTask {
+                    await self.computeHash(for: path)
+                }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: Self.hashTimeout)
+                    throw PerceptualHashError.timeout
+                }
+                guard let result = try await group.next() else { return nil }
+                group.cancelAll()
+                return result
+            }
+        } catch {
+            return nil
+        }
+    }
+
+    private func computeHash(for path: String) async -> String? {
+        let fileURL = URL(fileURLWithPath: path)
+        let cgImage: CGImage?
+
+        if DAMFileKind.isCameraRAW(fileURL) {
+            // RAW files are decoded out-of-process via sips so a malformed
+            // file cannot crash the app during pHash generation.
+            guard let nsImage = await DAMSafeRAWThumbnailService.shared.thumbnail(
+                for: path,
+                maxPixelSize: 64
+            ) else { return nil }
+            cgImage = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        } else {
+            cgImage = thumbnailCGImage(at: path, maxSize: dctSize)
+        }
+
+        guard let cgImage else { return nil }
 
         guard let pixels = gray32x32Pixels(from: cgImage) else { return nil }
 
@@ -158,4 +195,5 @@ actor PerceptualHashService {
 
 enum PerceptualHashError: Error {
     case dctSetupFailed
+    case timeout
 }

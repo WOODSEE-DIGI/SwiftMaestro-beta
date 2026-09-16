@@ -193,6 +193,69 @@ final class WebKitBrowserEngine: NSObject {
             }
         })
     }
+
+    // MARK: - Content scripts
+
+    /// Injects all matching user-installed content scripts for `url` into the
+    /// given web view. CSS is injected as style elements; JS is evaluated
+    /// directly. Runs on the main thread.
+    private func injectContentScripts(for url: URL, in webView: WKWebView) {
+        let service = BrowserExtensionService.shared
+        let matches = service.matchingContentScripts(for: url)
+        guard !matches.isEmpty else { return }
+
+        for (manifest, entry) in matches {
+            // Inject CSS first so it applies before DOM is fully rendered.
+            for cssPath in entry.css ?? [] {
+                guard let css = service.contentScriptAsset(relativePath: cssPath, in: manifest) else { continue }
+                let escaped = css.replacingOccurrences(of: "\\", with: "\\\\")
+                    .replacingOccurrences(of: "'", with: "\\'")
+                    .replacingOccurrences(of: "\n", with: "\\n")
+                let js = """
+                    (function() {
+                        var style = document.createElement('style');
+                        style.textContent = '\(escaped)';
+                        (document.head || document.documentElement).appendChild(style);
+                    })();
+                    """
+                webView.evaluateJavaScript(js, completionHandler: nil)
+            }
+
+            // Inject JS. For document_idle we wrap in a DOMContentLoaded listener;
+            // for document_start we inject immediately; document_end runs at the
+            // end of the document (approximated with setTimeout 0 after load).
+            let runAt = entry.runAt?.lowercased() ?? "document_idle"
+            for jsPath in entry.js {
+                guard let source = service.contentScriptAsset(relativePath: jsPath, in: manifest) else { continue }
+                let wrapped: String
+                switch runAt {
+                case "document_start":
+                    wrapped = source
+                case "document_end":
+                    wrapped = """
+                        (function() {
+                            if (document.readyState === 'complete' || document.readyState === 'interactive') {
+                                \(source)
+                            } else {
+                                document.addEventListener('DOMContentLoaded', function() { \(source) });
+                            }
+                        })();
+                        """
+                default: // document_idle
+                    wrapped = """
+                        (function() {
+                            if (document.readyState === 'complete') {
+                                \(source)
+                            } else {
+                                window.addEventListener('load', function() { \(source) });
+                            }
+                        })();
+                        """
+                }
+                webView.evaluateJavaScript(wrapped, completionHandler: nil)
+            }
+        }
+    }
 }
 
 extension WebKitBrowserEngine: WKNavigationDelegate {
@@ -203,6 +266,15 @@ extension WebKitBrowserEngine: WKNavigationDelegate {
             lastHTTPStatus = http.statusCode
         }
         return .allow
+    }
+
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        // Inject user-installed content scripts for this URL. This runs after the
+        // document has started loading but before DOMContentLoaded, so scripts with
+        // run_at=document_idle are queued; document_start scripts are injected now.
+        if let url = webView.url {
+            injectContentScripts(for: url, in: webView)
+        }
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {

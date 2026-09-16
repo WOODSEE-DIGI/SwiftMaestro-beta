@@ -231,6 +231,7 @@ struct SwiftMaestroApp: App {
                     appDelegate.whatsAppService = whatsAppService
                     CRMContactCardService.shared.whatsAppService = whatsAppService
                     pluginService.loadPlugins()
+                    BrowserExtensionService.shared.loadExtensions()
                     // Must complete before any agent could possibly dispatch a
                     // tool call — see ToolRegistry.swift's migration notes.
                     await MaestroTools.registerAllMigratedTools()

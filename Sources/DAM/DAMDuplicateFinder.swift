@@ -89,31 +89,28 @@ actor DAMDuplicateFinder {
                 for item in candidates {
                     bySize[item.size, default: []].append(item)
                 }
-                let groupsToHash = bySize.values.filter { $0.count > 1 }
-                let total = groupsToHash.reduce(0) { $0 + $1.count }
+                let itemsToHash = bySize.values
+                    .filter { $0.count > 1 }
+                    .flatMap { $0 }
+                let total = itemsToHash.count
+
+                if total > 0 {
+                    await delegate.duplicateFinder(
+                        self,
+                        didUpdate: Progress(hashed: 0, total: total, currentPath: "")
+                    )
+                }
+
+                let hashedPairs = try await Self.hashItems(itemsToHash, delegate: delegate, finder: self)
 
                 var byHash: [String: DAMDuplicateGroup] = [:]
-                var hashed = 0
-
-                for group in groupsToHash {
-                    for item in group {
-                        if Task.isCancelled { throw CancellationError() }
-                        guard FileManager.default.fileExists(atPath: item.path) else { continue }
-
-                        let digest = try await self.sha256(of: URL(fileURLWithPath: item.path))
-
-                        if var existing = byHash[digest] {
-                            existing.items.append(item)
-                            byHash[digest] = existing
-                        } else {
-                            byHash[digest] = DAMDuplicateGroup(hash: digest, items: [item])
-                        }
-
-                        hashed += 1
-                        await delegate.duplicateFinder(
-                            self,
-                            didUpdate: Progress(hashed: hashed, total: total, currentPath: item.path)
-                        )
+                for (digest, item) in hashedPairs {
+                    guard let digest else { continue }
+                    if var existing = byHash[digest] {
+                        existing.items.append(item)
+                        byHash[digest] = existing
+                    } else {
+                        byHash[digest] = DAMDuplicateGroup(hash: digest, items: [item])
                     }
                 }
 
@@ -138,7 +135,9 @@ actor DAMDuplicateFinder {
     // MARK: - Catalog candidates
 
     /// Returns every cataloged file path and metadata under `folderPath`, or
-    /// the whole catalog when `folderPath` is nil. Zero-byte files are excluded.
+    /// the whole catalog when `folderPath` is nil. Zero-byte and offline
+    /// (unavailable) files are excluded so scans never hang on ejected or
+    /// unresponsive volumes.
     private func candidatePaths(in folderPath: String?) async throws -> [DAMDuplicateItem] {
         try await DAMDatabase.shared.dbQueue.read { db in
             let sql: String
@@ -146,13 +145,15 @@ actor DAMDuplicateFinder {
             if let folderPath {
                 sql = """
                     SELECT path, fileSize, width, height, captureDate, fileModDate
-                    FROM asset WHERE fileSize > 0 AND path LIKE ?
+                    FROM asset
+                    WHERE fileSize > 0 AND isAvailable = 1 AND path LIKE ?
                     """
                 arguments = ["\(folderPath)%"]
             } else {
                 sql = """
                     SELECT path, fileSize, width, height, captureDate, fileModDate
-                    FROM asset WHERE fileSize > 0
+                    FROM asset
+                    WHERE fileSize > 0 AND isAvailable = 1
                     """
                 arguments = []
             }
@@ -172,9 +173,66 @@ actor DAMDuplicateFinder {
 
     // MARK: - Hashing
 
-    /// Streaming SHA-256 of a file, reading 1 MB chunks so large videos/RAWs
-    /// don't need to be fully loaded into memory.
-    private func sha256(of url: URL) async throws -> String {
+    private static let fileReadTimeout: TimeInterval = 30
+
+    /// Hashes the requested items concurrently, reporting progress as each
+    /// file finishes. Files that time out or fail to read are returned with a
+    /// nil digest and skipped rather than aborting the whole scan.
+    private nonisolated static func hashItems(
+        _ items: [DAMDuplicateItem],
+        delegate: any DAMDuplicateFinderDelegate,
+        finder: DAMDuplicateFinder
+    ) async throws -> [(String?, DAMDuplicateItem)] {
+        guard !items.isEmpty else { return [] }
+
+        let concurrency = max(1, min(8, ProcessInfo.processInfo.processorCount))
+        return try await withThrowingTaskGroup(of: (String?, DAMDuplicateItem).self) { group in
+            var iterator = items.makeIterator()
+            var results: [(String?, DAMDuplicateItem)] = []
+            results.reserveCapacity(items.count)
+            var hashed = 0
+
+            func addNext() {
+                guard let item = iterator.next() else { return }
+                group.addTask {
+                    let digest = await Self.sha256(of: URL(fileURLWithPath: item.path))
+                    return (digest, item)
+                }
+            }
+
+            for _ in 0..<concurrency { addNext() }
+
+            while let result = try await group.next() {
+                if Task.isCancelled {
+                    group.cancelAll()
+                    break
+                }
+                addNext()
+                results.append(result)
+                hashed += 1
+                await delegate.duplicateFinder(
+                    finder,
+                    didUpdate: Progress(hashed: hashed, total: items.count, currentPath: result.1.path)
+                )
+            }
+            return results
+        }
+    }
+
+    /// Streaming SHA-256 of a file with a hard per-file timeout. Returns nil
+    /// if the file cannot be read or the volume is unresponsive, so the scan
+    /// keeps moving.
+    private nonisolated static func sha256(of url: URL) async -> String? {
+        do {
+            return try await DAMResourceLimiter.shared.withTimeout(seconds: fileReadTimeout) {
+                try await Self.computeSHA256(of: url)
+            }
+        } catch {
+            return nil
+        }
+    }
+
+    private nonisolated static func computeSHA256(of url: URL) async throws -> String {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
 

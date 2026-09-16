@@ -294,6 +294,8 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
     /// MediaPlayer — retro-styled (BTOP+) media player with AVKit playback,
     /// spectrum visualization, playlist queue, and volume control.
     case mediaPlayer
+    /// RSS/Atom feed reader with YouTube watch-history sync.
+    case rssReader
 
     var icon: String {
         switch self {
@@ -337,6 +339,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .blocky: return "link.circle"
         case .pomodoro: return "timer"
         case .mediaPlayer: return "play.circle"
+        case .rssReader: return "dot.radiowaves.up.forward"
         }
     }
 
@@ -387,6 +390,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .blocky: return "blocky"
         case .pomodoro: return "pomodoro"
         case .mediaPlayer: return "mediaPlayer"
+        case .rssReader: return "rssReader"
         }
     }
 
@@ -435,6 +439,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .blocky: return String(localized: "Blocky")
         case .pomodoro: return String(localized: "Pomodoro")
         case .mediaPlayer: return String(localized: "Media Player")
+        case .rssReader: return String(localized: "Reader")
         }
     }
 
@@ -502,6 +507,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .blocky: return "blocky"
         case .pomodoro: return "pomodoro"
         case .mediaPlayer: return "mediaPlayer"
+        case .rssReader: return "rssReader"
         }
     }
 }

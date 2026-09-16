@@ -523,26 +523,14 @@ final class NotesViewModel {
 
     /// The resolved shared AI Memory root (iCloud container or ~/.ai-context/memory).
     ///
-    /// The on-disk store at `~/.ai-context/memory` is a SYMLINK into the iCloud
-    /// container (e.g. `~/Library/Mobile Documents/com~apple~CloudDocs/Documents/
-    /// SwiftMaestro/memory`). The URL-based FileManager APIs used to build the
-    /// memory tree (`contentsOfDirectory(at:includingPropertiesForKeys:)`) do NOT
-    /// follow a top-level symlink and throw `ENOTDIR` ("Not a directory") on it,
-    /// which made the memory tree show the "not readable — grant Full Disk Access"
-    /// placeholder even when Full Disk Access was granted. Resolving the symlink
-    /// yields the canonical on-disk directory those APIs can enumerate, so the
-    /// real memory contents are listed. `resolvingSymlinksInPath()` is a no-op
-    /// when the path is a real directory.
-    private var memoryRootURL: URL? {
-        let fm = FileManager.default
-        if let iCloudContainer = fm.url(forUbiquityContainerIdentifier: nil)?
-            .appendingPathComponent("Documents/SwiftMaestro/memory", isDirectory: true) {
-            return iCloudContainer.resolvingSymlinksInPath()
-        }
-        let homeMemory = fm.homeDirectoryForCurrentUser
-            .appendingPathComponent(".ai-context/memory", isDirectory: true)
-        return homeMemory.resolvingSymlinksInPath()
-    }
+    /// The URL-based FileManager APIs used to build the memory tree
+    /// (`contentsOfDirectory(at:includingPropertiesForKeys:)`) do NOT follow a
+    /// top-level symlink and throw `ENOTDIR` ("Not a directory") on it, which made
+    /// the memory tree show the "not readable — grant Full Disk Access" placeholder
+    /// even when Full Disk Access was granted. `SimpleMemoryStore.sharedMemoryRootURL()`
+    /// already resolves symlinks, yielding the canonical on-disk directory those APIs
+    /// can enumerate.
+    private var memoryRootURL: URL? { SimpleMemoryStore.sharedMemoryRootURL() }
 
     /// Returns an error message when the requested mutation would break the AI
     /// Memory store. Users may freely edit content (save) and create notes or

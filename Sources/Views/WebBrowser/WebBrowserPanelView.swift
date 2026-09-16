@@ -48,7 +48,10 @@ private struct WebBrowserToolbar: View {
     @State private var showClipPopover = false
     @State private var showBookmarksPopover = false
     @State private var showPrivacyPopover = false
+    @State private var showRSSDiscoveryPopover = false
     @State private var bookmarkStore = BookmarkStore.shared
+    @State private var extensionService = BrowserExtensionService.shared
+    @State private var showingPopover: [String: Bool] = [:]
 
     var body: some View {
         HStack(spacing: 8) {
@@ -151,6 +154,22 @@ private struct WebBrowserToolbar: View {
                 BrowserPrivacyPopover(store: store)
             }
 
+            // RSS feed discovery for the current page.
+            Button {
+                showRSSDiscoveryPopover = true
+            } label: {
+                Image(systemName: "dot.radiowaves.up.forward")
+            }
+            .help("Discover RSS/Atom feeds on this page")
+            .disabled(store.selectedTab?.currentURL == nil)
+            .popover(isPresented: $showRSSDiscoveryPopover, arrowEdge: .bottom) {
+                if let tab = store.selectedTab {
+                    RSSDiscoveryPopoverView(tab: tab) { _ in
+                        // Optional: surface a toast/notification that subscription succeeded.
+                    }
+                }
+            }
+
             // Dismiss popup overlays (newsletter modals, spin-to-win, cookie walls)
             Button {
                 Task {
@@ -162,6 +181,33 @@ private struct WebBrowserToolbar: View {
                 Image(systemName: "rectangle.slash")
             }
             .help("Dismiss popup overlays blocking this page")
+
+            // User-installed SwiftBrowser extension toolbar buttons.
+            ForEach(extensionService.extensions.filter({ $0.type == .browserAction })) { manifest in
+                Button {
+                    showingPopover[manifest.id] = true
+                } label: {
+                    HStack(spacing: 2) {
+                        Image(systemName: manifest.host?.toolbar?.icon ?? "puzzlepiece.extension")
+                        if let badge = extensionService.badgeText[manifest.id], !badge.isEmpty {
+                            Text(badge)
+                                .font(.caption2)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(Color.red)
+                                .foregroundStyle(.white)
+                                .clipShape(Capsule())
+                        }
+                    }
+                }
+                .help(manifest.host?.toolbar?.tooltip ?? manifest.name)
+                .popover(isPresented: Binding(
+                    get: { showingPopover[manifest.id] ?? false },
+                    set: { showingPopover[manifest.id] = $0 }
+                )) {
+                    BrowserActionPopover(manifest: manifest)
+                }
+            }
 
             Text(store.selectedTab?.engineType.rawValue.capitalized ?? "WebKit")
                 .font(.caption)
@@ -434,6 +480,29 @@ private struct ChromiumBrowserView: View {
 }
 
 // MARK: - ThemeStore fallback
+
+/// Popover hosted by a browser-action extension's toolbar button. Shows the
+/// extension's `entry` HTML (usually a small control panel) with the same
+/// capability-gated bridge as a full sidebar plugin panel.
+private struct BrowserActionPopover: View {
+    let manifest: PluginManifest
+
+    var body: some View {
+        Group {
+            if let entryURL = manifest.entryURL {
+                PluginWebView(manifest: manifest, entryURL: entryURL, loadError: .constant(nil))
+                    .frame(width: 360, height: 480)
+            } else {
+                ContentUnavailableView(
+                    "Extension Missing",
+                    systemImage: "puzzlepiece.extension",
+                    description: Text("Couldn't load \"\(manifest.name)\".")
+                )
+                .frame(width: 280, height: 200)
+            }
+        }
+    }
+}
 
 private extension ThemeStore {
     static var sharedIfAvailable: ThemeStore? {

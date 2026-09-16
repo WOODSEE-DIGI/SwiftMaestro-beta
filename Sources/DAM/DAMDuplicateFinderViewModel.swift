@@ -45,12 +45,17 @@ final class DAMDuplicateFinderViewModel: DAMDuplicateFinderDelegate {
     var totalWasted: Int64 = 0
     var errorMessage: String?
     var learnedPatterns: [DAMVersionPattern] = []
+    var missingHashCount: Int?
 
     private var scanTask: Task<Void, Never>?
 
     /// Whether the current mode needs pHashes and some are missing.
     var needsPerceptualHashGeneration: Bool {
-        mode == .perceptual && !isScanning && results.isEmpty && errorMessage == nil
+        mode == .perceptual
+            && !isScanning
+            && results.isEmpty
+            && errorMessage == nil
+            && (missingHashCount ?? 0) > 0
     }
 
     /// Start scanning based on the selected mode and scope.
@@ -61,8 +66,15 @@ final class DAMDuplicateFinderViewModel: DAMDuplicateFinderDelegate {
         results = []
         versionSets = []
         totalWasted = 0
-        progressText = ""
         learnedPatterns = []
+
+        let status = DAMResourceStatus.shared
+        let limit = status.lastLimit?.maxConcurrentHeavyTasks ?? 1
+        if status.activeHeavyTasks >= limit || status.queuedHeavyTasks > 0 {
+            progressText = "Waiting for another heavy task to finish…"
+        } else {
+            progressText = "Preparing scan…"
+        }
 
         let scope = selectedScope ?? defaultScope
 
@@ -81,7 +93,7 @@ final class DAMDuplicateFinderViewModel: DAMDuplicateFinderDelegate {
         guard !isScanning else { return }
         isScanning = true
         errorMessage = nil
-        progressText = ""
+        progressText = "Generating visual fingerprints…"
 
         let scope = selectedScope ?? defaultScope
         scanTask = Task {
@@ -92,12 +104,28 @@ final class DAMDuplicateFinderViewModel: DAMDuplicateFinderDelegate {
                     delegate: self
                 )
                 progressText = "Generated \(count) pHashes"
+                missingHashCount = 0
                 // Auto-start the perceptual scan after hashes are ready.
                 await runPerceptualScan(scope: scope)
             } catch is CancellationError {
                 // no-op
             } catch {
                 self.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    /// Refreshes the count of images in scope that still need a pHash.
+    /// Used to decide whether to show the "Generate pHashes" banner.
+    func refreshMissingHashCount(defaultScope: String?) {
+        let scope = selectedScope ?? defaultScope
+        guard mode == .perceptual else { return }
+        Task {
+            do {
+                let count = try await DAMDuplicateFinder.shared.countMissingPerceptualHashes(in: scope)
+                self.missingHashCount = count
+            } catch {
+                self.missingHashCount = nil
             }
         }
     }
@@ -150,14 +178,20 @@ final class DAMDuplicateFinderViewModel: DAMDuplicateFinderDelegate {
     private func runPerceptualScan(scope: String?) async {
         defer {
             isScanning = false
-            progressText = ""
+            if results.isEmpty && errorMessage == nil {
+                progressText = "No visual duplicates found"
+            } else {
+                progressText = ""
+            }
         }
         do {
             let groups = try await DAMDuplicateFinder.shared.findPerceptualDuplicates(in: scope)
             self.results = groups
             self.totalWasted = groups.reduce(0) { $0 + $1.wastedSpace }
             if groups.isEmpty {
-                progressText = "No visual duplicates found"
+                // Refresh the missing-hash count so the banner/empty state is accurate.
+                let count = try await DAMDuplicateFinder.shared.countMissingPerceptualHashes(in: scope)
+                self.missingHashCount = count
             }
         } catch is CancellationError {
             // no-op

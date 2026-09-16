@@ -118,6 +118,8 @@ struct WorkspacePanelContentView: View {
             PomodoroView()
         case .mediaPlayer:
             MediaPlayerView()
+        case .rssReader:
+            RSSReaderView()
         }
         }
     }

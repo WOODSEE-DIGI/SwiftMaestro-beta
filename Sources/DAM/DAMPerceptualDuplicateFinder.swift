@@ -19,27 +19,52 @@ extension DAMDuplicateFinder {
             let idsAndPaths = try await self.imageAssetsMissingHashes(in: folderPath)
             guard !idsAndPaths.isEmpty else { return 0 }
 
-            var written = 0
-            for (index, (id, path)) in idsAndPaths.enumerated() {
-                if Task.isCancelled { throw CancellationError() }
-
-                let hash = await PerceptualHashService.shared.hash(for: path)
-                if let hash {
-                    try await DAMDatabase.shared.dbQueue.write { db in
-                        try db.execute(
-                            sql: "UPDATE asset SET perceptualHash = ? WHERE id = ?",
-                            arguments: [hash, id]
-                        )
-                    }
-                    written += 1
-                }
-
+            if !idsAndPaths.isEmpty {
                 await delegate.duplicateFinder(
                     self,
-                    didUpdate: Progress(hashed: index + 1, total: idsAndPaths.count, currentPath: path)
+                    didUpdate: Progress(hashed: 0, total: idsAndPaths.count, currentPath: "")
                 )
             }
-            return written
+
+            let concurrency = max(1, min(4, ProcessInfo.processInfo.processorCount))
+            return try await withThrowingTaskGroup(of: (Int64, String, String?).self) { group in
+                var iterator = idsAndPaths.makeIterator()
+                var written = 0
+                var processed = 0
+
+                func addNext() {
+                    guard let (id, path) = iterator.next() else { return }
+                    group.addTask {
+                        let hash = await PerceptualHashService.shared.hash(for: path)
+                        return (id, path, hash)
+                    }
+                }
+
+                for _ in 0..<concurrency { addNext() }
+
+                while let result = try await group.next() {
+                    if Task.isCancelled {
+                        group.cancelAll()
+                        break
+                    }
+                    addNext()
+                    processed += 1
+                    if let hash = result.2 {
+                        try await DAMDatabase.shared.dbQueue.write { db in
+                            try db.execute(
+                                sql: "UPDATE asset SET perceptualHash = ? WHERE id = ?",
+                                arguments: [hash, result.0]
+                            )
+                        }
+                        written += 1
+                    }
+                    await delegate.duplicateFinder(
+                        self,
+                        didUpdate: Progress(hashed: processed, total: idsAndPaths.count, currentPath: result.1)
+                    )
+                }
+                return written
+            }
         }
     }
 
@@ -65,6 +90,35 @@ extension DAMDuplicateFinder {
             .sorted { $0.wastedSpace > $1.wastedSpace }
     }
 
+    /// Returns the number of available image/raw assets in scope that still
+    /// need a perceptual hash. Used by the UI to decide whether to show the
+    /// "Generate pHashes" banner.
+    func countMissingPerceptualHashes(in folderPath: String?) async throws -> Int {
+        try await DAMDatabase.shared.dbQueue.read { db in
+            let sql: String
+            let arguments: StatementArguments
+            if let folderPath {
+                sql = """
+                    SELECT COUNT(*) FROM asset
+                    WHERE perceptualHash IS NULL
+                      AND (kind = 'image' OR kind = 'raw')
+                      AND isAvailable = 1
+                      AND path LIKE ?
+                    """
+                arguments = ["\(folderPath)%"]
+            } else {
+                sql = """
+                    SELECT COUNT(*) FROM asset
+                    WHERE perceptualHash IS NULL
+                      AND (kind = 'image' OR kind = 'raw')
+                      AND isAvailable = 1
+                    """
+                arguments = []
+            }
+            return try Int.fetchOne(db, sql: sql, arguments: arguments) ?? 0
+        }
+    }
+
     // MARK: - Database helpers
 
     private func imageAssetsMissingHashes(in folderPath: String?) async throws -> [(Int64, String)] {
@@ -76,6 +130,7 @@ extension DAMDuplicateFinder {
                     SELECT id, path FROM asset
                     WHERE perceptualHash IS NULL
                       AND (kind = 'image' OR kind = 'raw')
+                      AND isAvailable = 1
                       AND path LIKE ?
                     """
                 arguments = ["\(folderPath)%"]
@@ -84,6 +139,7 @@ extension DAMDuplicateFinder {
                     SELECT id, path FROM asset
                     WHERE perceptualHash IS NULL
                       AND (kind = 'image' OR kind = 'raw')
+                      AND isAvailable = 1
                     """
                 arguments = []
             }
@@ -101,6 +157,7 @@ extension DAMDuplicateFinder {
                     SELECT path, fileSize, width, height, captureDate, fileModDate, perceptualHash FROM asset
                     WHERE perceptualHash IS NOT NULL
                       AND (kind = 'image' OR kind = 'raw')
+                      AND isAvailable = 1
                       AND path LIKE ?
                     """
                 arguments = ["\(folderPath)%"]
@@ -109,6 +166,7 @@ extension DAMDuplicateFinder {
                     SELECT path, fileSize, width, height, captureDate, fileModDate, perceptualHash FROM asset
                     WHERE perceptualHash IS NOT NULL
                       AND (kind = 'image' OR kind = 'raw')
+                      AND isAvailable = 1
                     """
                 arguments = []
             }

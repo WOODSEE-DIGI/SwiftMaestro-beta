@@ -89,6 +89,16 @@ enum SwiftMaestroPaths {
         return dir
     }
 
+    /// `~/Library/Application Support/SwiftMaestro/BrowserExtensions/` — user-created
+    /// SwiftBrowser extensions. Each extension is a subfolder with a `manifest.json`
+    /// plus HTML/JS/CSS assets. This directory lives outside the app bundle so
+    /// extensions survive SwiftMaestro app updates.
+    static var browserExtensionsDir: URL {
+        let dir = appSupportDir.appendingPathComponent("BrowserExtensions", isDirectory: true)
+        createDir(dir)
+        return dir
+    }
+
     // MARK: - Migration
 
     /// One-time migration from the old flat layout (where chats/plans/todos/workspace lived

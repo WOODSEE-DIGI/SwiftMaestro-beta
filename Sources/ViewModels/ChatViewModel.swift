@@ -1634,6 +1634,27 @@ class ChatViewModel: ObservableObject {
                 search, lookup, or research request, call ask_search with the query.
                 - list_workspace: See all projects and agents if unsure.
 
+                SWIFTBROWSER PLUGIN TOOLS — USE THESE FOR CUSTOM BROWSER FEATURES:
+                The user can ask you to add behavior to SwiftBrowser (toolbar buttons, \
+                content scripts, page actions, download helpers, sidebar panels, etc.). \
+                DO NOT research external browser-extension APIs, do NOT edit SwiftMaestro \
+                source files, and do NOT create Xcode targets or Swift packages. Instead, \
+                build the plugin by calling these tools; it is installed at runtime and \
+                persists in ~/Library/Application Support/SwiftMaestro/BrowserExtensions/.
+                - install_browser_extension: Create or update a plugin. Provide id, \
+                name, manifest (type, capabilities, toolbar config, content_scripts), and \
+                files (HTML/JS/CSS assets). Use this for "add a YouTube downloader button", \
+                "highlight prices on Amazon", "add a sidebar notes panel", or any custom \
+                browser behavior. \
+                EXAMPLE call for a toolbar button: \
+                id="com.example.youtube-downloader", name="YouTube Downloader", \
+                manifest={"type":"browser-action","version":"1.0.0","icon":"arrow.down.circle","entry":"popup.html","capabilities":["tabs","activeTab","downloads"],"host":{"toolbar":{"icon":"arrow.down.circle","label":"Download"}},"content_scripts":[{"matches":["*://*.youtube.com/*"],"js":["content.js"],"run_at":"document_idle"}]}, \
+                files={"popup.html":"<html><body><button id=btn>Download</button><script src=popup.js></script></body></html>","popup.js":"document.getElementById('btn').onclick=()=>{swiftMaestro.tabs.query({active:true},t=>{console.log(t[0].url);});};","content.js":"console.log('loaded');"}. \
+                manifest and files must be valid JSON objects, not Python dicts or prose.
+                - list_browser_extensions: Show installed plugins and their capabilities.
+                - uninstall_browser_extension: Remove a plugin by id.
+                - reload_browser_extensions: Rescan the plugins directory after manual edits.
+
                 MEMORY & CONTEXT TOOLS (use these — NOT list_notes for AI context):
                 - context_read: Read structured context for an agent, project, or session. \
                 Use this when the user says "ai context", "check context", "read context", \

@@ -125,6 +125,65 @@ final class PluginBridge: NSObject, WKScriptMessageHandler {
             try requireCapability(.oauth)
             return try await performOAuth(payload: payload)
 
+        // MARK: - Browser-extension capabilities
+
+        case "storageLocalGet":
+            try requireCapability(.storage)
+            guard let key = payload["key"] as? String, !key.isEmpty else {
+                throw BridgeError.invalidPayload("'key' is required")
+            }
+            return try storageLocalGet(key: key)
+
+        case "storageLocalSet":
+            try requireCapability(.storage)
+            guard let key = payload["key"] as? String, !key.isEmpty else {
+                throw BridgeError.invalidPayload("'key' is required")
+            }
+            storageLocalSet(key: key, value: payload["value"])
+            return nil
+
+        case "storageLocalRemove":
+            try requireCapability(.storage)
+            guard let key = payload["key"] as? String, !key.isEmpty else {
+                throw BridgeError.invalidPayload("'key' is required")
+            }
+            storageLocalRemove(key: key)
+            return nil
+
+        case "storageLocalClear":
+            try requireCapability(.storage)
+            storageLocalClear()
+            return nil
+
+        case "tabsQuery":
+            try requireCapability(.tabs)
+            return tabsQuery(payload: payload)
+
+        case "tabsGetCurrent":
+            try requireCapability(.tabs)
+            return tabsGetCurrent()
+
+        case "tabsExecuteScript":
+            try requireCapability(.activeTab)
+            guard let script = payload["script"] as? String, !script.isEmpty else {
+                throw BridgeError.invalidPayload("'script' is required")
+            }
+            let tabId = payload["tabId"] as? String
+            return try await tabsExecuteScript(script: script, tabId: tabId)
+
+        case "downloadsDownload":
+            try requireCapability(.downloads)
+            guard let urlString = payload["url"] as? String,
+                  let url = URL(string: urlString)
+            else { throw BridgeError.invalidPayload("'url' is required and must be valid") }
+            return try await downloadsDownload(url: url, filename: payload["filename"] as? String)
+
+        case "browserActionSetBadgeText":
+            try requireCapability(.browserAction)
+            let text = payload["text"] as? String
+            BrowserExtensionService.shared.setBadgeText(text, forExtensionID: pluginID)
+            return nil
+
         default:
             throw BridgeError.unknownRequestType(type)
         }
@@ -194,6 +253,122 @@ final class PluginBridge: NSObject, WKScriptMessageHandler {
             port: port,
             timeout: .seconds(timeout)
         )
+    }
+
+    // MARK: - Browser-extension helpers
+
+    // MARK: Storage
+
+    private func storageURL() -> URL {
+        BrowserExtensionService.shared.localStorageURL(forExtensionID: pluginID)
+    }
+
+    private func readStorage() -> [String: Any] {
+        guard let data = try? Data(contentsOf: storageURL()),
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return [:] }
+        return dict
+    }
+
+    private func writeStorage(_ dict: [String: Any]) throws {
+        let data = try JSONSerialization.data(withJSONObject: dict, options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: storageURL())
+    }
+
+    private func storageLocalGet(key: String) throws -> Any? {
+        readStorage()[key]
+    }
+
+    private func storageLocalSet(key: String, value: Any?) {
+        do {
+            var dict = readStorage()
+            if let value { dict[key] = value } else { dict.removeValue(forKey: key) }
+            try writeStorage(dict)
+        } catch {
+            NSLog("[PluginBridge:\(pluginID)] storage set failed: \(error)")
+        }
+    }
+
+    private func storageLocalRemove(key: String) {
+        storageLocalSet(key: key, value: nil)
+    }
+
+    private func storageLocalClear() {
+        do {
+            try writeStorage([:])
+        } catch {
+            NSLog("[PluginBridge:\(pluginID)] storage clear failed: \(error)")
+        }
+    }
+
+    // MARK: Tabs
+
+    private func tabsQuery(payload: [String: Any]) -> [[String: Any]] {
+        let store = WebBrowserStore.shared
+        let activeOnly = payload["active"] as? Bool ?? false
+        return store.tabs.compactMap { tab in
+            if activeOnly, store.selectedTabID != tab.id { return nil }
+            return tabPayload(tab, store: store)
+        }
+    }
+
+    private func tabsGetCurrent() -> [String: Any]? {
+        let store = WebBrowserStore.shared
+        guard let tab = store.selectedTab else { return nil }
+        return tabPayload(tab, store: store)
+    }
+
+    private func tabPayload(_ tab: BrowserTab, store: WebBrowserStore) -> [String: Any] {
+        [
+            "id": tab.id.uuidString,
+            "url": tab.currentURL?.absoluteString ?? "",
+            "title": tab.title,
+            "active": store.selectedTabID == tab.id,
+            "loading": tab.isLoading,
+            "engine": tab.engineType.rawValue,
+        ]
+    }
+
+    private func tabsExecuteScript(script: String, tabId: String?) async throws -> Any? {
+        let store = WebBrowserStore.shared
+        let tab: BrowserTab?
+        if let tabId = tabId, !tabId.isEmpty,
+           let id = UUID(uuidString: tabId) {
+            tab = store.tabs.first(where: { $0.id == id })
+        } else {
+            tab = store.selectedTab
+        }
+        guard let tab else { throw BridgeError.invalidPayload("No active/requested tab") }
+        guard let data = try await tab.evaluateJavaScript(script) else { return nil }
+        return try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
+    }
+
+    // MARK: Downloads
+
+    private func downloadsDownload(url: URL, filename: String?) async throws -> [String: Any] {
+        let (data, response) = try await URLSession.shared.data(from: url)
+        let http = response as? HTTPURLResponse
+        let suggestedName = filename ?? url.lastPathComponent
+
+        let downloadsDir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
+        var target = downloadsDir.appendingPathComponent(suggestedName)
+        // Disambiguate if file already exists.
+        let base = target.deletingPathExtension().lastPathComponent
+        let ext = target.pathExtension
+        var counter = 1
+        while FileManager.default.fileExists(atPath: target.path) {
+            let suffix = ext.isEmpty ? "-\(counter)" : "-\(counter).\(ext)"
+            let name = ext.isEmpty ? "\(base)\(suffix)" : "\(base)\(suffix)"
+            target = downloadsDir.appendingPathComponent(name)
+            counter += 1
+        }
+        try data.write(to: target)
+        return [
+            "success": true,
+            "path": target.path,
+            "bytes": data.count,
+            "status": http?.statusCode ?? 0,
+        ]
     }
 
     // MARK: - JS callbacks
@@ -289,6 +464,31 @@ final class PluginBridge: NSObject, WKScriptMessageHandler {
                 window.webkit.messageHandlers.swiftMaestroBridge.postMessage(
                     { id: '0', type: 'log', payload: { message: String(message) } });
             },
+            storage: {
+                local: {
+                    get: (key) => send('storageLocalGet', { key: key }),
+                    set: (key, value) => send('storageLocalSet', { key: key, value: value }),
+                    remove: (key) => send('storageLocalRemove', { key: key }),
+                    clear: () => send('storageLocalClear', {})
+                }
+            },
+            tabs: {
+                query: (query) => send('tabsQuery', query || {}),
+                getCurrent: () => send('tabsGetCurrent', {}),
+                executeScript: (tabId, script) => {
+                    if (typeof tabId === 'number' || typeof tabId === 'string') {
+                        return send('tabsExecuteScript', { tabId: String(tabId), script: script });
+                    }
+                    // If first arg is the script (tabId omitted), shift.
+                    return send('tabsExecuteScript', { script: tabId });
+                }
+            },
+            downloads: {
+                download: (options) => send('downloadsDownload', options || {})
+            },
+            browserAction: {
+                setBadgeText: (text) => send('browserActionSetBadgeText', { text: text })
+            }
         };
     })();
     """

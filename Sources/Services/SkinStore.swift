@@ -960,6 +960,7 @@ extension WorkspacePanelKind {
             "ndiBrowser": .ndiBrowser,
             "colorAdjustments": .colorAdjustments,
             "scenes": .scenes,
+            "rssReader": .rssReader,
         ]
     }
 }

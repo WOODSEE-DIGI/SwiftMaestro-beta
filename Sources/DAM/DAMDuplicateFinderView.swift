@@ -9,6 +9,7 @@ import SwiftUI
 struct DAMDuplicateFinderView: View {
     var viewModel: DAMViewModel
     @State private var finderModel = DAMDuplicateFinderViewModel()
+    @State private var selectedItem: UUID?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -38,6 +39,13 @@ struct DAMDuplicateFinderView: View {
             if finderModel.selectedScope == nil {
                 finderModel.selectedScope = viewModel.selectedFolder
             }
+            finderModel.refreshMissingHashCount(defaultScope: viewModel.selectedFolder)
+        }
+        .onChange(of: finderModel.selectedScope) { _, _ in
+            finderModel.refreshMissingHashCount(defaultScope: viewModel.selectedFolder)
+        }
+        .onChange(of: finderModel.mode) { _, _ in
+            finderModel.refreshMissingHashCount(defaultScope: viewModel.selectedFolder)
         }
     }
 
@@ -168,7 +176,11 @@ struct DAMDuplicateFinderView: View {
     private var generateHashesBanner: some View {
         HStack {
             Image(systemName: "photo.on.rectangle.angled")
-            Text("Some images don’t have a visual fingerprint yet. Generate pHashes to find near-duplicates.")
+            if let count = finderModel.missingHashCount {
+                Text("\(count) images need a visual fingerprint. Generate pHashes to find near-duplicates.")
+            } else {
+                Text("Some images may need a visual fingerprint. Generate pHashes to find near-duplicates.")
+            }
             Spacer()
             Button("Generate pHashes") {
                 finderModel.generateHashes(defaultScope: viewModel.selectedFolder)
@@ -181,7 +193,7 @@ struct DAMDuplicateFinderView: View {
     // MARK: - Results list
 
     private var resultsList: some View {
-        List {
+        List(selection: $selectedItem) {
             if finderModel.results.isEmpty && finderModel.versionSets.isEmpty && !finderModel.isScanning {
                 Section {
                     modeExplanation
@@ -199,6 +211,33 @@ struct DAMDuplicateFinderView: View {
             }
         }
         .listStyle(.inset)
+        .onKeyPress(.space) {
+            previewSelectedItem()
+            return .handled
+        }
+    }
+
+    private func previewSelectedItem() {
+        guard let id = selectedItem,
+              let url = urlForSelectedItem(id: id) else { return }
+        DAMQuickLookPanelController.shared.toggle(for: url)
+    }
+
+    private func urlForSelectedItem(id: UUID) -> URL? {
+        if finderModel.mode == .versions {
+            for set in finderModel.versionSets {
+                if let item = set.items.first(where: { $0.id == id }) {
+                    return URL(fileURLWithPath: item.path)
+                }
+            }
+        } else {
+            for group in finderModel.results {
+                if let item = group.items.first(where: { $0.id == id }) {
+                    return URL(fileURLWithPath: item.path)
+                }
+            }
+        }
+        return nil
     }
 
     private var modeExplanation: some View {
@@ -244,49 +283,8 @@ struct DAMDuplicateFinderView: View {
     private func duplicateGroupSection(_ group: DAMDuplicateGroup) -> some View {
         Section {
             ForEach(group.items) { item in
-                HStack(spacing: 8) {
-                    Text(URL(fileURLWithPath: item.path).lastPathComponent)
-                        .lineLimit(1)
-
-                    Spacer()
-
-                    if let dimensions = item.formattedDimensions {
-                        Text(dimensions)
-                            .font(.caption2.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    }
-
-                    if let date = item.formattedDate {
-                        Text(date)
-                            .font(.caption2.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Text(formatBytes(item.size))
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
-
-                    Button {
-                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.path)])
-                    } label: {
-                        Image(systemName: "arrow.right.circle")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Show in Finder")
-                }
-                .contextMenu {
-                    Button {
-                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.path)])
-                    } label: {
-                        Label("Show in Finder", systemImage: "arrow.right.circle")
-                    }
-
-                    Button {
-                        DAMCleanupListStore.shared.add(path: item.path)
-                    } label: {
-                        Label("Add to cleanup list", systemImage: "trash")
-                    }
-                }
+                resultRow(for: item)
+                    .tag(item.id)
             }
         } header: {
             HStack {
@@ -324,49 +322,8 @@ struct DAMDuplicateFinderView: View {
     private func versionSetSection(_ versionSet: DAMVersionSetFinder.VersionSet) -> some View {
         Section {
             ForEach(versionSet.items) { item in
-                HStack(spacing: 8) {
-                    Text(URL(fileURLWithPath: item.path).lastPathComponent)
-                        .lineLimit(1)
-
-                    Spacer()
-
-                    if let dimensions = item.formattedDimensions {
-                        Text(dimensions)
-                            .font(.caption2.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    }
-
-                    if let date = item.formattedDate {
-                        Text(date)
-                            .font(.caption2.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Text(formatBytes(item.size))
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
-
-                    Button {
-                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.path)])
-                    } label: {
-                        Image(systemName: "arrow.right.circle")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Show in Finder")
-                }
-                .contextMenu {
-                    Button {
-                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.path)])
-                    } label: {
-                        Label("Show in Finder", systemImage: "arrow.right.circle")
-                    }
-
-                    Button {
-                        DAMCleanupListStore.shared.add(path: item.path)
-                    } label: {
-                        Label("Add to cleanup list", systemImage: "trash")
-                    }
-                }
+                resultRow(for: item)
+                    .tag(item.id)
             }
         } header: {
             HStack {
@@ -402,10 +359,131 @@ struct DAMDuplicateFinderView: View {
         }
     }
 
+    // MARK: - Shared row
+
+    private func resultRow(for item: DAMDuplicateItem) -> some View {
+        HStack(spacing: 8) {
+            DAMDuplicateResultThumbnail(path: item.path)
+
+            Text(URL(fileURLWithPath: item.path).lastPathComponent)
+                .lineLimit(1)
+
+            Spacer()
+
+            if let dimensions = item.formattedDimensions {
+                Text(dimensions)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
+            if let date = item.formattedDate {
+                Text(date)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
+            Text(formatBytes(item.size))
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+
+            Button {
+                DAMQuickLookPanelController.shared.toggle(for: URL(fileURLWithPath: item.path))
+            } label: {
+                Image(systemName: "eye")
+            }
+            .buttonStyle(.borderless)
+            .help("Preview (Space)")
+
+            Button {
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.path)])
+            } label: {
+                Image(systemName: "arrow.right.circle")
+            }
+            .buttonStyle(.borderless)
+            .help("Show in Finder")
+        }
+        .contextMenu {
+            Button {
+                DAMQuickLookPanelController.shared.toggle(for: URL(fileURLWithPath: item.path))
+            } label: {
+                Label("Preview", systemImage: "eye")
+            }
+
+            Button {
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.path)])
+            } label: {
+                Label("Show in Finder", systemImage: "arrow.right.circle")
+            }
+
+            Button {
+                DAMCleanupListStore.shared.add(path: item.path)
+            } label: {
+                Label("Add to cleanup list", systemImage: "trash")
+            }
+        }
+    }
+
     // MARK: - Formatting
 
     private func formatBytes(_ bytes: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+}
+
+// MARK: - Thumbnail
+
+private struct DAMDuplicateResultThumbnail: View {
+    let path: String
+    @State private var image: NSImage?
+    @State private var loadFailed = false
+
+    private var fileURL: URL { URL(fileURLWithPath: path) }
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 4)
+                .fill(Color(nsColor: .controlBackgroundColor))
+
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+            } else if loadFailed {
+                Image(systemName: "doc")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.6)
+            }
+
+            if DAMFileKind.isVideo(fileURL) {
+                Image(systemName: "play.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.white)
+                    .shadow(radius: 1)
+            }
+        }
+        .frame(width: 40, height: 40)
+        .task {
+            do {
+                if DAMFileKind.isCameraRAW(fileURL) {
+                    image = await DAMSafeRAWThumbnailService.shared.thumbnail(
+                        for: path,
+                        maxPixelSize: 80
+                    )
+                } else {
+                    image = try await ThumbnailService.shared.thumbnail(
+                        for: fileURL,
+                        pixelSize: 80
+                    )
+                }
+            } catch {
+                loadFailed = true
+            }
+        }
     }
 }
 

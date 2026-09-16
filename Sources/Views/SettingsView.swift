@@ -178,6 +178,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case whisper
     case shell
     case healing
+    case browserPlugins
     case about
 
     var id: String { rawValue }
@@ -201,6 +202,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .whisper: return String(localized: "Whisper")
         case .shell: return String(localized: "Shell")
         case .healing: return String(localized: "Swift Helper")
+        case .browserPlugins: return String(localized: "Browser Plugins")
         case .about: return String(localized: "About")
         }
     }
@@ -224,6 +226,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .whisper: return "mic.fill"
         case .shell: return "terminal"
         case .healing: return "wrench.and.screwdriver"
+        case .browserPlugins: return "puzzlepiece.extension"
         case .about: return "info.circle"
         }
     }
@@ -331,6 +334,7 @@ struct SettingsView: View {
         case .whisper: WhisperKitSettingsTab()
         case .shell: ShellSettingsTab()
         case .healing: SwiftHelperSettingsTab()
+        case .browserPlugins: PluginsSettingsTab()
         case .about: AboutSettingsTab()
         }
     }
@@ -385,7 +389,7 @@ struct AppearanceSettingsTab: View {
         .busMonitor, .notesMD, .appleNotes, .calendar, .reminders, .contacts,
         .canvas, .kanban, .numbers, .whatsapp, .terminalApp,
         .webBrowser, .damBrowser, .maestroDocs, .maestroBooks, .maestroDB, .htmlBuilder, .backup, .voiceNotes,
-        .pomodoro,
+        .pomodoro, .rssReader,
     ]
 
     // Collapsible section state. "Language" and "Appearance" open by
@@ -834,16 +838,8 @@ struct StorageSettingsTab: View {
     private var plansDir: URL { dataDir.appendingPathComponent("plans", isDirectory: true) }
 
     /// Resolved shared AI Memory location: prefer the iCloud Drive container,
-    /// falling back to `~/.ai-context/memory` (which is symlinked to iCloud
-    /// once migrated). Matches `SimpleMemoryStore`'s resolution logic.
-    private var memoryDir: URL {
-        let fm = FileManager.default
-        if let iCloudContainer = fm.url(forUbiquityContainerIdentifier: nil)?
-            .appendingPathComponent("Documents/SwiftMaestro/memory", isDirectory: true) {
-            return iCloudContainer
-        }
-        return fm.homeDirectoryForCurrentUser.appendingPathComponent(".ai-context/memory", isDirectory: true)
-    }
+    /// falling back to `~/.ai-context/memory`. Matches `SimpleMemoryStore`.
+    private var memoryDir: URL { SimpleMemoryStore.sharedMemoryRootURL() }
 
     var body: some View {
         ScrollView {

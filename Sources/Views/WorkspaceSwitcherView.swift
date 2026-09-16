@@ -10,7 +10,7 @@ struct WorkspaceSwitcherView: View {
     private static let slotCount = 10
 
     var body: some View {
-        HStack(spacing: 2) {
+        HStack(spacing: 1) {
             ForEach(1...Self.slotCount, id: \.self) { slot in
                 slotButton(slot)
             }
@@ -29,9 +29,9 @@ struct WorkspaceSwitcherView: View {
             }
         } label: {
             Text(label)
-                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .font(.system(size: 10, weight: .medium, design: .rounded))
                 .foregroundStyle(isActive ? .white : theme.sidebarText)
-                .frame(width: 22, height: 22)
+                .frame(width: 20, height: 20)
                 .background(
                     isActive
                         ? AnyShapeStyle(theme.accent)
