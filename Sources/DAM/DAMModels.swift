@@ -19,6 +19,8 @@ enum DAMColorLabel: String, Codable, Sendable, CaseIterable {
 /// Culling flag (darktable pick/reject parity).
 enum DAMFlag: String, Codable, Sendable, CaseIterable {
     case none, pick, reject
+
+    var displayName: String { rawValue.capitalized }
 }
 
 /// Where a tag came from — user entry, harvested from xattr Finder tags,
@@ -303,6 +305,18 @@ struct DAMCollectionAsset: Codable, FetchableRecord, PersistableRecord, TableRec
         static let collectionId = Column("collectionId")
         static let assetId = Column("assetId")
     }
+}
+
+/// Criteria for a smart collection. Stored as JSON in `collection.predicateJSON`.
+struct DAMSmartPredicate: Codable, Sendable {
+    var query: String?
+    var tags: [String]?
+    var minRating: Int?
+    var fileType: String?
+    var flag: DAMFlag?
+    var tagColor: Int?
+    var hasAIKeywords: Bool?
+    var hasXattrKeywords: Bool?
 }
 
 // MARK: - AI tagging (learn-as-you-tag) models

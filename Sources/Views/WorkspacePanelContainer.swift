@@ -62,12 +62,15 @@ struct WorkspacePanelContainer<Content: View>: View {
                 .clipped()
         }
         .environment(panelLayout)
+        .environment(\.isWorkspaceEmbedded, true)
     }
 
     // MARK: - Header
 
     @ViewBuilder
     private var header: some View {
+        let headerBackground = theme.panelAccent(for: kind).opacity(0.2)
+
         let row = HStack(spacing: 6) {
             // Drag affordance: canvas tiles live-move via a header gesture;
             // floating windows keep the AppKit grip (drag-and-drop).
@@ -96,6 +99,7 @@ struct WorkspacePanelContainer<Content: View>: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+                .truncationMode(.tail)
 
             // Plans quick-toggle: left side near agent name for easy access
             if case .agentChat = kind {
@@ -115,44 +119,69 @@ struct WorkspacePanelContainer<Content: View>: View {
                     ? "Show Plans panel" : "Hide Plans panel")
             }
 
-            Spacer()
-
-            if case .agentChat(let id) = kind {
-                ChatPanelHeaderToolbar(agentID: id)
-            }
-
-            if let headerToolbar {
-                AnyView(headerToolbar)
-            }
-
-            Menu {
-                contextMenuContent
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 20, height: 20)
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-
-            Button {
-                withAnimation(.easeInOut(duration: 0.15)) {
-                    layout.close(kind)
-                }
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 20, height: 20)
-            }
-            .buttonStyle(.plain)
-            .help("Close panel")
+            Spacer(minLength: 0)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .background(theme.panelAccent(for: kind).opacity(0.2))
+        .background(headerBackground)
+        // Keep the title/drag affordance visible and let it truncate; the
+        // trailing controls are rendered on top so they never get pushed out
+        // when the panel is squeezed very small.
+        .overlay(alignment: .trailing) {
+            HStack(spacing: 6) {
+                if case .agentChat(let id) = kind {
+                    ChatPanelHeaderToolbar(agentID: id)
+                }
+
+                if let headerToolbar {
+                    AnyView(headerToolbar)
+                }
+
+                Menu {
+                    contextMenuContent
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 20, height: 20)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+
+                if let onFloat {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            layout.float(kind)
+                            onFloat(kind)
+                        }
+                    } label: {
+                        Image(systemName: "rectangle.expand.vertical")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 20, height: 20)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Pop Out to Window")
+                }
+
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        layout.close(kind)
+                    }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 20, height: 20)
+                }
+                .buttonStyle(.plain)
+                .help("Close panel")
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(headerBackground)
+        }
 
         // Canvas tiles: the whole header is the move handle (the grip icon is
         // just the affordance). minimumDistance 3 keeps buttons clickable.
@@ -173,15 +202,6 @@ struct WorkspacePanelContainer<Content: View>: View {
 
     @ViewBuilder
     private var contextMenuContent: some View {
-        if let onFloat {
-            Button {
-                layout.float(kind)
-                onFloat(kind)
-            } label: {
-                Label("Pop Out to Window", systemImage: "rectangle.expand.vertical")
-            }
-        }
-
         // Move this tile between canvas windows (main + secondary canvases,
         // e.g. a group of panels living on a second monitor as one window).
         if let tileID = canvasTileID, let tile = layout.canvasTile(id: tileID) {

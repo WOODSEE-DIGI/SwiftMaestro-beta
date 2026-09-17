@@ -99,6 +99,14 @@ enum SwiftMaestroPaths {
         return dir
     }
 
+    /// `~/Library/Application Support/SwiftMaestro/data/publish/` — Publish app
+    /// configs, draft index, and published-item history.
+    static var publishDir: URL {
+        let dir = dataDir.appendingPathComponent("publish", isDirectory: true)
+        createDir(dir)
+        return dir
+    }
+
     // MARK: - Migration
 
     /// One-time migration from the old flat layout (where chats/plans/todos/workspace lived

@@ -1708,6 +1708,7 @@ enum MaestroTools {
         (.backup, "backup"),
         (.pomodoro, "pomodoro"),
         (.rssReader, "reader"),
+        (.publish, "publish"),
         (.busMonitor, "busmonitor"),
         (.audioControl, "audiocontrol"),
         (.streamIngest, "streamingest"),
@@ -1725,7 +1726,7 @@ enum MaestroTools {
         + "browser (SwiftBrowser), voiceNotes (Voice Notes), htmlBuilder, backup, "
         + "kanban, numbers, maps, photos, stocks, mail, whatsapp, discord, notesMD, "
         + "appleNotes, terminal, calendar, reminders, contacts, bus, audio, "
-        + "agents, apps, cameras, scenes, mixer, broadcast, ndi — or an agent name."
+        + "agents, apps, cameras, scenes, mixer, broadcast, ndi, publish — or an agent name."
 
     private static func openPanelTool(_ call: ToolCall) async -> String {
         guard let args = decodeArgs(call, as: OpenPanelArgs.self),

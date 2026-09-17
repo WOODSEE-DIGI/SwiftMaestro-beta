@@ -65,6 +65,14 @@ struct MaestroDBView: View {
                 }
                 .buttonStyle(.borderless)
                 .help("Sync Accounting base from MaestroBooks")
+
+                Button {
+                    Task { await viewModel.syncPublishBase() }
+                } label: {
+                    Image(systemName: "newspaper")
+                }
+                .buttonStyle(.borderless)
+                .help("Sync Publish pipeline base")
                 Menu {
                     Button("New Base…") { newName = ""; isCreatingBase = true }
                     Button("New Table…") { newName = ""; isCreatingTable = true }

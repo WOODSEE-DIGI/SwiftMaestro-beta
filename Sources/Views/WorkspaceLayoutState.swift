@@ -296,6 +296,8 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
     case mediaPlayer
     /// RSS/Atom feed reader with YouTube watch-history sync.
     case rssReader
+    /// Publish — track draft content across SwiftMaestro apps and publish to feeds.
+    case publish
 
     var icon: String {
         switch self {
@@ -340,6 +342,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .pomodoro: return "timer"
         case .mediaPlayer: return "play.circle"
         case .rssReader: return "dot.radiowaves.up.forward"
+        case .publish: return "newspaper"
         }
     }
 
@@ -391,6 +394,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .pomodoro: return "pomodoro"
         case .mediaPlayer: return "mediaPlayer"
         case .rssReader: return "rssReader"
+        case .publish: return "publish"
         }
     }
 
@@ -440,6 +444,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .pomodoro: return String(localized: "Pomodoro")
         case .mediaPlayer: return String(localized: "Media Player")
         case .rssReader: return String(localized: "Reader")
+        case .publish: return String(localized: "Publish")
         }
     }
 
@@ -508,6 +513,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .pomodoro: return "pomodoro"
         case .mediaPlayer: return "mediaPlayer"
         case .rssReader: return "rssReader"
+        case .publish: return "publish"
         }
     }
 }
@@ -1155,6 +1161,7 @@ final class WorkspaceLayoutState {
         case .webBrowser, .damBrowser, .maestroDocs, .maestroDB: return (10, 12)
         case .htmlBuilder: return (12, 16)
         case .backup, .voiceNotes: return (8, 12)
+        case .publish: return (12, 12)
         default: return (8, 8)
         }
     }

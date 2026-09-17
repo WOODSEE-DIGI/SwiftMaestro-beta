@@ -135,7 +135,9 @@ struct WorkspacePanelWindowView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 6) {
+        let headerBackground = theme.panelAccent(for: target.kind).opacity(0.2)
+
+        return HStack(spacing: 6) {
             // Drag grip: drag this window into the main window's tiling grid.
             // While dragging, every tile in the main window shows its neon
             // drop-zone preview; releasing docks the panel in that position
@@ -164,56 +166,64 @@ struct WorkspacePanelWindowView: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+                .truncationMode(.tail)
 
-            Spacer()
-
-            if case .agentChat(let id) = target.kind {
-                ChatPanelHeaderToolbar(agentID: id)
-            }
-
-            Button {
-                isPinnedToFront.toggle()
-            } label: {
-                Label(
-                    isPinnedToFront ? "Unpin" : "Keep on Top",
-                    systemImage: isPinnedToFront ? "pin.fill" : "pin"
-                )
-                .font(.caption2)
-            }
-            .buttonStyle(.plain)
-            .help(isPinnedToFront
-                ? "Stop keeping this window in front of all others"
-                : "Keep this window in front of all others")
-
-            Menu {
-                Button {
-                    dockPanel(.right)
-                } label: {
-                    Label("Dock to Right", systemImage: "rectangle.split.2x1")
-                }
-                Button {
-                    dockPanel(.left)
-                } label: {
-                    Label("Dock to Left", systemImage: "rectangle.split.2x1")
-                }
-                Divider()
-                Button {
-                    dockPanel(.bottom)
-                } label: {
-                    Label("Dock Below", systemImage: "rectangle.split.1x2")
-                }
-            } label: {
-                Label("Dock", systemImage: "rectangle.on.rectangle")
-                    .font(.caption2)
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("Dock into the main window — choose a side or below")
+            Spacer(minLength: 0)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .background(theme.panelAccent(for: target.kind).opacity(0.2))
+        .background(headerBackground)
+        // Keep the dock/pin controls on top so they survive tiny windows.
+        .overlay(alignment: .trailing) {
+            HStack(spacing: 6) {
+                if case .agentChat(let id) = target.kind {
+                    ChatPanelHeaderToolbar(agentID: id)
+                }
+
+                Button {
+                    isPinnedToFront.toggle()
+                } label: {
+                    Label(
+                        isPinnedToFront ? "Unpin" : "Keep on Top",
+                        systemImage: isPinnedToFront ? "pin.fill" : "pin"
+                    )
+                    .font(.caption2)
+                }
+                .buttonStyle(.plain)
+                .help(isPinnedToFront
+                    ? "Stop keeping this window in front of all others"
+                    : "Keep this window in front of all others")
+
+                Menu {
+                    Button {
+                        dockPanel(.right)
+                    } label: {
+                        Label("Dock to Right", systemImage: "rectangle.split.2x1")
+                    }
+                    Button {
+                        dockPanel(.left)
+                    } label: {
+                        Label("Dock to Left", systemImage: "rectangle.split.2x1")
+                    }
+                    Divider()
+                    Button {
+                        dockPanel(.bottom)
+                    } label: {
+                        Label("Dock Below", systemImage: "rectangle.split.1x2")
+                    }
+                } label: {
+                    Label("Dock", systemImage: "rectangle.on.rectangle")
+                        .font(.caption2)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Dock into the main window — choose a side or below")
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(headerBackground)
+        }
     }
 }
 

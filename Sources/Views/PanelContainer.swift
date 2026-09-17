@@ -38,7 +38,9 @@ struct PanelContainer<Content: View>: View {
     // MARK: - Header Bar
 
     private var headerBar: some View {
-        HStack(spacing: 6) {
+        let headerBackground = Color(nsColor: NSColor(red: 0.16, green: 0.16, blue: 0.18, alpha: 1.0))
+
+        return HStack(spacing: 6) {
             // Drag handle
             Image(systemName: "circle.grid.2x2")
                 .font(.caption)
@@ -61,10 +63,17 @@ struct PanelContainer<Content: View>: View {
             Text(panelType.displayName)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
 
-            Spacer()
-
-            // Context menu
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(headerBackground)
+        // Render the menu on top so it is never compressed out when the panel
+        // is squeezed very small.
+        .overlay(alignment: .trailing) {
             Menu {
                 contextMenuContent
             } label: {
@@ -76,10 +85,10 @@ struct PanelContainer<Content: View>: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(headerBackground)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(Color(nsColor: NSColor(red: 0.16, green: 0.16, blue: 0.18, alpha: 1.0)))
     }
 
     // MARK: - Context Menu
@@ -157,6 +166,8 @@ struct FloatingPanelView<Content: View>: View {
     @Environment(PanelLayoutState.self) private var layoutState
 
     var body: some View {
+        let headerBackground = Color(nsColor: NSColor(red: 0.16, green: 0.16, blue: 0.18, alpha: 1.0))
+
         VStack(spacing: 0) {
             // Header with dock button
             HStack(spacing: 6) {
@@ -167,9 +178,16 @@ struct FloatingPanelView<Content: View>: View {
                 Text(panelType.displayName)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
 
-                Spacer()
-
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(headerBackground)
+            // Keep the dock button on top so it survives tiny floating windows.
+            .overlay(alignment: .trailing) {
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         layoutState.dock(panelType)
@@ -180,10 +198,10 @@ struct FloatingPanelView<Content: View>: View {
                 }
                 .buttonStyle(.plain)
                 .help("Dock back to main window")
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(headerBackground)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(Color(nsColor: NSColor(red: 0.16, green: 0.16, blue: 0.18, alpha: 1.0)))
 
             content()
         }

@@ -120,6 +120,8 @@ struct WorkspacePanelContentView: View {
             MediaPlayerView()
         case .rssReader:
             RSSReaderView()
+        case .publish:
+            PublishView()
         }
         }
     }

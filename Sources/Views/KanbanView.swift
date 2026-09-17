@@ -65,42 +65,127 @@ struct KanbanView: View {
     // MARK: - Header
 
     private var header: some View {
+        GeometryReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                headerContent(width: proxy.size.width)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .frame(minHeight: 38)
+            }
+            .background(theme.secondaryBackground)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    @ViewBuilder
+    private func headerContent(width: CGFloat) -> some View {
+        let isFull = width >= 800
+        let isCompact = width >= 460
+
         HStack(spacing: 12) {
-            Text("Kanban")
-                .font(.headline)
+            // Leading controls
+            HStack(spacing: 12) {
+                Text("Kanban")
+                    .font(.headline)
+                    .lineLimit(1)
 
-            Picker("Board", selection: $selectedBoardId) {
-                ForEach(store.boards) { board in
-                    Text(board.name).tag(Optional(board.id))
+                boardPicker
+                    .frame(width: isFull ? 220 : (isCompact ? 150 : 100))
+
+                if isFull {
+                    newBoardButton
+                    if selectedBoard != nil {
+                        newColumnButton
+                    }
+                } else {
+                    newBoardButton
+                        .labelStyle(.iconOnly)
+                        .help("New Board")
+                    if selectedBoard != nil {
+                        newColumnButton
+                            .labelStyle(.iconOnly)
+                            .help("New Column")
+                    }
                 }
             }
-            .labelsHidden()
-            .frame(minWidth: 160, maxWidth: 260)
 
-            Button {
-                isAddingBoard = true
-            } label: {
-                Label("New Board", systemImage: "plus")
-            }
+            // Flexible spacer: pushes trailing controls to the right when
+            // there is room, but collapses so the toolbar can scroll when the
+            // panel is squeezed below the minimum content width.
+            Color.clear
+                .frame(minWidth: 12, maxWidth: .infinity, maxHeight: 1)
 
-            if selectedBoard != nil {
-                Button {
-                    isAddingColumn = true
-                } label: {
-                    Label("Column", systemImage: "plus.rectangle.on.rectangle")
+            // Trailing controls
+            HStack(spacing: 12) {
+                searchField
+                    .frame(width: isFull ? 180 : (isCompact ? 140 : 90))
+
+                if isFull, let board = selectedBoard {
+                    duplicateBoardButton(board: board)
+                    deleteBoardButton(board: board)
+                } else if selectedBoard != nil {
+                    actionsMenu
                 }
             }
+        }
+        .frame(minWidth: width, alignment: .leading)
+    }
 
-            Spacer()
-
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                TextField("Search cards", text: $searchQuery)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 180)
+    private var boardPicker: some View {
+        Picker("Board", selection: $selectedBoardId) {
+            ForEach(store.boards) { board in
+                Text(board.name).tag(Optional(board.id))
             }
+        }
+        .labelsHidden()
+    }
 
+    private var newBoardButton: some View {
+        Button {
+            isAddingBoard = true
+        } label: {
+            Label("New Board", systemImage: "plus")
+        }
+    }
+
+    private var newColumnButton: some View {
+        Button {
+            isAddingColumn = true
+        } label: {
+            Label("Column", systemImage: "plus.rectangle.on.rectangle")
+        }
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField("Search cards", text: $searchQuery)
+                .textFieldStyle(.roundedBorder)
+        }
+    }
+
+    private func duplicateBoardButton(board: KanbanBoard) -> some View {
+        Button {
+            _ = store.duplicate(board)
+        } label: {
+            Label("Duplicate", systemImage: "doc.on.doc")
+        }
+    }
+
+    private func deleteBoardButton(board: KanbanBoard) -> some View {
+        Button(role: .destructive) {
+            if let id = selectedBoardId {
+                store.delete(id)
+                selectedBoardId = store.boards.first?.id
+            }
+        } label: {
+            Label("Delete", systemImage: "trash")
+        }
+    }
+
+    private var actionsMenu: some View {
+        Menu {
             if let board = selectedBoard {
                 Button {
                     _ = store.duplicate(board)
@@ -117,7 +202,13 @@ struct KanbanView: View {
                     Label("Delete", systemImage: "trash")
                 }
             }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .foregroundStyle(.secondary)
         }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .help("Board actions")
     }
 
     private var selectedBoard: KanbanBoard? {
@@ -230,19 +321,11 @@ struct KanbanBoardView: View {
         .background(theme.chatBackground)
     }
 
-    /// All columns at their ideal width when they comfortably fit; otherwise
-    /// scale every column down together (like thumbnails) so the whole board
-    /// stays visible without horizontal scrolling, down to a reasonable
-    /// minimum — only beyond that minimum does scrolling kick back in.
+    /// Columns keep a readable fixed width. When the panel is too narrow to
+    /// show every column, the board scrolls horizontally instead of squashing
+    /// cards down to an unusable size.
     private func columnWidth(availableWidth: CGFloat) -> CGFloat {
-        let count = max(board.columns.count, 1)
-        let spacingAndPadding = CGFloat(max(count - 1, 0)) * Self.columnSpacing + Self.horizontalPadding
-        let availableForColumns = availableWidth - spacingAndPadding
-        let idealTotalWidth = CGFloat(count) * Self.idealColumnWidth
-        guard idealTotalWidth > availableForColumns, availableForColumns > 0 else {
-            return Self.idealColumnWidth
-        }
-        return max(Self.minColumnWidth, availableForColumns / CGFloat(count))
+        Self.idealColumnWidth
     }
 }
 

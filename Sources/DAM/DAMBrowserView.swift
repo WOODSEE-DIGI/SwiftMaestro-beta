@@ -33,6 +33,21 @@ struct DAMBrowserView: View {
     @State private var quickLookMonitor: Any?
 
     @State private var healthWarnings: [DAMVolume] = []
+    @State private var showingCollectionSheet = false
+    @State private var editingCollection: DAMCollection? = nil
+    @State private var newCollectionName = ""
+    @State private var newCollectionKind: DAMCollection.Kind = .manual
+    @State private var newCollectionParentID: Int64?
+
+    // Smart predicate sheet state
+    @State private var predicateQuery = ""
+    @State private var predicateTags = ""
+    @State private var predicateMinRating = 0
+    @State private var predicateFileType = ""
+    @State private var predicateFlagRaw: String = ""
+    @State private var predicateTagColor: Int?
+    @State private var predicateHasAIKeywords = false
+    @State private var predicateHasXattrKeywords = false
 
     /// Home workspace viewing options.
     @AppStorage("dam.homeViewMode") private var homeViewMode: HomeViewMode = .browser
@@ -98,6 +113,12 @@ struct DAMBrowserView: View {
             quickLookMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak viewModel] event in
                 guard event.keyCode == 49 else { return event }
                 guard event.modifierFlags.intersection(.deviceIndependentFlagsMask).isSubset(of: [.numericPad, .function]) else { return event }
+                // Don’t steal spacebar while the user is typing in any text field
+                // (keyword editor, search box, rename sheets, etc.).
+                if let responder = NSApp.keyWindow?.firstResponder,
+                   responder is NSTextView || responder is NSTextField {
+                    return event
+                }
                 guard let viewModel, viewModel.selection.count == 1,
                       let asset = viewModel.assets.first(where: { $0.id == viewModel.selection.first }),
                       FileManager.default.fileExists(atPath: asset.path)
@@ -111,6 +132,9 @@ struct DAMBrowserView: View {
                 NSEvent.removeMonitor(quickLookMonitor)
             }
             DAMQuickLookPanelController.shared.close()
+        }
+        .sheet(isPresented: $showingCollectionSheet) {
+            collectionSheet
         }
     }
 
@@ -301,7 +325,7 @@ struct DAMBrowserView: View {
     private var folderTreePanel: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Folders")
+                Text("Library")
                     .font(.headline)
                 Spacer()
                 Button {
@@ -311,19 +335,53 @@ struct DAMBrowserView: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
-                .help("Rescan catalog folders and volumes")
+                .help("Rescan catalog folders, volumes, and collections")
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
 
             Divider()
 
-            List(selection: Binding<String?>(
-                get: { viewModel.selectedFolder ?? "" },
-                set: { viewModel.selectedFolder = ($0?.isEmpty == false) ? $0 : nil }
-            )) {
+            List(selection: sidebarSelection) {
                 Label("All Assets", systemImage: "photo.on.rectangle.angled")
                     .tag("")
+
+                Section {
+                    if viewModel.collections.isEmpty {
+                        Text("No collections yet")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .tag("collections.empty")
+                            .disabled(true)
+                    } else {
+                        ForEach(flattenedCollectionItems) { item in
+                            CollectionRow(
+                                collection: item.collection,
+                                count: viewModel.collectionAssetCounts[item.collection.id ?? -1],
+                                depth: item.depth,
+                                viewModel: viewModel,
+                                onRename: {
+                                    prepareCollectionSheet(editing: item.collection)
+                                }
+                            )
+                            .tag(collectionTag(for: item.collection))
+                        }
+                    }
+                } header: {
+                    HStack {
+                        Text("Collections")
+                        Spacer()
+                        Button {
+                            prepareCollectionSheet(editing: nil)
+                        } label: {
+                            Image(systemName: "plus")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .help("Create new collection")
+                    }
+                }
 
                 if !viewModel.folderTree.isEmpty {
                     Section("Catalog") {
@@ -345,6 +403,220 @@ struct DAMBrowserView: View {
                 }
             }
             .listStyle(.sidebar)
+        }
+    }
+
+    private var sidebarSelection: Binding<String?> {
+        Binding<String?>(
+            get: {
+                if let id = viewModel.selectedCollectionID {
+                    return "collection:\(id)"
+                }
+                return viewModel.selectedFolder ?? ""
+            },
+            set: { tag in
+                if let tag, tag.hasPrefix("collection:") {
+                    let idString = String(tag.dropFirst("collection:".count))
+                    viewModel.selectedCollectionID = Int64(idString)
+                } else {
+                    viewModel.selectedFolder = (tag?.isEmpty == false) ? tag : nil
+                }
+            }
+        )
+    }
+
+    private func collectionTag(for collection: DAMCollection) -> String {
+        "collection:\(collection.id ?? -1)"
+    }
+
+    /// Collections that can be chosen as a parent for the one being edited.
+    /// Prevents selecting the collection itself or any of its descendants
+    /// (which would create a cycle).
+    private var eligibleParentCollections: [DAMCollection] {
+        guard let editing = editingCollection else { return viewModel.collections }
+        let forbidden = descendantIDs(of: editing.id ?? -1).union([editing.id ?? -1])
+        return viewModel.collections.filter { !forbidden.contains($0.id ?? -1) }
+    }
+
+    private func descendantIDs(of id: Int64) -> Set<Int64> {
+        let byParent = Dictionary(grouping: viewModel.collections) { $0.parentId ?? -1 }
+        var result = Set<Int64>()
+        func visit(_ parentId: Int64) {
+            for child in byParent[parentId] ?? [] {
+                let childId = child.id ?? -1
+                guard result.insert(childId).inserted else { continue }
+                visit(childId)
+            }
+        }
+        visit(id)
+        return result
+    }
+
+    /// Flattened, depth-aware list of collections for the sidebar.
+    private var flattenedCollectionItems: [CollectionListItem] {
+        let byParent = Dictionary(grouping: viewModel.collections) { $0.parentId ?? -1 }
+        func flatten(parentId: Int64, depth: Int) -> [CollectionListItem] {
+            let children = byParent[parentId] ?? []
+            let sorted = children.sorted {
+                $0.name.localizedStandardCompare($1.name) == .orderedAscending
+            }
+            return sorted.flatMap { collection in
+                [CollectionListItem(collection: collection, depth: depth)]
+                    + flatten(parentId: collection.id ?? -1, depth: depth + 1)
+            }
+        }
+        return flatten(parentId: -1, depth: 0)
+    }
+
+    /// IDs to drag from the grid: the current selection if this asset is part
+    /// of it, otherwise just the asset under the cursor.
+    private func draggedAssetIDs(for asset: DAMAsset) -> String {
+        let id = asset.id ?? -1
+        let ids: [Int64]
+        if viewModel.selection.contains(id) {
+            ids = viewModel.selection.compactMap { $0 }
+        } else {
+            ids = [id]
+        }
+        return ids.map(String.init).joined(separator: ",")
+    }
+
+    // MARK: - Collection sidebar row with drop target
+
+    private struct CollectionListItem: Identifiable {
+        let collection: DAMCollection
+        let depth: Int
+        var id: Int64? { collection.id }
+    }
+
+    private struct CollectionRow: View {
+        let collection: DAMCollection
+        let count: Int?
+        let depth: Int
+        let viewModel: DAMViewModel
+        let onRename: () -> Void
+        @State private var isDropTargeted = false
+
+        private var collectionIcon: String {
+            collection.kind == .smart ? "gear.badge.checkmark" : "folder.badge.person.crop"
+        }
+
+        private var draggablePayload: String {
+            "collection:\(collection.id ?? -1)"
+        }
+
+        var body: some View {
+            HStack {
+                Image(systemName: collectionIcon)
+                    .foregroundStyle(.secondary)
+                Text(collection.name)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if collection.kind == .smart {
+                    Text("smart")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Color.secondary.opacity(0.15))
+                        .clipShape(Capsule())
+                }
+                Spacer()
+                if let count {
+                    Text("\(count)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.leading, CGFloat(depth) * 14)
+            .contentShape(Rectangle())
+            .contextMenu { collectionContextMenu() }
+            .onDrag {
+                NSItemProvider(object: draggablePayload as NSString)
+            }
+            .onDrop(of: [UTType.plainText.identifier], isTargeted: $isDropTargeted) { providers, _ in
+                guard collection.kind == .manual, let provider = providers.first else { return false }
+                provider.loadObject(ofClass: String.self) { object, _ in
+                    guard let string = object,
+                          let targetId = collection.id else { return }
+                    if string.hasPrefix("collection:") {
+                        let movedIdString = String(string.dropFirst("collection:".count))
+                        guard let movedId = Int64(movedIdString),
+                              movedId != targetId else { return }
+                        Task { @MainActor in
+                            await viewModel.setCollectionParent(id: movedId, parentId: targetId)
+                        }
+                    } else {
+                        let ids = string
+                            .components(separatedBy: ",")
+                            .compactMap { Int64($0.trimmingCharacters(in: .whitespaces)) }
+                            .filter { $0 >= 0 }
+                        guard !ids.isEmpty else { return }
+                        Task { @MainActor in
+                            await viewModel.addAssetIds(ids, to: targetId)
+                        }
+                    }
+                }
+                return true
+            }
+            .background(isDropTargeted ? Color.accentColor.opacity(0.25) : Color.clear)
+        }
+
+        @ViewBuilder
+        private func collectionContextMenu() -> some View {
+            Button {
+                onRename()
+            } label: {
+                Label("Rename", systemImage: "pencil")
+            }
+
+            let eligible = eligibleParents()
+            if !eligible.isEmpty {
+                Menu {
+                    Button {
+                        Task { await viewModel.setCollectionParent(id: collection.id ?? -1, parentId: nil) }
+                    } label: {
+                        Label("Top level", systemImage: "arrow.up.backward")
+                    }
+                    ForEach(eligible) { parent in
+                        Button {
+                            Task { await viewModel.setCollectionParent(id: collection.id ?? -1, parentId: parent.id) }
+                        } label: {
+                            Text(parent.name)
+                        }
+                    }
+                } label: {
+                    Label("Move into…", systemImage: "folder")
+                }
+            }
+
+            Button(role: .destructive) {
+                Task { await viewModel.deleteCollection(id: collection.id ?? -1) }
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
+
+        private func eligibleParents() -> [DAMCollection] {
+            let forbidden = descendantIDs(of: collection.id ?? -1)
+                .union([collection.id ?? -1])
+            return viewModel.collections
+                .filter { !forbidden.contains($0.id ?? -1) }
+                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        }
+
+        private func descendantIDs(of id: Int64) -> Set<Int64> {
+            let byParent = Dictionary(grouping: viewModel.collections) { $0.parentId ?? -1 }
+            var result = Set<Int64>()
+            func visit(_ parentId: Int64) {
+                for child in byParent[parentId] ?? [] {
+                    let childId = child.id ?? -1
+                    guard result.insert(childId).inserted else { continue }
+                    visit(childId)
+                }
+            }
+            visit(id)
+            return result
         }
     }
 
@@ -436,6 +708,9 @@ struct DAMBrowserView: View {
                         )
                         .onTapGesture { handleGridTap(asset) }
                         .contextMenu { gridContextMenu(for: asset) }
+                        .onDrag {
+                            NSItemProvider(object: draggedAssetIDs(for: asset) as NSString)
+                        }
                         .task { await viewModel.loadMoreIfNeeded(currentItem: asset) }
                     }
                 }
@@ -466,6 +741,32 @@ struct DAMBrowserView: View {
         // right-clicked asset when it isn't selected, else the selection.
         let effective: Set<DAMAsset.ID> = viewModel.selection.contains(id)
             ? viewModel.selection : [id]
+
+        let manualCollections = viewModel.collections.filter { $0.kind == .manual }
+        if !manualCollections.isEmpty {
+            Menu {
+                ForEach(manualCollections) { collection in
+                    Button {
+                        Task { await viewModel.addSelectionToCollection(collection.id ?? -1) }
+                    } label: {
+                        Text(collection.name)
+                    }
+                }
+            } label: {
+                Label("Add to Collection", systemImage: "folder.badge.plus")
+            }
+        }
+
+        if let selectedID = viewModel.selectedCollectionID,
+           let collection = viewModel.collections.first(where: { $0.id == selectedID }),
+           collection.kind == .manual {
+            Button {
+                Task { await viewModel.removeSelectionFromActiveCollection() }
+            } label: {
+                Label("Remove from Collection", systemImage: "folder.badge.minus")
+            }
+        }
+
         DAMContextMenu.items(
             viewModel: viewModel,
             assets: viewModel.assets.filter { effective.contains($0.id ?? -1) },
@@ -479,6 +780,193 @@ struct DAMBrowserView: View {
         } label: {
             Label("Generate Tags for Folder", systemImage: "folder.badge.sparkles")
         }
+    }
+
+    @ViewBuilder
+    private func predicateRow<Content: View>(label: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var collectionSheet: some View {
+        NavigationStack {
+            Form {
+                Section("Collection Name") {
+                    TextField("Name", text: $newCollectionName)
+                }
+
+                Section("Type") {
+                    Picker("Kind", selection: $newCollectionKind) {
+                        Text("Manual Album").tag(DAMCollection.Kind.manual)
+                        Text("Smart Collection").tag(DAMCollection.Kind.smart)
+                    }
+                    .pickerStyle(.segmented)
+                }
+
+                Section("Location") {
+                    Picker("Inside", selection: $newCollectionParentID) {
+                        Text("Top level").tag(nil as Int64?)
+                        ForEach(eligibleParentCollections) { collection in
+                            Text(collection.name).tag(collection.id as Int64?)
+                        }
+                    }
+                }
+
+                if newCollectionKind == .smart {
+                    Section("Match Conditions") {
+                        VStack(alignment: .leading, spacing: 14) {
+                            TextField("Search words", text: $predicateQuery)
+                                .autocorrectionDisabled()
+
+                            TextField("Tags (comma separated)", text: $predicateTags)
+                                .autocorrectionDisabled()
+
+                            predicateRow(label: "Minimum rating") {
+                                Picker("", selection: $predicateMinRating) {
+                                    Text("Any").tag(0)
+                                    ForEach(1...5, id: \.self) { n in
+                                        Text(String(repeating: "★", count: n)).tag(n)
+                                    }
+                                }
+                                .pickerStyle(.segmented)
+                            }
+
+                            TextField("File type", text: $predicateFileType, prompt: Text("image, video, pdf…"))
+                                .autocorrectionDisabled()
+
+                            predicateRow(label: "Flag") {
+                                Picker("", selection: $predicateFlagRaw) {
+                                    Text("Any").tag("")
+                                    ForEach(DAMFlag.allCases.map(\.rawValue), id: \.self) { raw in
+                                        Text(DAMFlag(rawValue: raw)?.displayName ?? raw).tag(raw)
+                                    }
+                                }
+                                .pickerStyle(.segmented)
+                            }
+
+                            predicateRow(label: "Finder color") {
+                                Picker("", selection: $predicateTagColor) {
+                                    Text("Any").tag(nil as Int?)
+                                    Text("Gray").tag(1)
+                                    Text("Red").tag(2)
+                                    Text("Orange").tag(3)
+                                    Text("Yellow").tag(4)
+                                    Text("Green").tag(5)
+                                    Text("Blue").tag(6)
+                                    Text("Purple").tag(7)
+                                }
+                                .pickerStyle(.segmented)
+                            }
+
+                            Toggle("Has AI keywords", isOn: $predicateHasAIKeywords)
+                            Toggle("Has Finder/xattr keywords", isOn: $predicateHasXattrKeywords)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle(editingCollection == nil ? "New Collection" : "Edit Collection")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        showingCollectionSheet = false
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        Task {
+                            let predicateJSON = buildCollectionPredicateJSON()
+                            await viewModel.saveCollection(
+                                id: editingCollection?.id,
+                                name: newCollectionName,
+                                kind: newCollectionKind,
+                                predicateJSON: predicateJSON,
+                                parentId: newCollectionParentID
+                            )
+                            showingCollectionSheet = false
+                            resetCollectionSheet()
+                        }
+                    }
+                    .disabled(newCollectionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .frame(minWidth: 480, minHeight: newCollectionKind == .smart ? 640 : 240)
+        }
+    }
+
+    private func prepareCollectionSheet(editing collection: DAMCollection?) {
+        editingCollection = collection
+        newCollectionName = collection?.name ?? ""
+        newCollectionKind = collection?.kind ?? .manual
+        newCollectionParentID = collection?.parentId
+        predicateQuery = ""
+        predicateTags = ""
+        predicateMinRating = 0
+        predicateFileType = ""
+        predicateFlagRaw = ""
+        predicateTagColor = nil
+        predicateHasAIKeywords = false
+        predicateHasXattrKeywords = false
+        if let collection, collection.kind == .smart,
+           let data = collection.predicateJSON?.data(using: .utf8),
+           let predicate = try? JSONDecoder().decode(DAMSmartPredicate.self, from: data) {
+            predicateQuery = predicate.query ?? ""
+            predicateTags = predicate.tags?.joined(separator: ", ") ?? ""
+            predicateMinRating = predicate.minRating ?? 0
+            predicateFileType = predicate.fileType ?? ""
+            predicateFlagRaw = predicate.flag?.rawValue ?? ""
+            predicateTagColor = predicate.tagColor
+            predicateHasAIKeywords = predicate.hasAIKeywords ?? false
+            predicateHasXattrKeywords = predicate.hasXattrKeywords ?? false
+        }
+        showingCollectionSheet = true
+    }
+
+    private func resetCollectionSheet() {
+        newCollectionName = ""
+        editingCollection = nil
+        newCollectionKind = .manual
+        newCollectionParentID = nil
+        predicateQuery = ""
+        predicateTags = ""
+        predicateMinRating = 0
+        predicateFileType = ""
+        predicateFlagRaw = ""
+        predicateTagColor = nil
+        predicateHasAIKeywords = false
+        predicateHasXattrKeywords = false
+    }
+
+    private func buildCollectionPredicateJSON() -> String? {
+        guard newCollectionKind == .smart else { return nil }
+        let tags = predicateTags
+            .components(separatedBy: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }
+        var predicate = DAMSmartPredicate()
+        if !predicateQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            predicate.query = predicateQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if !tags.isEmpty { predicate.tags = tags }
+        if predicateMinRating > 0 { predicate.minRating = predicateMinRating }
+        if !predicateFileType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            predicate.fileType = predicateFileType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }
+        let trimmedFlag = predicateFlagRaw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedFlag.isEmpty, let flag = DAMFlag(rawValue: trimmedFlag) {
+            predicate.flag = flag
+        }
+        if let predicateTagColor { predicate.tagColor = predicateTagColor }
+        if predicateHasAIKeywords { predicate.hasAIKeywords = true }
+        if predicateHasXattrKeywords { predicate.hasXattrKeywords = true }
+        guard let data = try? JSONEncoder().encode(predicate) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     private var statusBar: some View {

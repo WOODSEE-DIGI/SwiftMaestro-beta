@@ -1,5 +1,6 @@
 import SwiftUI
 import WebKit
+import Darwin
 
 // MARK: - HTML/CSS Editor (WYSIWYG)
 
@@ -16,6 +17,10 @@ struct SwiftWeaverEditorView: View {
     @State private var cursorLocation: Int = 0
     @State private var exportAlertMessage: String?
     @State private var pendingInsert: String?
+    @State private var selectedPublishTag: PublishTag? = nil
+    @State private var selectedNeocitiesConfigID: UUID?
+    @State private var isUploadingToNeocities = false
+    @State private var neocitiesUploadMessage: String?
 
     /// Dreamweaver's signature Code / Split / Design modes.
     enum ViewMode: String, CaseIterable {
@@ -27,6 +32,19 @@ struct SwiftWeaverEditorView: View {
     enum CodeTab: String, CaseIterable {
         case html = "HTML"
         case css = "CSS"
+    }
+
+    /// Publish system tags that can be stamped onto the exported PNG as a
+    /// Finder tag, so Publish (or MaestroDAM) can pick it up later.
+    private var systemPublishTags: [PublishTag] {
+        PublishStore.shared.tags
+            .filter { $0.isSystem }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    private var selectedNeocitiesConfigName: String? {
+        guard let id = selectedNeocitiesConfigID else { return nil }
+        return PublishStore.shared.neocitiesConfigs.first { $0.id == id }?.sitename
     }
 
     // MARK: - Default Templates
@@ -162,7 +180,7 @@ struct SwiftWeaverEditorView: View {
         ("Section", "rectangle.split.3x1", "<section>\n  \n</section>"),
         ("Header", "text.justify.leading", "<header>\n  \n</header>"),
         ("Footer", "text.justify.trailing", "<footer>\n  \n</footer>"),
-        ("Nav", "menubar", "<nav>\n  \n</nav>"),
+        ("Nav", "line.3.horizontal", "<nav>\n  \n</nav>"),
         ("Heading 1", "textformat.size.larger", "<h1>Title</h1>"),
         ("Heading 2", "textformat.size", "<h2>Subtitle</h2>"),
         ("Heading 3", "textformat.size.smaller", "<h3>Section</h3>"),
@@ -175,7 +193,7 @@ struct SwiftWeaverEditorView: View {
         ("Unordered List", "list.bullet", "<ul>\n  <li>Item</li>\n</ul>"),
         ("Ordered List", "list.number", "<ol>\n  <li>Item</li>\n</ol>"),
         ("Form", "text.cursor", "<form>\n  <input type=\"text\" placeholder=\"Name\" />\n  <button type=\"submit\">Submit</button>\n</form>"),
-        ("Input", "textfield", "<input type=\"text\" placeholder=\"Enter text\" />"),
+        ("Input", "character.cursor.ibeam", "<input type=\"text\" placeholder=\"Enter text\" />"),
         ("Button", "rectangle.and.hand.point.up.left", "<button>Click me</button>"),
         ("Iframe", "globe", "<iframe src=\"\" width=\"100%\" height=\"400\"></iframe>"),
         ("SVG", "scribble", "<svg viewBox=\"0 0 100 100\" width=\"100\" height=\"100\">\n  <circle cx=\"50\" cy=\"50\" r=\"40\" fill=\"#7c3aed\" />\n</svg>"),
@@ -202,7 +220,7 @@ struct SwiftWeaverEditorView: View {
         ("Pill Shape", "capsule", "border-radius: 9999px;"),
         ("Text Overflow", "text.append", "overflow: hidden;\nwhite-space: nowrap;\ntext-overflow: ellipsis;"),
         ("Border", "rectangle.dashed", "border: 1px solid rgba(255, 255, 255, 0.15);"),
-        ("Gradient BG", "rectangle.gradientdx", "background: linear-gradient(135deg, #1a1a2e, #16213e);"),
+        ("Gradient BG", "paintbrush", "background: linear-gradient(135deg, #1a1a2e, #16213e);"),
         ("Fixed Size", "arrow.up.left.and.arrow.down.right", "width: 300px;\nheight: 200px;"),
         ("Z-Index", "rectangle.stack", "z-index: 10;"),
         ("Font Size", "textformat.size", "font-size: 16px;"),
@@ -362,10 +380,100 @@ struct SwiftWeaverEditorView: View {
 
                 Spacer()
 
+                // Publish tag picker
+                Menu {
+                    Button {
+                        selectedPublishTag = nil
+                    } label: {
+                        HStack {
+                            Text("No publish tag")
+                            if selectedPublishTag == nil {
+                                Spacer()
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+
+                    ForEach(systemPublishTags) { tag in
+                        Button {
+                            selectedPublishTag = tag
+                        } label: {
+                            HStack {
+                                Text("#\(tag.name)")
+                                if selectedPublishTag?.id == tag.id {
+                                    Spacer()
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    Label(
+                        selectedPublishTag.map { "#\($0.name)" } ?? "Publish tag",
+                        systemImage: "tag"
+                    )
+                    .font(.caption)
+                }
+                .menuStyle(.borderlessButton)
+                .help("Stamp a Publish system tag onto the exported PNG")
+
                 // Export
                 Button("Export PNG") { exportPNG() }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
+
+                // Neocities publishing
+                if !PublishStore.shared.neocitiesConfigs.isEmpty {
+                    Menu {
+                        Button {
+                            selectedNeocitiesConfigID = nil
+                        } label: {
+                            HStack {
+                                Text("Choose a site…")
+                                if selectedNeocitiesConfigID == nil {
+                                    Spacer()
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+
+                        ForEach(PublishStore.shared.neocitiesConfigs) { config in
+                            Button {
+                                selectedNeocitiesConfigID = config.id
+                            } label: {
+                                HStack {
+                                    Text(config.sitename)
+                                    if selectedNeocitiesConfigID == config.id {
+                                        Spacer()
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        Label(
+                            selectedNeocitiesConfigName ?? "Neocities site",
+                            systemImage: "network"
+                        )
+                        .font(.caption)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .help("Choose a Neocities destination")
+
+                    Button {
+                        Task { await publishToNeocities() }
+                    } label: {
+                        if isUploadingToNeocities {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Label("Publish to Neocities", systemImage: "arrow.up.circle")
+                                .font(.caption)
+                        }
+                    }
+                    .disabled(selectedNeocitiesConfigID == nil || isUploadingToNeocities)
+                    .help("Upload the current HTML page to Neocities")
+                }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
@@ -1093,10 +1201,64 @@ struct SwiftWeaverEditorView: View {
                 }
                 do {
                     try data.write(to: url)
+                    if let tag = selectedPublishTag {
+                        try applyPublishTag(tag, to: url)
+                    }
                 } catch {
                     exportAlertMessage = "Couldn't save the PNG: \(error.localizedDescription)"
                 }
             }
+        }
+    }
+
+    /// Upload the current SwiftWeaver document as a static HTML page to Neocities.
+    private func publishToNeocities() async {
+        guard let configID = selectedNeocitiesConfigID else { return }
+        isUploadingToNeocities = true
+        neocitiesUploadMessage = nil
+        defer { isUploadingToNeocities = false }
+
+        let baseName = store.fileURL?.deletingPathExtension().lastPathComponent ?? "page"
+        let filename = "\(baseName).html"
+        let html = store.documentHTML
+
+        if let path = await PublishStore.shared.uploadHTMLToNeocities(
+            configID: configID,
+            filename: filename,
+            html: html
+        ) {
+            neocitiesUploadMessage = "Published to /\(path)"
+            exportAlertMessage = neocitiesUploadMessage
+        } else {
+            let error = PublishStore.shared.lastError ?? "Unknown upload error"
+            neocitiesUploadMessage = error
+            exportAlertMessage = "Neocities upload failed: \(error)"
+        }
+    }
+
+    /// Stamp a Publish tag onto a file as a Finder tag so Publish/MaestroDAM
+    /// can discover it from the filesystem.
+    private func applyPublishTag(_ tag: PublishTag, to url: URL) throws {
+        try applyFinderTag(tag.name, to: url)
+    }
+
+    /// Writes a Finder tag to the file's extended attributes using the
+    /// `com.apple.metadata:_kMDItemUserTags` binary-plist format.
+    private func applyFinderTag(_ tag: String, to url: URL) throws {
+        let tagged = ["\(tag)\n0"]
+        let plist = try PropertyListSerialization.data(
+            fromPropertyList: tagged,
+            format: .binary,
+            options: 0
+        )
+        let path = url.path
+        let attribute = "com.apple.metadata:_kMDItemUserTags"
+        let result = plist.withUnsafeBytes { buffer -> Int32 in
+            guard let baseAddress = buffer.baseAddress else { return -1 }
+            return setxattr(path, attribute, baseAddress, buffer.count, 0, 0)
+        }
+        if result != 0 {
+            throw POSIXError(POSIXErrorCode(rawValue: Int32(errno)) ?? .EIO)
         }
     }
 

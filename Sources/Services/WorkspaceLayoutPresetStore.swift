@@ -6,13 +6,13 @@ import SwiftUI
 /// open, where they sit on the grid, and which are floating — so the user can
 /// save, recall, and share layout configurations.
 struct WorkspaceLayoutPreset: Identifiable, Codable, Hashable, Sendable {
-    var id: UUID = UUID()
+    var id: UUID
     var name: String
     /// The numbered slot (1–10) this preset occupies in the workspace switcher.
     /// Nil if unassigned (legacy presets before slots were introduced).
     var slot: Int?
-    var createdAt: Date = Date()
-    var updatedAt: Date = Date()
+    var createdAt: Date
+    var updatedAt: Date
 
     /// The canvas tiles at save time (grid positions, sizes, z-order).
     var canvasTiles: [CanvasTile]
@@ -22,7 +22,60 @@ struct WorkspaceLayoutPreset: Identifiable, Codable, Hashable, Sendable {
     var isLocked: Bool
 
     /// Built-in presets ship with the app and cannot be deleted.
-    var isBuiltIn: Bool = false
+    var isBuiltIn: Bool
+
+    init(
+        id: UUID = UUID(),
+        name: String,
+        slot: Int? = nil,
+        createdAt: Date = Date(),
+        updatedAt: Date = Date(),
+        canvasTiles: [CanvasTile],
+        floatingPanels: [WorkspacePanelKind],
+        isLocked: Bool,
+        isBuiltIn: Bool = false
+    ) {
+        self.id = id
+        self.name = name
+        self.slot = slot
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.canvasTiles = canvasTiles
+        self.floatingPanels = floatingPanels
+        self.isLocked = isLocked
+        self.isBuiltIn = isBuiltIn
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, slot, createdAt, updatedAt
+        case canvasTiles, floatingPanels, isLocked, isBuiltIn
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? "Untitled Layout"
+        slot = try container.decodeIfPresent(Int.self, forKey: .slot)
+        createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
+        canvasTiles = try container.decodeIfPresent([CanvasTile].self, forKey: .canvasTiles) ?? []
+        floatingPanels = try container.decodeIfPresent([WorkspacePanelKind].self, forKey: .floatingPanels) ?? []
+        isLocked = try container.decodeIfPresent(Bool.self, forKey: .isLocked) ?? false
+        isBuiltIn = try container.decodeIfPresent(Bool.self, forKey: .isBuiltIn) ?? false
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encodeIfPresent(slot, forKey: .slot)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(updatedAt, forKey: .updatedAt)
+        try container.encode(canvasTiles, forKey: .canvasTiles)
+        try container.encode(floatingPanels, forKey: .floatingPanels)
+        try container.encode(isLocked, forKey: .isLocked)
+        try container.encode(isBuiltIn, forKey: .isBuiltIn)
+    }
 }
 
 // MARK: - Workspace Layout Preset Store
@@ -234,10 +287,16 @@ final class WorkspaceLayoutPresetStore {
     }
 
     private func load() {
-        guard let data = UserDefaults.standard.data(forKey: defaultsKey),
-              let decoded = try? JSONDecoder().decode([WorkspaceLayoutPreset].self, from: data) else { return }
-        presets = decoded
-        migrateGridResolutionIfNeeded()
+        guard let data = UserDefaults.standard.data(forKey: defaultsKey) else { return }
+        if let decoded = try? JSONDecoder().decode([WorkspaceLayoutPreset].self, from: data) {
+            presets = decoded
+            migrateGridResolutionIfNeeded()
+        } else {
+            // Don't silently wipe the user's saved layouts if the schema drifted.
+            // Preserve the raw blob for diagnostics and fall back to built-ins.
+            UserDefaults.standard.set(data, forKey: defaultsKey + ".corrupt")
+            print("WorkspaceLayoutPresetStore: failed to decode saved presets. Corrupt data preserved at \(defaultsKey).corrupt")
+        }
     }
 
     /// One-time migration: scale presets saved on the old 12×8 grid up to the

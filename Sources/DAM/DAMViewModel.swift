@@ -65,6 +65,8 @@ final class DAMViewModel {
     /// Folder-tree scope (nil = whole catalog). Mirrors Bridge's Folders tab.
     var selectedFolder: String? {
         didSet {
+            guard selectedFolder != oldValue else { return }
+            if selectedFolder != nil { selectedCollectionID = nil }
             clearSelection()
             Task { await reload() }
         }
@@ -82,6 +84,17 @@ final class DAMViewModel {
     /// Mounted local volumes shown in the Folders sidebar (e.g. Macintosh HD).
     /// These are not catalog folders; they exist so Storage Map can scan them.
     private(set) var volumeNodes: [DAMFolderNode] = []
+    /// User-created collections/albums.
+    private(set) var collections: [DAMCollection] = []
+    /// Cached asset counts per collection ID.
+    private(set) var collectionAssetCounts: [Int64: Int] = [:]
+    /// Selected collection ID (nil = not browsing a collection).
+    var selectedCollectionID: Int64? {
+        didSet {
+            clearSelection()
+            Task { await reload() }
+        }
+    }
     private(set) var totalAssetCount = 0
     private(set) var isImporting = false
     private(set) var importScanned = 0
@@ -343,6 +356,15 @@ final class DAMViewModel {
     /// Initial load / full refresh honoring current filters.
     func reload() async {
         do {
+            if let collectionID = selectedCollectionID {
+                let filtered = try await fetchCollectionAssets(collectionID: collectionID)
+                assets = Array(filtered.prefix(pageSize))
+                totalAssetCount = filtered.count
+                canLoadMore = filtered.count > pageSize
+                errorMessage = nil
+                return
+            }
+
             let folder = selectedFolder
             let rating = minimumRating
             let tagColor = filterTagColor
@@ -386,11 +408,22 @@ final class DAMViewModel {
                 let counts = try database.folderCounts()
                 let tree = Self.buildTree(from: counts)
                 let volumes = Self.buildVolumeNodes()
-                return (tree: tree, volumes: volumes, folders: counts.map(\.folder))
+                let collections = try database.allCollections()
+                let collectionCounts = try database.dbQueue.read { db in
+                    try Row.fetchAll(db, sql: "SELECT collectionId, COUNT(*) AS n FROM collectionAsset GROUP BY collectionId")
+                        .reduce(into: [Int64: Int]()) { dict, row in
+                            let id: Int64 = row["collectionId"]
+                            let count: Int = row["n"]
+                            dict[id] = count
+                        }
+                }
+                return (tree: tree, volumes: volumes, folders: counts.map(\.folder), collections: collections, collectionCounts: collectionCounts)
             }.value
 
             folderTree = result.tree
             volumeNodes = result.volumes
+            collections = result.collections
+            collectionAssetCounts = result.collectionCounts
 
             // Read Finder tag colors asynchronously so the tree is visible
             // immediately; colors will fill in when the xattr scan finishes.
@@ -403,6 +436,95 @@ final class DAMViewModel {
             }
         } catch {
             NSLog("[DAM] folder tree refresh failed: %@", String(describing: error))
+        }
+    }
+
+    /// Reload just the collections list from the database.
+    func refreshCollections() async {
+        do {
+            collections = try await Task.detached(priority: .userInitiated) { [database] in
+                try database.allCollections()
+            }.value
+        } catch {
+            errorMessage = "Failed to load collections: \(error.localizedDescription)"
+        }
+    }
+
+    /// Create or update a collection.
+    func saveCollection(id: Int64?, name: String, kind: DAMCollection.Kind, predicateJSON: String?, parentId: Int64? = nil) async {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        do {
+            if let id {
+                try database.updateCollection(id: id, name: trimmed, kind: kind, predicateJSON: predicateJSON, parentId: parentId)
+                if kind == .smart {
+                    try database.applySmartCollection(id: id)
+                }
+            } else {
+                let collection = try database.createCollection(name: trimmed, kind: kind, predicateJSON: predicateJSON, parentId: parentId)
+                if kind == .smart, let newId = collection.id {
+                    try database.applySmartCollection(id: newId)
+                }
+            }
+            await refreshCollections()
+        } catch {
+            errorMessage = "Failed to save collection: \(error.localizedDescription)"
+        }
+    }
+
+    /// Move a collection under a new parent (or top level).
+    func setCollectionParent(id: Int64, parentId: Int64?) async {
+        guard id != parentId ?? -1 else { return }
+        do {
+            try database.updateCollectionParent(id: id, parentId: parentId)
+            await refreshCollections()
+        } catch {
+            errorMessage = "Failed to move collection: \(error.localizedDescription)"
+        }
+    }
+
+    /// Delete a collection. Original assets are not affected.
+    func deleteCollection(id: Int64) async {
+        do {
+            try database.deleteCollection(id: id)
+            if selectedCollectionID == id { selectedCollectionID = nil }
+            await refreshCollections()
+        } catch {
+            errorMessage = "Failed to delete collection: \(error.localizedDescription)"
+        }
+    }
+
+    /// Add the current selection to a collection.
+    func addSelectionToCollection(_ collectionId: Int64) async {
+        let ids = Array(selection).compactMap { $0 }
+        await addAssetIds(ids, to: collectionId)
+    }
+
+    /// Add a specific list of asset IDs to a collection.
+    func addAssetIds(_ ids: [Int64], to collectionId: Int64) async {
+        guard !ids.isEmpty else { return }
+        do {
+            try database.addAssetsToCollection(assetIds: ids, collectionId: collectionId)
+            if selectedCollectionID == collectionId {
+                await reload()
+            }
+            await refreshCollections()
+        } catch {
+            errorMessage = "Failed to add to collection: \(error.localizedDescription)"
+        }
+    }
+
+    /// Remove the current selection from the active collection.
+    func removeSelectionFromActiveCollection() async {
+        guard let collectionId = selectedCollectionID else { return }
+        let ids = Array(selection).compactMap { $0 }
+        guard !ids.isEmpty else { return }
+        do {
+            try database.removeAssetsFromCollection(assetIds: ids, collectionId: collectionId)
+            await reload()
+            await refreshCollections()
+        } catch {
+            errorMessage = "Failed to remove from collection: \(error.localizedDescription)"
         }
     }
 
@@ -568,6 +690,74 @@ final class DAMViewModel {
                 tagColor: tagColor, fileType: fileType,
                 tagged: tagged, flag: flag,
                 limit: limit, offset: offset)
+        }.value
+    }
+
+    /// Loads and filters all assets in a collection in memory. Collections are
+    /// typically much smaller than the whole catalog, so this keeps the UI
+    /// consistent with the toolbar filters without needing a new SQL query path.
+    private func fetchCollectionAssets(collectionID: Int64) async throws -> [DAMAsset] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rating = minimumRating
+        let tagColor = filterTagColor
+        let fileType = filterFileType
+        let tagged = filterTagged
+        let flag = filterFlag
+        let sort = sortOrder
+
+        return try await Task.detached(priority: .userInitiated) { [database] in
+            var assets = try database.assets(inCollectionId: collectionID)
+
+            if !query.isEmpty {
+                let lower = query.lowercased()
+                assets = assets.filter { asset in
+                    [asset.filename, asset.aiCaption, asset.aiKeywords, asset.ocrText, asset.xattrKeywords]
+                        .compactMap { $0 }
+                        .contains { $0.lowercased().contains(lower) }
+                }
+            }
+
+            assets = assets.filter { $0.rating >= rating }
+
+            if let tagColor {
+                let mid = "%\":\(tagColor),%"
+                let end = "%\":\(tagColor)}"
+                assets = assets.filter { $0.tagColors?.contains(mid) == true || $0.tagColors?.contains(end) == true }
+            }
+
+            if let fileType {
+                assets = assets.filter {
+                    $0.kind == fileType || ($0.kind == nil && ($0.uti?.contains(fileType) ?? false))
+                }
+            }
+
+            if let tagged {
+                assets = assets.filter {
+                    let hasTags = !($0.xattrKeywords?.isEmpty ?? true)
+                    return tagged ? hasTags : !hasTags
+                }
+            }
+
+            if let flag {
+                assets = assets.filter { $0.flag == flag }
+            }
+
+            assets.sort { lhs, rhs in
+                switch sort {
+                case .captureDateDesc:
+                    return (lhs.captureDate ?? .distantPast) > (rhs.captureDate ?? .distantPast)
+                case .captureDateAsc:
+                    return (lhs.captureDate ?? .distantFuture) < (rhs.captureDate ?? .distantFuture)
+                case .filenameAsc:
+                    return lhs.filename.localizedStandardCompare(rhs.filename) == .orderedAscending
+                case .sizeDesc:
+                    return (lhs.fileSize ?? 0) > (rhs.fileSize ?? 0)
+                case .ratingDesc:
+                    return lhs.rating > rhs.rating
+                }
+            }
+
+            return assets
         }.value
     }
 

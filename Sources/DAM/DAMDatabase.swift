@@ -452,6 +452,43 @@ final class DAMDatabase: Sendable {
             }
         }
 
+        // v14 — user-entered keywords were deliberately excluded from FTS5 in v4.
+        // Rebuild the search table so Publish (and the DAM search bar) can find
+        // user keywords such as #draft.
+        migrator.registerMigration("v14-userKeywords-search") { db in
+            try db.execute(sql: "DROP TRIGGER IF EXISTS assetSearch_insert")
+            try db.execute(sql: "DROP TRIGGER IF EXISTS assetSearch_delete")
+            try db.execute(sql: "DROP TRIGGER IF EXISTS assetSearch_update")
+            try db.execute(sql: "DROP TABLE IF EXISTS assetSearch")
+            try db.execute(sql: """
+                CREATE VIRTUAL TABLE assetSearch USING fts5(
+                    filename, aiCaption, aiKeywords, ocrText, xattrKeywords, userKeywords,
+                    content='asset', content_rowid='id'
+                )
+                """)
+            try db.execute(sql: """
+                CREATE TRIGGER assetSearch_insert AFTER INSERT ON asset BEGIN
+                    INSERT INTO assetSearch(rowid, filename, aiCaption, aiKeywords, ocrText, xattrKeywords, userKeywords)
+                    VALUES (new.id, new.filename, new.aiCaption, new.aiKeywords, new.ocrText, new.xattrKeywords, new.userKeywords);
+                END
+                """)
+            try db.execute(sql: """
+                CREATE TRIGGER assetSearch_delete AFTER DELETE ON asset BEGIN
+                    INSERT INTO assetSearch(assetSearch, rowid, filename, aiCaption, aiKeywords, ocrText, xattrKeywords, userKeywords)
+                    VALUES ('delete', old.id, old.filename, old.aiCaption, old.aiKeywords, old.ocrText, old.xattrKeywords, old.userKeywords);
+                END
+                """)
+            try db.execute(sql: """
+                CREATE TRIGGER assetSearch_update AFTER UPDATE ON asset BEGIN
+                    INSERT INTO assetSearch(assetSearch, rowid, filename, aiCaption, aiKeywords, ocrText, xattrKeywords, userKeywords)
+                    VALUES ('delete', old.id, old.filename, old.aiCaption, old.aiKeywords, old.ocrText, old.xattrKeywords, old.userKeywords);
+                    INSERT INTO assetSearch(rowid, filename, aiCaption, aiKeywords, ocrText, xattrKeywords, userKeywords)
+                    VALUES (new.id, new.filename, new.aiCaption, new.aiKeywords, new.ocrText, new.xattrKeywords, new.userKeywords);
+                END
+                """)
+            try db.execute(sql: "INSERT INTO assetSearch(assetSearch) VALUES('rebuild')")
+        }
+
         return migrator
     }()
 
@@ -668,6 +705,165 @@ final class DAMDatabase: Sendable {
     func allCollections() throws -> [DAMCollection] {
         try dbQueue.read { db in
             try DAMCollection.fetchAll(db)
+        }
+    }
+
+    /// Create a new collection.
+    @discardableResult
+    func createCollection(name: String, kind: DAMCollection.Kind = .manual, predicateJSON: String? = nil, parentId: Int64? = nil) throws -> DAMCollection {
+        var collection = DAMCollection(id: nil, name: name, kind: kind, predicateJSON: predicateJSON, parentId: parentId)
+        try dbQueue.write { db in
+            try collection.insert(db)
+        }
+        return collection
+    }
+
+    /// Rename a collection.
+    func renameCollection(id: Int64, to name: String) throws {
+        try dbQueue.write { db in
+            try db.execute(sql: "UPDATE collection SET name = ? WHERE id = ?", arguments: [name, id])
+        }
+    }
+
+    /// Delete a collection and its asset links (original assets are untouched).
+    /// Children are promoted to the deleted collection's parent (or top level).
+    func deleteCollection(id: Int64) throws {
+        try dbQueue.write { db in
+            let parentId = try Int64.fetchOne(db, sql: "SELECT parentId FROM collection WHERE id = ?", arguments: [id])
+            if let parentId {
+                try db.execute(sql: "UPDATE collection SET parentId = ? WHERE parentId = ?", arguments: [parentId, id])
+            } else {
+                try db.execute(sql: "UPDATE collection SET parentId = NULL WHERE parentId = ?", arguments: [id])
+            }
+            try db.execute(sql: "DELETE FROM collection WHERE id = ?", arguments: [id])
+        }
+    }
+
+    /// Fetch a single collection by id.
+    func collection(id: Int64) throws -> DAMCollection? {
+        try dbQueue.read { db in
+            try DAMCollection.fetchOne(db, key: id)
+        }
+    }
+
+    /// Update a collection's name, kind, predicate, and parent.
+    func updateCollection(id: Int64, name: String, kind: DAMCollection.Kind, predicateJSON: String?, parentId: Int64?) throws {
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "UPDATE collection SET name = ?, kind = ?, predicateJSON = ?, parentId = ? WHERE id = ?",
+                arguments: [name, kind.rawValue, predicateJSON ?? "", parentId ?? NSNull(), id]
+            )
+        }
+    }
+
+    /// Move a collection under a new parent (or top level).
+    func updateCollectionParent(id: Int64, parentId: Int64?) throws {
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "UPDATE collection SET parentId = ? WHERE id = ?",
+                arguments: [parentId ?? NSNull(), id]
+            )
+        }
+    }
+
+    /// Evaluate a smart collection's predicate and rebuild its membership.
+    func applySmartCollection(id: Int64) throws {
+        guard let collection = try collection(id: id),
+              collection.kind == .smart,
+              let json = collection.predicateJSON?.data(using: .utf8),
+              let predicate = try? JSONDecoder().decode(DAMSmartPredicate.self, from: json) else { return }
+
+        let matchingIds = try dbQueue.read { db -> [Int64] in
+            var conditions: [String] = []
+            var args: [any DatabaseValueConvertible] = []
+
+            if let minRating = predicate.minRating {
+                conditions.append("rating >= ?")
+                args.append(minRating)
+            }
+            if let fileType = predicate.fileType {
+                conditions.append("(kind = ? OR (kind IS NULL AND uti LIKE ?))")
+                args.append(fileType)
+                args.append("%\(fileType)%")
+            }
+            if let flag = predicate.flag {
+                conditions.append("flag = ?")
+                args.append(flag.rawValue)
+            }
+            if let tagColor = predicate.tagColor {
+                conditions.append("(tagColors LIKE ? OR tagColors LIKE ?)")
+                args.append("%\":\(tagColor),%")
+                args.append("%\":\(tagColor)}%")
+            }
+            if let query = predicate.query, !query.isEmpty {
+                let phrase = "\"\(query.replacingOccurrences(of: "\"", with: "\"\""))\""
+                conditions.append("id IN (SELECT rowid FROM assetSearch WHERE assetSearch MATCH ?)")
+                args.append(phrase)
+            }
+            if let tags = predicate.tags, !tags.isEmpty {
+                let placeholders = tags.map { _ in "?" }.joined(separator: ",")
+                conditions.append("id IN (SELECT at.assetId FROM assetTag at JOIN tag t ON t.id = at.tagId WHERE t.name IN (\(placeholders)))")
+                args.append(contentsOf: tags)
+            }
+            if predicate.hasAIKeywords == true {
+                conditions.append("aiKeywords IS NOT NULL AND aiKeywords != ''")
+            }
+            if predicate.hasXattrKeywords == true {
+                conditions.append("xattrKeywords IS NOT NULL AND xattrKeywords != ''")
+            }
+
+            let whereClause = conditions.isEmpty ? "" : "WHERE " + conditions.joined(separator: " AND ")
+            return try Int64.fetchAll(db, sql: "SELECT id FROM asset \(whereClause)", arguments: StatementArguments(args))
+        }
+
+        try dbQueue.write { db in
+            try db.execute(sql: "DELETE FROM collectionAsset WHERE collectionId = ?", arguments: [id])
+            for (index, assetId) in matchingIds.enumerated() {
+                let link = DAMCollectionAsset(collectionId: id, assetId: assetId, position: index)
+                try link.insert(db, onConflict: .ignore)
+            }
+        }
+    }
+
+    /// Add an asset to a collection. Ignores duplicates.
+    func addAssetToCollection(assetId: Int64, collectionId: Int64, position: Int? = nil) throws {
+        try dbQueue.write { db in
+            let link = DAMCollectionAsset(collectionId: collectionId, assetId: assetId, position: position)
+            try link.insert(db, onConflict: .ignore)
+        }
+    }
+
+    /// Add multiple assets to a collection.
+    func addAssetsToCollection(assetIds: [Int64], collectionId: Int64) throws {
+        guard !assetIds.isEmpty else { return }
+        try dbQueue.write { db in
+            for (index, assetId) in assetIds.enumerated() {
+                let link = DAMCollectionAsset(collectionId: collectionId, assetId: assetId, position: index)
+                try link.insert(db, onConflict: .ignore)
+            }
+        }
+    }
+
+    /// Remove an asset from a collection (original file is untouched).
+    func removeAssetFromCollection(assetId: Int64, collectionId: Int64) throws {
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "DELETE FROM collectionAsset WHERE collectionId = ? AND assetId = ?",
+                arguments: [collectionId, assetId]
+            )
+        }
+    }
+
+    /// Remove multiple assets from a collection.
+    func removeAssetsFromCollection(assetIds: [Int64], collectionId: Int64) throws {
+        guard !assetIds.isEmpty else { return }
+        try dbQueue.write { db in
+            for assetId in assetIds {
+                try db.execute(
+                    sql: "DELETE FROM collectionAsset WHERE collectionId = ? AND assetId = ?",
+                    arguments: [collectionId, assetId]
+                )
+            }
         }
     }
 

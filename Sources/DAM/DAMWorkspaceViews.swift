@@ -623,24 +623,35 @@ struct MetadataPanelView: View {
             }
             TextField("comma, separated, keywords", text: $keywordDraft)
                 .textFieldStyle(.roundedBorder)
-            Picker("Mode", selection: $keywordMode) {
-                ForEach(DAMViewModel.KeywordApplyMode.allCases, id: \.self) { mode in
-                    Text(mode.rawValue).tag(mode)
+                .onSubmit {
+                    Task { await applyKeywords(mode: .add) }
                 }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            Button {
-                Task {
-                    await viewModel.applyUserKeywords(
-                        keywordDraft, mode: keywordMode, to: viewModel.selection)
+            HStack(spacing: 8) {
+                Button {
+                    Task { await applyKeywords(mode: .add) }
+                } label: {
+                    Text("Add")
+                        .frame(maxWidth: .infinity)
                 }
-            } label: {
-                Text("Apply to \(viewModel.selection.count) selected")
-                    .frame(maxWidth: .infinity)
+                .disabled(viewModel.selection.isEmpty || keywordDraft.trimmingCharacters(in: .whitespaces).isEmpty)
+
+                Button {
+                    Task { await applyKeywords(mode: .replace) }
+                } label: {
+                    Text("Replace")
+                        .frame(maxWidth: .infinity)
+                }
+                .disabled(viewModel.selection.isEmpty || keywordDraft.trimmingCharacters(in: .whitespaces).isEmpty)
             }
-            .disabled(viewModel.selection.isEmpty)
             .controlSize(.small)
+        }
+    }
+
+    private func applyKeywords(mode: DAMViewModel.KeywordApplyMode) async {
+        await viewModel.applyUserKeywords(
+            keywordDraft, mode: mode, to: viewModel.selection)
+        if viewModel.errorMessage == nil {
+            keywordDraft = ""
         }
     }
 

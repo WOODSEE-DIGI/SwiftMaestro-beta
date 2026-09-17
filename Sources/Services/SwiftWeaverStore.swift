@@ -102,10 +102,8 @@ final class SwiftWeaverStore {
         if let w = template.canvasWidth, let h = template.canvasHeight {
             canvasWidth = w
             canvasHeight = h
-            fluidPreview = false
-        } else {
-            fluidPreview = true
         }
+        fluidPreview = template.fluid
         fileURL = nil
     }
 
@@ -156,6 +154,7 @@ final class SwiftWeaverStore {
         <html>
         <head>
         <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
         <style>
         \(cssSource)
         </style>

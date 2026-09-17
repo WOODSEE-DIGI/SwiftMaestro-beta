@@ -418,6 +418,16 @@ final class MaestroDBViewModel {
         }
     }
 
+    /// Creates or refreshes the special "Publish" base and performs a two-way
+    /// sync with the Publish app pipeline.
+    func syncPublishBase() async {
+        await PublishMaestroDBBridge.shared.sync()
+        await loadAll()
+        if let base = try? database.bases().first(where: { $0.name == "Publish" }) {
+            selectedBaseID = base.id
+        }
+    }
+
     /// Create or reuse an "Imported Assets" base and "Assets" table, then add a
     /// row for the file sent from another panel (e.g. the client asset gallery).
     func importAssetPath(_ path: String) async {

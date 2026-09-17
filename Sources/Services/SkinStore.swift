@@ -961,6 +961,7 @@ extension WorkspacePanelKind {
             "colorAdjustments": .colorAdjustments,
             "scenes": .scenes,
             "rssReader": .rssReader,
+            "publish": .publish,
         ]
     }
 }

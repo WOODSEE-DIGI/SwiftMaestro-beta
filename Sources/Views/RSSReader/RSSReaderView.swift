@@ -10,6 +10,7 @@ struct RSSReaderView: View {
     let store = RSSReaderStore.shared
     let tracker = YouTubeHistoryTracker.shared
     @Environment(ThemeStore.self) private var theme
+    @Environment(\.isWorkspaceEmbedded) private var isWorkspaceEmbedded
 
     @State private var selectedFeedID: UUID?
     @State private var selectedArticleID: UUID?
@@ -31,12 +32,12 @@ struct RSSReaderView: View {
     }
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            feedSidebar
-        } content: {
-            articleList
-        } detail: {
-            articleReader
+        Group {
+            if isWorkspaceEmbedded {
+                embeddedBody
+            } else {
+                regularBody
+            }
         }
         .task {
             store.loadIfNeeded()
@@ -60,6 +61,29 @@ struct RSSReaderView: View {
             Button("OK") { fetchError = nil }
         } message: {
             Text(fetchError ?? "")
+        }
+    }
+
+    private var regularBody: some View {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+            feedSidebar
+        } content: {
+            articleList
+        } detail: {
+            articleReader
+        }
+    }
+
+    /// Workspace-tile layout: avoids NavigationSplitView's automatic sidebar
+    /// toggle, which leaks into the main window toolbar and shifts the title bar.
+    private var embeddedBody: some View {
+        HSplitView {
+            feedSidebarEmbedded
+                .frame(minWidth: 160, idealWidth: 200, maxWidth: 320, maxHeight: .infinity)
+            articleList
+                .frame(minWidth: 220, idealWidth: 300, maxWidth: 420, maxHeight: .infinity)
+            articleReader
+                .frame(minWidth: 280, maxHeight: .infinity)
         }
     }
 
@@ -115,6 +139,84 @@ struct RSSReaderView: View {
                         Label("Watch Later", systemImage: "play.rectangle")
                     }
                     .tag(Optional<UUID>.some(watchLaterPseudoID))
+                }
+
+                if store.feeds.isEmpty {
+                    Section {
+                        ContentUnavailableView(
+                            "No Feeds Yet",
+                            systemImage: "dot.radiowaves.up.forward",
+                            description: Text("Tap Add Feed above to subscribe to an RSS feed, or import an OPML file.")
+                        )
+                    } header: {
+                        Text("Get Started")
+                    }
+                }
+
+                ForEach(folderedFeeds.keys.sorted(), id: \.self) { folder in
+                    Section(folder.isEmpty ? "Uncategorized" : folder) {
+                        ForEach(folderedFeeds[folder] ?? []) { feed in
+                            FeedRow(feed: feed, unreadCount: unreadCount(for: feed))
+                                .tag(Optional(feed.id))
+                                .contextMenu {
+                                    Button("Refresh") { Task { await refreshFeed(feed) } }
+                                    Button("Manage Categories…") {
+                                        feedForCategoryFilter = feed
+                                        showCategoryFilterSheet = true
+                                    }
+                                    Button("Delete") { store.removeFeed(id: feed.id) }
+                                }
+                        }
+                    }
+                }
+            }
+            .listStyle(.sidebar)
+        }
+    }
+
+    /// Sidebar without NavigationLink, used in the workspace-tile layout so it
+    /// doesn't depend on NavigationSplitView selection machinery.
+    private var feedSidebarEmbedded: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Button {
+                    showAddSheet = true
+                } label: {
+                    Label("Add Feed", systemImage: "plus")
+                }
+                .controlSize(.small)
+
+                Menu {
+                    Button("Import OPML…") { showOPMLImport = true }
+                    Button("Export OPML…") { exportOPML() }
+                    Divider()
+                    Button("Refresh All") { Task { await refreshAll() } }
+                    Button("Mark All Read") { store.markAllRead(in: selectedFeedID) }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .menuIndicator(.hidden)
+                .controlSize(.small)
+
+                Spacer()
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+
+            Text("Reader")
+                .font(.headline)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .padding(.top, 8)
+
+            List(selection: $selectedFeedID) {
+                Section {
+                    Label("All Articles", systemImage: "tray.full")
+                        .tag(Optional<UUID>.none)
+                    Label("Starred", systemImage: "star.fill")
+                        .tag(Optional<UUID>.some(starredPseudoID))
+                    Label("Watch Later", systemImage: "play.rectangle")
+                        .tag(Optional<UUID>.some(watchLaterPseudoID))
                 }
 
                 if store.feeds.isEmpty {
@@ -429,8 +531,19 @@ private struct RSSArticleReaderView: View {
     let feed: RSSFeed?
     let tracker: YouTubeHistoryTracker
     @Environment(ThemeStore.self) private var theme
+    @Environment(\.isWorkspaceEmbedded) private var isWorkspaceEmbedded
 
     var body: some View {
+        Group {
+            if isWorkspaceEmbedded {
+                readerContent
+            } else {
+                readerContent.toolbar { readerToolbarItems }
+            }
+        }
+    }
+
+    private var readerContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 if let imageURL = article.imageURL {
@@ -496,26 +609,28 @@ private struct RSSArticleReaderView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(theme.background)
-        .toolbar {
-            ToolbarItemGroup {
-                if let url = article.url {
-                    Button {
-                        NSWorkspace.shared.open(url)
-                        if let videoID = article.youtubeVideoID {
-                            tracker.markWatched(videoID: videoID, source: "external-open", sourceURL: url)
-                        }
-                    } label: {
-                        Image(systemName: "arrow.up.forward.square")
-                    }
-                    .help("Open in browser")
-                }
+    }
+
+    @ToolbarContentBuilder
+    private var readerToolbarItems: some ToolbarContent {
+        ToolbarItemGroup {
+            if let url = article.url {
                 Button {
-                    RSSReaderStore.shared.markRead(articleID: article.id, read: !article.isRead)
+                    NSWorkspace.shared.open(url)
+                    if let videoID = article.youtubeVideoID {
+                        tracker.markWatched(videoID: videoID, source: "external-open", sourceURL: url)
+                    }
                 } label: {
-                    Image(systemName: article.isRead ? "envelope.badge" : "envelope.open")
+                    Image(systemName: "arrow.up.forward.square")
                 }
-                .help(article.isRead ? "Mark unread" : "Mark read")
+                .help("Open in browser")
             }
+            Button {
+                RSSReaderStore.shared.markRead(articleID: article.id, read: !article.isRead)
+            } label: {
+                Image(systemName: article.isRead ? "envelope.badge" : "envelope.open")
+            }
+            .help(article.isRead ? "Mark unread" : "Mark read")
         }
     }
 }
