@@ -507,22 +507,9 @@ UNSIGNED=1 CONFIG=Debug ./scripts/build.sh
 xcodegen generate && open SwiftMaestro.xcodeproj   # then ⌘R
 ```
 
-### Release: signed + notarized `.dmg`
-The release build is Developer ID signed and notarized. One-time, store your notarization credentials:
+### Release
 
-```bash
-xcrun notarytool store-credentials "SwiftMaestroNotary" \
-  --apple-id <your-apple-id> --team-id <your-team-id> \
-  --password <app-specific-password>
-```
-
-Then:
-
-```bash
-./scripts/build.sh       # Developer ID signed, hardened-runtime, arm64 Release
-./scripts/package.sh     # build DMG → notarize → staple → verify
-./scripts/smoke-test.sh  # verify signature, arch, hardening, Gatekeeper
-```
+See [`RELEASE.md`](RELEASE.md) for the single canonical release runbook.
 
 ---
 

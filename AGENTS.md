@@ -112,68 +112,26 @@ xcodebuild -project SwiftMaestro.xcodeproj -scheme SwiftMaestro -configuration D
 
 ## Release (PKG + upload) — MANDATORY
 
-The ONLY sanctioned release path is `./scripts/release.sh` (optionally `UPLOAD=1`).
-The ONLY sanctioned upload method for the ~28 GB full installer is the MinIO client
-(`mc`) multipart upload via `upload-to-onidel.sh` (wired into release.sh).
+See **`RELEASE.md`** for the single canonical release runbook. The rules below
+are non-negotiable and are repeated here because agents must not miss them.
 
-- **NEVER** upload the installer via curl/single-PUT, presigned URLs, SFTP/lftp,
-  rclone, the Onidel web UI, or any hand-rolled method — they time out or
-  break on 28 GB and have wasted hours repeatedly. `mc cp` uses S3 multipart
-  under the hood and has shipped every full installer since 0.2.2 without failing.
-- If an `mc` upload genuinely fails, RETRY `mc` — do not switch methods.
-- Do not "invent" a light/beta installer variant to dodge the upload size; the full
-  ~28 GB PKG is the only first-install artifact.
-- The 1984-hosting appcast SFTP step in release.sh skips itself cleanly when
-  `SM_SFTP_USER`/`SM_SFTP_HOST` are unset — do not work around it with another
-  transfer method.
-- `release.sh` now runs `./scripts/release-check.sh` first. It will refuse to
-  build if the working tree is dirty, if `Sources/Resources/Info.plist` version
-  is not strictly greater than the latest git tag, or if stale release artifacts
-  already exist in `dist/`. **Do not bypass this with `SKIP_RELEASE_CHECK=1`
-  unless you are manually retrying after a failure.**
-- The .pkg installers place bundled models in `/Library/Application Support/
-  SwiftMaestro/models`. The Sparkle update archives are app-only, so binary
-  deltas are small and no longer OOM `generate_appcast`.
-- Before every release, bump both `CFBundleShortVersionString` and
-  `CFBundleVersion` in `Sources/Resources/Info.plist`, commit, and tag only
-  after the upload succeeds.
+- **Version and build numbers are the user's decision and must be explicitly stated.**
+  If the user has not provided the exact `CFBundleShortVersionString` and
+  `CFBundleVersion`, stop and ask. Never assume a major/minor/patch bump or invent
+  a version.
+- **Proactive status reporting is required during releases.** Report at each
+  milestone (build started, packaging started, appcast generation started,
+  upload started, upload complete) and check in if any single step takes longer
+  than 60 minutes.
+- **Do not make unilateral release decisions.** If `release.sh` fails, an upload
+  stalls, or anything is unclear, report it and ask the user for instructions
+  before acting.
+- The ONLY sanctioned release path is `./scripts/release.sh` (optionally `UPLOAD=1`).
+- The ONLY sanctioned upload method for the ~28 GB full installer is `mc` via
+  `upload-to-onidel.sh` as wired into `release.sh`.
+- Tag only after the upload succeeds.
 
-### Fast-upload runbook (follow exactly)
-
-```bash
-# 1. Build + package (30-45 min). Notarization is SKIPPED by default
-#    (daily-beta cadence); NOTARIZE=1 opts in for正式 releases.
-./scripts/release.sh            # build + sign + package + appcast
-UPLOAD=1 ./scripts/release.sh   # same + upload
-
-# 2. If a PKG already exists and only the upload is needed:
-<website-repo>/upload-to-onidel.sh dist/SwiftMaestro-X.Y.Z-full.pkg
-<website-repo>/upload-to-onidel.sh --appcast dist/appcast.xml
-```
-
-**Order matters: PKG first, appcast SECOND.** A live appcast pointing at a
-missing installer = 404 for every updater.
-
-**Verify an upload is actually moving before declaring it stalled:**
-- Run `mc --debug cp ...` and count `partNumber=... 200 OK` lines, OR
-- `netstat -ibn` — watch **column 10 (Obytes, outgoing)**, NOT column 7
-  (Ibytes, incoming). An upload measured on Ibytes reads 0 MB/s forever and
-  has tricked an agent into killing a healthy upload before.
-- Server-side: `mc ls --incomplete onidel/swiftmaestro-releases/` shows the
-  in-flight multipart session.
-- Expected rate on the user's fibre: ~5 MB/s (28 GB ≈ 90–100 min).
-
-**Known landmines:**
-- `generate_appcast` now works on small app-only `.zip` archives, so it can run
-  in parallel with an upload. Still, never run two `mc cp` processes for the
-  same object.
-- Never run two `mc cp` processes for the same object — they split the uplink
-  and orphan multipart sessions.
-- Kill stale `diskimages-helper`/`hdiutil` processes before retrying
-  appcast generation.
-- Verify the Sparkle EdDSA key before shipping an appcast:
-  `generate_keys -p` output must equal `SUPublicEDKey` in
-  `Sources/Resources/Info.plist`.
+For full commands, verification steps, and troubleshooting, read **`RELEASE.md`**.
 
 ---
 

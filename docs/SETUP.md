@@ -65,15 +65,8 @@ Optional: add MCP servers in **Settings → MCP** for extra tools (web, shell, e
 API tokens are stored in the macOS Keychain — never in chat history, logs, or the memory store. Add them in **Settings → Secrets** and reference them anywhere as `secret://<name>`.
 
 ## Building a release (maintainers)
-```bash
-# One-time: store notarization credentials
-xcrun notarytool store-credentials "SwiftMaestroNotary" \
-  --apple-id <apple-id> --team-id <team-id> --password <app-specific-password>
 
-./scripts/build.sh        # Developer ID signed, hardened-runtime, arm64 Release
-./scripts/package.sh      # DMG → notarize → staple → verify
-./scripts/smoke-test.sh   # signature / arch / hardening / Gatekeeper checks
-```
+See [`RELEASE.md`](../RELEASE.md) for the single canonical release runbook.
 
 ## Troubleshooting
 
