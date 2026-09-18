@@ -159,10 +159,15 @@ fi
     -o "$DIST_DIR/appcast.xml" \
     "$APPCAST_WORKING"
 
-# Move generated delta patches into dist for upload, then clean up the working copy.
+# Move generated delta patches and release notes into dist for upload, then clean
+# up the working copy.
 for delta in "$APPCAST_WORKING"/*.delta; do
     [ -f "$delta" ] || continue
     mv "$delta" "$DIST_DIR/"
+done
+for notes in "$APPCAST_WORKING"/*.md; do
+    [ -f "$notes" ] || continue
+    mv "$notes" "$DIST_DIR/"
 done
 rm -rf "$APPCAST_WORKING"
 
@@ -193,6 +198,10 @@ fi
 for delta in "$APPCAST_LIGHT_WORKING"/*.delta; do
     [ -f "$delta" ] || continue
     mv "$delta" "$DIST_DIR/"
+done
+for notes in "$APPCAST_LIGHT_WORKING"/*.md; do
+    [ -f "$notes" ] || continue
+    mv "$notes" "$DIST_DIR/"
 done
 rm -rf "$APPCAST_LIGHT_WORKING"
 
@@ -248,6 +257,13 @@ if [ "${UPLOAD:-0}" = "1" ]; then
     for delta in "$DIST_DIR"/*.delta; do
         [ -f "$delta" ] || continue
         "$ONIDEL_UPLOAD" "$delta"
+    done
+
+    echo ""
+    echo "--- Uploading release notes to Onidel ---"
+    for notes in "$DIST_DIR"/*.md; do
+        [ -f "$notes" ] || continue
+        "$ONIDEL_UPLOAD" "$notes"
     done
 
     echo ""
