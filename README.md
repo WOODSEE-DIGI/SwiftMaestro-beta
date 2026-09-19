@@ -79,6 +79,8 @@ SwiftMaestro is a **multi-panel workspace** with a tiling canvas. Each panel can
 
 **Chat** — Main AI chat interface with streaming responses, tool calls, image attachments, markdown rendering, and code block syntax highlighting. The AI can read and write files, run commands, and manage your workspace — all from the chat.
 
+![Chat with shell command approval](<Image Assets/Maestro Coder Shell Command approval.png>)
+
 **Apple Mail** — A webmail-style mail reader that connects to your Mail.app data. Browse mailboxes, read messages with full HTML rendering, compose replies. No tracking, no analytics — just your mail, surfaced through the AI.
 
 **WhatsApp** — Full WhatsApp chat interface with QR code pairing for multi-device. Read conversations, send messages, search chats — all self-hosted through a local bridge.
@@ -101,9 +103,13 @@ SwiftMaestro is a **multi-panel workspace** with a tiling canvas. Each panel can
 
 **Plans** — Per-agent markdown plan documents with version history. Create, edit, and track project plans that persist across sessions.
 
+![Plans side panel](<Image Assets/side-panel-agents-plans-working-directory.png>)
+
 ### Data & Databases
 
 **MaestroDB** — A built-in Airtable-style database. Create your own bases with custom tables and typed fields. Grid and kanban views, CSV import/export, linked rows, and full agent control — the AI can query and modify your databases through conversation.
+
+![MaestroDB, MaestroBooks and MaestroDocs workspace](<Image Assets/MaestroDocs-MaestroBooks-MaestroDB.png>)
 
 **SQLite** — Direct SQLite database querying. Inspect schemas, run read/write queries with safety gating. The AI can analyze any SQLite database on your system.
 
@@ -112,6 +118,8 @@ SwiftMaestro is a **multi-panel workspace** with a tiling canvas. Each panel can
 ### Documents & Content
 
 **Documents** — View and author PDF, DOCX, RTF, ODT, HTML, CSV, XLSX, PPTX, and EPUB — all native, no external dependencies. The AI can create and edit documents in any of these formats.
+
+![MaestroDocs workspace](<Image Assets/MaestroDocs-MaestroBooks-MaestroDB.png>)
 
 **Whiteboard** — Freeform canvas with sticky notes, text boxes, shapes, image insertion, pen/eraser drawing, grid, zoom, and export to PNG, JPEG, PDF, or SVG. Brainstorm and sketch with the AI.
 
@@ -127,7 +135,11 @@ SwiftMaestro is a **multi-panel workspace** with a tiling canvas. Each panel can
 
 **DAM (Digital Asset Management)** — Import, search, rate, tag, and filter your media library. Includes an interactive Storage Map sunburst, Duplicate Finder, DAM Statistics, Volume Health, and imports from Lightroom, Capture One, Final Cut Pro XML, and DaVinci Resolve. Full-text search across assets with keyword management and filter views.
 
+![MaestroDAM home browser](<Image Assets/MaestroDAM-Home.png>)
+
 **Media Player** — Playback panel with real spectrum/VU metering, playlist queue, and import from M3U/M3U8, PLS, and iTunes/Apple Music XML.
+
+![Media Player](<Image Assets/Media Player.png>)
 
 **Voice Notes** — Record voice notes with local WhisperKit transcription. Export transcriptions to Notes. Push-to-talk hotkey support.
 
@@ -135,7 +147,11 @@ SwiftMaestro is a **multi-panel workspace** with a tiling canvas. Each panel can
 
 **Books** — Full invoicing system: clients, invoices, products, expenses, PDF invoice generation, and Xero accounting sync. The AI can create invoices, track expenses, and manage your books.
 
+![MaestroBooks workspace](<Image Assets/MaestroDocs-MaestroBooks-MaestroDB.png>)
+
 **Stocks** — Stock watchlist with quotes, add/remove symbols. The AI can check stock prices and manage your watchlist.
+
+![Stocky / Blocky finance workspace](<Image Assets/Maestro-Blocky-Stocky.png>)
 
 **News** — Apple News launcher — the AI can open articles in Apple News.
 
@@ -143,21 +159,31 @@ SwiftMaestro is a **multi-panel workspace** with a tiling canvas. Each panel can
 
 **Web Browser** — Internal browser with WebKit and Chromium CDP engines, tabs, and navigation. The AI can browse the web, read pages, and extract information.
 
+![Web research / online search workspace](<Image Assets/Maestro online search old.png>)
+
 **Plugins** — WKWebView-hosted panels for third-party integrations. Bundled: Mastodon, Bluesky, Patreon. User-installable from the plugins directory.
 
 ### System & Monitoring
 
 **Terminal** — Live PTY shell with VT100/ANSI emulation plus agent command log. Run commands directly or watch the AI execute them.
 
+![Terminal and Coder workspace](<Image Assets/Maestro-Terminal-Coder.png>)
+
 **Agents** — Sidebar launcher listing all Maestro and project agents. Quick access to switch between AI assistants.
 
+![Agents and Apps side panel](<Image Assets/Agents-Apps.png>)
+
 **Apps Launcher** — Sidebar launcher for all available workspace panels, organized by category.
+
+![Apps Launcher side panel](<Image Assets/side-panel-apps.png>)
 
 **Bus Monitor** — Real-time agent bus traffic viewer — watch agents communicate with each other.
 
 **Resource Monitor** — CPU and memory usage monitoring during AI inference.
 
 **Backup Status** — Backup status indicator showing the health of your data backups.
+
+![Backup Status](<Image Assets/Maestro Backup.png>)
 
 ---
 
