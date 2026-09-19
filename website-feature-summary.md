@@ -16,7 +16,7 @@ Think of it as a **personal AI operating system** that lives on your Mac.
 
 | Stat | Detail |
 |------|--------|
-| **Panels** | 40+ built-in mini-apps |
+| **Panels** | 40+ built-in apps |
 | **Agent Tools** | 150+ tools across 35 categories |
 | **Integrations** | 30+ services and platforms |
 | **Settings Tabs** | 14 configuration panels |
@@ -82,7 +82,7 @@ Think of it as a **personal AI operating system** that lives on your Mac.
 
 ---
 
-## Built-In Panels (40+ Mini-Apps)
+## Built-In Panels (40+ Apps)
 
 ### Chat & Communication
 
