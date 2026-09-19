@@ -1,3 +1,16 @@
+# SwiftMaestro 0.6.2
+
+## MaestroDAM
+
+- **AI redaction hardening**: expanded PII patterns (VIN, rego, certificate/transaction IDs, SSN, ABN/ACN/TFN, Centrelink CRN, Medicare, passport, concession cards, driver licences, WWCC, police/firearms permits, bank accounts, BSB).
+- **Custom redaction patterns**: user-defined regexes persisted per machine, editable in Edit and batch AI Options.
+- **Precise text redaction**: only the sensitive value is redacted via `VNRecognizedText.boundingBox(for:)`, leaving labels readable.
+- **Edit workspace restructuring**: batch sidebar (Edit, Batch Rating, Batch Keywords, Redaction Layout) stays visible; primary action bar moved to the top.
+- **Image watermarks**: PNG/JPEG/TIFF/HEIC watermark support with live preview, 1–100% size, and 0–25% margin.
+- **Export sizing slider**: replace the Max Dimension preset picker with a continuous 512–8192 px slider, numeric text field, and quick preset buttons.
+- **Export file naming**: choose Original name, Job name + original, or Job name + sequence; live sample preview.
+- **Crash fix**: resolved an `EXC_BAD_ACCESS` in `DAMBrowserView.workspaceContent` by correcting the Edit sidebar `List(selection:)` binding and hardening the watermark renderer against invalid values.
+
 # SwiftMaestro 0.5.5
 
 ## Swift Helper & Ticketing
