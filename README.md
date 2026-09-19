@@ -1,6 +1,10 @@
 # SwiftMaestro
 
-A native macOS AI assistant that runs large language models **fully on-device** on Apple Silicon via Apple [MLX](https://github.com/ml-explore/mlx) (`mlx-swift-lm`). No server, no account, no cloud — your conversations and files never leave your Mac.
+What is SwiftMaestro? SM is our answer to the Broligarchy & Silicon Valley greed. Sm is born as an application that is very similar to your operating system MacOS; it has over a dozen apps bundled inside all included for free to allow you the freedom to cut ties with software that bills you every month. Apps cover Accounting, Word & spreadsheets & databases, html website building, RSS feed reader, Digital Asset Management DAM and many more. Each application is interconnected and with the built in local Ai assistant you can simply ask for it to help you create a Database and tell it where to find the dataset source, be it local or online, the built in Ai assistant can help you if you want it to.
+
+With active development and porting already underway to convert SwiftMaestro into a fully fledged Arch based Linux Distro due to be released in early 2027.
+
+Currently SwiftMaestro is A native macOS AI assistant that runs large language models **fully on-device** on Apple Silicon via Apple [MLX](https://github.com/ml-explore/mlx) (`mlx-swift-lm`). No server, no account, no cloud — your conversations and files never leave your Mac.
 
 ## The Big Numbers
 
@@ -36,15 +40,18 @@ A native macOS AI assistant that runs large language models **fully on-device** 
 
 ---
 
-## What's New in 0.6.0
+## What's New in 0.6.2
 
-- **MaestroDAM Storage Map** — interactive sunburst chart (baobab-style rings) visualises disk usage by folder, with click-to-drill, breadcrumb navigation, and a top-files list.
-- **Duplicate Finder** — find duplicates by exact hash, perceptual image hash, or version-set grouping, with smart keep rules and one-click cleanup.
-- **DAM Statistics & Health** — catalog size breakdowns, folder counts, per-volume health checks, and storage-fault summaries.
-- **Import from Final Cut & Lightroom** — bring in FCPXML events and Lightroom/Capture One ratings, labels, picks, and keywords. DaVinci Resolve keyword imports and Apple Photos favourite cross-checks are also supported.
-- **Media Player playlist import** — load M3U/M3U8, PLS, and iTunes/Apple Music XML playlists into the Media Player queue.
-- **SwiftMaestro Setup** — a dedicated setup app streamlines first installs, model downloads, and integrity verification.
-- **Resource-aware background work** — `DAMResourceLimiter` throttles heavy scans by CPU, memory, and thermals; `RetroScanIndicator` shows live progress across long operations.
+- **MaestroDAM redaction hardening** — expanded PII detection for VIN, rego, certificate/transaction IDs, SSN, ABN/ACN/TFN, Centrelink CRN, Medicare, passport, concession cards, driver licences, WWCC, police/firearms permits, bank accounts, and BSB.
+- **Custom redaction patterns** — define your own regex patterns, persisted per machine, and apply them in single-asset Edit or batch AI Options.
+- **Precise text redaction** — only the sensitive value is redacted via `VNRecognizedText.boundingBox(for:)`, leaving surrounding labels readable.
+- **Edit workspace refinements** — the batch sidebar (Edit, Batch Rating, Batch Keywords, Redaction Layout) stays visible while editing; the primary action bar is now pinned at the top.
+- **Image watermarks** — PNG/JPEG/TIFF/HEIC watermark support with live preview, 1–100% size, and 0–25% margin.
+- **Export sizing slider** — replace the Max Dimension preset picker with a continuous 512–8192 px slider, numeric text field, and quick preset buttons.
+- **Export file naming** — choose Original name, Job name + original, or Job name + sequence; live sample preview.
+- **Crash fix** — resolved an `EXC_BAD_ACCESS` in the Edit/Output workspace switch by correcting the sidebar `List(selection:)` binding and hardening the watermark renderer.
+
+See [CHANGELOG.md](CHANGELOG.md) for earlier releases.
 
 ---
 
