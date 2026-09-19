@@ -15,6 +15,7 @@ struct DAMTaggingTests {
                 id: nil, path: path, filename: (path as NSString).lastPathComponent,
                 folder: (path as NSString).deletingLastPathComponent,
                 uti: "public.jpeg", fileSize: 1000, fileModDate: Date(),
+                volumeId: nil, relativePath: nil, isAvailable: true, lastVerifiedAt: Date(),
                 width: 100, height: 100, duration: nil,
                 rating: 0, colorLabel: .none, flag: .none,
                 captureDate: nil, cameraMake: nil, cameraModel: nil, lensModel: nil,

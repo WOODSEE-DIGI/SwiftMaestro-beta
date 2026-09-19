@@ -245,6 +245,55 @@ actor ThumbnailService {
         }
     }
 
+    /// Returns a thumbnail that includes any visible redaction layers burned
+    /// in. Assets without edits, or with no visible redactions, fall through
+    /// to the regular thumbnail path. The result is memory-cached with a key
+    /// that includes the recipe signature so layer visibility changes invalidate
+    /// the cached image automatically.
+    func redactedThumbnail(
+        for asset: DAMAsset,
+        pixelSize: CGFloat = gridPixelSize
+    ) async throws -> NSImage {
+        let fileURL = URL(fileURLWithPath: asset.path).standardizedFileURL
+        let effectiveSize: CGFloat = DAMFileKind.isVideo(fileURL)
+            ? min(pixelSize, 1024)
+            : pixelSize
+
+        guard let assetId = asset.id,
+              DAMDatabase.shared.hasEdits(assetId: assetId),
+              let recipe = DAMDatabase.shared.loadEdits(assetId: assetId),
+              !recipe.visibleRedactions().isEmpty else {
+            return try await thumbnail(
+                for: fileURL,
+                modificationDate: asset.fileModDate,
+                pixelSize: effectiveSize)
+        }
+
+        let baseKey = Self.cacheKey(
+            for: fileURL,
+            size: Int(effectiveSize),
+            modificationDate: asset.fileModDate)
+        let signature = Self.hashString(recipe.asJSON)
+        let key = "\(baseKey)-r-\(signature)"
+
+        if let cached = Self.memoryCache.object(forKey: key as NSString) {
+            return cached
+        }
+
+        let task = Task<NSImage, Error>.detached(priority: .utility) {
+            let image = try DAMEditRenderer.render(
+                asset: asset,
+                edit: recipe,
+                maxPixelSize: Int(effectiveSize * 2),
+                showRedactions: true)
+            let cost = max(1, Int(image.size.width * image.size.height * 4))
+            Self.memoryCache.setObject(image, forKey: key as NSString, cost: cost)
+            return image
+        }
+
+        return try await task.value
+    }
+
     // MARK: - Render pipeline (off-actor)
 
     /// Full generation path: disk cache → EIP extraction → LibRaw (RAW) →
@@ -660,7 +709,11 @@ actor ThumbnailService {
                 .contentModificationDate?.timeIntervalSince1970) ?? 0
         }
         let raw = "v2|\(url.path)|\(size)|\(mtime)"
-        // Paths can exceed filename limits — hash the key to a fixed-length name.
+        return hashString(raw)
+    }
+
+    /// Fixed-length hash for cache keys and recipe signatures.
+    private nonisolated static func hashString(_ raw: String) -> String {
         var hash: UInt64 = 5381
         for byte in raw.utf8 { hash = ((hash << 5) &+ hash) &+ UInt64(byte) }
         return String(hash, radix: 16)

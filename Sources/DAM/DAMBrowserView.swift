@@ -33,6 +33,8 @@ struct DAMBrowserView: View {
     @State private var quickLookMonitor: Any?
 
     @State private var healthWarnings: [DAMVolume] = []
+    @State private var isInitialLoading = true
+    @State private var loadingStep = "Initializing…"
     @State private var showingCollectionSheet = false
     @State private var editingCollection: DAMCollection? = nil
     @State private var newCollectionName = ""
@@ -91,19 +93,31 @@ struct DAMBrowserView: View {
             WorkspaceTabBar(viewModel: viewModel)
             Divider()
             workspaceContent
+                .overlay {
+                    if isInitialLoading {
+                        retroLoadingOverlay
+                    }
+                }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task {
-            // Volume monitoring touches disk/DB and can be slow; don't block
-            // the folder tree and first asset page on it.
+            isInitialLoading = true
+            loadingStep = "Starting volume monitor…"
             Task { await DAMVolumeStore.shared.startMonitoring() }
 
-            // Load the asset grid and folder tree in parallel so the sidebar
-            // appears as soon as the folder counts are ready.
-            async let reload = viewModel.reload()
+            loadingStep = "Loading folder tree…"
             async let tree = viewModel.refreshFolderTree()
+
+            loadingStep = "Loading asset grid…"
+            async let reload = viewModel.reload()
+
             _ = await (reload, tree)
 
+            loadingStep = "Starting background enrichment…"
             viewModel.startBackgroundEnrichment()
+
+            isInitialLoading = false
+
             if let path = UserDefaults.standard.string(forKey: "crm.pendingDAMAssetPath") {
                 UserDefaults.standard.removeObject(forKey: "crm.pendingDAMAssetPath")
                 await viewModel.revealAsset(atPath: path)
@@ -136,6 +150,26 @@ struct DAMBrowserView: View {
         .sheet(isPresented: $showingCollectionSheet) {
             collectionSheet
         }
+    }
+
+    /// Retro loading overlay for the initial catalog load. Shows a scanning
+    /// indicator plus the current step so the user knows their data is coming.
+    private var retroLoadingOverlay: some View {
+        VStack(spacing: 20) {
+            Spacer()
+            RetroScanIndicator(message: loadingStep)
+            if viewModel.assets.isEmpty {
+                Text("MaestroDAM is loading your catalog. This may take a moment for large libraries.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 360)
+                    .padding(.horizontal, 24)
+            }
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.ultraThinMaterial)
     }
 
     @ViewBuilder
@@ -237,87 +271,94 @@ struct DAMBrowserView: View {
 
             Spacer()
 
-            Picker("Sort", selection: Binding(
-                get: { viewModel.sortOrder },
-                set: { viewModel.sortOrder = $0 }
-            )) {
-                ForEach(DAMDatabase.DAMSortOrder.allCases, id: \.self) { order in
-                    Text(order.displayName).tag(order)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    Picker("Sort", selection: Binding(
+                        get: { viewModel.sortOrder },
+                        set: { viewModel.sortOrder = $0 }
+                    )) {
+                        ForEach(DAMDatabase.DAMSortOrder.allCases, id: \.self) { order in
+                            Text(order.displayName).tag(order)
+                        }
+                    }
+                    .frame(width: 140)
+
+                    Picker("Rating", selection: Binding(
+                        get: { viewModel.minimumRating },
+                        set: { viewModel.minimumRating = $0 }
+                    )) {
+                        Text("All ratings").tag(0)
+                        ForEach(1...5, id: \.self) { stars in
+                            Text("\(stars)+ ★").tag(stars)
+                        }
+                    }
+                    .frame(width: 110)
+
+                    // Tag color filter
+                    Menu {
+                        Button("All tags") { viewModel.filterTagColor = nil }
+                        Divider()
+                        Button("Green") { viewModel.filterTagColor = 2 }
+                        Button("Purple") { viewModel.filterTagColor = 3 }
+                        Button("Blue") { viewModel.filterTagColor = 4 }
+                        Button("Yellow") { viewModel.filterTagColor = 5 }
+                        Button("Red") { viewModel.filterTagColor = 6 }
+                        Button("Orange") { viewModel.filterTagColor = 7 }
+                        Divider()
+                        Button("Tagged only") { viewModel.filterTagged = true }
+                        Button("Untagged only") { viewModel.filterTagged = false }
+                        Button("Clear tag filter") { viewModel.filterTagged = nil }
+                    } label: {
+                        Label("Tags", systemImage: "tag")
+                    }
+                    .frame(width: 80)
+
+                    // File type filter
+                    Picker("Type", selection: Binding(
+                        get: { viewModel.filterFileType },
+                        set: { viewModel.filterFileType = $0 }
+                    )) {
+                        Text("All types").tag(nil as String?)
+                        Text("Images").tag("image" as String?)
+                        Text("RAW").tag("raw" as String?)
+                        Text("Video").tag("movie" as String?)
+                        Text("Audio").tag("audio" as String?)
+                        Text("PDF").tag("pdf" as String?)
+                    }
+                    .frame(width: 100)
+
+                    // Flag filter
+                    Picker("Flag", selection: Binding(
+                        get: { viewModel.filterFlag },
+                        set: { viewModel.filterFlag = $0 }
+                    )) {
+                        Text("All flags").tag(nil as DAMFlag?)
+                        Text("Picked").tag(DAMFlag.pick as DAMFlag?)
+                        Text("Rejected").tag(DAMFlag.reject as DAMFlag?)
+                    }
+                    .frame(width: 90)
+
+                    TextField("Search catalog", text: Binding(
+                        get: { viewModel.searchText },
+                        set: { viewModel.searchText = $0 }
+                    ))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 180)
+
+                    Button {
+                        withAnimation { showPreviewPanel.toggle() }
+                    } label: {
+                        Image(systemName: "sidebar.right")
+                    }
+                    .help("Show/hide the Preview panel")
                 }
+                .padding(.horizontal, 2)
             }
-            .frame(width: 140)
-
-            Picker("Rating", selection: Binding(
-                get: { viewModel.minimumRating },
-                set: { viewModel.minimumRating = $0 }
-            )) {
-                Text("All ratings").tag(0)
-                ForEach(1...5, id: \.self) { stars in
-                    Text("\(stars)+ ★").tag(stars)
-                }
-            }
-            .frame(width: 110)
-
-            // Tag color filter
-            Menu {
-                Button("All tags") { viewModel.filterTagColor = nil }
-                Divider()
-                Button("Green") { viewModel.filterTagColor = 2 }
-                Button("Purple") { viewModel.filterTagColor = 3 }
-                Button("Blue") { viewModel.filterTagColor = 4 }
-                Button("Yellow") { viewModel.filterTagColor = 5 }
-                Button("Red") { viewModel.filterTagColor = 6 }
-                Button("Orange") { viewModel.filterTagColor = 7 }
-                Divider()
-                Button("Tagged only") { viewModel.filterTagged = true }
-                Button("Untagged only") { viewModel.filterTagged = false }
-                Button("Clear tag filter") { viewModel.filterTagged = nil }
-            } label: {
-                Label("Tags", systemImage: "tag")
-            }
-            .frame(width: 80)
-
-            // File type filter
-            Picker("Type", selection: Binding(
-                get: { viewModel.filterFileType },
-                set: { viewModel.filterFileType = $0 }
-            )) {
-                Text("All types").tag(nil as String?)
-                Text("Images").tag("image" as String?)
-                Text("RAW").tag("raw" as String?)
-                Text("Video").tag("movie" as String?)
-                Text("Audio").tag("audio" as String?)
-                Text("PDF").tag("pdf" as String?)
-            }
-            .frame(width: 100)
-
-            // Flag filter
-            Picker("Flag", selection: Binding(
-                get: { viewModel.filterFlag },
-                set: { viewModel.filterFlag = $0 }
-            )) {
-                Text("All flags").tag(nil as DAMFlag?)
-                Text("Picked").tag(DAMFlag.pick as DAMFlag?)
-                Text("Rejected").tag(DAMFlag.reject as DAMFlag?)
-            }
-            .frame(width: 90)
-
-            TextField("Search catalog", text: Binding(
-                get: { viewModel.searchText },
-                set: { viewModel.searchText = $0 }
-            ))
-            .textFieldStyle(.roundedBorder)
-            .frame(maxWidth: 220)
-
-            Button {
-                withAnimation { showPreviewPanel.toggle() }
-            } label: {
-                Image(systemName: "sidebar.right")
-            }
-            .help("Show/hide the Preview panel")
+            .frame(height: 32)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
     }
 
     // MARK: - Left: Folders tree
@@ -1061,27 +1102,32 @@ struct DAMBrowserView: View {
     /// image above the rows so the user can see detail while scanning
     /// metadata.
     private var metadataBody: some View {
-        HStack(spacing: 0) {
-            if showFolderTree {
-                folderTreePanel
-                    .frame(width: treeWidth)
-                PanelResizeHandle(width: $treeWidth, minWidth: 170, maxWidth: 400)
-            }
-            VStack(spacing: 0) {
-                metadataHeader
-                Divider()
-                if metadataViewMode == .preview {
-                    MetadataPreviewPane(asset: viewModel.primaryAsset)
-                        .frame(minHeight: 240, idealHeight: 420, maxHeight: 560)
-                    Divider()
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                if showFolderTree {
+                    folderTreePanel
+                        .frame(width: treeWidth)
+                    PanelResizeHandle(width: $treeWidth, minWidth: 170, maxWidth: 400)
                 }
-                ListWorkspaceView(viewModel: viewModel)
-                Divider()
-                statusBar
+                VStack(spacing: 0) {
+                    metadataHeader
+                    Divider()
+                    if metadataViewMode == .preview {
+                        MetadataPreviewPane(asset: viewModel.primaryAsset)
+                            .frame(minHeight: 240, idealHeight: 420, maxHeight: 560)
+                        Divider()
+                    }
+                    ListWorkspaceView(viewModel: viewModel)
+                    Divider()
+                    statusBar
+                }
+                PanelResizeHandle(width: $metaSideWidth, minWidth: 260, maxWidth: 480, invert: true)
+                MetadataPanelView(viewModel: viewModel)
+                    .frame(width: metaSideWidth)
             }
-            PanelResizeHandle(width: $metaSideWidth, minWidth: 260, maxWidth: 480, invert: true)
-            MetadataPanelView(viewModel: viewModel)
-                .frame(width: metaSideWidth)
+            Divider()
+            FilmstripBar(viewModel: viewModel, assets: viewModel.assets)
+                .frame(height: 128)
         }
     }
 
@@ -1301,18 +1347,32 @@ private struct DAMPreviewImage: View {
         }
         .frame(height: displayHeight)
         .task(id: asset.id) {
+            await loadImage()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .damEditsDidChange)) { notification in
+            guard let changedAssetId = notification.userInfo?["assetId"] as? Int64,
+                  changedAssetId == asset.id else { return }
+            Task { await loadImage() }
+        }
+    }
+
+    private func loadImage() async {
+        await MainActor.run {
             image = nil
             loadFailed = false
-            // Debounce: restart-safe under rapid selection churn.
-            try? await Task.sleep(for: .milliseconds(120))
+        }
+        // Debounce: restart-safe under rapid selection churn.
+        try? await Task.sleep(for: .milliseconds(120))
+        guard !Task.isCancelled else { return }
+        do {
+            let loaded = try await ThumbnailService.shared.redactedThumbnail(for: asset, pixelSize: 1024)
+            await MainActor.run {
+                image = loaded
+                loadFailed = false
+            }
+        } catch {
             guard !Task.isCancelled else { return }
-            do {
-                image = try await ThumbnailService.shared.thumbnail(
-                    for: URL(fileURLWithPath: asset.path),
-                    modificationDate: asset.fileModDate,
-                    pixelSize: 1024)
-            } catch {
-                guard !Task.isCancelled else { return }
+            await MainActor.run {
                 loadFailed = true
             }
         }
@@ -1361,25 +1421,41 @@ private struct MetadataPreviewPane: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task(id: asset?.id ?? -1) {
-            guard let asset else {
+            await loadImage()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .damEditsDidChange)) { notification in
+            guard let changedAssetId = notification.userInfo?["assetId"] as? Int64,
+                  changedAssetId == asset?.id else { return }
+            Task { await loadImage() }
+        }
+    }
+
+    private func loadImage() async {
+        guard let asset else {
+            await MainActor.run {
                 image = nil
                 loadFailed = false
-                return
             }
+            return
+        }
+        await MainActor.run {
             image = nil
             loadFailed = false
-            // Debounce: rapid selection churn restarts this task — don't pay
-            // for a large decode until the selection settles for a beat.
-            try? await Task.sleep(for: .milliseconds(120))
+        }
+        // Debounce: rapid selection churn restarts this task — don't pay
+        // for a large decode until the selection settles for a beat.
+        try? await Task.sleep(for: .milliseconds(120))
+        guard !Task.isCancelled else { return }
+        do {
+            let loaded = try await ThumbnailService.shared.redactedThumbnail(for: asset, pixelSize: 1600)
+            await MainActor.run {
+                image = loaded
+                loadFailed = false
+            }
+        } catch {
+            // Cancellation is not a failure — don't flash the doc icon.
             guard !Task.isCancelled else { return }
-            do {
-                image = try await ThumbnailService.shared.thumbnail(
-                    for: URL(fileURLWithPath: asset.path),
-                    modificationDate: asset.fileModDate,
-                    pixelSize: 1600)
-            } catch {
-                // Cancellation is not a failure — don't flash the doc icon.
-                guard !Task.isCancelled else { return }
+            await MainActor.run {
                 loadFailed = true
             }
         }
@@ -1498,12 +1574,26 @@ private struct DAMThumbnailCell: View {
             }
             .frame(maxWidth: .infinity)
         }
-        .task {
-            do {
-                image = try await ThumbnailService.shared.thumbnail(
-                    for: URL(fileURLWithPath: asset.path),
-                    modificationDate: asset.fileModDate)
-            } catch {
+        .task(id: asset.id) {
+            await loadImage()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .damEditsDidChange)) { notification in
+            guard let changedAssetId = notification.userInfo?["assetId"] as? Int64,
+                  changedAssetId == asset.id else { return }
+            Task { await loadImage() }
+        }
+    }
+
+    private func loadImage() async {
+        do {
+            let loaded = try await ThumbnailService.shared.redactedThumbnail(for: asset, pixelSize: 160)
+            await MainActor.run {
+                image = loaded
+                loadFailed = false
+            }
+        } catch {
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
                 loadFailed = true
             }
         }

@@ -65,13 +65,20 @@ struct WorkspacePanelWindowView: View {
             // dedicated `AgentChatWindow`; otherwise an empty chat can collapse
             // the workspace panel window to an unusable size.
             Group {
-                if case .agentChat = target.kind {
+                switch target.kind {
+                case .agentChat:
                     WindowSizeConfigurator(
                         minSize: CGSize(width: 720, height: 520),
                         defaultSize: CGSize(width: 960, height: 720),
                         backgroundColor: nil
                     )
-                } else {
+                case .damBrowser:
+                    WindowSizeConfigurator(
+                        minSize: CGSize(width: 900, height: 620),
+                        defaultSize: CGSize(width: 1280, height: 820),
+                        backgroundColor: nil
+                    )
+                default:
                     EmptyView()
                 }
             }

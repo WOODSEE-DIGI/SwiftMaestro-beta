@@ -28,6 +28,7 @@ build/
 
 # Staging / distribution directories
 dist/
+dist-old/
 BundledMCP/
 store/
 

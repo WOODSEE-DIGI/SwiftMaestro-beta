@@ -1,6 +1,13 @@
 import Foundation
 import GRDB
 
+extension Notification.Name {
+    /// Posted after the edit recipe for an asset is saved or cleared.
+    /// `userInfo["assetId"]` contains the affected `Int64` asset ID.
+    static let damEditsDidChange = Notification.Name(
+        "com.woodseedigi.swiftmaestro.damEditsDidChange")
+}
+
 // MARK: - MaestroDAM Database
 //
 // Owns the catalog's GRDB queue and migrations. The catalog lives in the
@@ -519,6 +526,21 @@ final class DAMDatabase: Sendable {
                     ON CONFLICT(assetId) DO UPDATE SET editsJSON = excluded.editsJSON, updatedAt = excluded.updatedAt
                     """,
                     arguments: [assetId, state.asJSON, Date()])
+            }
+        }
+        // Publish on the main actor so SwiftUI @State updates in observers
+        // never run on GRDB's background writer queue.
+        if Thread.isMainThread {
+            NotificationCenter.default.post(
+                name: .damEditsDidChange,
+                object: nil,
+                userInfo: ["assetId": assetId])
+        } else {
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(
+                    name: .damEditsDidChange,
+                    object: nil,
+                    userInfo: ["assetId": assetId])
             }
         }
     }

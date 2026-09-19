@@ -381,6 +381,61 @@ final class DAMEditTests: XCTestCase {
         XCTAssertGreaterThan(b, 0.7); XCTAssertLessThan(r, 0.35)
     }
 
+    func testPixelateMosaicsRegion() throws {
+        let asset = try makeQuadrantImageFile()
+        var edit = DAMEditState()
+        // Pixelate the top half at maximum strength: the red/green boundary
+        // becomes large averaged cells.
+        edit.redactions = [.init(
+            rect: .init(x: 0, y: 0, width: 1, height: 0.5),
+            kind: .pixelate, strength: 1.0)]
+        let rendered = try DAMEditRenderer.render(asset: asset, edit: edit, maxPixelSize: 512)
+
+        // A pixel near the red/green boundary should be mixed, not pure.
+        let mixed = try XCTUnwrap(pixelColor(rendered, x: 30, y: 16))
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0
+        mixed.usingColorSpace(.sRGB)?.getRed(&r, green: &g, blue: &b, alpha: nil)
+        XCTAssertGreaterThan(r, 0.05, "pixelated boundary should keep some red")
+        XCTAssertGreaterThan(g, 0.05, "pixelated boundary should keep some green")
+        XCTAssertLessThan(r, 0.95, "pixelated boundary should not be pure red")
+        XCTAssertLessThan(g, 0.95, "pixelated boundary should not be pure green")
+
+        // Outside the box (bottom-left): still blue.
+        let outside = try XCTUnwrap(pixelColor(rendered, x: 16, y: 48))
+        outside.usingColorSpace(.sRGB)?.getRed(&r, green: &g, blue: &b, alpha: nil)
+        XCTAssertGreaterThan(b, 0.7); XCTAssertLessThan(r, 0.35)
+    }
+
+    func testBlurStrengthAffectsRadius() throws {
+        let asset = try makeQuadrantImageFile()
+        var weakEdit = DAMEditState()
+        weakEdit.redactions = [.init(
+            rect: .init(x: 0.25, y: 0, width: 0.5, height: 0.5),
+            kind: .blur, strength: 0.1)]
+        var strongEdit = DAMEditState()
+        strongEdit.redactions = [.init(
+            rect: .init(x: 0.25, y: 0, width: 0.5, height: 0.5),
+            kind: .blur, strength: 0.9)]
+
+        let weak = try DAMEditRenderer.render(asset: asset, edit: weakEdit, maxPixelSize: 512)
+        let strong = try DAMEditRenderer.render(asset: asset, edit: strongEdit, maxPixelSize: 512)
+
+        // Different strengths should produce measurably different pixels at
+        // the red/green boundary. We don't assert a direction because the
+        // small 64x64 fixture can saturate, but the values must differ.
+        var wr: CGFloat = 0, wg: CGFloat = 0, wb: CGFloat = 0
+        var sr: CGFloat = 0, sg: CGFloat = 0, sb: CGFloat = 0
+        try XCTUnwrap(pixelColor(weak, x: 32, y: 16)).usingColorSpace(.sRGB)?
+            .getRed(&wr, green: &wg, blue: &wb, alpha: nil)
+        try XCTUnwrap(pixelColor(strong, x: 32, y: 16)).usingColorSpace(.sRGB)?
+            .getRed(&sr, green: &sg, blue: &sb, alpha: nil)
+
+        let diff = abs(wr - sr) + abs(wg - sg) + abs(wb - sb)
+        XCTAssertGreaterThan(
+            diff, 0.02,
+            "different blur strengths should produce different boundary colors")
+    }
+
     // MARK: - Recipe backward compatibility + layout payloads
 
     /// Recipes saved before redactions existed must still decode — the old
@@ -406,7 +461,8 @@ final class DAMEditTests: XCTestCase {
         var edit = DAMEditState()
         edit.redactions = [
             .init(rect: .init(x: 0.1, y: 0.1, width: 0.3, height: 0.1), kind: .blackout),
-            .init(rect: .init(x: 0.5, y: 0.5, width: 0.2, height: 0.2), kind: .blur),
+            .init(rect: .init(x: 0.5, y: 0.5, width: 0.2, height: 0.2), kind: .blur, strength: 0.75),
+            .init(rect: .init(x: 0.2, y: 0.7, width: 0.2, height: 0.2), kind: .pixelate, strength: 0.4),
         ]
         let json = edit.redactionLayoutJSON
         let decoded = DAMEditState.redactionLayout(fromJSON: json)
@@ -416,5 +472,107 @@ final class DAMEditTests: XCTestCase {
         XCTAssertNil(DAMEditState.redactionLayout(fromJSON: edit.asJSON))
         // Garbage is not a layout.
         XCTAssertNil(DAMEditState.redactionLayout(fromJSON: "not json"))
+    }
+
+    // MARK: - Redaction layers
+
+    /// Recipes with redactions but no populated layer array migrate to a
+    /// single default layer and every box is assigned to it.
+    func testLegacyRedactionsMigrateToDefaultLayer() {
+        var edit = DAMEditState()
+        edit.redactions = [
+            .init(rect: .init(x: 0.1, y: 0.1, width: 0.2, height: 0.2), kind: .blackout),
+        ]
+        // redactionLayers is still empty (legacy-on-disk shape); round-trip
+        // through JSON runs the migration.
+        let decoded = DAMEditState.fromJSON(edit.asJSON)
+        XCTAssertEqual(decoded.redactions.count, 1)
+        XCTAssertEqual(decoded.redactionLayers.count, 1)
+        XCTAssertEqual(decoded.redactions.first?.layerID, decoded.redactionLayers.first?.id)
+    }
+
+    /// Hidden layers are stripped from the export-safe recipe.
+    func testExportRecipeStripsHiddenLayers() {
+        var edit = DAMEditState()
+        let publicLayer = DAMEditState.RedactionLayer(name: "Public", isVisible: true)
+        let piiLayer = DAMEditState.RedactionLayer(name: "PII", isVisible: false)
+        edit.redactionLayers = [publicLayer, piiLayer]
+        edit.redactions = [
+            .init(rect: .init(x: 0.1, y: 0.1, width: 0.1, height: 0.1), kind: .blackout, layerID: publicLayer.id),
+            .init(rect: .init(x: 0.5, y: 0.5, width: 0.1, height: 0.1), kind: .blackout, layerID: piiLayer.id),
+        ]
+        let exported = edit.forExport()
+        XCTAssertEqual(exported.redactionLayers.count, 1)
+        XCTAssertEqual(exported.redactionLayers.first?.id, publicLayer.id)
+        XCTAssertEqual(exported.redactions.count, 1)
+        XCTAssertEqual(exported.redactions.first?.layerID, publicLayer.id)
+        // Original recipe is untouched (value semantics).
+        XCTAssertEqual(edit.redactionLayers.count, 2)
+        XCTAssertEqual(edit.redactions.count, 2)
+    }
+
+    /// Hidden layers are excluded from visibleRedactions; visible layers are
+    /// included.
+    func testVisibleRedactionsRespectsLayerVisibility() {
+        var edit = DAMEditState()
+        let publicLayer = DAMEditState.RedactionLayer(name: "Public", isVisible: true)
+        let piiLayer = DAMEditState.RedactionLayer(name: "PII", isVisible: false)
+        edit.redactionLayers = [publicLayer, piiLayer]
+        edit.redactions = [
+            .init(rect: .init(x: 0.1, y: 0.1, width: 0.1, height: 0.1), kind: .blackout, layerID: publicLayer.id),
+            .init(rect: .init(x: 0.5, y: 0.5, width: 0.1, height: 0.1), kind: .blackout, layerID: piiLayer.id),
+        ]
+        let visible = edit.visibleRedactions()
+        XCTAssertEqual(visible.count, 1)
+        XCTAssertEqual(visible.first?.layerID, publicLayer.id)
+    }
+
+    /// AI redaction detector runs on-device and returns boxes normalized to
+    /// the redaction recipe coordinate space (top-left origin).
+    func testAIRedactionDetectorReturnsNormalizedBoxes() async throws {
+        let asset = try makeTestImageFile()
+        let boxes = try await DAMRedactionDetectorService.shared.detect(
+            at: asset.path,
+            options: .init(detectFaces: true, detectText: true, detectBarcodes: false))
+        // Synthetic test image has no faces; result should be empty or contain
+        // only in-bounds boxes.
+        for box in boxes {
+            XCTAssertGreaterThanOrEqual(box.rect.x, 0)
+            XCTAssertGreaterThanOrEqual(box.rect.y, 0)
+            XCTAssertLessThanOrEqual(box.rect.x + box.rect.width, 1)
+            XCTAssertLessThanOrEqual(box.rect.y + box.rect.height, 1)
+        }
+    }
+
+    /// The renderer burns redactions in by default, but skips them when
+    /// showRedactions is false so the untouched original is visible.
+    func testRenderShowRedactionsToggle() throws {
+        let asset = try makeTestImageFile()
+
+        var edit = DAMEditState()
+        edit.redactions = [
+            .init(rect: .init(x: 0.25, y: 0.25, width: 0.5, height: 0.5), kind: .blackout),
+        ]
+
+        let redacted = try DAMEditRenderer.render(asset: asset, edit: edit, maxPixelSize: 256, showRedactions: true)
+        let original = try DAMEditRenderer.render(asset: asset, edit: edit, maxPixelSize: 256, showRedactions: false)
+
+        // Center pixel should be black in redacted render, unchanged in original.
+        let center = pixelColor(redacted, x: 32, y: 16)
+        let origCenter = pixelColor(original, x: 32, y: 16)
+        XCTAssertNotNil(center)
+        XCTAssertNotNil(origCenter)
+        var br: CGFloat = 0, bg: CGFloat = 0, bb: CGFloat = 0, ba: CGFloat = 0
+        center?.getRed(&br, green: &bg, blue: &bb, alpha: &ba)
+        XCTAssertEqual(br, 0, accuracy: 0.05)
+        XCTAssertEqual(bg, 0, accuracy: 0.05)
+        XCTAssertEqual(bb, 0, accuracy: 0.05)
+
+        var or: CGFloat = 0, og: CGFloat = 0, ob: CGFloat = 0, oa: CGFloat = 0
+        origCenter?.getRed(&or, green: &og, blue: &ob, alpha: &oa)
+        let redactedLuma = (br + bg + bb) / 3
+        let originalLuma = (or + og + ob) / 3
+        XCTAssertGreaterThan(originalLuma - redactedLuma, 0.1,
+                             "original render should be lighter than redacted center")
     }
 }

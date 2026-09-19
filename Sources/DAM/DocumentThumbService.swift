@@ -31,6 +31,25 @@ enum DocumentThumbService {
 
     /// Shared PDF painter (file-backed or in-memory — iWork preview.pdf).
     private static func pdfImage(doc: PDFDocument, pixelSize: CGFloat, key: String) throws -> NSImage {
+        let cgImage = try pdfCGImage(doc: doc, maxPixelSize: Int(pixelSize * 2))
+        let image = NSImage(cgImage: cgImage, size: NSSize(
+            width: CGFloat(cgImage.width),
+            height: CGFloat(cgImage.height)))
+        ThumbnailService.writeDiskCache(image, key: key)
+        return image
+    }
+
+    /// Render page 1 of a PDF to a CGImage at the requested max pixel size.
+    /// Shared by the thumbnail pipeline, the edit preview renderer, and the
+    /// AI redaction detector so all of them can work with PDFs.
+    static func pdfCGImage(url: URL, maxPixelSize: Int) throws -> CGImage {
+        guard let doc = PDFDocument(url: url) else {
+            throw ThumbnailService.ThumbnailError.generationFailed
+        }
+        return try pdfCGImage(doc: doc, maxPixelSize: maxPixelSize)
+    }
+
+    private static func pdfCGImage(doc: PDFDocument, maxPixelSize: Int) throws -> CGImage {
         guard let page = doc.page(at: 0) else {
             throw ThumbnailService.ThumbnailError.noRepresentation
         }
@@ -38,26 +57,31 @@ enum DocumentThumbService {
         guard bounds.width > 0, bounds.height > 0 else {
             throw ThumbnailService.ThumbnailError.noRepresentation
         }
-        let maxPixel = max(64, pixelSize * 2)
-        let scale = maxPixel / max(bounds.width, bounds.height)
-        let target = NSSize(
-            width: max(1, (bounds.width * scale).rounded()),
-            height: max(1, (bounds.height * scale).rounded()))
+        let scale = CGFloat(maxPixelSize) / max(bounds.width, bounds.height)
+        let targetWidth = max(1, Int((bounds.width * scale).rounded()))
+        let targetHeight = max(1, Int((bounds.height * scale).rounded()))
 
-        let image = NSImage(size: target)
-        image.lockFocus()
-        NSColor.white.setFill()
-        NSRect(origin: .zero, size: target).fill()
-        if let context = NSGraphicsContext.current?.cgContext {
-            context.saveGState()
-            context.scaleBy(x: scale, y: scale)
-            page.draw(with: .mediaBox, to: context)
-            context.restoreGState()
+        guard let srgb = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(
+                  data: nil, width: targetWidth, height: targetHeight,
+                  bitsPerComponent: 8, bytesPerRow: 0,
+                  space: srgb,
+                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else {
+            throw ThumbnailService.ThumbnailError.generationFailed
         }
-        image.unlockFocus()
 
-        ThumbnailService.writeDiskCache(image, key: key)
-        return image
+        context.setFillColor(NSColor.white.cgColor)
+        context.fill(CGRect(origin: .zero, size: CGSize(width: targetWidth, height: targetHeight)))
+        context.saveGState()
+        context.scaleBy(x: scale, y: scale)
+        page.draw(with: .mediaBox, to: context)
+        context.restoreGState()
+
+        guard let cgImage = context.makeImage() else {
+            throw ThumbnailService.ThumbnailError.generationFailed
+        }
+        return cgImage
     }
 
     // MARK: - Text page (TextKit / plain text)

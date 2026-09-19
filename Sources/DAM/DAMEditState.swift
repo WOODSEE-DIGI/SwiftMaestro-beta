@@ -51,8 +51,13 @@ struct DAMEditState: Codable, Sendable, Equatable {
     var blackAndWhite: Bool = false
 
     // MARK: Redaction
-    /// Redaction boxes layered above the image — blackout or blur. Stored in
-    /// the same normalized 0…1 frame the preview shows (post-rotation,
+    /// Named redaction layers. Each layer can be toggled independently, so a
+    /// single asset can carry multiple redaction sets (e.g. "AI PII", "Manual
+    /// Review", "Public Safe") and the user can show/hide them for review or
+    /// screen recording without touching the original file.
+    var redactionLayers: [RedactionLayer] = []
+    /// Redaction boxes layered above the image — blackout, blur, or pixelate.
+    /// Stored in the same normalized 0…1 frame the preview shows (post-rotation,
     /// post-crop: what you see is what you redact), rendered LAST in the
     /// pipeline (after effects) so exports bake them in. The original file
     /// is never touched.
@@ -66,17 +71,58 @@ struct DAMEditState: Codable, Sendable, Equatable {
         var height: Double
     }
 
+    /// A named redaction layer. Boxes belong to a layer; only visible layers
+    /// are rendered. The original file is never modified.
+    struct RedactionLayer: Codable, Sendable, Equatable, Identifiable {
+        var id: UUID = UUID()
+        var name: String = "Redactions"
+        var isVisible: Bool = true
+    }
+
     /// One redaction box: a normalized rect plus its treatment.
     struct RedactionBox: Codable, Sendable, Equatable, Identifiable {
         var id: UUID = UUID()
         var rect: CropRect
         var kind: Kind
+        /// Per-box intensity for blur/pixelate (0…1). nil means "use default".
+        /// Blackout ignores this. Optional for backward compatibility with
+        /// recipes saved before the strength field existed.
+        var strength: Double? = nil
+        /// Which layer this box belongs to. nil maps to the default layer on
+        /// load for backward compatibility.
+        var layerID: UUID? = nil
 
         enum Kind: String, Codable, Sendable, CaseIterable {
             /// Solid black fill — unrecoverable, for text/numbers.
             case blackout
             /// Gaussian blur — for faces/areas where context should remain.
             case blur
+            /// Pixelate / mosaic — readable context, no fine detail.
+            case pixelate
+
+            var displayName: String {
+                switch self {
+                case .blackout: return String(localized: "Blackout")
+                case .blur: return String(localized: "Blur")
+                case .pixelate: return String(localized: "Pixelate")
+                }
+            }
+
+            var systemImage: String {
+                switch self {
+                case .blackout: return "square.fill"
+                case .blur: return "aqi.medium"
+                case .pixelate: return "grid"
+                }
+            }
+
+            /// Whether this kind supports a per-box strength slider.
+            var hasStrength: Bool {
+                switch self {
+                case .blackout: return false
+                case .blur, .pixelate: return true
+                }
+            }
         }
     }
 
@@ -95,7 +141,7 @@ struct DAMEditState: Codable, Sendable, Equatable {
         case exposureEV, contrast, highlights, shadows
         case saturation, vibrance, temperature, tint
         case sharpen, noiseReduction, blackAndWhite
-        case redactions
+        case redactions, redactionLayers
     }
 
     /// All-default recipe (identity). Explicit because the custom Codable
@@ -120,6 +166,95 @@ struct DAMEditState: Codable, Sendable, Equatable {
         noiseReduction = try c.decodeIfPresent(Double.self, forKey: .noiseReduction) ?? 0
         blackAndWhite = try c.decodeIfPresent(Bool.self, forKey: .blackAndWhite) ?? false
         redactions = try c.decodeIfPresent([RedactionBox].self, forKey: .redactions) ?? []
+        redactionLayers = try c.decodeIfPresent([RedactionLayer].self, forKey: .redactionLayers) ?? []
+        migrateRedactionLayersIfNeeded()
+    }
+
+    /// Backward-compat migration: recipes saved before layers existed get a
+    /// single default layer and all existing boxes are assigned to it.
+    private mutating func migrateRedactionLayersIfNeeded() {
+        if redactionLayers.isEmpty {
+            if redactions.isEmpty {
+                // Fresh recipe — nothing to migrate.
+                return
+            }
+            let defaultLayer = RedactionLayer(name: "Redactions")
+            redactionLayers = [defaultLayer]
+            for index in redactions.indices {
+                redactions[index].layerID = defaultLayer.id
+            }
+        } else {
+            // Any box without a layer ID inherits the first (default) layer.
+            let defaultLayerID = redactionLayers.first?.id
+            for index in redactions.indices where redactions[index].layerID == nil {
+                redactions[index].layerID = defaultLayerID
+            }
+        }
+    }
+
+    /// Intersection-over-union of two normalized rects (0…1). Used to avoid
+    /// adding duplicate redaction boxes when AI detection is run repeatedly.
+    static func iou(_ a: CropRect, _ b: CropRect) -> Double {
+        let ax0 = a.x, ay0 = a.y, ax1 = a.x + a.width, ay1 = a.y + a.height
+        let bx0 = b.x, by0 = b.y, bx1 = b.x + b.width, by1 = b.y + b.height
+        let ix0 = max(ax0, bx0), iy0 = max(ay0, by0)
+        let ix1 = min(ax1, bx1), iy1 = min(ay1, by1)
+        guard ix1 > ix0, iy1 > iy0 else { return 0 }
+        let intersection = (ix1 - ix0) * (iy1 - iy0)
+        let areaA = a.width * a.height
+        let areaB = b.width * b.height
+        let union = areaA + areaB - intersection
+        guard union > 0 else { return 0 }
+        return intersection / union
+    }
+
+    /// Returns the boxes whose layer is currently visible. Used by the
+    /// renderer and overlays so hidden layers don't draw.
+    func visibleRedactions() -> [RedactionBox] {
+        let visibleLayerIDs = Set(redactionLayers.filter(\.isVisible).map(\.id))
+        return redactions.filter { box in
+            guard let layerID = box.layerID else { return true }
+            return visibleLayerIDs.contains(layerID)
+        }
+    }
+
+    /// Adds a new layer and returns its ID.
+    @discardableResult
+    mutating func addRedactionLayer(named name: String = "New Layer") -> UUID {
+        let layer = RedactionLayer(name: name)
+        redactionLayers.append(layer)
+        return layer.id
+    }
+
+    /// Removes a layer and all boxes that belong to it.
+    mutating func removeRedactionLayer(id: UUID) {
+        redactionLayers.removeAll { $0.id == id }
+        redactions.removeAll { $0.layerID == id }
+    }
+
+    /// Returns a copy of the recipe safe for export: hidden layers and their
+    /// boxes are stripped so they can never travel with the exported file.
+    /// The original recipe (and original source file) remain untouched.
+    func forExport() -> DAMEditState {
+        var copy = self
+        let visibleLayerIDs = Set(redactionLayers.filter(\.isVisible).map(\.id))
+        copy.redactionLayers = redactionLayers.filter(\.isVisible)
+        copy.redactions = redactions.filter { box in
+            guard let layerID = box.layerID else { return true }
+            return visibleLayerIDs.contains(layerID)
+        }
+        return copy
+    }
+
+    /// Returns the default layer to use when creating a new box. Creates one
+    /// if the recipe has no layers yet.
+    mutating func defaultRedactionLayerID() -> UUID {
+        if redactionLayers.isEmpty {
+            let layer = RedactionLayer(name: "Redactions")
+            redactionLayers.append(layer)
+            return layer.id
+        }
+        return redactionLayers[0].id
     }
 
     /// The recipe as it should be rendered while the crop tool is armed:

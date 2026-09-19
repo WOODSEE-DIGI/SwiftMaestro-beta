@@ -14,6 +14,10 @@ import SwiftUI
 struct DAMRedactOverlay: View {
     /// The recipe's redaction boxes (live-edited during drags).
     @Binding var boxes: [DAMEditState.RedactionBox]
+    /// The recipe's redaction layers (visibility toggles which boxes draw).
+    var layers: [DAMEditState.RedactionLayer]
+    /// The layer that receives newly drawn boxes.
+    var activeLayerID: UUID?
     /// The pixel size of the rendered image (for aspect + fitted-rect math).
     let imageSize: CGSize
     /// The kind applied to newly drawn boxes.
@@ -24,6 +28,19 @@ struct DAMRedactOverlay: View {
     let onChange: () -> Void
     /// Called once when a drag ends (persist + re-render here, not per frame).
     let onEnd: () -> Void
+
+    /// IDs of layers currently visible.
+    private var visibleLayerIDs: Set<UUID> {
+        Set(layers.filter(\.isVisible).map(\.id))
+    }
+
+    /// Boxes that should draw in the overlay (visible layers only).
+    private var visibleBoxes: [DAMEditState.RedactionBox] {
+        boxes.filter { box in
+            guard let layerID = box.layerID else { return true }
+            return visibleLayerIDs.contains(layerID)
+        }
+    }
 
     /// In-progress drag-to-draw rect (not yet committed to `boxes`).
     @State private var draftStart: CGPoint?
@@ -40,10 +57,15 @@ struct DAMRedactOverlay: View {
     private let handleSize: CGFloat = 18
     /// Minimum box size (fraction of frame) — redactions can be small.
     private let minSize = 0.02
+    /// Arrow-key nudge amount in view pixels (Shift multiplies by 10).
+    private let nudgePixels: CGFloat = 1
 
     var body: some View {
         GeometryReader { proxy in
             let fitted = DAMCropOverlay.fittedRect(imageSize: imageSize, in: proxy.size)
+            // Capture fitted rect for arrow-key nudging (pixels → normalized).
+            // Discarded-statement form keeps the expression out of the ViewBuilder.
+            let _ = DispatchQueue.main.async { lastFittedRect = fitted }
             ZStack(alignment: .topLeading) {
                 // Background: drag draws a new box; tap deselects.
                 Color.clear
@@ -51,10 +73,10 @@ struct DAMRedactOverlay: View {
                     .onTapGesture { selectedID = nil }
                     .gesture(drawGesture(fitted: fitted))
 
-                // Committed boxes.
-                ForEach(boxes) { box in
+                // Committed boxes (visible layers only).
+                ForEach(Array(visibleBoxes.enumerated()), id: \.element.id) { index, box in
                     if let rect = DAMCropOverlay.viewRect(for: box.rect, fitted: fitted) {
-                        boxView(box, rect: rect, fitted: fitted)
+                        boxView(box, index: index, rect: rect, fitted: fitted)
                     }
                 }
 
@@ -71,12 +93,16 @@ struct DAMRedactOverlay: View {
             }
         }
         .allowsHitTesting(true)
+        .focusable()
+        .onAppear { installKeyMonitor() }
+        .onDisappear { removeKeyMonitor() }
     }
 
     // MARK: - Box view (fill per kind, stroke, selection handles)
 
     private func boxView(
         _ box: DAMEditState.RedactionBox,
+        index: Int,
         rect: CGRect,
         fitted: CGRect
     ) -> some View {
@@ -93,7 +119,7 @@ struct DAMRedactOverlay: View {
                     isSelected ? Color.accentColor : Color.white.opacity(0.8),
                     style: StrokeStyle(
                         lineWidth: isSelected ? 2 : 1,
-                        dash: box.kind == .blur ? [4, 3] : []))
+                        dash: box.kind == .blur || box.kind == .pixelate ? [4, 3] : []))
         }
         .frame(width: rect.width, height: rect.height)
         // ORDER MATTERS: contentShape must come BEFORE .position. Position
@@ -123,6 +149,17 @@ struct DAMRedactOverlay: View {
                 }
             }
         }
+        // Number badge so the box list and overlay stay in sync.
+        .overlay(alignment: .topLeading) {
+            Text("\(index + 1)")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 1)
+                .background(Color.black.opacity(0.6), in: Capsule())
+                .padding(2)
+                .allowsHitTesting(false)
+        }
     }
 
     // MARK: - Gestures
@@ -139,7 +176,8 @@ struct DAMRedactOverlay: View {
             .onEnded { _ in
                 if var rect = draftRect {
                     rect = clamped(rect)
-                    let box = DAMEditState.RedactionBox(rect: rect, kind: kind)
+                    var box = DAMEditState.RedactionBox(rect: rect, kind: kind)
+                    box.layerID = activeLayerID
                     boxes.append(box)
                     selectedID = box.id
                 }
@@ -169,7 +207,8 @@ struct DAMRedactOverlay: View {
             }
     }
 
-    /// Drag a corner handle of the selected box: resize it.
+    /// Drag a corner handle of the selected box: resize it. Hold Shift to
+    /// lock the current aspect ratio.
     private func resizeGesture(
         _ box: DAMEditState.RedactionBox,
         corner: HandleCorner,
@@ -179,8 +218,10 @@ struct DAMRedactOverlay: View {
             .onChanged { value in
                 guard let index = boxes.firstIndex(where: { $0.id == box.id }) else { return }
                 let current = normalize(value.location, in: fitted)
+                let lockAspect = NSEvent.modifierFlags.contains(.shift)
                 boxes[index].rect = clamped(
-                    corner.dragging(boxes[index].rect, to: current, minSize: minSize))
+                    corner.dragging(boxes[index].rect, to: current, minSize: minSize,
+                                    lockAspect: lockAspect))
                 onChange()
             }
             .onEnded { _ in onEnd() }
@@ -212,6 +253,53 @@ struct DAMRedactOverlay: View {
             width: w, height: h)
     }
 
+    // MARK: - Keyboard nudging
+
+    /// Local event monitor handle — removed on disappear so arrow keys return
+    /// to normal navigation when the redact overlay is gone.
+    @State private var keyMonitor: Any?
+
+    private func installKeyMonitor() {
+        guard keyMonitor == nil else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard self.selectedID != nil else { return event }
+            let (dxSign, dySign): (Int, Int)
+            switch event.keyCode {
+            case 126: (dxSign, dySign) = (0, 1)   // up
+            case 125: (dxSign, dySign) = (0, -1)  // down
+            case 123: (dxSign, dySign) = (-1, 0)  // left
+            case 124: (dxSign, dySign) = (1, 0)   // right
+            default: return event
+            }
+            let multiplier = event.modifierFlags.contains(.shift) ? 10.0 : 1.0
+            self.nudgeSelected(dx: CGFloat(dxSign) * self.nudgePixels * multiplier,
+                               dy: CGFloat(dySign) * self.nudgePixels * multiplier)
+            return nil
+        }
+    }
+
+    private func removeKeyMonitor() {
+        if let monitor = keyMonitor {
+            NSEvent.removeMonitor(monitor)
+            keyMonitor = nil
+        }
+    }
+
+    private func nudgeSelected(dx: CGFloat, dy: CGFloat) {
+        guard let id = selectedID,
+              let index = boxes.firstIndex(where: { $0.id == id }) else { return }
+        guard let fitted = lastFittedRect else { return }
+        let ndx = Double(dx / fitted.width)
+        let ndy = Double(dy / fitted.height)
+        boxes[index].rect = boxes[index].rect.movedBy(dx: ndx, dy: ndy)
+        onChange()
+        onEnd()
+    }
+
+    /// The most recent fitted rect, captured during body layout for keyboard
+    /// nudging (converts view pixels to normalized recipe coordinates).
+    @State private var lastFittedRect: CGRect?
+
     // MARK: - Corners
 
     private enum HandleCorner: CaseIterable {
@@ -229,9 +317,11 @@ struct DAMRedactOverlay: View {
         func dragging(
             _ rect: DAMEditState.CropRect,
             to point: CGPoint,
-            minSize: Double
+            minSize: Double,
+            lockAspect: Bool = false
         ) -> DAMEditState.CropRect {
             var out = rect
+            let aspect = rect.width / rect.height
             switch self {
             case .topLeft:
                 let nx = min(point.x, rect.x + rect.width - minSize)
@@ -239,17 +329,45 @@ struct DAMRedactOverlay: View {
                 out.width = rect.width + (rect.x - nx)
                 out.height = rect.height + (rect.y - ny)
                 out.x = nx; out.y = ny
+                if lockAspect, aspect.isFinite, aspect > 0 {
+                    // Bottom-right corner stays fixed.
+                    out = out.lockedTo(aspect: aspect,
+                                       fixedRight: rect.x + rect.width,
+                                       fixedBottom: rect.y + rect.height,
+                                       minSize: minSize)
+                }
             case .topRight:
                 let ny = min(point.y, rect.y + rect.height - minSize)
                 out.width = max(point.x - rect.x, minSize)
                 out.height = rect.height + (rect.y - ny); out.y = ny
+                if lockAspect, aspect.isFinite, aspect > 0 {
+                    // Bottom-left corner stays fixed.
+                    out = out.lockedTo(aspect: aspect,
+                                       fixedLeft: rect.x,
+                                       fixedBottom: rect.y + rect.height,
+                                       minSize: minSize)
+                }
             case .bottomLeft:
                 let nx = min(point.x, rect.x + rect.width - minSize)
                 out.width = rect.width + (rect.x - nx); out.x = nx
                 out.height = max(point.y - rect.y, minSize)
+                if lockAspect, aspect.isFinite, aspect > 0 {
+                    // Top-right corner stays fixed.
+                    out = out.lockedTo(aspect: aspect,
+                                       fixedRight: rect.x + rect.width,
+                                       fixedTop: rect.y,
+                                       minSize: minSize)
+                }
             case .bottomRight:
                 out.width = max(point.x - rect.x, minSize)
                 out.height = max(point.y - rect.y, minSize)
+                if lockAspect, aspect.isFinite, aspect > 0 {
+                    // Top-left corner stays fixed.
+                    out = out.lockedTo(aspect: aspect,
+                                       fixedLeft: rect.x,
+                                       fixedTop: rect.y,
+                                       minSize: minSize)
+                }
             }
             return out
         }

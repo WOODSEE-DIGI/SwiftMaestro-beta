@@ -62,6 +62,11 @@ final class DAMViewModel {
     var filterFlag: DAMFlag? = nil {
         didSet { Task { await reload() } }
     }
+    /// Whether redaction boxes are drawn on previews. Original files are never
+    /// modified; this only affects the live preview/edit render and is always
+    /// forced ON for exports. Useful for reviewing originals vs. redacted
+    /// versions and for screen-recording workflows.
+    var showRedactions: Bool = true
     /// Folder-tree scope (nil = whole catalog). Mirrors Bridge's Folders tab.
     var selectedFolder: String? {
         didSet {

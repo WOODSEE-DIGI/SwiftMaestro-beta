@@ -70,7 +70,7 @@ enum DAMExportService {
             progress(index, assets.count, asset.filename)
             itemState(index, .processing)
             do {
-                if let url = try exportOne(asset, preset: preset, to: destination) {
+                if let url = try exportOne(asset, index: index, preset: preset, to: destination) {
                     result.exported.append(url)
                     itemState(index, .done)
                 }
@@ -91,6 +91,7 @@ enum DAMExportService {
 
     private nonisolated static func exportOne(
         _ asset: DAMAsset,
+        index: Int,
         preset: DAMExportPreset,
         to destination: URL
     ) throws -> URL? {
@@ -99,10 +100,26 @@ enum DAMExportService {
             throw ExportSkip(reason: "File offline or missing")
         }
 
+        let secureRedacted = preset.secureRedacted == true
+        let originalBase = (asset.filename as NSString).deletingPathExtension
+        let exportExt = preset.format.reRenders
+            ? preset.format.fileExtension
+            : source.pathExtension
+
         guard preset.format.reRenders else {
             // Verbatim copy — original file, metadata and all. Watermark,
             // sizing, and metadata policy do not apply to byte copies.
-            let target = uniqueURL(destination.appendingPathComponent(asset.filename))
+            // Secure redacted exports MUST re-render, so they never take this path.
+            if secureRedacted {
+                throw ExportSkip(reason: "Secure redacted export requires a rendered format")
+            }
+            let filename = exportFilename(
+                mode: preset.exportNamingMode,
+                jobName: preset.exportJobName,
+                originalBase: originalBase,
+                index: index,
+                extension: exportExt)
+            let target = uniqueURL(destination.appendingPathComponent(filename))
             try FileManager.default.copyItem(at: source, to: target)
             return target
         }
@@ -110,8 +127,12 @@ enum DAMExportService {
         if DAMFileKind.isZIPPackage(source) {
             throw ExportSkip(reason: "EIP package — rendered export not supported yet")
         }
-        let base = (asset.filename as NSString).deletingPathExtension
-            + "." + preset.format.fileExtension
+        let base = exportFilename(
+            mode: preset.exportNamingMode,
+            jobName: preset.exportJobName,
+            originalBase: originalBase,
+            index: index,
+            extension: preset.format.fileExtension)
         let target = uniqueURL(destination.appendingPathComponent(base))
 
         // Unedited full-size JPEG → JPEG with All metadata, no watermark:
@@ -122,7 +143,7 @@ enum DAMExportService {
             .map { !$0.isIdentity } ?? false
         if preset.format == .jpeg, preset.maxDimension == 0,
            preset.metadata == .all, !preset.watermark.enabled,
-           !hasRecipe, isJPEGSource {
+           !hasRecipe, !secureRedacted, isJPEGSource {
             try FileManager.default.copyItem(at: source, to: target)
             return target
         }
@@ -133,9 +154,10 @@ enum DAMExportService {
         if hasRecipe, let id = asset.id,
            let recipe = DAMDatabase.shared.loadEdits(assetId: id) {
             // Saved non-destructive edits → render the recipe (original stays
-            // untouched — edits only exist in the recipe).
+            // untouched — edits only exist in the recipe). Hidden redaction
+            // layers are stripped before export so they can never leak.
             cgImage = try DAMEditRenderer.renderCGImage(
-                asset: asset, edit: recipe, maxPixelSize: ceiling)
+                asset: asset, edit: recipe.forExport(), maxPixelSize: ceiling)
         } else if DAMFileKind.isCameraRAW(source) {
             // LibRaw decode — the shim's embedded-preview rule means large
             // targets always trigger a real full-quality decode.
@@ -155,13 +177,16 @@ enum DAMExportService {
 
         // 3. Watermark (post-resize — relative size follows the output).
         if preset.watermark.enabled {
-            cgImage = DAMEditRenderer.applyWatermark(cgImage, settings: preset.watermark)
+            cgImage = DAMEditRenderer.applyWatermark(cgImage, settings: preset.watermark.sanitized())
         }
 
         // 4. Encode with format + metadata policy.
+        // Secure redacted exports always strip metadata, regardless of the
+        // preset's metadata policy, so no EXIF/IPTC/GPS can leak.
+        let metadataPolicy: DAMExportPreset.MetadataPolicy = secureRedacted ? .none : preset.metadata
         let data = try DAMEditRenderer.encode(
             cgImage, format: preset.format, quality: preset.quality,
-            sourceURL: source, metadataPolicy: preset.metadata)
+            sourceURL: source, metadataPolicy: metadataPolicy)
         try data.write(to: target, options: .atomic)
         return target
     }
@@ -199,6 +224,30 @@ enum DAMExportService {
         }
         return candidate
     }
+
+    /// Build an exported filename from the preset naming mode.
+    nonisolated static func exportFilename(
+        mode: DAMExportPreset.NamingMode,
+        jobName: String,
+        originalBase: String,
+        index: Int,
+        extension: String
+    ) -> String {
+        let stem: String
+        switch mode {
+        case .original:
+            stem = originalBase
+        case .jobNameOriginal:
+            let prefix = jobName.trimmingCharacters(in: .whitespaces)
+            stem = prefix.isEmpty ? originalBase : "\(prefix)_\(originalBase)"
+        case .jobNameSequence:
+            let prefix = jobName.trimmingCharacters(in: .whitespaces)
+            let seq = String(format: "%04d", index + 1)
+            stem = prefix.isEmpty ? seq : "\(prefix)_\(seq)"
+        }
+        let ext = `extension`.trimmingCharacters(in: .whitespaces)
+        return ext.isEmpty ? stem : "\(stem).\(ext)"
+    }
 }
 
 // MARK: - Output workspace
@@ -217,12 +266,21 @@ struct OutputWorkspaceView: View {
     @State private var maxDimension = 2048   // 0 = original size
     @State private var quality: Double = 0.85
     @State private var metadataPolicy: DAMExportPreset.MetadataPolicy = .some
+    @State private var secureRedacted = false
     @State private var watermarkEnabled = false
+    @State private var watermarkKind: DAMExportPreset.WatermarkSettings.Kind = .text
     @State private var watermarkText = ""
+    @State private var watermarkImagePath: String? = nil
+    @State private var watermarkImageBookmark: Data? = nil
     @State private var watermarkPosition = DAMExportPreset.WatermarkSettings.Position.bottomRight
     @State private var watermarkOpacity: Double = 0.6
     @State private var watermarkSize: Double = 0.03
+    @State private var watermarkMargin: Double = 0.02
+    @State private var watermarkPreview: NSImage?
+    @State private var watermarkPreviewTask: Task<Void, Never>?
     @State private var destinationPath = DAMExportPreset.defaultDestination
+    @State private var exportJobName = ""
+    @State private var exportNamingMode: DAMExportPreset.NamingMode = .original
     @State private var showSaveDialog = false
     @State private var newPresetName = ""
 
@@ -233,12 +291,15 @@ struct OutputWorkspaceView: View {
         DAMExportPreset(
             id: selectedPresetID, name: selectedPreset?.name ?? "Custom",
             format: format, maxDimension: maxDimension, quality: quality,
-            metadata: metadataPolicy,
+            metadata: metadataPolicy, secureRedacted: secureRedacted,
             watermark: .init(
-                enabled: watermarkEnabled, text: watermarkText,
+                enabled: watermarkEnabled, kind: watermarkKind, text: watermarkText,
+                imagePath: watermarkImagePath, imageBookmark: watermarkImageBookmark,
                 position: watermarkPosition, opacity: watermarkOpacity,
-                relativeSize: watermarkSize),
-            destinationPath: destinationPath)
+                relativeSize: watermarkSize, margin: watermarkMargin),
+            destinationPath: destinationPath,
+            exportJobName: exportJobName,
+            exportNamingMode: exportNamingMode)
     }
 
     private var selectedPreset: DAMExportPreset? {
@@ -254,9 +315,10 @@ struct OutputWorkspaceView: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            // Left: presets
-            VStack(alignment: .leading, spacing: 0) {
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                // Left: presets
+                VStack(alignment: .leading, spacing: 0) {
                 HStack {
                     Text("Export")
                         .font(.headline)
@@ -308,10 +370,12 @@ struct OutputWorkspaceView: View {
 
             Divider()
 
-            // Center: summary / processing queue / result
+            // Center: watermark preview, summary, or processing queue
             VStack(spacing: 14) {
                 if viewModel.isExporting {
                     queuePane
+                } else if watermarkEnabled, viewModel.selection.count == 1, watermarkPreview != nil {
+                    watermarkPreviewArea
                 } else {
                     Spacer()
                     Image(systemName: formatIcon(format))
@@ -361,15 +425,44 @@ struct OutputWorkspaceView: View {
                     if format.reRenders {
                         // Sizing
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("Max Dimension")
-                                .font(.subheadline.weight(.semibold))
-                            Picker("Max dimension", selection: $maxDimension) {
-                                Text("Original").tag(0)
-                                Text("1024 px").tag(1024)
-                                Text("2048 px").tag(2048)
-                                Text("4096 px").tag(4096)
+                            HStack {
+                                Text("Max Dimension")
+                                    .font(.subheadline.weight(.semibold))
+                                Spacer()
+                                if maxDimension == 0 {
+                                    Text("Original")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    TextField(
+                                        "Pixels",
+                                        value: $maxDimension,
+                                        formatter: maxDimensionFormatter
+                                    )
+                                    .frame(width: 56)
+                                    .textFieldStyle(.roundedBorder)
+                                    .multilineTextAlignment(.trailing)
+                                    Text("px")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
                             }
-                            .labelsHidden()
+
+                            if maxDimension > 0 {
+                                Slider(
+                                    value: maxDimensionSliderBinding,
+                                    in: 512...8192,
+                                    step: 64
+                                )
+                            }
+
+                            HStack(spacing: 6) {
+                                dimensionPresetButton("Original", value: 0)
+                                dimensionPresetButton("1024", value: 1024)
+                                dimensionPresetButton("2048", value: 2048)
+                                dimensionPresetButton("4096", value: 4096)
+                                dimensionPresetButton("8192", value: 8192)
+                            }
                         }
 
                         // Quality (lossy formats only)
@@ -395,9 +488,23 @@ struct OutputWorkspaceView: View {
                             }
                             .pickerStyle(.segmented)
                             .labelsHidden()
+                            .disabled(secureRedacted)
                             Text(metadataCaption)
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        // Secure redacted export
+                        VStack(alignment: .leading, spacing: 6) {
+                            Toggle("Flatten redactions", isOn: $secureRedacted)
+                                .toggleStyle(.checkbox)
+                                .font(.subheadline.weight(.semibold))
+                            Text(secureRedacted
+                                 ? "Exports are re-rendered, all metadata is stripped, and redactions are baked into pixels — the original image cannot be recovered from the exported file."
+                                 : "When enabled, exports are flattened so redactions cannot be removed and metadata is stripped.")
+                                .font(.caption2)
+                                .foregroundStyle(secureRedacted ? .orange : .secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
 
@@ -407,8 +514,36 @@ struct OutputWorkspaceView: View {
                                 .toggleStyle(.checkbox)
                                 .font(.subheadline.weight(.semibold))
                             if watermarkEnabled {
-                                TextField("Watermark text", text: $watermarkText)
-                                    .textFieldStyle(.roundedBorder)
+                                Picker("Type", selection: $watermarkKind) {
+                                    ForEach(DAMExportPreset.WatermarkSettings.Kind.allCases) { kind in
+                                        Text(kind.title).tag(kind)
+                                    }
+                                }
+                                .pickerStyle(.segmented)
+                                .labelsHidden()
+
+                                switch watermarkKind {
+                                case .text:
+                                    TextField("Watermark text", text: $watermarkText)
+                                        .textFieldStyle(.roundedBorder)
+                                case .image:
+                                    HStack(spacing: 8) {
+                                        if let path = watermarkImagePath {
+                                            Text(URL(fileURLWithPath: path).lastPathComponent)
+                                                .font(.caption)
+                                                .lineLimit(1)
+                                                .truncationMode(.middle)
+                                        } else {
+                                            Text("No image selected")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        Spacer()
+                                        Button("Choose…") { chooseWatermarkImage() }
+                                            .controlSize(.small)
+                                    }
+                                }
+
                                 Picker("Position", selection: $watermarkPosition) {
                                     ForEach(DAMExportPreset.WatermarkSettings.Position.allCases) { pos in
                                         Text(pos.title).tag(pos)
@@ -423,9 +558,19 @@ struct OutputWorkspaceView: View {
                                     Text("Size: \(Int(watermarkSize * 100))% of image edge")
                                         .font(.caption2)
                                         .foregroundStyle(.secondary)
-                                    Slider(value: $watermarkSize, in: 0.01...0.15)
+                                    Slider(value: $watermarkSize, in: 0.01...1.0)
+                                    Text("Margin: \(Int(watermarkMargin * 100))% of image edge")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                    Slider(value: $watermarkMargin, in: 0.0...0.25)
                                 }
+
+                                // Live preview + visual position pad.
+                                watermarkPreviewPane
                             }
+                        }
+                        .task(id: watermarkPreviewTrigger) {
+                            scheduleWatermarkPreviewUpdate()
                         }
                     } else {
                         Text("Originals are copied byte-for-byte — sizing, quality, "
@@ -433,6 +578,29 @@ struct OutputWorkspaceView: View {
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    // File naming
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("File Naming")
+                            .font(.subheadline.weight(.semibold))
+                        Picker("Naming", selection: $exportNamingMode) {
+                            ForEach(DAMExportPreset.NamingMode.allCases) { mode in
+                                Text(mode.title).tag(mode)
+                            }
+                        }
+                        .labelsHidden()
+
+                        if exportNamingMode != .original {
+                            TextField("Job name", text: $exportJobName)
+                                .textFieldStyle(.roundedBorder)
+                        }
+
+                        Text(namingSample)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
                     }
 
                     // Destination
@@ -463,12 +631,25 @@ struct OutputWorkspaceView: View {
             }
             .frame(width: 260)
         }
-        .onAppear {
-            userPresets = presetStore.load()
+        Divider()
+        FilmstripBar(viewModel: viewModel, assets: viewModel.assets)
+            .frame(height: 128)
+    }
+    .onAppear {
+        userPresets = presetStore.load()
             if let selected = selectedPreset { loadPreset(selected) }
         }
         .onChange(of: selectedPresetID) { _, _ in
             if let selected = selectedPreset { loadPreset(selected) }
+        }
+        .onChange(of: secureRedacted) { _, newValue in
+            if newValue {
+                metadataPolicy = .none
+                if !format.reRenders { format = .jpeg }
+            }
+        }
+        .onChange(of: format) { _, newValue in
+            if !newValue.reRenders { secureRedacted = false }
         }
         .alert("Save Export Preset", isPresented: $showSaveDialog) {
             TextField("Preset name", text: $newPresetName)
@@ -584,17 +765,63 @@ struct OutputWorkspaceView: View {
         }
     }
 
+    private var namingSample: String {
+        let ext = format.reRenders ? format.fileExtension : "jpg"
+        let sample = DAMExportService.exportFilename(
+            mode: exportNamingMode,
+            jobName: exportJobName,
+            originalBase: "IMG_1234",
+            index: 0,
+            extension: ext)
+        return "Example: \(sample)"
+    }
+
+    private var maxDimensionFormatter: NumberFormatter {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .none
+        formatter.allowsFloats = false
+        formatter.minimum = 0
+        formatter.maximum = 16384
+        return formatter
+    }
+
+    private var maxDimensionSliderBinding: Binding<Double> {
+        Binding(
+            get: { Double(max(maxDimension, 512)) },
+            set: { maxDimension = max(512, Int($0.rounded())) }
+        )
+    }
+
+    private func dimensionPresetButton(_ title: String, value: Int) -> some View {
+        Button {
+            maxDimension = value
+        } label: {
+            Text(title)
+                .font(.caption)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .disabled(maxDimension == value)
+    }
+
     private func loadPreset(_ preset: DAMExportPreset) {
         format = preset.format
         maxDimension = preset.maxDimension
         quality = preset.quality
         metadataPolicy = preset.metadata
+        secureRedacted = preset.secureRedacted == true
         watermarkEnabled = preset.watermark.enabled
+        watermarkKind = preset.watermark.kind
         watermarkText = preset.watermark.text
+        watermarkImagePath = preset.watermark.imagePath
+        watermarkImageBookmark = preset.watermark.imageBookmark
         watermarkPosition = preset.watermark.position
         watermarkOpacity = preset.watermark.opacity
         watermarkSize = preset.watermark.relativeSize
+        watermarkMargin = preset.watermark.margin
         destinationPath = preset.destinationPath
+        exportJobName = preset.exportJobName
+        exportNamingMode = preset.exportNamingMode
     }
 
     private func saveNewPreset() {
@@ -622,6 +849,130 @@ struct OutputWorkspaceView: View {
         if selectedPresetID == preset.id {
             selectedPresetID = DAMExportPreset.builtIns[0].id
         }
+    }
+
+    // MARK: - Watermark preview
+
+    private var watermarkPreviewArea: some View {
+        VStack(spacing: 12) {
+            HStack {
+                Spacer()
+                if let preview = watermarkPreview {
+                    Image(nsImage: preview)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxWidth: 720, maxHeight: 520)
+                        .cornerRadius(8)
+                } else {
+                    ProgressView("Loading preview…")
+                        .controlSize(.small)
+                }
+                Spacer()
+            }
+
+            Text("\(viewModel.selection.count) item(s) selected · watermark preview")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(16)
+    }
+
+    private var watermarkPreviewPane: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Position")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            // Visual 3x3 position pad.
+            VStack(spacing: 4) {
+                HStack(spacing: 4) {
+                    watermarkPositionButton(.topLeft, icon: "arrow.up.left")
+                    Spacer()
+                    watermarkPositionButton(.topRight, icon: "arrow.up.right")
+                }
+                HStack(spacing: 4) {
+                    Spacer()
+                    watermarkPositionButton(.center, icon: "dot.square")
+                    Spacer()
+                }
+                HStack(spacing: 4) {
+                    watermarkPositionButton(.bottomLeft, icon: "arrow.down.left")
+                    Spacer()
+                    watermarkPositionButton(.bottomRight, icon: "arrow.down.right")
+                }
+            }
+            .frame(width: 80)
+        }
+    }
+
+    private func watermarkPositionButton(
+        _ position: DAMExportPreset.WatermarkSettings.Position,
+        icon: String
+    ) -> some View {
+        Button {
+            watermarkPosition = position
+        } label: {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .medium))
+                .frame(width: 24, height: 24)
+                .foregroundStyle(watermarkPosition == position ? Color.white : Color.primary)
+                .background(
+                    watermarkPosition == position
+                        ? Color.accentColor
+                        : Color.primary.opacity(0.08),
+                    in: RoundedRectangle(cornerRadius: 4)
+                )
+        }
+        .buttonStyle(.plain)
+        .help(position.title)
+    }
+
+    private var watermarkPreviewTrigger: String {
+        let assetID = viewModel.primaryAsset?.id.map(String.init) ?? "none"
+        return "\(watermarkEnabled)-\(watermarkKind)-\(watermarkText)-\(watermarkImagePath ?? "")-\(watermarkPosition)-\(watermarkOpacity)-\(watermarkSize)-\(watermarkMargin)-\(assetID)"
+    }
+
+    private func scheduleWatermarkPreviewUpdate() {
+        watermarkPreviewTask?.cancel()
+        watermarkPreviewTask = Task {
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled else { return }
+            await updateWatermarkPreview()
+        }
+    }
+
+    private func updateWatermarkPreview() async {
+        guard watermarkEnabled,
+              let asset = viewModel.primaryAsset,
+              let assetId = asset.id
+        else {
+            await MainActor.run { watermarkPreview = nil }
+            return
+        }
+
+        let settings = formPreset.watermark.sanitized()
+        let previewMaxPixel = 320
+
+        // Load the recipe on the main actor before detaching —
+        // DAMDatabase is Sendable but not an actor, so avoid concurrent reads.
+        let recipe = await MainActor.run {
+            DAMDatabase.shared.loadEdits(assetId: assetId) ?? DAMEditState()
+        }
+
+        let image = await Task.detached(priority: .userInitiated) {
+            guard let cgImage = try? DAMEditRenderer.renderCGImage(
+                asset: asset, edit: recipe, maxPixelSize: previewMaxPixel),
+                  cgImage.width > 0, cgImage.height > 0
+            else { return nil as NSImage? }
+            let watermarked = DAMEditRenderer.applyWatermark(cgImage, settings: settings)
+            guard watermarked.width > 0, watermarked.height > 0 else { return nil as NSImage? }
+            return NSImage(
+                cgImage: watermarked,
+                size: NSSize(width: watermarked.width, height: watermarked.height))
+        }.value
+
+        guard !Task.isCancelled else { return }
+        await MainActor.run { watermarkPreview = image }
     }
 
     @ViewBuilder
@@ -663,6 +1014,24 @@ struct OutputWorkspaceView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         destinationPath = url.path
     }
+
+    @MainActor
+    private func chooseWatermarkImage() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.png, .jpeg, .tiff, .heic, .image]
+        panel.message = "Choose a watermark image"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        watermarkImagePath = url.path
+        // Create a security-scoped bookmark for persistence across launches.
+        watermarkImageBookmark = try? url.bookmarkData(
+            options: .withSecurityScope,
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil)
+    }
 }
 
 // MARK: - Edit workspace
@@ -681,16 +1050,112 @@ struct EditWorkspaceView: View {
     }
 
     var body: some View {
-        if let asset = singleSelection {
-            DAMEditView(asset: asset, viewModel: viewModel)
-        } else {
-            batchWorkspace
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                sidebar
+                Divider()
+                mainContent
+            }
+            Divider()
+            FilmstripBar(viewModel: viewModel, assets: viewModel.assets)
+                .frame(height: 128)
         }
     }
 
-    // MARK: - Batch workspace (multi-select or none)
+    // MARK: - Sidebar (always visible)
 
-    private enum BatchTask: String, CaseIterable, Identifiable {
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Edit")
+                    .font(.headline)
+                Spacer()
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            Divider()
+            let canEditSingle = singleSelection != nil
+            List(selection: $task) {
+                ForEach(EditTask.allCases) { item in
+                    Label(item.rawValue, systemImage: item.icon)
+                        .tag(item)
+                        .disabled(item == .singleAsset && !canEditSingle)
+                        .listRowInsets(EdgeInsets(top: 4, leading: 10, bottom: 4, trailing: 10))
+                }
+            }
+            .listStyle(.plain)
+            .environment(\.defaultMinListRowHeight, 28)
+        }
+        .frame(minWidth: 170, idealWidth: 200, maxWidth: 240)
+    }
+
+    // MARK: - Main content area
+
+    /// Non-optional task for switches; a nil selection falls back to the
+    /// single-asset editor so the UI is never in an undefined state.
+    private var activeTask: EditTask { task ?? .singleAsset }
+
+    @ViewBuilder
+    private var mainContent: some View {
+        switch activeTask {
+        case .singleAsset:
+            if let asset = singleSelection {
+                DAMEditView(asset: asset, viewModel: viewModel)
+            } else {
+                ContentUnavailableView(
+                    "Select One Asset",
+                    systemImage: "photo",
+                    description: Text(
+                        "Select a single asset in the filmstrip below to use the non-destructive editor.")
+                )
+            }
+        case .rating, .keywords, .redactions:
+            batchTaskContent
+        }
+    }
+
+    private var batchTaskContent: some View {
+        VStack(spacing: 16) {
+            Text("\(viewModel.selection.count) item(s) selected")
+                .font(.headline)
+                .padding(.top, 16)
+
+            if viewModel.selection.isEmpty {
+                ContentUnavailableView(
+                    "Nothing Selected",
+                    systemImage: "checkmark.circle",
+                    description: Text(
+                        "Select assets in the browser strip below or any workspace "
+                        + "(⌘-click for multiple), then apply a batch operation here.")
+                )
+            } else {
+                switch activeTask {
+                case .rating:
+                    ratingControls
+                case .keywords:
+                    keywordControls
+                case .redactions:
+                    redactionLayoutControls
+                case .singleAsset:
+                    EmptyView()
+                }
+            }
+
+            if !confirmation.isEmpty {
+                Text(confirmation)
+                    .font(.caption)
+                    .foregroundStyle(.green)
+            }
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    // MARK: - Edit tasks
+
+    private enum EditTask: String, CaseIterable, Identifiable, Hashable {
+        case singleAsset = "Edit"
         case rating = "Batch Rating"
         case keywords = "Batch Keywords"
         case redactions = "Redaction Layout"
@@ -699,6 +1164,7 @@ struct EditWorkspaceView: View {
 
         var icon: String {
             switch self {
+            case .singleAsset: return "slider.horizontal.3"
             case .rating: return "star"
             case .keywords: return "tag"
             case .redactions: return "eye.slash"
@@ -706,77 +1172,17 @@ struct EditWorkspaceView: View {
         }
     }
 
-    @State private var task: BatchTask = .rating
+    @State private var task: EditTask? = .singleAsset
     @State private var ratingDraft = 5
     @State private var keywordDraft = ""
     @State private var keywordMode: DAMViewModel.KeywordApplyMode = .add
     @State private var confirmation = ""
+    @State private var batchAIOptions = DAMRedactionDetectorService.Options()
+    /// User-defined regex patterns for batch AI redaction, one per line.
+    @State private var batchCustomPatternText: String = ""
     /// Number of boxes in the redaction layout currently on the clipboard
     /// (nil = no layout copied). Refreshed when the selection changes.
     @State private var clipboardLayoutCount: Int?
-
-    /// The original batch rating/keywords workspace, used when zero or
-    /// several assets are selected.
-    private var batchWorkspace: some View {
-        HStack(spacing: 0) {
-            // Left: task list
-            VStack(alignment: .leading, spacing: 0) {
-                HStack {
-                    Text("Edit")
-                        .font(.headline)
-                    Spacer()
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                Divider()
-                List(selection: $task) {
-                    ForEach(BatchTask.allCases) { item in
-                        Label(item.rawValue, systemImage: item.icon)
-                            .tag(item)
-                    }
-                }
-                .listStyle(.sidebar)
-            }
-            .frame(minWidth: 170, idealWidth: 200, maxWidth: 240)
-
-            Divider()
-
-            // Center: task controls + selection strip
-            VStack(spacing: 16) {
-                Text("\(viewModel.selection.count) item(s) selected")
-                    .font(.headline)
-                    .padding(.top, 16)
-
-                if viewModel.selection.isEmpty {
-                    ContentUnavailableView(
-                        "Nothing Selected",
-                        systemImage: "checkmark.circle",
-                        description: Text(
-                            "Select assets in the browser strip below or any workspace "
-                            + "(⌘-click for multiple), then apply a batch operation here.")
-                    )
-                } else {
-                    switch task {
-                    case .rating:
-                        ratingControls
-                    case .keywords:
-                        keywordControls
-                    case .redactions:
-                        redactionLayoutControls
-                    }
-                }
-
-                if !confirmation.isEmpty {
-                    Text(confirmation)
-                        .font(.caption)
-                        .foregroundStyle(.green)
-                }
-
-                Spacer()
-            }
-            .frame(maxWidth: .infinity)
-        }
-    }
 
     // MARK: - Batch redaction layout
 
@@ -785,6 +1191,14 @@ struct EditWorkspaceView: View {
     /// same boxes land proportionally on each image's frame. Existing
     /// redaction boxes on a target are REPLACED; other recipe settings
     /// (light/color/geometry) are untouched.
+
+    /// Split the batch custom-pattern editor text into non-empty regex strings.
+    private func batchCustomPatterns(from text: String) -> [String] {
+        text.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
     private var redactionLayoutControls: some View {
         VStack(spacing: 12) {
             Text("Copy a layout from a single image first "
@@ -812,11 +1226,89 @@ struct EditWorkspaceView: View {
             }
             .disabled(clipboardLayoutCount == nil || viewModel.selection.isEmpty)
             .controlSize(.small)
+
+            Divider()
+
+            Text("Or let on-device AI detect sensitive regions on every selected image.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 320)
+
+            DisclosureGroup("AI Options") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Toggle("Faces", isOn: $batchAIOptions.detectFaces)
+                        .toggleStyle(.checkbox)
+                    Toggle("Text / OCR", isOn: $batchAIOptions.detectText)
+                        .toggleStyle(.checkbox)
+                    Toggle("Barcodes & QR", isOn: $batchAIOptions.detectBarcodes)
+                        .toggleStyle(.checkbox)
+
+                    HStack {
+                        Text("Confidence")
+                            .font(.caption)
+                        Slider(value: $batchAIOptions.minimumConfidence, in: 0.05...0.95)
+                        Text(String(format: "%.0f%%", batchAIOptions.minimumConfidence * 100))
+                            .font(.caption.monospacedDigit())
+                            .frame(width: 36, alignment: .trailing)
+                    }
+
+                    if batchAIOptions.detectText {
+                        let builtIn = DAMRedactionDetectorService.Options.piiPatterns
+                        let custom = batchCustomPatterns(from: batchCustomPatternText)
+
+                        Toggle("Built-in PII patterns", isOn: Binding(
+                            get: { batchAIOptions.textPatterns.contains(where: builtIn.contains) },
+                            set: { useBuiltIn in
+                                batchAIOptions.textPatterns = useBuiltIn
+                                    ? Array(Set(builtIn + custom))
+                                    : custom
+                            }
+                        ))
+                        .toggleStyle(.checkbox)
+                        .help("Email, phone, date, address, VIN, rego, SSN, ABN, ACN, TFN, CRN, Medicare, passport, licence, bank account, certificate/transaction IDs")
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Custom regex patterns (one per line)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            TextEditor(text: $batchCustomPatternText)
+                                .font(.system(.caption, design: .monospaced))
+                                .frame(minHeight: 44, idealHeight: 70, maxHeight: 120)
+                                .border(Color.secondary.opacity(0.2), width: 1)
+                                .cornerRadius(4)
+                                .onChange(of: batchCustomPatternText) { _, _ in
+                                    let patterns = batchCustomPatterns(from: batchCustomPatternText)
+                                    let useBuiltIn = batchAIOptions.textPatterns.contains(where: builtIn.contains)
+                                    batchAIOptions.textPatterns = useBuiltIn
+                                        ? Array(Set(builtIn + patterns))
+                                        : patterns
+                                    DAMCustomPatternStore.shared.save(patterns)
+                                }
+                        }
+                    }
+                }
+            }
+            .font(.caption)
+
+            Button {
+                applyAIRedactionToSelection()
+            } label: {
+                Label("AI Redact \(viewModel.selection.count) selected", systemImage: "wand.and.rays")
+                    .frame(maxWidth: 260)
+            }
+            .disabled(viewModel.selection.isEmpty)
+            .controlSize(.small)
         }
         .task(id: viewModel.selection) {
             refreshClipboardLayoutCount()
         }
-        .onAppear { refreshClipboardLayoutCount() }
+        .onAppear {
+            refreshClipboardLayoutCount()
+            let custom = DAMCustomPatternStore.shared.load()
+            batchCustomPatternText = custom.joined(separator: "\n")
+            batchAIOptions.textPatterns = custom
+        }
     }
 
     private func refreshClipboardLayoutCount() {
@@ -840,17 +1332,67 @@ struct EditWorkspaceView: View {
             var applied = 0
             for id in ids {
                 var recipe = DAMDatabase.shared.loadEdits(assetId: id) ?? DAMEditState()
+                // Ensure a default layer exists even on empty recipes so the
+                // pasted batch lands in its own toggleable layer.
+                _ = recipe.defaultRedactionLayerID()
+                let batchLayer = DAMEditState.RedactionLayer(name: "Batch Redactions")
+                recipe.redactionLayers.append(batchLayer)
                 // Fresh ids per target — recipes are per-asset and box ids
                 // must never collide across pastes.
-                recipe.redactions = boxes.map { box in
+                let pasted = boxes.map { box -> DAMEditState.RedactionBox in
                     var copy = box
                     copy.id = UUID()
+                    copy.layerID = batchLayer.id
                     return copy
                 }
+                recipe.redactions.append(contentsOf: pasted)
                 try? DAMDatabase.shared.saveEdits(assetId: id, recipe)
                 applied += 1
             }
             confirmation = "Applied \(boxes.count) redaction box(es) to \(applied) asset(s)."
+        }
+    }
+
+    /// Run on-device AI redaction on every selected asset. Each asset gets a
+    /// new "AI Detected" layer so the results are reviewable per-image.
+    private func applyAIRedactionToSelection() {
+        let ids = viewModel.selection.compactMap { $0 }
+        let assets = viewModel.assets.filter { asset in
+            ids.contains(where: { $0 == asset.id })
+        }
+        Task {
+            var applied = 0
+            var totalBoxes = 0
+            let options = batchAIOptions
+            for asset in assets {
+                guard FileManager.default.fileExists(atPath: asset.path),
+                      let assetId = asset.id else { continue }
+                var recipe = DAMDatabase.shared.loadEdits(assetId: assetId) ?? DAMEditState()
+                _ = recipe.defaultRedactionLayerID()
+                let aiLayer = DAMEditState.RedactionLayer(name: "AI Detected")
+                recipe.redactionLayers.append(aiLayer)
+                do {
+                    let detected = try await DAMRedactionDetectorService.shared.detect(
+                        at: asset.path, options: options)
+                    let existing = recipe.redactions.filter { $0.layerID == aiLayer.id }
+                    let newBoxes = detected.filter { candidate in
+                        !existing.contains { DAMEditState.iou(candidate.rect, $0.rect) > 0.7 }
+                    }
+                    let boxes = newBoxes.map { box -> DAMEditState.RedactionBox in
+                        var copy = box
+                        copy.id = UUID()
+                        copy.layerID = aiLayer.id
+                        return copy
+                    }
+                    recipe.redactions.append(contentsOf: boxes)
+                    try? DAMDatabase.shared.saveEdits(assetId: assetId, recipe)
+                    totalBoxes += boxes.count
+                    applied += 1
+                } catch {
+                    NSLog("[AI Redact] failed for %@: %@", asset.path, "\(error)")
+                }
+            }
+            confirmation = "AI redacted \(applied) asset(s), added \(totalBoxes) box(es)."
         }
     }
 

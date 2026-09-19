@@ -19,8 +19,18 @@ struct DAMExportPreset: Codable, Equatable, Identifiable, Sendable {
     var quality: Double = 0.85
     /// How much source metadata travels into re-rendered exports.
     var metadata: MetadataPolicy = .some
+    /// When true, the export is forced through the re-render pipeline and
+    /// metadata is stripped (.none), so redactions are baked into pixels and
+    /// the original image/recipe cannot be recovered from the exported file.
+    /// Optional for backward compatibility with presets saved before this
+    /// field existed (nil = false).
+    var secureRedacted: Bool? = false
     var watermark: WatermarkSettings = .init()
     var destinationPath: String = DAMExportPreset.defaultDestination
+    /// Custom base name for exported files ("Client Samples").
+    var exportJobName: String = ""
+    /// How exported files are named.
+    var exportNamingMode: NamingMode = .original
 
     static let defaultDestination =
         ("~/Pictures/MaestroDAM Exports" as NSString).expandingTildeInPath
@@ -88,15 +98,59 @@ struct DAMExportPreset: Codable, Equatable, Identifiable, Sendable {
         }
     }
 
+    // MARK: Naming
+
+    enum NamingMode: String, Codable, CaseIterable, Identifiable, Sendable {
+        /// Keep the source filename (e.g. IMG_1234.jpg).
+        case original
+        /// {jobName}_{sourceBase} (e.g. Client Samples_IMG_1234.jpg).
+        case jobNameOriginal
+        /// {jobName}_{sequence} (e.g. Client Samples_0001.jpg).
+        case jobNameSequence
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .original: return "Original name"
+            case .jobNameOriginal: return "Job name + original"
+            case .jobNameSequence: return "Job name + sequence"
+            }
+        }
+    }
+
     // MARK: Watermark
 
     struct WatermarkSettings: Codable, Equatable, Sendable {
         var enabled = false
+        var kind: Kind = .text
         var text = ""
+        /// Path to a PNG (or other image) watermark file.
+        var imagePath: String? = nil
+        /// Security-scoped bookmark for the image file (App-Store-safe persistence).
+        var imageBookmark: Data? = nil
         var position: Position = .bottomRight
         var opacity: Double = 0.6
-        /// Font size as a fraction of the image's longest edge (0.01…0.15).
+        /// For text: font size as a fraction of the image's longest edge.
+        /// For image: longest edge of the watermark as a fraction of the canvas
+        /// longest edge (0.01…1.0).
         var relativeSize: Double = 0.03
+        /// Inset from the canvas edge as a fraction of the canvas longest edge
+        /// (0…0.25). Applied to all positional anchors except center.
+        var margin: Double = 0.02
+
+        enum Kind: String, Codable, CaseIterable, Identifiable, Sendable {
+            case text, image
+
+            var id: String { rawValue }
+
+            var title: String {
+                switch self {
+                case .text: return "Text"
+                case .image: return "Image"
+                }
+            }
+        }
 
         enum Position: String, Codable, CaseIterable, Identifiable, Sendable {
             case topLeft, topRight, bottomLeft, bottomRight, center
@@ -113,23 +167,34 @@ struct DAMExportPreset: Codable, Equatable, Identifiable, Sendable {
                 }
             }
 
-            /// Bottom-left-origin point for the text, given canvas + text size.
-            func point(canvas: CGSize, textSize: CGSize, margin: CGFloat) -> CGPoint {
+            /// Bottom-left-origin point for the watermark, given canvas + size.
+            func point(canvas: CGSize, size: CGSize, margin: CGFloat) -> CGPoint {
                 switch self {
                 case .topLeft:
-                    return CGPoint(x: margin, y: canvas.height - margin - textSize.height)
+                    return CGPoint(x: margin, y: canvas.height - margin - size.height)
                 case .topRight:
-                    return CGPoint(x: canvas.width - margin - textSize.width,
-                                   y: canvas.height - margin - textSize.height)
+                    return CGPoint(x: canvas.width - margin - size.width,
+                                   y: canvas.height - margin - size.height)
                 case .bottomLeft:
                     return CGPoint(x: margin, y: margin)
                 case .bottomRight:
-                    return CGPoint(x: canvas.width - margin - textSize.width, y: margin)
+                    return CGPoint(x: canvas.width - margin - size.width, y: margin)
                 case .center:
-                    return CGPoint(x: (canvas.width - textSize.width) / 2,
-                                   y: (canvas.height - textSize.height) / 2)
+                    return CGPoint(x: (canvas.width - size.width) / 2,
+                                   y: (canvas.height - size.height) / 2)
                 }
             }
+        }
+
+        /// Returns a copy with finite, clamped numeric fields so invalid
+        /// decoded values (NaN, infinity, negatives) can never reach Core
+        /// Graphics and produce undefined behavior.
+        func sanitized() -> WatermarkSettings {
+            var copy = self
+            copy.opacity = copy.opacity.isFinite ? max(0.1, min(1.0, copy.opacity)) : 0.6
+            copy.relativeSize = copy.relativeSize.isFinite ? max(0.01, min(1.0, copy.relativeSize)) : 0.03
+            copy.margin = copy.margin.isFinite ? max(0.0, min(0.25, copy.margin)) : 0.02
+            return copy
         }
     }
 }
@@ -157,6 +222,11 @@ extension DAMExportPreset {
             id: UUID(uuidString: "E5000000-0000-0000-0000-000000000004")!,
             name: "Archive TIFF",
             format: .tiff, maxDimension: 0, quality: 1.0, metadata: .all),
+        DAMExportPreset(
+            id: UUID(uuidString: "E5000000-0000-0000-0000-000000000005")!,
+            name: "Flattened Redacted",
+            format: .jpeg, maxDimension: 2048, quality: 0.9,
+            metadata: .none, secureRedacted: true),
     ]
 
     static func isBuiltIn(_ id: UUID) -> Bool {

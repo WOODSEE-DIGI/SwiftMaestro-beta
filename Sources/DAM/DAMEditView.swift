@@ -30,8 +30,14 @@ struct DAMEditView: View {
     @State private var isRedactToolActive = false
     /// The kind applied to newly drawn redaction boxes.
     @State private var redactKind: DAMEditState.RedactionBox.Kind = .blackout
+    /// Options passed to the on-device AI detector.
+    @State private var aiOptions = DAMRedactionDetectorService.Options()
+    /// User-defined regex patterns, one per line, persisted across sessions.
+    @State private var customPatternText: String = ""
     /// The selected redaction box (shared with the overlay; Delete removes).
     @State private var selectedRedactionID: UUID?
+    /// The layer that receives newly drawn redaction boxes.
+    @State private var activeLayerID: UUID?
     /// Feedback line for layout copy/paste actions.
     @State private var redactionStatus: String?
 
@@ -74,6 +80,8 @@ struct DAMEditView: View {
                 if isRedactToolActive {
                     DAMRedactOverlay(
                         boxes: $edit.redactions,
+                        layers: edit.redactionLayers,
+                        activeLayerID: activeLayerID ?? edit.defaultRedactionLayerID(),
                         imageSize: rendered.size,
                         kind: redactKind,
                         selectedID: $selectedRedactionID,
@@ -121,7 +129,7 @@ struct DAMEditView: View {
                         Image(systemName: isCropToolActive ? "crop" : "eye.slash")
                         Text(isCropToolActive
                              ? "Drag to draw · drag inside to move · corners to resize"
-                             : "Drag to draw a box · drag box to move · corners to resize · ⌫ deletes selected")
+                             : "Drag to draw a box · drag box to move · corners to resize · ⌫ deletes · arrows nudge · Shift locks aspect")
                         Button("Done") { disarmTools() }
                             .keyboardShortcut(.escape, modifiers: [])
                         if isRedactToolActive && selectedRedactionID != nil {
@@ -147,6 +155,23 @@ struct DAMEditView: View {
             VStack(alignment: .leading, spacing: 14) {
                 header
 
+                // Primary action bar — kept at the top of the controls so Save
+                // is always visible and users don't have to scroll to find it.
+                HStack(spacing: 10) {
+                    Button("Reset all") { edit = DAMEditState(); persistAndRender() }
+                        .disabled(edit.isIdentity)
+                        .controlSize(.small)
+                    Spacer()
+                    Button("Copy settings") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(edit.asJSON, forType: .string) }
+                        .controlSize(.small)
+                    Button("Paste") { pasteSettings() }
+                        .controlSize(.small)
+                    Button("Save") { saveNow() }
+                        .keyboardShortcut("s", modifiers: .command)
+                        .controlSize(.small)
+                        .buttonStyle(.borderedProminent)
+                }
+
                 group("Geometry", icon: "crop.rotate") {
                     HStack(spacing: 8) {
                         cropToolButton
@@ -167,32 +192,35 @@ struct DAMEditView: View {
                         Picker("Redaction kind", selection: $redactKind) {
                             Text("Blackout").tag(DAMEditState.RedactionBox.Kind.blackout)
                             Text("Blur").tag(DAMEditState.RedactionBox.Kind.blur)
+                            Text("Pixelate").tag(DAMEditState.RedactionBox.Kind.pixelate)
                         }
                         .pickerStyle(.segmented)
                         .labelsHidden()
                     }
+
+                    Toggle("Show redactions", isOn: showRedactionsBinding)
+                        .toggleStyle(.checkbox)
+                        .onChange(of: viewModel.showRedactions) { _, _ in scheduleRender() }
+
+                    aiRedactButton
+
+                    redactionLayerList
+
                     if !edit.redactions.isEmpty {
-                        Text("\(edit.redactions.count) box(es) — arm the tool, then drag "
-                             + "on the preview to add, move, or resize")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        HStack(spacing: 8) {
-                            Button("Delete selected") { deleteSelectedRedaction() }
-                                .disabled(selectedRedactionID == nil)
-                            Button("Clear all") {
-                                edit.redactions = []
-                                selectedRedactionID = nil
-                                persistAndRender()
-                            }
-                        }
-                        .controlSize(.small)
+                        redactionBoxList
                     }
+
+                    if let index = selectedBoxIndex {
+                        selectedBoxControls(index: index)
+                    }
+
                     HStack(spacing: 8) {
                         Button("Copy layout") { copyRedactionLayout() }
                             .disabled(edit.redactions.isEmpty)
                         Button("Paste layout") { pasteRedactionLayout() }
                     }
                     .controlSize(.small)
+
                     if let redactionStatus {
                         Text(redactionStatus)
                             .font(.caption2)
@@ -220,15 +248,6 @@ struct DAMEditView: View {
                     sliderRow("Sharpen", value: $edit.sharpen, range: 0...1, format: "%.2f", field: \.sharpen)
                     sliderRow("Noise reduction", value: $edit.noiseReduction, range: 0...1, format: "%.2f", field: \.noiseReduction)
                 }
-
-                HStack {
-                    Button("Reset all") { edit = DAMEditState(); persistAndRender() }
-                        .disabled(edit.isIdentity)
-                    Spacer()
-                    Button("Copy settings") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(edit.asJSON, forType: .string) }
-                    Button("Paste") { pasteSettings() }
-                }
-                .padding(.bottom, 12)
             }
             .padding(12)
         }
@@ -325,6 +344,223 @@ struct DAMEditView: View {
 
     // MARK: - Redaction actions
 
+    private var selectedBoxIndex: Int? {
+        edit.redactions.firstIndex(where: { $0.id == selectedRedactionID })
+    }
+
+    /// Toggles a layer's visibility. Selecting a hidden layer makes it visible
+    /// and active; selecting an already-active layer has no effect.
+    private func selectLayer(_ layer: DAMEditState.RedactionLayer) {
+        if let index = edit.redactionLayers.firstIndex(where: { $0.id == layer.id }) {
+            edit.redactionLayers[index].isVisible = true
+        }
+        activeLayerID = layer.id
+        scheduleRender()
+    }
+
+    private func toggleLayerVisibility(_ layer: DAMEditState.RedactionLayer) {
+        guard let index = edit.redactionLayers.firstIndex(where: { $0.id == layer.id }) else { return }
+        edit.redactionLayers[index].isVisible.toggle()
+        // If the active layer was hidden, fall back to the first visible layer
+        // so new boxes don't land on a hidden layer.
+        if layer.id == activeLayerID, !edit.redactionLayers[index].isVisible {
+            activeLayerID = edit.redactionLayers.first(where: \.isVisible)?.id ?? edit.defaultRedactionLayerID()
+        }
+        persistAndRender()
+    }
+
+    private func addRedactionLayer() {
+        let id = edit.addRedactionLayer(named: "Layer \(edit.redactionLayers.count + 1)")
+        activeLayerID = id
+        persistAndRender()
+    }
+
+    private func renameLayer(_ layer: DAMEditState.RedactionLayer, to name: String) {
+        guard let index = edit.redactionLayers.firstIndex(where: { $0.id == layer.id }) else { return }
+        edit.redactionLayers[index].name = name
+        persistAndRender()
+    }
+
+    private func deleteRedactionLayer(_ layer: DAMEditState.RedactionLayer) {
+        edit.removeRedactionLayer(id: layer.id)
+        if activeLayerID == layer.id {
+            activeLayerID = edit.redactionLayers.first?.id ?? edit.defaultRedactionLayerID()
+        }
+        persistAndRender()
+    }
+
+    /// Layer list: visibility toggles, rename inline, add/delete, and active
+    /// layer selection. New redaction boxes are added to the active layer.
+    private var redactionLayerList: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Layers")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    addRedactionLayer()
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .help("Add a new redaction layer")
+            }
+
+            ForEach(edit.redactionLayers) { layer in
+                let isActive = layer.id == (activeLayerID ?? edit.defaultRedactionLayerID())
+                HStack(spacing: 6) {
+                    Button {
+                        toggleLayerVisibility(layer)
+                    } label: {
+                        Image(systemName: layer.isVisible ? "eye" : "eye.slash")
+                            .foregroundStyle(layer.isVisible ? .primary : .secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    .help(layer.isVisible ? "Hide layer" : "Show layer")
+
+                    TextField("Layer name", text: Binding(
+                        get: { layer.name },
+                        set: { renameLayer(layer, to: $0) }
+                    ))
+                    .font(.caption)
+                    .textFieldStyle(.plain)
+
+                    Spacer()
+
+                    Button {
+                        selectLayer(layer)
+                    } label: {
+                        Image(systemName: isActive ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(isActive ? Color.accentColor : .secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    .help(isActive ? "Active layer" : "Make active layer")
+
+                    Button {
+                        deleteRedactionLayer(layer)
+                    } label: {
+                        Image(systemName: "trash")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Delete layer and its boxes")
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+                .background(isActive ? Color.accentColor.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 4))
+            }
+        }
+    }
+
+    /// Numbered box list for quick select/delete when many redactions overlap.
+    private var redactionBoxList: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("\(edit.redactions.count) box(es) — click to select, ⌫ deletes")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            FlowLayout(spacing: 6) {
+                ForEach(Array(edit.redactions.enumerated()), id: \.element.id) { index, box in
+                    let isSelected = box.id == selectedRedactionID
+                    let isVisible = boxVisibility(box)
+                    Button {
+                        selectedRedactionID = box.id
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: box.kind.systemImage)
+                            Text("\(index + 1)")
+                        }
+                        .font(.caption.weight(isSelected ? .semibold : .regular))
+                        .foregroundStyle(isSelected ? Color.accentColor : (isVisible ? .primary : .secondary))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(isSelected ? Color.accentColor : Color.secondary.opacity(0.3),
+                                        lineWidth: isSelected ? 2 : 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .opacity(isVisible ? 1 : 0.5)
+                }
+            }
+
+            HStack(spacing: 8) {
+                Button("Delete selected") { deleteSelectedRedaction() }
+                    .disabled(selectedRedactionID == nil)
+                Button("Clear all") {
+                    edit.redactions = []
+                    selectedRedactionID = nil
+                    persistAndRender()
+                }
+            }
+            .controlSize(.small)
+        }
+    }
+
+    private func boxVisibility(_ box: DAMEditState.RedactionBox) -> Bool {
+        guard let layerID = box.layerID,
+              let layer = edit.redactionLayers.first(where: { $0.id == layerID })
+        else { return true }
+        return layer.isVisible
+    }
+
+    /// Per-box editing for the selected redaction: change kind and strength.
+    private func selectedBoxControls(index: Int) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Selected box")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Picker("Kind", selection: selectedBoxKindBinding(index: index)) {
+                    ForEach(DAMEditState.RedactionBox.Kind.allCases, id: \.self) { kind in
+                        Label(kind.displayName, systemImage: kind.systemImage).tag(kind)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 180)
+            }
+
+            if edit.redactions[index].kind.hasStrength {
+                HStack {
+                    Text("Intensity")
+                        .frame(width: 70, alignment: .leading)
+                        .font(.caption)
+                    Slider(value: selectedBoxStrengthBinding(index: index), in: 0...1)
+                    Text(String(format: "%.0f%%", selectedBoxStrengthBinding(index: index).wrappedValue * 100))
+                        .frame(width: 38, alignment: .trailing)
+                        .font(.caption.monospacedDigit())
+                }
+            }
+        }
+        .padding(8)
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func selectedBoxKindBinding(index: Int) -> Binding<DAMEditState.RedactionBox.Kind> {
+        Binding(
+            get: { edit.redactions[index].kind },
+            set: { newValue in
+                edit.redactions[index].kind = newValue
+                persistAndRender()
+            }
+        )
+    }
+
+    private func selectedBoxStrengthBinding(index: Int) -> Binding<Double> {
+        Binding(
+            get: { edit.redactions[index].strength ?? 0.5 },
+            set: { newValue in
+                edit.redactions[index].strength = newValue
+                persistAndRender()
+            }
+        )
+    }
+
     private func deleteSelectedRedaction() {
         guard let id = selectedRedactionID else { return }
         edit.redactions.removeAll { $0.id == id }
@@ -351,9 +587,13 @@ struct DAMEditView: View {
             return
         }
         // Fresh ids so repeated pastes never collide with existing boxes.
+        // Pasted boxes land on the active layer so the user can toggle them
+        // as a set without disturbing other layers.
+        let targetLayerID = activeLayerID ?? edit.defaultRedactionLayerID()
         edit.redactions = boxes.map { box in
             var copy = box
             copy.id = UUID()
+            copy.layerID = targetLayerID
             return copy
         }
         selectedRedactionID = nil
@@ -414,6 +654,119 @@ struct DAMEditView: View {
         )
     }
 
+    private var showRedactionsBinding: Binding<Bool> {
+        Binding(
+            get: { viewModel.showRedactions },
+            set: { viewModel.showRedactions = $0 }
+        )
+    }
+
+    /// Split the custom-pattern editor text into non-empty regex strings.
+    private func customPatterns(from text: String) -> [String] {
+        text.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    /// Run on-device AI detection and add the resulting boxes to the active
+    /// layer so the user can review, adjust, or delete before exporting.
+    private var aiRedactButton: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                Task { await runAIRedaction() }
+            } label: {
+                Label("AI Redact", systemImage: "wand.and.rays")
+            }
+            .controlSize(.small)
+            .help("Detect faces, text, and QR codes to redact")
+
+            DisclosureGroup("AI Options") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Toggle("Faces", isOn: $aiOptions.detectFaces)
+                        .toggleStyle(.checkbox)
+                    Toggle("Text / OCR", isOn: $aiOptions.detectText)
+                        .toggleStyle(.checkbox)
+                    Toggle("Barcodes & QR", isOn: $aiOptions.detectBarcodes)
+                        .toggleStyle(.checkbox)
+
+                    HStack {
+                        Text("Confidence")
+                            .font(.caption)
+                        Slider(value: $aiOptions.minimumConfidence, in: 0.05...0.95)
+                        Text(String(format: "%.0f%%", aiOptions.minimumConfidence * 100))
+                            .font(.caption.monospacedDigit())
+                            .frame(width: 36, alignment: .trailing)
+                    }
+
+                    if aiOptions.detectText {
+                        let builtIn = DAMRedactionDetectorService.Options.piiPatterns
+                        let custom = customPatterns(from: customPatternText)
+
+                        Toggle("Built-in PII patterns", isOn: Binding(
+                            get: { aiOptions.textPatterns.contains(where: builtIn.contains) },
+                            set: { useBuiltIn in
+                                aiOptions.textPatterns = useBuiltIn
+                                    ? Array(Set(builtIn + custom))
+                                    : custom
+                            }
+                        ))
+                        .toggleStyle(.checkbox)
+                        .help("Email, phone, date, address, VIN, rego, SSN, ABN, ACN, TFN, CRN, Medicare, passport, licence, bank account, certificate/transaction IDs")
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Custom regex patterns (one per line)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            TextEditor(text: $customPatternText)
+                                .font(.system(.caption, design: .monospaced))
+                                .frame(minHeight: 44, idealHeight: 70, maxHeight: 120)
+                                .border(Color.secondary.opacity(0.2), width: 1)
+                                .cornerRadius(4)
+                                .onChange(of: customPatternText) { _, _ in
+                                    let patterns = customPatterns(from: customPatternText)
+                                    let useBuiltIn = aiOptions.textPatterns.contains(where: builtIn.contains)
+                                    aiOptions.textPatterns = useBuiltIn
+                                        ? Array(Set(builtIn + patterns))
+                                        : patterns
+                                    DAMCustomPatternStore.shared.save(patterns)
+                                }
+                        }
+                    }
+                }
+            }
+            .font(.caption)
+        }
+    }
+
+    private func runAIRedaction() async {
+        var options = aiOptions
+        options.kind = redactKind
+        do {
+            let detected = try await DAMRedactionDetectorService.shared.detect(
+                at: asset.path, options: options)
+            guard !detected.isEmpty else {
+                redactionStatus = "AI found nothing to redact."
+                return
+            }
+            let layerID = activeLayerID ?? edit.defaultRedactionLayerID()
+            let existing = edit.redactions.filter { $0.layerID == layerID }
+            let newBoxes = detected.filter { candidate in
+                !existing.contains { DAMEditState.iou(candidate.rect, $0.rect) > 0.7 }
+            }
+            guard !newBoxes.isEmpty else {
+                redactionStatus = "AI found \(detected.count) region(s), all already redacted."
+                return
+            }
+            var boxes = newBoxes
+            for index in boxes.indices { boxes[index].layerID = layerID }
+            edit.redactions.append(contentsOf: boxes)
+            persistAndRender()
+            redactionStatus = "AI added \(boxes.count) redaction box(es)."
+        } catch {
+            redactionStatus = "AI redaction failed: \(error.localizedDescription)"
+        }
+    }
+
     // MARK: - Persistence + rendering
 
     private func loadAndRender() {
@@ -423,19 +776,40 @@ struct DAMEditView: View {
         } else {
             edit = DAMEditState()
         }
+        activeLayerID = edit.defaultRedactionLayerID()
+
+        // Load persisted custom patterns once per asset open.
+        let custom = DAMCustomPatternStore.shared.load()
+        customPatternText = custom.joined(separator: "\n")
+        aiOptions.textPatterns = custom
+
         scheduleRender(immediate: true)
     }
 
-    /// Save the recipe (debounced) and re-render the preview.
+    /// Save the recipe (debounced) and re-render the preview. The save runs in
+    /// a detached task so it completes even if the user switches to another
+    /// asset before the debounce fires.
     private func persistAndRender() {
         saveTask?.cancel()
-        saveTask = Task {
+        let currentEdit = edit
+        let assetId = asset.id
+        saveTask = Task.detached(priority: .utility) {
             try? await Task.sleep(for: .milliseconds(350))
             guard !Task.isCancelled else { return }
-            guard let id = asset.id else { return }
-            try? DAMDatabase.shared.saveEdits(assetId: id, edit)
+            guard let assetId else { return }
+            try? DAMDatabase.shared.saveEdits(assetId: assetId, currentEdit)
         }
         scheduleRender()
+    }
+
+    /// Force an immediate save (Command+S) without waiting for the debounce.
+    private func saveNow() {
+        saveTask?.cancel()
+        guard let assetId = asset.id else { return }
+        let currentEdit = edit
+        Task.detached(priority: .userInitiated) {
+            try? DAMDatabase.shared.saveEdits(assetId: assetId, currentEdit)
+        }
     }
 
     private func scheduleRender(immediate: Bool = false) {
@@ -451,13 +825,16 @@ struct DAMEditView: View {
             // (crop stripped) so the overlay rect stays aligned with what the
             // user sees; disarmed, the render applies the crop as usual.
             let recipe = isCropToolActive ? edit.forCropEditing : edit
+            let showRedactions = viewModel.showRedactions
             let image = await Task.detached(priority: .userInitiated) {
-                try? DAMEditRenderer.render(asset: asset, edit: recipe, maxPixelSize: 1600)
+                try? DAMEditRenderer.render(asset: asset, edit: recipe, maxPixelSize: 1600, showRedactions: showRedactions)
             }.value
             guard !Task.isCancelled else { return }
-            rendered = image
-            renderFailed = image == nil
-            isRendering = false
+            await MainActor.run {
+                rendered = image
+                renderFailed = image == nil
+                isRendering = false
+            }
         }
     }
 

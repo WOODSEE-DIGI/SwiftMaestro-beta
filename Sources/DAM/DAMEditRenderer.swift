@@ -24,13 +24,18 @@ enum DAMEditRenderer {
 
     /// Render the asset with its edit recipe. `maxPixelSize` caps the longest
     /// edge (preview = fast path; pass 0 for full resolution exports).
-    static func render(asset: DAMAsset, edit: DAMEditState, maxPixelSize: Int = 2000) throws -> NSImage {
+    /// `showRedactions` controls whether redaction layers are burned into the
+    /// output; pass `false` to review the untouched original, `true` for
+    /// screen-recording-safe previews and exports.
+    static func render(asset: DAMAsset, edit: DAMEditState, maxPixelSize: Int = 2000, showRedactions: Bool = true) throws -> NSImage {
         var image = try loadCIImage(for: asset, maxPixelSize: maxPixelSize)
         image = applyGeometry(edit, to: image)
         image = applyTone(edit, to: image)
         image = applyColor(edit, to: image)
         image = applyEffects(edit, to: image)
-        image = applyRedactions(edit, to: image)
+        if showRedactions {
+            image = applyRedactions(edit, to: image)
+        }
         return try nsImage(from: image)
     }
 
@@ -53,6 +58,12 @@ enum DAMEditRenderer {
                 throw RenderError.cannotLoad(asset.filename)
             }
             return image
+        }
+
+        if DAMFileKind.isPDF(url) {
+            let cgImage = try DocumentThumbService.pdfCGImage(
+                url: url, maxPixelSize: maxPixelSize > 0 ? maxPixelSize : 2400)
+            return CIImage(cgImage: cgImage)
         }
 
         guard let image = CIImage(contentsOf: url) else {
@@ -106,12 +117,14 @@ enum DAMEditRenderer {
     /// (the displayed frame, post-crop); CIImage is bottom-left-origin —
     /// flip y when mapping. Blackout = solid fill; blur = gaussian with the
     /// region's own edge pixels clamped outward first (so the blur smears
-    /// with itself, not with the surroundings or transparency).
+    /// with itself, not with the surroundings or transparency). Pixelate
+    /// uses CIPixellate for a mosaic effect.
     private static func applyRedactions(_ edit: DAMEditState, to image: CIImage) -> CIImage {
-        guard !edit.redactions.isEmpty else { return image }
+        let visible = edit.visibleRedactions()
+        guard !visible.isEmpty else { return image }
         var out = image
         let extent = out.extent
-        for box in edit.redactions {
+        for box in visible {
             let rect = CGRect(
                 x: extent.minX + box.rect.x * extent.width,
                 y: extent.minY + (1 - box.rect.y - box.rect.height) * extent.height,
@@ -125,15 +138,42 @@ enum DAMEditRenderer {
             case .blackout:
                 out = CIImage(color: .black).cropped(to: rect).composited(over: out)
             case .blur:
-                let radius = max(rect.width, rect.height) * 0.12
+                let radius = blurRadius(for: rect, strength: box.strength)
                 let blurred = out
                     .clamped(to: rect)
                     .applyingFilter("CIGaussianBlur", parameters: ["inputRadius": radius])
                     .cropped(to: rect)
                 out = blurred.composited(over: out)
+            case .pixelate:
+                let scale = pixelateScale(for: rect, strength: box.strength)
+                let pixellated = out
+                    .clamped(to: rect)
+                    .applyingFilter("CIPixellate", parameters: ["inputScale": scale])
+                    .cropped(to: rect)
+                out = pixellated.composited(over: out)
             }
         }
         return out
+    }
+
+    /// Per-box blur radius. nil strength = default (0.5). Radius scales with
+    /// the larger box dimension and is clamped to avoid unreasonably soft or
+    /// invisible results.
+    private static func blurRadius(for rect: CGRect, strength: Double?) -> CGFloat {
+        let s = strength ?? 0.5
+        let base = max(rect.width, rect.height) * 0.12
+        let factor = 0.5 + (1.5 * s)   // 0.5 @ 0  →  2.0 @ 1
+        return max(2, min(base * factor, max(rect.width, rect.height) * 0.45))
+    }
+
+    /// Per-box pixelate scale. nil strength = default (0.5). Scale scales with
+    /// the smaller box dimension and is clamped so boxes never become one giant
+    /// pixel nor remain almost un-pixelated.
+    private static func pixelateScale(for rect: CGRect, strength: Double?) -> CGFloat {
+        let s = strength ?? 0.5
+        let base = min(rect.width, rect.height)
+        let factor = 0.03 + (0.18 * s) // 3% @ 0  →  21% @ 1
+        return max(4, min(base * factor, min(rect.width, rect.height) * 0.35))
     }
 
     /// Instantiate a CoreImage filter by name, set inputImage + any params,
@@ -323,29 +363,44 @@ enum DAMEditRenderer {
         return out.isEmpty ? nil : out
     }
 
-    /// Draw a text watermark onto a rendered image. Returns the input
+    /// Draw a text or image watermark onto a rendered image. Returns the input
     /// unchanged when disabled/empty. Drawn in a bitmap context the size of
-    /// the image; font scales with the longest edge; bottom-left origin.
+    /// the image; font / watermark scales with the longest edge; bottom-left origin.
     static func applyWatermark(
         _ image: CGImage,
         settings: DAMExportPreset.WatermarkSettings
     ) -> CGImage {
-        guard settings.enabled, !settings.text.isEmpty else { return image }
+        guard settings.enabled,
+              image.width > 0, image.height > 0,
+              settings.opacity.isFinite,
+              settings.relativeSize.isFinite,
+              settings.margin.isFinite
+        else { return image }
+
+        switch settings.kind {
+        case .text:
+            return applyTextWatermark(image, settings: settings)
+        case .image:
+            return applyImageWatermark(image, settings: settings)
+        }
+    }
+
+    private static func applyTextWatermark(
+        _ image: CGImage,
+        settings: DAMExportPreset.WatermarkSettings
+    ) -> CGImage {
+        guard !settings.text.isEmpty else { return image }
         let width = image.width, height = image.height
         guard width > 0, height > 0,
-              let srgb = CGColorSpace(name: CGColorSpace.sRGB),
-              let context = CGContext(
-                  data: nil, width: width, height: height,
-                  bitsPerComponent: 8, bytesPerRow: 0,
-                  space: srgb,
-                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+              let context = makeSRGBContext(width: width, height: height)
         else { return image }
 
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
 
         let canvas = CGSize(width: width, height: height)
-        let fontSize = max(
-            10.0, settings.relativeSize * Double(max(width, height)))
+        let longestEdge = Double(max(width, height))
+        let fontSize = max(10.0, settings.relativeSize * longestEdge)
+        let margin = max(2.0, settings.margin * longestEdge)
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: fontSize, weight: .medium),
             .foregroundColor: NSColor.white.withAlphaComponent(settings.opacity),
@@ -359,7 +414,7 @@ enum DAMEditRenderer {
         let attributed = NSAttributedString(string: settings.text, attributes: attributes)
         let textSize = attributed.size()
         let origin = settings.position.point(
-            canvas: canvas, textSize: textSize, margin: fontSize)
+            canvas: canvas, size: textSize, margin: margin)
 
         // Bridge into AppKit text drawing over the bitmap context.
         NSGraphicsContext.saveGraphicsState()
@@ -368,6 +423,93 @@ enum DAMEditRenderer {
         NSGraphicsContext.restoreGraphicsState()
 
         return context.makeImage() ?? image
+    }
+
+    private static func applyImageWatermark(
+        _ image: CGImage,
+        settings: DAMExportPreset.WatermarkSettings
+    ) -> CGImage {
+        guard let watermarkCGImage = resolveWatermarkImage(settings) else { return image }
+        let width = image.width, height = image.height
+        guard width > 0, height > 0,
+              let context = makeSRGBContext(width: width, height: height)
+        else { return image }
+
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        let canvas = CGSize(width: width, height: height)
+        let longestEdge = Double(max(width, height))
+        let watermarkSize = scaledWatermarkSize(
+            watermark: watermarkCGImage,
+            canvas: canvas,
+            relativeSize: settings.relativeSize)
+        let margin = max(2.0, settings.margin * longestEdge)
+        let origin = settings.position.point(
+            canvas: canvas, size: watermarkSize, margin: margin)
+
+        context.saveGState()
+        context.setAlpha(CGFloat(settings.opacity))
+        context.draw(watermarkCGImage, in: CGRect(origin: origin, size: watermarkSize))
+        context.restoreGState()
+
+        return context.makeImage() ?? image
+    }
+
+    private static func makeSRGBContext(width: Int, height: Int) -> CGContext? {
+        guard width > 0, height > 0,
+              let srgb = CGColorSpace(name: CGColorSpace.sRGB)
+        else { return nil }
+        return CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: srgb,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+    }
+
+    private static func resolveWatermarkImage(
+        _ settings: DAMExportPreset.WatermarkSettings
+    ) -> CGImage? {
+        // Prefer the security-scoped bookmark if present.
+        if let bookmark = settings.imageBookmark {
+            var isStale = false
+            guard let url = try? URL(
+                resolvingBookmarkData: bookmark,
+                options: .withSecurityScope,
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale),
+                  url.startAccessingSecurityScopedResource()
+            else { return nil }
+            defer { url.stopAccessingSecurityScopedResource() }
+            return cgImage(from: url)
+        }
+        if let path = settings.imagePath {
+            return cgImage(from: URL(fileURLWithPath: path))
+        }
+        return nil
+    }
+
+    private static func cgImage(from url: URL) -> CGImage? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        return CGImageSourceCreateImageAtIndex(source, 0, nil)
+    }
+
+    private static func scaledWatermarkSize(
+        watermark: CGImage,
+        canvas: CGSize,
+        relativeSize: Double
+    ) -> CGSize {
+        let watermarkLongest = max(watermark.width, watermark.height)
+        let canvasLongest = max(canvas.width, canvas.height)
+        guard watermarkLongest > 0,
+              canvasLongest.isFinite, canvasLongest > 0,
+              relativeSize.isFinite
+        else { return .zero }
+        let targetLongest = max(1.0, relativeSize * Double(canvasLongest))
+        let scale = targetLongest / Double(watermarkLongest)
+        guard scale.isFinite else { return .zero }
+        return CGSize(
+            width: CGFloat(watermark.width) * scale,
+            height: CGFloat(watermark.height) * scale)
     }
 }
 

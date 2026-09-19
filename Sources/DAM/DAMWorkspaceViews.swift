@@ -211,12 +211,26 @@ private struct FilmstripCell: View {
                 .strokeBorder(isSelected ? Color.accentColor : .clear, lineWidth: 3)
         )
         .help(asset.filename)
-        .task {
-            do {
-                image = try await ThumbnailService.shared.thumbnail(
-                    for: URL(fileURLWithPath: asset.path))
-            } catch {
-                guard !Task.isCancelled else { return }
+        .task(id: asset.id) {
+            await loadImage()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .damEditsDidChange)) { notification in
+            guard let changedAssetId = notification.userInfo?["assetId"] as? Int64,
+                  changedAssetId == asset.id else { return }
+            Task { await loadImage() }
+        }
+    }
+
+    private func loadImage() async {
+        do {
+            let loaded = try await ThumbnailService.shared.redactedThumbnail(for: asset)
+            await MainActor.run {
+                image = loaded
+                loadFailed = false
+            }
+        } catch {
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
                 loadFailed = true
             }
         }

@@ -267,4 +267,32 @@ extension DAMEditState.CropRect {
             height: height
         )
     }
+
+    // MARK: - Aspect-ratio-locked resize
+
+    /// Resize while preserving `aspect`, anchoring the corner specified by
+    /// the fixed edges. The larger of the two computed dimensions drives the
+    /// result, matching common image-editor Shift-drag behavior.
+    func lockedTo(
+        aspect: Double,
+        fixedLeft: Double? = nil,
+        fixedRight: Double? = nil,
+        fixedTop: Double? = nil,
+        fixedBottom: Double? = nil,
+        minSize: Double
+    ) -> DAMEditState.CropRect {
+        var out = self
+        // Preserve the larger dimension's intent.
+        if out.width > out.height * aspect {
+            out.width = max(out.height * aspect, minSize)
+        } else {
+            out.height = max(out.width / aspect, minSize)
+        }
+        // Re-anchor the unchanged corner.
+        if let fixedRight = fixedRight { out.x = fixedRight - out.width }
+        if let fixedBottom = fixedBottom { out.y = fixedBottom - out.height }
+        if let fixedLeft = fixedLeft { out.x = fixedLeft }
+        if let fixedTop = fixedTop { out.y = fixedTop }
+        return out
+    }
 }
