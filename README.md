@@ -169,11 +169,7 @@ SwiftMaestro is a **multi-panel workspace** with a tiling canvas. Each panel can
 
 **Agents** — Sidebar launcher listing all Maestro and project agents. Quick access to switch between AI assistants.
 
-![Agents and Apps side panel](<Image Assets/Agents-Apps.png>)
-
 **Apps Launcher** — Sidebar launcher for all available workspace panels, organized by category.
-
-![Apps Launcher side panel](<Image Assets/side-panel-apps.png>)
 
 **Bus Monitor** — Real-time agent bus traffic viewer — watch agents communicate with each other.
 

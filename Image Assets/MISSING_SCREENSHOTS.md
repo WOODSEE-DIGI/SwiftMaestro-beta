@@ -49,8 +49,20 @@ This file tracks workspace screenshots still needed for the **Built-In Panels** 
 
 ## System & Monitoring
 
+- [ ] Agents
+- [ ] Apps Launcher
 - [ ] Bus Monitor
 - [ ] Resource Monitor
+
+---
+
+## Outdated images — do not use
+
+These files still exist in `Image Assets/` but show old UI/branding (e.g. “Navigator” instead of “Maestro”) and should be replaced before use:
+
+- `Agents-Apps.png`
+- `side-panel-apps.png`
+- `side-panel-agents-plans-working-directory.png`
 
 ---
 
