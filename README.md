@@ -71,7 +71,7 @@ See [CHANGELOG.md](CHANGELOG.md) for earlier releases.
 
 ---
 
-## Built-In Panels (40+ Mini-Apps)
+## Built-In Panels (40+ Apps)
 
 SwiftMaestro is a **multi-panel workspace** with a tiling canvas. Each panel can be docked in the main window or floated as its own window. Drag, drop, resize, and rearrange freely.
 
