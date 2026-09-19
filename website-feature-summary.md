@@ -90,7 +90,7 @@ Think of it as a **personal AI operating system** that lives on your Mac.
 Main AI chat interface with streaming responses, tool calls, image attachments, markdown rendering, and code block syntax highlighting. The AI can read and write files, run commands, and manage your workspace — all from the chat.
 
 **Apple Mail**
-A webmail-style mail reader that connects to your Mail.app data. Browse mailboxes, read messages with full HTML rendering, compose replies. No tracking, no analytics — just your mail, surfaced through the AI.
+Full mailbox integration inside SwiftMaestro. Browse, search, read, and compose using your live Mail.app data with no external servers and no tracking. Everything stays on your Mac unless you choose to let the built-in AI agent help manage your mailbox.
 
 **WhatsApp**
 Full WhatsApp chat interface with QR code pairing for multi-device. Read conversations, send messages, search chats — all self-hosted through a local bridge.
