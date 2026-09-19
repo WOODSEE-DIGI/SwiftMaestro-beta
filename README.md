@@ -103,8 +103,6 @@ SwiftMaestro is a **multi-panel workspace** with a tiling canvas. Each panel can
 
 **Plans** — Per-agent markdown plan documents with version history. Create, edit, and track project plans that persist across sessions.
 
-![Plans side panel](<Image Assets/side-panel-agents-plans-working-directory.png>)
-
 ### Data & Databases
 
 **MaestroDB** — A built-in Airtable-style database. Create your own bases with custom tables and typed fields. Grid and kanban views, CSV import/export, linked rows, and full agent control — the AI can query and modify your databases through conversation.
