@@ -29,6 +29,7 @@ This file tracks workspace screenshots still needed for the **Built-In Panels** 
 
 ## Documents & Content
 
+- [ ] Documents
 - [ ] Whiteboard
 - [ ] HTML Builder
 - [ ] Overlay Builder
@@ -41,6 +42,7 @@ This file tracks workspace screenshots still needed for the **Built-In Panels** 
 
 ## Business & Finance
 
+- [ ] Books
 - [ ] News
 
 ## Web & Research
@@ -63,6 +65,16 @@ These files still exist in `Image Assets/` but show old UI/branding (e.g. “Nav
 - `Agents-Apps.png`
 - `side-panel-apps.png`
 - `side-panel-agents-plans-working-directory.png`
+
+---
+
+## Composite placeholder — replace with individual screenshots
+
+`MaestroDocs-MaestroBooks-MaestroDB.png` is currently used once under **MaestroDB** as a temporary composite. It should be replaced with separate, dedicated screenshots for:
+
+- [ ] MaestroDB
+- [ ] MaestroDocs
+- [ ] MaestroBooks
 
 ---
 

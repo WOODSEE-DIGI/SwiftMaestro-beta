@@ -117,8 +117,6 @@ SwiftMaestro is a **multi-panel workspace** with a tiling canvas. Each panel can
 
 **Documents** — View and author PDF, DOCX, RTF, ODT, HTML, CSV, XLSX, PPTX, and EPUB — all native, no external dependencies. The AI can create and edit documents in any of these formats.
 
-![MaestroDocs workspace](<Image Assets/MaestroDocs-MaestroBooks-MaestroDB.png>)
-
 **Whiteboard** — Freeform canvas with sticky notes, text boxes, shapes, image insertion, pen/eraser drawing, grid, zoom, and export to PNG, JPEG, PDF, or SVG. Brainstorm and sketch with the AI.
 
 **HTML Builder** — WYSIWYG HTML/CSS editor with live preview. 26 HTML snippets, 21 CSS helpers, 5 templates, copy-to-clipboard, and auto-format. The AI can build web pages for you.
@@ -144,8 +142,6 @@ SwiftMaestro is a **multi-panel workspace** with a tiling canvas. Each panel can
 ### Business & Finance
 
 **Books** — Full invoicing system: clients, invoices, products, expenses, PDF invoice generation, and Xero accounting sync. The AI can create invoices, track expenses, and manage your books.
-
-![MaestroBooks workspace](<Image Assets/MaestroDocs-MaestroBooks-MaestroDB.png>)
 
 **Stocks** — Stock watchlist with quotes, add/remove symbols. The AI can check stock prices and manage your watchlist.
 
