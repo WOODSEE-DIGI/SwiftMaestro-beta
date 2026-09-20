@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="Sources/Resources/Assets.xcassets/AppIcon.appiconset/icon_512x512.png" alt="SwiftMaestro icon" width="128" height="128">
+</p>
+
 # SwiftMaestro
 
 What is SwiftMaestro? SM is our answer to the Broligarchy & Silicon Valley greed. Sm is born as an application that is very similar to your operating system MacOS; it has over a dozen apps bundled inside all included for free to allow you the freedom to cut ties with software that bills you every month. Apps cover Accounting, Word & spreadsheets & databases, html website building, RSS feed reader, Digital Asset Management DAM and many more. Each application is interconnected, and the built-in Maestro Chat Agent can help you work across them — for example, building a database from a local or online dataset — only when you ask it to.
@@ -10,7 +14,7 @@ Currently SwiftMaestro is A native macOS AI assistant that runs large language m
 
 | | |
 |---|---|
-| **40+** built-in panels | **150+** agent tools |
+| **40+** built-in apps | **150+** agent tools |
 | **30+** integrations | **14** settings tabs |
 | **13** agent categories | **11** bundled MCP servers |
 | **Zero** external dependencies | **Zero** cloud required |
