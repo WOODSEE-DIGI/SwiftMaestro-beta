@@ -21,7 +21,7 @@ Currently SwiftMaestro is A native macOS AI assistant that runs large language m
 
 - **100% local inference** — models run in-process on the Apple Silicon GPU through MLX. No external runtime or server to start or manage.
 - **Self-contained** — on first launch a guided onboarding walks you through picking, downloading, and loading a model. Nothing is hard-wired to a specific machine. Bundles FFmpeg, WhisperKit models, and 11 MCP servers inside the app.
-- **Multi-Agent Workspace** — create named agents for different domains (coding, research, writing, operations). The Navigator delegates tasks and keeps project agents coordinated.
+- **Multi-Agent Workspace** — create named agents for different domains (coding, research, writing, operations). Maestro delegates tasks and keeps project agents coordinated when you ask.
 - **Durable Memory** — native memory tools backed by SQLite + vector search, stored locally at `~/.ai-context/memory`.
 - **Files & Documents** — read and write files within authorised folders, with extraction for text, Markdown, DOCX, PDF, RTF, HTML, and arbitrary binary. Index documents into searchable chunks.
 - **Apple Integration** — create Reminders, Calendar events, and Notes; search and manage Contacts; run and create Apple Shortcuts; use Apple Notes, Numbers, and Calendar data in chat.
@@ -77,11 +77,11 @@ SwiftMaestro is a **multi-panel workspace** with a tiling canvas. Each panel can
 
 ### Chat & Communication
 
-**Chat** — Main AI chat interface with streaming responses, tool calls, image attachments, markdown rendering, and code block syntax highlighting. The AI can read and write files, run commands, and manage your workspace — all from the chat.
+**Chat** — Main AI chat interface with streaming responses, tool calls, image attachments, markdown rendering, and code block syntax highlighting. Ask the AI to help read and write files, run commands, or manage your workspace — only when you want it.
 
 ![Chat with shell command approval](<Image Assets/Maestro Coder Shell Command approval.png>)
 
-**Apple Mail** — Full mailbox integration inside SwiftMaestro. Browse, search, read, and compose using your live Mail.app data with no external servers and no tracking. Everything stays on your Mac unless you choose to let the built-in AI agent help manage your mailbox.
+**Apple Mail** — Full mailbox integration inside SwiftMaestro. Browse, search, read, and compose using your live Mail.app data with no external servers and no tracking. Everything stays on your Mac unless you choose to ask the built-in AI agent to help manage your mailbox.
 
 **WhatsApp** — Full WhatsApp chat interface with QR code pairing for multi-device. Read conversations, send messages, search chats — all self-hosted through a local bridge.
 
@@ -89,45 +89,45 @@ SwiftMaestro is a **multi-panel workspace** with a tiling canvas. Each panel can
 
 ### Productivity & Organization
 
-**Notes** — A Markdown editor with folder tree, iCloud sync, and web clipper integration. Create, edit, and search your notes. The AI can read and write directly to your Notes vault.
+**Notes** — A Markdown editor with folder tree, iCloud sync, and web clipper integration. Create, edit, and search your notes. The AI can help you read, search, and update your Notes vault — on request.
 
-**Apple Notes** — Browse your native Apple Notes folders and notes. The AI can search, read, and create notes in Apple's own Notes app.
+**Apple Notes** — Browse your native Apple Notes folders and notes. The AI can help you search, read, and create notes in Apple's own Notes app when asked.
 
-**Calendar** — EventKit-based calendar view. See your events, create new ones, search across your schedule. The AI can manage your calendar through conversation.
+**Calendar** — EventKit-based calendar view. See your events, create new ones, search across your schedule. The AI can help you view, create, and search calendar events through conversation.
 
 **Reminders** — EventKit-based reminders listing. Create, list, and manage your reminders through the AI.
 
 **Contacts** — Native macOS contacts browser. Search, create, update, and delete contacts — all through the AI.
 
-**Kanban** — Kanban boards with drag-and-drop cards, columns, search, and full agent control. The AI can create boards, add cards, move them between columns, and track your projects.
+**Kanban** — Kanban boards with drag-and-drop cards, columns, search, and agent-assisted control. The AI can help you create boards, add cards, move them between columns, and track your projects.
 
 **Plans** — Per-agent markdown plan documents with version history. Create, edit, and track project plans that persist across sessions.
 
 ### Data & Databases
 
-**MaestroDB** — A built-in Airtable-style database. Create your own bases with custom tables and typed fields. Grid and kanban views, CSV import/export, linked rows, and full agent control — the AI can query and modify your databases through conversation.
+**MaestroDB** — A built-in Airtable-style database. Create your own bases with custom tables and typed fields. Grid and kanban views, CSV import/export, linked rows, and agent-assisted control — the AI can help you query and modify your databases through conversation.
 
 ![MaestroDB, MaestroBooks and MaestroDocs workspace](<Image Assets/MaestroDocs-MaestroBooks-MaestroDB.png>)
 
-**SQLite** — Direct SQLite database querying. Inspect schemas, run read/write queries with safety gating. The AI can analyze any SQLite database on your system.
+**SQLite** — Direct SQLite database querying. Inspect schemas, run read/write queries with safety gating. The AI can help you inspect and analyze any SQLite database on your system.
 
-**Numbers** — Browse Apple Numbers files, navigate sheets and tables, read and write cells. The AI can work with your spreadsheets directly.
+**Numbers** — Browse Apple Numbers files, navigate sheets and tables, read and write cells. The AI can help you work with your spreadsheets directly.
 
 ### Documents & Content
 
-**Documents** — View and author PDF, DOCX, RTF, ODT, HTML, CSV, XLSX, PPTX, and EPUB — all native, no external dependencies. The AI can create and edit documents in any of these formats.
+**Documents** — View and author PDF, DOCX, RTF, ODT, HTML, CSV, XLSX, PPTX, and EPUB — all native, no external dependencies. The AI can help you create and edit documents in any of these formats.
 
 **Whiteboard** — Freeform canvas with sticky notes, text boxes, shapes, image insertion, pen/eraser drawing, grid, zoom, and export to PNG, JPEG, PDF, or SVG. Brainstorm and sketch with the AI.
 
-**HTML Builder** — WYSIWYG HTML/CSS editor with live preview. 26 HTML snippets, 21 CSS helpers, 5 templates, copy-to-clipboard, and auto-format. The AI can build web pages for you.
+**HTML Builder** — WYSIWYG HTML/CSS editor with live preview. 26 HTML snippets, 21 CSS helpers, 5 templates, copy-to-clipboard, and auto-format. The AI can help you build web pages.
 
 **Overlay Builder** — Live video overlay designer at 1920x1080. Multiple overlay types (text, images, shapes, clocks), safe area guides, transparent PNG export, and HTML overlay editor.
 
 ### Media & Creative
 
-**Photos** — Browse Apple Photos albums and assets. The AI can search and reference your photo library.
+**Photos** — Browse Apple Photos albums and assets. The AI can help you search and reference your photo library.
 
-**Maps** — Apple Maps with geocoding, reverse geocoding, and point-of-interest search. The AI can find locations, calculate distances, and open directions.
+**Maps** — Apple Maps with geocoding, reverse geocoding, and point-of-interest search. The AI can help you find locations, calculate distances, and open directions.
 
 **DAM (Digital Asset Management)** — Import, search, rate, tag, and filter your media library. Includes an interactive Storage Map sunburst, Duplicate Finder, DAM Statistics, Volume Health, and imports from Lightroom, Capture One, Final Cut Pro XML, and DaVinci Resolve. Full-text search across assets with keyword management and filter views.
 
@@ -141,17 +141,17 @@ SwiftMaestro is a **multi-panel workspace** with a tiling canvas. Each panel can
 
 ### Business & Finance
 
-**Books** — Full invoicing system: clients, invoices, products, expenses, PDF invoice generation, and Xero accounting sync. The AI can create invoices, track expenses, and manage your books.
+**Books** — Full invoicing system: clients, invoices, products, expenses, PDF invoice generation, and Xero accounting sync. The AI can help you create invoices, track expenses, and manage your books.
 
-**Stocks** — Stock watchlist with quotes, add/remove symbols. The AI can check stock prices and manage your watchlist.
+**Stocks** — Stock watchlist with quotes, add/remove symbols. The AI can help you check stock prices and manage your watchlist.
 
 ![Stocky / Blocky finance workspace](<Image Assets/Maestro-Blocky-Stocky.png>)
 
-**News** — Apple News launcher — the AI can open articles in Apple News.
+**News** — Apple News launcher — the AI can help you open articles in Apple News.
 
 ### Web & Research
 
-**Web Browser** — Internal browser with WebKit and Chromium CDP engines, tabs, and navigation. The AI can browse the web, read pages, and extract information.
+**Web Browser** — Internal browser with WebKit and Chromium CDP engines, tabs, and navigation. The AI can help you browse the web, read pages, and extract information.
 
 ![Web research / online search workspace](<Image Assets/Maestro online search old.png>)
 
@@ -181,7 +181,7 @@ SwiftMaestro is a **multi-panel workspace** with a tiling canvas. Each panel can
 
 ### Panel-Aware Agents
 
-Tools **activate automatically** when the matching panel is open. Maestro can open any panel for you — including ones you've never opened. The AI knows what you're looking at and can work with it.
+Tools **activate automatically** when the matching panel is open. Maestro can open any panel for you when asked — including ones you've never opened. The AI sees only what you're looking at so it can assist with it, not replace you.
 
 ### Multi-Agent Architecture
 
@@ -193,7 +193,7 @@ Tools **activate automatically** when the matching panel is open. Maestro can op
 
 ### Agent Bus
 
-Reactive pub/sub message broker for agent-to-agent communication. Persistent polling workers that auto-reply to bus requests. Real-time bus traffic viewer panel.
+Reactive pub/sub message broker for agent-to-agent communication. Persistent polling workers that respond to bus requests you’ve configured. Real-time bus traffic viewer panel.
 
 ### Built-in Intelligence
 
@@ -493,7 +493,7 @@ By default models are stored under `~/Library/Application Support/SwiftMaestro/m
 ### Multi-Agent Communication
 - Agent bus for reactive pub/sub messaging
 - Inter-agent messaging inbox
-- Persistent polling workers for auto-reply
+- Persistent polling workers that respond to configured bus requests
 
 ---
 
