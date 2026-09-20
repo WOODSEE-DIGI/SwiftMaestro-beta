@@ -95,9 +95,9 @@ SwiftMaestro is a **multi-panel workspace** with a tiling canvas. Each panel can
 
 **Calendar** — EventKit-based calendar view. See your events, create new ones, search across your schedule. The AI can help you view, create, and search calendar events through conversation.
 
-**Reminders** — EventKit-based reminders listing. Create, list, and manage your reminders through the AI.
+**Reminders** — EventKit-based reminders listing. Create, list, and manage your reminders — or ask the AI to help when you want it.
 
-**Contacts** — Native macOS contacts browser. Search, create, update, and delete contacts — all through the AI.
+**Contacts** — Native macOS contacts browser. Search, create, update, and delete contacts directly — or ask the AI to help when you want it.
 
 **Kanban** — Kanban boards with drag-and-drop cards, columns, search, and agent-assisted control. The AI can help you create boards, add cards, move them between columns, and track your projects.
 
