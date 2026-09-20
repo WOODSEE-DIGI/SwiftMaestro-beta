@@ -6,7 +6,7 @@
 
 ## What It Is
 
-SwiftMaestro is a **fully local AI assistant for macOS** that runs entirely on your Mac's GPU — no cloud, no servers, no accounts, no subscriptions. It's a multi-panel workspace where you chat with an AI that can actually *do things*: read your files, manage your calendar, send emails, run shell commands, build documents, track finances, and much more.
+SwiftMaestro is a **fully local macOS assistant** that runs entirely on your Mac's GPU — no cloud, no servers, no accounts, no subscriptions. It's a multi-panel workspace where you chat with the **Maestro Chat Agent** to help you *do things*: read your files, manage your calendar, send emails, run shell commands, build documents, track finances, and much more — only when you ask.
 
 Think of it as a **personal AI operating system** that lives on your Mac.
 
@@ -60,11 +60,11 @@ Think of it as a **personal AI operating system** that lives on your Mac.
 ### Panel-Aware Agents
 - Tools **activate automatically** when the matching panel is open
 - Maestro can open any panel for you when asked — including ones you've never opened
-- The AI sees only what you're looking at so it can assist with it, not replace you
+- The Maestro Chat Agent sees only what you're looking at so it can assist with it, not replace you
 
 ### Multi-Agent Architecture
-- **Maestro (Navigator)** — your main AI conductor that delegates to specialists
-- **Project Agents** — long-lived per-project AI assistants with their own working directory, model, and tool set
+- **Maestro (Navigator)** — your main conductor that delegates to specialists
+- **Project Agents** — long-lived per-project assistants with their own working directory, model, and tool set
 - **13 Agent Categories** — Coding, Research, Analysis, Create, Writing, Design, DevOps, Testing, Data, Marketing, Legal, Finance, General
 - **Task Tool** — launch temporary specialist agents for parallel work
 - **Compact Tool Mode** — large tool sets deferred behind discovery for cleaner conversations
@@ -75,7 +75,7 @@ Think of it as a **personal AI operating system** that lives on your Mac.
 - Real-time bus traffic viewer panel
 
 ### Built-in Intelligence
-- **Mid-Generation Steering** — inject new input while the AI is generating
+- **Mid-Generation Steering** — inject new input while the Maestro Chat Agent is generating
 - **Reasoning Split** — separates thinking from final answer
 - **Chat Compaction** — auto-summarizes when approaching context limits
 - **Model Capability Validation** — verifies tool support per model at startup
@@ -87,36 +87,36 @@ Think of it as a **personal AI operating system** that lives on your Mac.
 ### Chat & Communication
 
 **Chat**
-Main AI chat interface with streaming responses, tool calls, image attachments, markdown rendering, and code block syntax highlighting. Ask the AI to help read and write files, run commands, or manage your workspace — only when you want it.
+Main chat interface with streaming responses, tool calls, image attachments, markdown rendering, and code block syntax highlighting. Ask the Maestro Chat Agent to help read and write files, run commands, or manage your workspace — only when you want it.
 
 **Apple Mail**
-Full mailbox integration inside SwiftMaestro. Browse, search, read, and compose using your live Mail.app data with no external servers and no tracking. Everything stays on your Mac unless you choose to ask the built-in AI agent to help manage your mailbox.
+Full mailbox integration inside SwiftMaestro. Browse, search, read, and compose using your live Mail.app data with no external servers and no tracking. Everything stays on your Mac unless you choose to ask the Maestro Chat Agent to help manage your mailbox.
 
 **WhatsApp**
 Full WhatsApp chat interface with QR code pairing for multi-device. Read conversations, send messages, search chats — all self-hosted through a local bridge.
 
 **Discord**
-Browse servers and channels, read messages, archive conversations, send messages. Connect your Discord workspace to the AI.
+Browse servers and channels, read messages, archive conversations, send messages. Connect your Discord workspace to the Maestro Chat Agent.
 
 ### Productivity & Organization
 
 **Notes**
-A Markdown editor with folder tree, iCloud sync, and web clipper integration. Create, edit, and search your notes. The AI can help you read, search, and update your Notes vault — on request.
+A Markdown editor with folder tree, iCloud sync, and web clipper integration. Create, edit, and search your notes. The Maestro Chat Agent can help you read, search, and update your Notes vault — on request.
 
 **Apple Notes**
-Browse your native Apple Notes folders and notes. The AI can help you search, read, and create notes in Apple's own Notes app when asked.
+Browse your native Apple Notes folders and notes. The Maestro Chat Agent can help you search, read, and create notes in Apple's own Notes app when asked.
 
 **Calendar**
-EventKit-based calendar view. See your events, create new ones, search across your schedule. The AI can help you view, create, and search calendar events through conversation.
+EventKit-based calendar view. See your events, create new ones, search across your schedule. The Maestro Chat Agent can help you view, create, and search calendar events through conversation.
 
 **Reminders**
-EventKit-based reminders listing. Create, list, and manage your reminders — or ask the AI to help when you want it.
+EventKit-based reminders listing. Create, list, and manage your reminders — or ask the Maestro Chat Agent to help when you want it.
 
 **Contacts**
-Native macOS contacts browser. Search, create, update, and delete contacts directly — or ask the AI to help when you want it.
+Native macOS contacts browser. Search, create, update, and delete contacts directly — or ask the Maestro Chat Agent to help when you want it.
 
 **Kanban**
-Kanban boards with drag-and-drop cards, columns, search, and agent-assisted control. The AI can help you create boards, add cards, move them between columns, and track your projects.
+Kanban boards with drag-and-drop cards, columns, search, and agent-assisted control. The Maestro Chat Agent can help you create boards, add cards, move them between columns, and track your projects.
 
 **Plans**
 Per-agent markdown plan documents with version history. Create, edit, and track project plans that persist across sessions.
@@ -124,24 +124,24 @@ Per-agent markdown plan documents with version history. Create, edit, and track 
 ### Data & Databases
 
 **MaestroDB**
-A built-in Airtable-style database. Create your own bases with custom tables and typed fields. Grid and kanban views, CSV import/export, linked rows, and agent-assisted control — the AI can help you query and modify your databases through conversation.
+A built-in Airtable-style database. Create your own bases with custom tables and typed fields. Grid and kanban views, CSV import/export, linked rows, and agent-assisted control — the Maestro Chat Agent can help you query and modify your databases through conversation.
 
 **SQLite**
-Direct SQLite database querying. Inspect schemas, run read/write queries with safety gating. The AI can help you inspect and analyze any SQLite database on your system.
+Direct SQLite database querying. Inspect schemas, run read/write queries with safety gating. The Maestro Chat Agent can help you inspect and analyze any SQLite database on your system.
 
 **Numbers**
-Browse Apple Numbers files, navigate sheets and tables, read and write cells. The AI can help you work with your spreadsheets directly.
+Browse Apple Numbers files, navigate sheets and tables, read and write cells. The Maestro Chat Agent can help you work with your spreadsheets directly.
 
 ### Documents & Content
 
 **Documents**
-View and author PDF, DOCX, RTF, ODT, HTML, CSV, XLSX, PPTX, and EPUB — all native, no external dependencies. The AI can help you create and edit documents in any of these formats.
+View and author PDF, DOCX, RTF, ODT, HTML, CSV, XLSX, PPTX, and EPUB — all native, no external dependencies. The Maestro Chat Agent can help you create and edit documents in any of these formats.
 
 **Whiteboard**
-Freeform canvas with sticky notes, text boxes, shapes, image insertion, pen/eraser drawing, grid, zoom, and export to PNG, JPEG, PDF, or SVG. Brainstorm and sketch with the AI.
+Freeform canvas with sticky notes, text boxes, shapes, image insertion, pen/eraser drawing, grid, zoom, and export to PNG, JPEG, PDF, or SVG. Brainstorm and sketch with the Maestro Chat Agent.
 
 **HTML Builder**
-WYSIWYG HTML/CSS editor with live preview. 26 HTML snippets, 21 CSS helpers, 5 templates, copy-to-clipboard, and auto-format. The AI can help you build web pages.
+WYSIWYG HTML/CSS editor with live preview. 26 HTML snippets, 21 CSS helpers, 5 templates, copy-to-clipboard, and auto-format. The Maestro Chat Agent can help you build web pages.
 
 **Overlay Builder**
 Live video overlay designer at 1920x1080. Multiple overlay types (text, images, shapes, clocks), safe area guides, transparent PNG export, and HTML overlay editor.
@@ -149,10 +149,10 @@ Live video overlay designer at 1920x1080. Multiple overlay types (text, images, 
 ### Media & Creative
 
 **Photos**
-Browse Apple Photos albums and assets. The AI can help you search and reference your photo library.
+Browse Apple Photos albums and assets. The Maestro Chat Agent can help you search and reference your photo library.
 
 **Maps**
-Apple Maps with geocoding, reverse geocoding, and point-of-interest search. The AI can help you find locations, calculate distances, and open directions.
+Apple Maps with geocoding, reverse geocoding, and point-of-interest search. The Maestro Chat Agent can help you find locations, calculate distances, and open directions.
 
 **DAM (Digital Asset Management)**
 Import, search, rate, tag, and filter your media library. Full-text search across assets with keyword management and filter views.
@@ -163,18 +163,18 @@ Record voice notes with local WhisperKit transcription. Export transcriptions to
 ### Business & Finance
 
 **Books**
-Full invoicing system: clients, invoices, products, expenses, PDF invoice generation, and Xero accounting sync. The AI can help you create invoices, track expenses, and manage your books.
+Full invoicing system: clients, invoices, products, expenses, PDF invoice generation, and Xero accounting sync. The Maestro Chat Agent can help you create invoices, track expenses, and manage your books.
 
 **Stocks**
-Stock watchlist with quotes, add/remove symbols. The AI can help you check stock prices and manage your watchlist.
+Stock watchlist with quotes, add/remove symbols. The Maestro Chat Agent can help you check stock prices and manage your watchlist.
 
 **News**
-Apple News launcher — the AI can help you open articles in Apple News.
+Apple News launcher — the Maestro Chat Agent can help you open articles in Apple News.
 
 ### Web & Research
 
 **Web Browser**
-Internal browser with WebKit and Chromium CDP engines, tabs, and navigation. The AI can help you browse the web, read pages, and extract information.
+Internal browser with WebKit and Chromium CDP engines, tabs, and navigation. The Maestro Chat Agent can help you browse the web, read pages, and extract information.
 
 **Plugins**
 WKWebView-hosted panels for third-party integrations. Bundled: Mastodon, Bluesky, Patreon. User-installable from the plugins directory.
@@ -182,10 +182,10 @@ WKWebView-hosted panels for third-party integrations. Bundled: Mastodon, Bluesky
 ### System & Monitoring
 
 **Terminal**
-Live PTY shell with VT100/ANSI emulation plus agent command log. Run commands directly or watch the AI execute them.
+Live PTY shell with VT100/ANSI emulation plus agent command log. Run commands directly or watch the Maestro Chat Agent execute them.
 
 **Agents**
-Sidebar launcher listing all Maestro and project agents. Quick access to switch between AI assistants.
+Sidebar launcher listing all Maestro and project agents. Quick access to switch between agents.
 
 **Apps Launcher**
 Sidebar launcher for all available workspace panels, organized by category.
