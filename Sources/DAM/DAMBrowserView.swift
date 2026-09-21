@@ -25,6 +25,9 @@ struct DAMBrowserView: View {
     @AppStorage("dam.treeWidth") private var treeWidth: Double = 240
     @AppStorage("dam.previewWidth") private var previewWidth: Double = 300
     @AppStorage("dam.metaSideWidth") private var metaSideWidth: Double = 320
+    @AppStorage("dam.catalogSectionExpanded") private var catalogSectionExpanded = true
+    @AppStorage("dam.volumesSectionExpanded") private var volumesSectionExpanded = true
+    @AppStorage("dam.volumesSectionHeight") private var volumesSectionHeight: Double = 160
     /// Metadata workspace viewing option: full-page list, or a large preview
     /// of the selected image above the list (persisted across launches).
     @AppStorage("dam.metadataViewMode") private var metadataViewMode: MetadataViewMode = .list
@@ -40,6 +43,12 @@ struct DAMBrowserView: View {
     @State private var newCollectionName = ""
     @State private var newCollectionKind: DAMCollection.Kind = .manual
     @State private var newCollectionParentID: Int64?
+    @State private var showingOffloadSheet = false
+    @State private var appLoadStartDate = Date()
+    @State private var quickCropAsset: DAMAsset? = nil
+    @State private var isPreparingShare = false
+    @State private var shareProgressDone = 0
+    @State private var shareProgressTotal = 0
 
     // Smart predicate sheet state
     @State private var predicateQuery = ""
@@ -97,10 +106,17 @@ struct DAMBrowserView: View {
                     if isInitialLoading {
                         retroLoadingOverlay
                     }
+                    if isPreparingShare {
+                        sharePreparationOverlay
+                    }
                 }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .sheet(item: $quickCropAsset) { asset in
+            DAMQuickCropSheet(asset: asset) { quickCropAsset = nil }
+        }
         .task {
+            appLoadStartDate = Date()
             isInitialLoading = true
             loadingStep = "Starting volume monitor…"
             Task { await DAMVolumeStore.shared.startMonitoring() }
@@ -150,14 +166,30 @@ struct DAMBrowserView: View {
         .sheet(isPresented: $showingCollectionSheet) {
             collectionSheet
         }
+        .sheet(isPresented: $showingOffloadSheet) {
+            DAMOffloadSheet(viewModel: viewModel)
+        }
     }
 
-    /// Retro loading overlay for the initial catalog load. Shows a scanning
-    /// indicator plus the current step so the user knows their data is coming.
+    /// Loading overlay for the initial catalog load. Uses the same themed
+    /// block-bar graphic as the Storage Map scan so the app skin stays
+    /// consistent.
     private var retroLoadingOverlay: some View {
         VStack(spacing: 20) {
             Spacer()
-            RetroScanIndicator(message: loadingStep)
+            TimelineView(.periodic(from: .now, by: 0.5)) { context in
+                DAMThemeProgressOverlay(
+                    message: loadingStep,
+                    fraction: nil,
+                    countText: nil,
+                    etaText: nil,
+                    elapsedSeconds: context.date.timeIntervalSince(appLoadStartDate),
+                    currentItem: nil,
+                    secondaryFraction: nil,
+                    secondaryCountText: nil,
+                    secondaryEtaText: nil
+                )
+            }
             if viewModel.assets.isEmpty {
                 Text("MaestroDAM is loading your catalog. This may take a moment for large libraries.")
                     .font(.caption)
@@ -166,6 +198,31 @@ struct DAMBrowserView: View {
                     .frame(maxWidth: 360)
                     .padding(.horizontal, 24)
             }
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.ultraThinMaterial)
+    }
+
+    /// Progress overlay shown while cropping/redacting selected assets before
+    /// handing them to the system share sheet.
+    private var sharePreparationOverlay: some View {
+        VStack(spacing: 20) {
+            Spacer()
+            let fraction = shareProgressTotal > 0
+                ? Double(shareProgressDone) / Double(shareProgressTotal)
+                : 0.0
+            DAMThemeProgressOverlay(
+                message: "Preparing share…",
+                fraction: fraction,
+                countText: "\(shareProgressDone) / \(shareProgressTotal)",
+                etaText: nil,
+                elapsedSeconds: nil,
+                currentItem: nil,
+                secondaryFraction: nil,
+                secondaryCountText: nil,
+                secondaryEtaText: nil
+            )
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -183,6 +240,12 @@ struct DAMBrowserView: View {
     }
 
     // MARK: - Toolbar
+
+    /// Selected assets, used by the Share and Crop toolbar actions.
+    private var selectedAssets: [DAMAsset] {
+        viewModel.assets
+            .filter { viewModel.selection.contains($0.id) }
+    }
 
     private var toolbar: some View {
         HStack(spacing: 12) {
@@ -205,6 +268,9 @@ struct DAMBrowserView: View {
                 Button { viewModel.importFolderWithPanel() } label: {
                     Label("Import Folder…", systemImage: "folder")
                 }
+                Button { showingOffloadSheet = true } label: {
+                    Label("Offload & Import…", systemImage: "externaldrive.badge.timemachine")
+                }
                 Button { viewModel.importLightroomCSVWithPanel() } label: {
                     Label("Import Lightroom CSV…", systemImage: "tablecells")
                 }
@@ -215,7 +281,7 @@ struct DAMBrowserView: View {
                 Label("Import…", systemImage: "square.and.arrow.down")
             }
             .disabled(viewModel.isImporting || viewModel.isImportingLightroom
-                       || viewModel.isImportingLrcat)
+                       || viewModel.isImportingLrcat || viewModel.isOffloading)
 
             if viewModel.isImportingLrcat {
                 Button {
@@ -338,6 +404,62 @@ struct DAMBrowserView: View {
                     }
                     .frame(width: 90)
 
+                    Button {
+                        viewModel.togglePrivacyMode()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: viewModel.privacyModeActive
+                                  ? "eye.slash.fill"
+                                  : "eye.slash")
+                            if viewModel.privacyScanningCount > 0 {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .frame(width: 12, height: 12)
+                            }
+                        }
+                    }
+                    .help(viewModel.privacyModeActive
+                          ? "Privacy mode is on — redactions are visible"
+                          : "Privacy mode — hide faces and sensitive content for screen sharing")
+                    .buttonStyle(BorderlessButtonStyle())
+                    .foregroundStyle(viewModel.privacyModeActive ? .red : .primary)
+
+                    Divider().frame(height: 16)
+
+                    // ROTATE: rotate all selected assets 90° counter-clockwise (matches icon).
+                    Button {
+                        viewModel.rotateSelectedAssets(clockwise: false)
+                    } label: {
+                        Image(systemName: "rotate.left")
+                    }
+                    .help("Rotate selected 90° counter-clockwise")
+                    .buttonStyle(BorderlessButtonStyle())
+                    .disabled(viewModel.selection.isEmpty)
+
+                    // SHARE: flatten edits/redactions then present the native
+                    // macOS share sheet. Originals are only shared untouched
+                    // when no visible edits exist.
+                    Button {
+                        Task { await prepareAndShareSelectedAssets() }
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .help("Share selected assets")
+                    .buttonStyle(BorderlessButtonStyle())
+                    .disabled(selectedAssets.isEmpty || isPreparingShare)
+
+                    // CROP: open a Quick Look-style modal crop sheet.
+                    Button {
+                        if let asset = viewModel.primaryAsset ?? selectedAssets.first {
+                            quickCropAsset = asset
+                        }
+                    } label: {
+                        Image(systemName: "crop")
+                    }
+                    .help("Quick crop")
+                    .buttonStyle(BorderlessButtonStyle())
+                    .disabled(viewModel.selection.count != 1)
+
                     TextField("Search catalog", text: Binding(
                         get: { viewModel.searchText },
                         set: { viewModel.searchText = $0 }
@@ -361,85 +483,166 @@ struct DAMBrowserView: View {
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
     }
 
+    // MARK: - Share preparation
+
+    private func prepareAndShareSelectedAssets() async {
+        let assets = selectedAssets
+        guard !assets.isEmpty else { return }
+
+        await MainActor.run {
+            isPreparingShare = true
+            shareProgressDone = 0
+            shareProgressTotal = assets.count
+        }
+        defer {
+            Task { @MainActor in
+                isPreparingShare = false
+                shareProgressDone = 0
+                shareProgressTotal = 0
+            }
+        }
+
+        do {
+            let urls = try await DAMShareService.prepareShareURLs(for: assets) { done, total in
+                Task { @MainActor in
+                    shareProgressDone = done
+                    shareProgressTotal = total
+                }
+            }
+            await MainActor.run {
+                presentSharePicker(urls: urls)
+            }
+        } catch {
+            await MainActor.run {
+                viewModel.setErrorMessage("Could not prepare assets for sharing: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Present `NSSharingServicePicker` anchored to the key window.
+    private func presentSharePicker(urls: [URL]) {
+        guard !urls.isEmpty,
+              let window = NSApp.keyWindow,
+              let contentView = window.contentView else { return }
+        let picker = NSSharingServicePicker(items: urls as [Any])
+        picker.show(
+            relativeTo: contentView.bounds,
+            of: contentView,
+            preferredEdge: .minY
+        )
+    }
+
     // MARK: - Left: Folders tree
 
     private var folderTreePanel: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Library")
-                    .font(.headline)
-                Spacer()
-                Button {
-                    Task { await viewModel.refreshFolderTree() }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                volumesSidebarSection
+
+                DAMSidebarDivider { delta in
+                    let headerHeight: CGFloat = 28
+                    let dividerHeight: CGFloat = 1
+                    let minCatalogHeight: CGFloat = 60
+                    let maxVolumes = max(60, geometry.size.height - dividerHeight - headerHeight * 2 - minCatalogHeight)
+                    volumesSectionHeight = min(max(60, volumesSectionHeight + delta), maxVolumes)
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .help("Rescan catalog folders, volumes, and collections")
+
+                catalogSidebarSection
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .frame(maxHeight: .infinity, alignment: .top)
+        }
+    }
 
-            Divider()
+    /// Catalog section: All Assets, Collections, and catalog folder tree.
+    private var catalogSidebarSection: some View {
+        DAMSidebarSection(
+            title: "Catalog",
+            isExpanded: $catalogSectionExpanded,
+            height: nil
+        ) {
+            Button {
+                Task { await viewModel.refreshFolderTree() }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.caption)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Rescan catalog folders, volumes, and collections")
+        } content: {
+            List(selection: catalogSidebarSelection) {
+                    Label("All Assets", systemImage: "photo.on.rectangle.angled")
+                        .tag("")
 
-            List(selection: sidebarSelection) {
-                Label("All Assets", systemImage: "photo.on.rectangle.angled")
-                    .tag("")
-
-                Section {
-                    if viewModel.collections.isEmpty {
-                        Text("No collections yet")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .tag("collections.empty")
-                            .disabled(true)
-                    } else {
-                        ForEach(flattenedCollectionItems) { item in
-                            CollectionRow(
-                                collection: item.collection,
-                                count: viewModel.collectionAssetCounts[item.collection.id ?? -1],
-                                depth: item.depth,
-                                viewModel: viewModel,
-                                onRename: {
-                                    prepareCollectionSheet(editing: item.collection)
-                                }
-                            )
-                            .tag(collectionTag(for: item.collection))
-                        }
-                    }
-                } header: {
-                    HStack {
-                        Text("Collections")
-                        Spacer()
-                        Button {
-                            prepareCollectionSheet(editing: nil)
-                        } label: {
-                            Image(systemName: "plus")
+                    Section {
+                        if viewModel.collections.isEmpty {
+                            Text("No collections yet")
                                 .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .tag("collections.empty")
+                                .disabled(true)
+                        } else {
+                            ForEach(flattenedCollectionItems) { item in
+                                CollectionRow(
+                                    collection: item.collection,
+                                    count: viewModel.collectionAssetCounts[item.collection.id ?? -1],
+                                    depth: item.depth,
+                                    viewModel: viewModel,
+                                    onRename: {
+                                        prepareCollectionSheet(editing: item.collection)
+                                    }
+                                )
+                                .tag(collectionTag(for: item.collection))
+                            }
                         }
-                        .buttonStyle(.plain)
+                    } header: {
+                        HStack {
+                            Text("Collections")
+                            Spacer()
+                            Button {
+                                prepareCollectionSheet(editing: nil)
+                            } label: {
+                                Image(systemName: "plus")
+                                    .font(.caption)
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                            .help("Create new collection")
+                        }
+                    }
+
+                    if !viewModel.folderTree.isEmpty {
+                        Section("Folders") {
+                            OutlineGroup(viewModel.folderTree, children: \.children) { node in
+                                folderRow(for: node)
+                                    .tag(node.path)
+                                    .contextMenu { folderContextMenu(for: node) }
+                            }
+                        }
+                    }
+                }
+                .listStyle(.sidebar)
+            }
+    }
+
+    /// Volumes section: mounted drives outside the catalog.
+    private var volumesSidebarSection: some View {
+        DAMSidebarSection(
+            title: "Volumes",
+            isExpanded: $volumesSectionExpanded,
+            height: CGFloat(volumesSectionHeight)
+        ) {
+            List(selection: volumesSidebarSelection) {
+                if viewModel.volumeNodes.isEmpty {
+                    Text("No volumes mounted")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
-                        .help("Create new collection")
-                    }
-                }
-
-                if !viewModel.folderTree.isEmpty {
-                    Section("Catalog") {
-                        OutlineGroup(viewModel.folderTree, children: \.children) { node in
-                            folderRow(for: node)
-                                .tag(node.path)
-                                .contextMenu { folderContextMenu(for: node) }
-                        }
-                    }
-                }
-
-                if !viewModel.volumeNodes.isEmpty {
-                    Section("Volumes") {
-                        ForEach(viewModel.volumeNodes) { node in
-                            folderRow(for: node, icon: "internaldrive")
-                                .tag(node.path)
-                        }
+                        .tag("volumes.empty")
+                        .disabled(true)
+                } else {
+                    ForEach(viewModel.volumeNodes) { node in
+                        folderRow(for: node, icon: "internaldrive")
+                            .tag(node.path)
                     }
                 }
             }
@@ -447,21 +650,42 @@ struct DAMBrowserView: View {
         }
     }
 
-    private var sidebarSelection: Binding<String?> {
+    private var volumePaths: Set<String> {
+        Set(viewModel.volumeNodes.map(\.path))
+    }
+
+    private var catalogSidebarSelection: Binding<String?> {
         Binding<String?>(
             get: {
                 if let id = viewModel.selectedCollectionID {
                     return "collection:\(id)"
                 }
-                return viewModel.selectedFolder ?? ""
+                guard let folder = viewModel.selectedFolder else { return "" }
+                return volumePaths.contains(folder) ? nil : folder
             },
             set: { tag in
                 if let tag, tag.hasPrefix("collection:") {
                     let idString = String(tag.dropFirst("collection:".count))
                     viewModel.selectedCollectionID = Int64(idString)
+                    viewModel.selectedFolder = nil
                 } else {
+                    viewModel.selectedCollectionID = nil
                     viewModel.selectedFolder = (tag?.isEmpty == false) ? tag : nil
                 }
+            }
+        )
+    }
+
+    private var volumesSidebarSelection: Binding<String?> {
+        Binding<String?>(
+            get: {
+                guard let folder = viewModel.selectedFolder,
+                      volumePaths.contains(folder) else { return nil }
+                return folder
+            },
+            set: { tag in
+                viewModel.selectedCollectionID = nil
+                viewModel.selectedFolder = tag
             }
         )
     }
@@ -569,6 +793,7 @@ struct DAMBrowserView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .frame(maxWidth: .infinity)
             .padding(.leading, CGFloat(depth) * 14)
             .contentShape(Rectangle())
             .contextMenu { collectionContextMenu() }
@@ -686,6 +911,8 @@ struct DAMBrowserView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .frame(maxWidth: .infinity)
+        .contentShape(Rectangle())
     }
 
     // MARK: - Shared center pieces

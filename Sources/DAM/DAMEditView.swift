@@ -175,8 +175,8 @@ struct DAMEditView: View {
                 group("Geometry", icon: "crop.rotate") {
                     HStack(spacing: 8) {
                         cropToolButton
-                        iconButton("rotate.left", "Rotate left") { edit.rotateQuarterTurns = (edit.rotateQuarterTurns + 3) % 4; persistAndRender() }
-                        iconButton("rotate.right", "Rotate right") { edit.rotateQuarterTurns = (edit.rotateQuarterTurns + 1) % 4; persistAndRender() }
+                        iconButton("rotate.left", "Rotate left") { edit.rotateQuarterTurns = (edit.rotateQuarterTurns + 1) % 4; persistAndRender() }
+                        iconButton("rotate.right", "Rotate right") { edit.rotateQuarterTurns = (edit.rotateQuarterTurns + 3) % 4; persistAndRender() }
                         iconButton("arrow.left.and.right.righttriangle.left.righttriangle.right", "Flip horizontal") { edit.flipHorizontal.toggle(); persistAndRender() }
                     }
                     sliderRow("Straighten", value: $edit.straightenDegrees, range: -45...45, format: "%.1f°", field: \.straightenDegrees)

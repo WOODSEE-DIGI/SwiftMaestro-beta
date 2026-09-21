@@ -50,6 +50,7 @@ enum DAMEditRenderer {
             throw RenderError.cannotLoad(asset.filename)
         }
 
+        let baseImage: CIImage
         if DAMFileKind.isCameraRAW(url) {
             let data = try RAWPreviewDecoder.jpegPreviewForRAW(
                 atPath: url.path,
@@ -57,19 +58,21 @@ enum DAMEditRenderer {
             guard let image = CIImage(data: data) else {
                 throw RenderError.cannotLoad(asset.filename)
             }
-            return image
-        }
-
-        if DAMFileKind.isPDF(url) {
+            baseImage = image
+        } else if DAMFileKind.isPDF(url) {
             let cgImage = try DocumentThumbService.pdfCGImage(
                 url: url, maxPixelSize: maxPixelSize > 0 ? maxPixelSize : 2400)
             return CIImage(cgImage: cgImage)
+        } else {
+            guard let image = CIImage(contentsOf: url) else {
+                throw RenderError.cannotLoad(asset.filename)
+            }
+            baseImage = image
         }
 
-        guard let image = CIImage(contentsOf: url) else {
-            throw RenderError.cannotLoad(asset.filename)
-        }
-        return image
+        // CIImage(contentsOf:) and CIImage(data:) do NOT apply EXIF orientation.
+        // Apply the cataloged orientation so renders match the thumbnail/grid view.
+        return baseImage.oriented(forExifOrientation: Int32(asset.orientation))
     }
 
     // MARK: - Chain stages

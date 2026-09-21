@@ -28,6 +28,9 @@ final class NotesViewModel {
     /// Root items of the vault folder tree.
     private(set) var rootItems: [NoteItem] = []
 
+    /// Root items for additional folders outside the vault.
+    private(set) var externalRootItems: [NoteItem] = []
+
     /// Currently selected folder or note.
     var selectedItem: NoteItem? = nil {
         didSet { Task { await loadSelectedNote() } }
@@ -74,6 +77,7 @@ final class NotesViewModel {
     /// needing a `NotesViewModel` instance injected.
     nonisolated static let vaultPathKey = "notes.vaultPath"
     nonisolated static let autosaveKey = "notes.autosaveEnabled"
+    nonisolated static let externalFolderPathsKey = "notes.externalFolderPaths"
     private nonisolated static let defaultVaultName = "notes"
 
     init() {
@@ -135,12 +139,13 @@ final class NotesViewModel {
         }
     }
 
-    /// Initial load of the vault tree, injecting the AI Memory folder into the root items.
+    /// Initial load of the vault tree, injecting the AI Memory folder into the root items,
+    /// and loading any additional external folders registered by the user.
     func load() async {
         do {
             try await service.ensureVault()
             var items = try await service.listDirectory(at: vaultURL)
-            
+
             // Append permanent AI Memory folder link pointing to the shared
             // memory store (iCloud or ~/.ai-context/memory). Listed SHALLOWLY
             // (two levels) and tolerantly so the ~43K-file store is never
@@ -183,10 +188,32 @@ final class NotesViewModel {
             }
 
             rootItems = items
+            externalRootItems = await loadExternalFolders()
             errorMessage = nil
         } catch {
             errorMessage = "Could not load notes vault: \(error.localizedDescription)"
             NSLog("[NOTES] load failed: \(error)")
+        }
+    }
+
+    /// Load all user-registered external folders as editable root items.
+    private func loadExternalFolders() async -> [NoteItem] {
+        let paths = UserDefaults.standard.stringArray(forKey: Self.externalFolderPathsKey) ?? []
+        var items: [NoteItem] = []
+        for path in paths {
+            let url = URL(fileURLWithPath: path)
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            do {
+                let children = try await service.listDirectory(at: url)
+                var item = NoteItem(url: url, isFolder: true, modifiedAt: Date(), children: children)
+                item.isReadOnly = false
+                items.append(item)
+            } catch {
+                NSLog("[NOTES] could not list external folder \(path): \(error)")
+            }
+        }
+        return items.sorted {
+            $0.name.localizedCompare($1.name) == .orderedAscending
         }
     }
 
@@ -268,8 +295,13 @@ final class NotesViewModel {
         }
     }
 
-    /// Delete a note or folder.
+    /// Delete a note or folder. For external-folder roots this only removes the
+    /// sidebar reference; the original folder on disk is left untouched.
     func delete(item: NoteItem) async {
+        if isExternalRoot(item) {
+            removeExternalFolder(item)
+            return
+        }
         if let reason = readOnlyGuard(for: item, action: .delete) {
             errorMessage = reason
             return
@@ -318,6 +350,67 @@ final class NotesViewModel {
             }
         }
         #endif
+    }
+
+    /// Add an external folder to the sidebar as an editable reference.
+    func addExternalFolder() {
+        #if os(macOS)
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Add Folder"
+        panel.message = "Select a folder outside the vault to browse and edit"
+        panel.begin { result in
+            guard result == .OK, let url = panel.url else { return }
+            Task { @MainActor in
+                self.registerExternalFolder(url)
+            }
+        }
+        #endif
+    }
+
+    /// Remove an external folder from the sidebar. This does not delete the original folder.
+    func removeExternalFolder(_ item: NoteItem) {
+        var paths = UserDefaults.standard.stringArray(forKey: Self.externalFolderPathsKey) ?? []
+        paths.removeAll { $0 == item.url.path }
+        UserDefaults.standard.set(paths, forKey: Self.externalFolderPathsKey)
+        if selectedItem?.id == item.id { selectedItem = nil }
+        Task { await load() }
+    }
+
+    private func registerExternalFolder(_ url: URL) {
+        let resolved = url.resolvingSymlinksInPath()
+        guard resolved.path != vaultURL.path else {
+            errorMessage = "That folder is already the vault."
+            return
+        }
+        var paths = UserDefaults.standard.stringArray(forKey: Self.externalFolderPathsKey) ?? []
+        guard !paths.contains(resolved.path) else { return }
+        paths.append(resolved.path)
+        UserDefaults.standard.set(paths, forKey: Self.externalFolderPathsKey)
+        Task { await load() }
+    }
+
+    /// Import external files or folders into the selected folder (or vault root).
+    /// - Parameters:
+    ///   - urls: Items to import.
+    ///   - copy: When true, originals are copied. When false, symlinks are created.
+    func importItems(_ urls: [URL], copy: Bool) async {
+        let destination = selectedFolder()
+        do {
+            for url in urls {
+                // Dropped/imported URLs may be security-scoped even though the app
+                // is non-sandboxed; acquire access for the duration of the I/O.
+                let started = url.startAccessingSecurityScopedResource()
+                defer { if started { url.stopAccessingSecurityScopedResource() } }
+                _ = try await service.importItem(at: url, into: destination, copy: copy)
+            }
+            await load()
+        } catch {
+            errorMessage = "Could not import: \(error.localizedDescription)"
+            NSLog("[NOTES] import failed: \(error)")
+        }
     }
 
     /// Reset the vault to the default local Documents location.
@@ -417,6 +510,12 @@ final class NotesViewModel {
         return item.isFolder ? item.url : item.url.deletingLastPathComponent()
     }
 
+    /// Display name of the folder that would receive an imported item.
+    func selectedFolderName() -> String {
+        guard let item = selectedItem else { return vaultURL.lastPathComponent }
+        return item.isFolder ? item.name : item.url.deletingLastPathComponent().lastPathComponent
+    }
+
     /// Build a bounded, tolerant, read-only listing of the AI Memory root so the
     /// huge shared store (tens of thousands of files) is never eagerly expanded
     /// into the Notes tree, and a single unreadable subfolder can't hide the whole
@@ -504,6 +603,11 @@ final class NotesViewModel {
     func isInMemory(_ item: NoteItem) -> Bool {
         guard let memoryRoot = memoryRootURL else { return false }
         return item.url.path == memoryRoot.path || item.url.path.hasPrefix(memoryRoot.path + "/")
+    }
+
+    /// True if the item is one of the registered external-folder roots.
+    func isExternalRoot(_ item: NoteItem) -> Bool {
+        externalRootItems.contains { $0.id == item.id }
     }
 
     /// True if the item is a load-bearing part of the memory store that must not

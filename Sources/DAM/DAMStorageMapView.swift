@@ -57,10 +57,26 @@ struct DAMStorageMapView: View {
                 }
             } else if isScanning, let scanProgress {
                 TimelineView(.periodic(from: .now, by: 0.5)) { context in
-                    StorageMapProgressOverlay(
-                        progress: scanProgress,
-                        startDate: scanStartDate,
-                        now: context.date
+                    let elapsed = scanStartDate.map { context.date.timeIntervalSince($0) }
+                    let message = scanProgress.message
+                        ?? (scanProgress.currentPath.map { "Scanning \(($0 as NSString).lastPathComponent)…" }
+                            ?? "Scanning…")
+                    DAMThemeProgressOverlay(
+                        message: message,
+                        fraction: scanProgress.totalBytes > 0 ? scanProgress.fraction : nil,
+                        countText: scanProgress.totalBytes > 0
+                            ? "\(formatBytes(scanProgress.scannedBytes)) / \(formatBytes(scanProgress.totalBytes))"
+                            : nil,
+                        etaText: scanProgress.totalBytes > 0
+                            ? (scanProgress.estimatedSecondsRemaining.map { "ETA \(formatDuration($0))" })
+                            : nil,
+                        elapsedSeconds: elapsed,
+                        currentItem: scanProgress.currentPath,
+                        secondaryFraction: scanProgress.totalItems > 0 ? scanProgress.itemFraction : nil,
+                        secondaryCountText: scanProgress.totalItems > 0
+                            ? "Folders: \(scanProgress.completedItems) / \(scanProgress.totalItems)"
+                            : nil,
+                        secondaryEtaText: nil
                     )
                 }
             } else if let errorMessage {
@@ -311,6 +327,21 @@ struct DAMStorageMapView: View {
         }
         return copy
     }
+
+    private func formatBytes(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    private func formatDuration(_ seconds: Double) -> String {
+        let total = max(0, Int(seconds))
+        if total < 60 { return "\(total)s" }
+        let minutes = total / 60
+        let secs = total % 60
+        if minutes < 60 { return "\(minutes)m \(secs)s" }
+        let hours = minutes / 60
+        let mins = minutes % 60
+        return "\(hours)h \(mins)m"
+    }
 }
 
 // MARK: - Row
@@ -404,183 +435,5 @@ private struct FolderSizeRow: View {
     }
 }
 
-// MARK: - Progress overlay
-
-private struct StorageMapProgressOverlay: View {
-    let progress: ScanProgress
-    let startDate: Date?
-    let now: Date
-
-    @Environment(ThemeStore.self) private var theme
-
-    var body: some View {
-        VStack(spacing: 14) {
-            Text(title)
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .frame(width: barWidth)
-
-            if progress.totalBytes > 0 {
-                blockBar(fraction: progress.fraction)
-
-                HStack(spacing: 4) {
-                    Text("\(Int(progress.fraction * 100))%")
-                        .frame(minWidth: 36, alignment: .leading)
-                    Spacer()
-                    Text("\(formatBytes(progress.scannedBytes)) / \(formatBytes(progress.totalBytes))")
-                    Spacer()
-                    Text("ETA \(etaString)")
-                        .frame(minWidth: 70, alignment: .trailing)
-                }
-                .font(.system(.caption2, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .frame(width: barWidth)
-
-                if progress.totalItems > 0 {
-                    blockBar(fraction: progress.itemFraction, blockHeight: 10)
-
-                    HStack(spacing: 4) {
-                        Text("Folders: \(progress.completedItems) / \(progress.totalItems)")
-                        Spacer()
-                        Text("ETA \(itemEtaString)")
-                    }
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(.secondary.opacity(0.85))
-                    .frame(width: barWidth)
-                }
-
-                Text("Elapsed \(liveElapsed)")
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(.secondary.opacity(0.8))
-            } else {
-                RetroIndeterminateBar(theme: theme, startDate: startDate, now: now)
-            }
-        }
-        .padding(24)
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-
-    private let blockCount = 48
-    private var blockSize: CGFloat { 8 }
-    private var barWidth: CGFloat { CGFloat(blockCount) * (blockSize + 2) - 2 }
-
-    private var title: String {
-        if let message = progress.message { return message }
-        guard let path = progress.currentPath else { return "Scanning…" }
-        let name = (path as NSString).lastPathComponent
-        return "Scanning \(name.isEmpty ? path : name)…"
-    }
-
-    private var liveElapsed: String {
-        let elapsed = startDate.map { now.timeIntervalSince($0) } ?? progress.elapsedSeconds
-        return formatDuration(elapsed)
-    }
-
-    private func blockBar(fraction: Double, blockHeight: CGFloat = 20) -> some View {
-        HStack(spacing: 2) {
-            ForEach(0..<blockCount, id: \.self) { index in
-                RoundedRectangle(cornerRadius: 1)
-                    .fill(Double(index) < Double(blockCount) * fraction ? theme.accent : Color.primary.opacity(0.12))
-                    .frame(width: blockSize, height: blockHeight)
-            }
-        }
-        .frame(width: barWidth, alignment: .leading)
-    }
-
-    private var etaString: String {
-        guard progress.scannedBytes > 0, let eta = progress.estimatedSecondsRemaining else {
-            return "calculating…"
-        }
-        return formatDuration(eta)
-    }
-
-    private var itemEtaString: String {
-        guard progress.completedItems > 0, progress.totalItems > progress.completedItems else {
-            return "calculating…"
-        }
-        let elapsed = startDate.map { now.timeIntervalSince($0) } ?? progress.elapsedSeconds
-        guard elapsed > 0 else { return "calculating…" }
-        let rate = elapsed / Double(progress.completedItems)
-        let remaining = Double(progress.totalItems - progress.completedItems)
-        return formatDuration(rate * remaining)
-    }
-
-    private func formatDuration(_ seconds: Double) -> String {
-        let total = max(0, Int(seconds))
-        if total < 60 { return "\(total)s" }
-        let minutes = total / 60
-        let secs = total % 60
-        if minutes < 60 { return "\(minutes)m \(secs)s" }
-        let hours = minutes / 60
-        let mins = minutes % 60
-        return "\(hours)h \(mins)m"
-    }
-
-    private func formatBytes(_ bytes: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
-    }
-}
-
-/// Long retro block bar for indeterminate scans (e.g. the `du` volume scan).
-/// Uses the current theme and shows elapsed time.
-private struct RetroIndeterminateBar: View {
-    let theme: ThemeStore
-    let startDate: Date?
-    let now: Date
-
-    @State private var tick = 0
-    private let blockCount = 48
-    private let timer = Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()
-
-    var body: some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 2) {
-                ForEach(0..<blockCount, id: \.self) { index in
-                    RoundedRectangle(cornerRadius: 1)
-                        .fill(color(for: index))
-                        .frame(width: 8, height: 16)
-                }
-            }
-
-            if let elapsed = elapsedString {
-                Text(elapsed)
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .frame(width: CGFloat(blockCount) * 10 - 2)
-        .onReceive(timer) { _ in
-            tick = (tick + 1) % (blockCount * 2)
-        }
-    }
-
-    private var elapsedString: String? {
-        guard let startDate else { return nil }
-        let total = max(0, Int(now.timeIntervalSince(startDate)))
-        guard total > 0 else { return nil }
-        if total < 60 { return "\(total)s elapsed" }
-        let minutes = total / 60
-        let secs = total % 60
-        return "\(minutes)m \(secs)s elapsed"
-    }
-
-    private func color(for index: Int) -> Color {
-        let width = 10
-        let head = tick % (blockCount + width)
-        let distance = abs(index - head)
-
-        if distance == 0 {
-            return theme.accent
-        } else if distance <= 2 {
-            return theme.accent.opacity(0.85)
-        } else if distance <= width {
-            return theme.accent.opacity(Double(width - distance) / Double(width) * 0.65 + 0.15)
-        } else {
-            return Color.primary.opacity(0.12)
-        }
-    }
-}
 
 

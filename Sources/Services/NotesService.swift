@@ -152,6 +152,34 @@ actor NotesService {
         return newURL
     }
 
+    /// Import an external file or folder into the given destination folder.
+    /// - Parameters:
+    ///   - source: File or folder outside the vault.
+    ///   - destination: Vault folder to receive the imported item.
+    ///   - copy: When true, the original is copied into the vault. When false,
+    ///     a symlink is created in the vault pointing back to the original.
+    /// - Returns: The URL of the imported item inside the destination folder.
+    @discardableResult
+    func importItem(at source: URL, into destination: URL, copy: Bool) throws -> URL {
+        let fm = FileManager.default
+        let safeName = uniquedName(for: source.lastPathComponent, in: destination)
+        let target = destination.appendingPathComponent(safeName)
+
+        try coordinate(reading: source, writing: destination) { sourceURL, destinationURL in
+            let targetURL = destinationURL.appendingPathComponent(safeName)
+            guard !fm.fileExists(atPath: targetURL.path) else {
+                throw NotesServiceError.alreadyExists(targetURL)
+            }
+
+            if copy {
+                try fm.copyItem(at: sourceURL, to: targetURL)
+            } else {
+                try fm.createSymbolicLink(at: targetURL, withDestinationURL: sourceURL)
+            }
+        }
+        return target
+    }
+
     /// Search note titles and contents for a query string.
     func search(query: String, scope: URL? = nil) throws -> [NoteItem] {
         let base = scope ?? vaultURL
@@ -245,6 +273,22 @@ actor NotesService {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let invalid = CharacterSet(charactersIn: "/\\:?%*|\"<>")
         return trimmed.components(separatedBy: invalid).joined(separator: "-")
+    }
+
+    /// Returns a filename that does not already exist in the destination folder.
+    /// If `name` is taken, appends a numeric suffix before the extension.
+    private func uniquedName(for name: String, in destination: URL) -> String {
+        let fm = FileManager.default
+        let baseName = (name as NSString).deletingPathExtension
+        let ext = (name as NSString).pathExtension
+        var candidate = name
+        var counter = 1
+        while fm.fileExists(atPath: destination.appendingPathComponent(candidate).path) {
+            let suffix = ext.isEmpty ? "\(counter)" : "\(counter).\(ext)"
+            candidate = "\(baseName) \(suffix)"
+            counter += 1
+        }
+        return candidate
     }
 }
 

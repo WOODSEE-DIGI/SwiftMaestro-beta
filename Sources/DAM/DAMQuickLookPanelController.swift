@@ -25,15 +25,20 @@ final class DAMQuickLookPanelController {
         show(for: url)
     }
 
+    /// Always show the preview panel for `url`, replacing any existing preview.
+    /// Use this for toolbar/menu actions where the intent is explicitly to open.
+    func show(for url: URL) {
+        close()
+        present(for: url)
+    }
+
     /// Dismiss the preview panel.
     func close() {
         panel?.orderOut(nil)
         panel = nil
     }
 
-    private func show(for url: URL) {
-        close()
-
+    private func present(for url: URL) {
         let previewView = QLPreviewView(frame: .zero)
         previewView?.previewItem = url as NSURL
         previewView?.shouldCloseWithWindow = true

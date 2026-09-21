@@ -14,9 +14,20 @@ struct NotesView: View {
     @State private var renameText = ""
     @State private var showingNewNoteSheet = false
     @State private var showingNewFolderSheet = false
+    @State private var importURLs: [URL] = []
+    @State private var showingImportChoiceSheet = false
     /// Drag-resizable note-tree width, persisted like `AppleNotesView`'s
     /// folder list — a single view-local divider, so `@AppStorage` is enough.
     @AppStorage("notes.treeWidth") private var treeWidth = 220.0
+
+    private var selectionBinding: Binding<String?> {
+        Binding(
+            get: { viewModel.selectedItem?.id },
+            set: { newID in
+                Task { await selectItem(withID: newID) }
+            }
+        )
+    }
 
     var body: some View {
         ResizablePanelHost(panes: [
@@ -85,6 +96,23 @@ struct NotesView: View {
         } message: {
             Text("Rename '\(renamingItem?.name ?? "")'")
         }
+        .alert("Import Items", isPresented: $showingImportChoiceSheet) {
+            Button("Copy into Vault", role: nil) {
+                Task {
+                    await viewModel.importItems(importURLs, copy: true)
+                    importURLs = []
+                }
+            }
+            Button("Link in Place (Symlink)", role: nil) {
+                Task {
+                    await viewModel.importItems(importURLs, copy: false)
+                    importURLs = []
+                }
+            }
+            Button("Cancel", role: .cancel) { importURLs = [] }
+        } message: {
+            Text("Import \(importURLs.count) item(s) into '\(viewModel.selectedFolderName())'? Copying leaves the originals untouched. Linking creates shortcuts back to the originals.")
+        }
     }
 
     // MARK: - Sidebar
@@ -98,35 +126,64 @@ struct NotesView: View {
             Divider()
             searchBar
             Divider()
-            List(viewModel.rootItems, children: \.children, selection: .init(
-                get: { viewModel.selectedItem?.id },
-                set: { newID in
-                    Task { await selectItem(withID: newID) }
-                }
-            )) { item in
-                Label(item.title, systemImage: iconFor(item))
-                    .tag(item.id)
-                    .contextMenu {
-                        if item.isFolder && !item.isReadOnly {
-                            Button("New Note") { showingNewNoteSheet = true }
-                            Button("New Folder") { showingNewFolderSheet = true }
-                        }
-                        if !item.isReadOnly {
-                            Button("Rename") {
-                                renamingItem = item
-                                renameText = item.name
-                            }
-                            Divider()
-                            Button("Delete", role: .destructive) {
-                                Task { await viewModel.delete(item: item) }
+            List(selection: selectionBinding) {
+                Section("External Folders") {
+                    if viewModel.externalRootItems.isEmpty {
+                        Text("No external folders")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(viewModel.externalRootItems) { item in
+                            OutlineGroup([item], children: \.children) { child in
+                                treeRow(for: child)
                             }
                         }
                     }
+                }
+                Section("Vault") {
+                    ForEach(viewModel.rootItems) { item in
+                        OutlineGroup([item], children: \.children) { child in
+                            treeRow(for: child)
+                        }
+                    }
+                }
             }
             .listStyle(.sidebar)
+            .onDrop(of: [.fileURL], isTargeted: nil, perform: handleDrop)
 
             Divider()
             sidebarFooter
+        }
+    }
+
+    @ViewBuilder
+    private func treeRow(for item: NoteItem) -> some View {
+        Label(item.title, systemImage: iconFor(item))
+            .tag(item.id)
+            .contextMenu { contextMenu(for: item) }
+    }
+
+    private func contextMenu(for item: NoteItem) -> some View {
+        Group {
+            if viewModel.isExternalRoot(item) {
+                Button("Remove External Folder") {
+                    viewModel.removeExternalFolder(item)
+                }
+                Divider()
+            }
+            if item.isFolder && !item.isReadOnly {
+                Button("New Note") { showingNewNoteSheet = true }
+                Button("New Folder") { showingNewFolderSheet = true }
+            }
+            if !item.isReadOnly {
+                Button("Rename") {
+                    renamingItem = item
+                    renameText = item.name
+                }
+                Divider()
+                Button("Delete", role: .destructive) {
+                    Task { await viewModel.delete(item: item) }
+                }
+            }
         }
     }
 
@@ -138,12 +195,15 @@ struct NotesView: View {
             Menu {
                 Button("New Note") { showingNewNoteSheet = true }
                 Button("New Folder") { showingNewFolderSheet = true }
+                Divider()
+                Button("Import File or Folder…") { presentImportPicker() }
+                Button("Add External Folder…") { viewModel.addExternalFolder() }
             } label: {
                 Label("Add", systemImage: "plus")
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .help("Add a note or folder")
+            .help("Add a note, folder, import, or external folder")
         }
     }
 
@@ -253,7 +313,8 @@ struct NotesView: View {
     }
 
     private func selectItem(withID id: String?) async {
-        if let id, let item = findItem(withID: id, in: viewModel.rootItems) {
+        if let id, let item = findItem(withID: id, in: viewModel.rootItems)
+            ?? findItem(withID: id, in: viewModel.externalRootItems) {
             viewModel.selectedItem = item
         } else {
             viewModel.selectedItem = nil
@@ -266,6 +327,46 @@ struct NotesView: View {
             if let found = findItem(withID: id, in: item.children ?? []) { return found }
         }
         return nil
+    }
+
+    // MARK: - Import & Drag-and-Drop
+
+    private func presentImportPicker() {
+        #if os(macOS)
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Import"
+        panel.message = "Select files or folders to import into the current folder"
+        panel.begin { result in
+            guard result == .OK else { return }
+            Task { @MainActor in
+                self.importURLs = panel.urls
+                self.showingImportChoiceSheet = true
+            }
+        }
+        #endif
+    }
+
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        var urls: [URL] = []
+        let group = DispatchGroup()
+        for provider in providers {
+            group.enter()
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                if let url { urls.append(url) }
+                group.leave()
+            }
+        }
+        group.notify(queue: .main) {
+            guard !urls.isEmpty else { return }
+            Task { @MainActor in
+                // Drag-and-drop always copies; it never moves or replaces the original.
+                await self.viewModel.importItems(urls, copy: true)
+            }
+        }
+        return true
     }
 }
 

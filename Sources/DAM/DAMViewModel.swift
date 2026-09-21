@@ -67,6 +67,13 @@ final class DAMViewModel {
     /// forced ON for exports. Useful for reviewing originals vs. redacted
     /// versions and for screen-recording workflows.
     var showRedactions: Bool = true
+    /// Privacy mode: one-click redaction toggle for screen sharing/recordings.
+    /// Activating it turns redaction rendering on, makes existing layers
+    /// visible, and auto-redacts visible/upcoming assets that have no
+    /// redactions yet.
+    var privacyModeActive: Bool = false
+    /// Number of assets still being scanned by privacy redaction.
+    private(set) var privacyScanningCount: Int = 0
     /// Folder-tree scope (nil = whole catalog). Mirrors Bridge's Folders tab.
     var selectedFolder: String? {
         didSet {
@@ -105,6 +112,12 @@ final class DAMViewModel {
     private(set) var importScanned = 0
     private(set) var importWritten = 0
     private(set) var errorMessage: String?
+
+    /// Expose a setter so views can report errors without making the
+    /// property publicly mutable everywhere.
+    func setErrorMessage(_ message: String?) {
+        errorMessage = message
+    }
 
     /// Folder path → Finder tag color indices, for colored dots in the
     /// folder tree sidebar. Populated during refreshFolderTree.
@@ -192,6 +205,136 @@ final class DAMViewModel {
         primarySelectedID = nil
     }
 
+    // MARK: - Geometry edits (toolbar)
+
+    /// Rotate every selected asset 90° in the requested direction.
+    /// Non-destructive: increments/decrements the per-asset edit recipe.
+    /// Note: Core Graphics positive rotation is counter-clockwise, so a
+    /// clockwise 90° turn is represented as +3 quarter-turns.
+    func rotateSelectedAssets(clockwise: Bool = true) {
+        let ids = selection.compactMap { $0 }
+        guard !ids.isEmpty else { return }
+        let delta = clockwise ? 3 : 1
+        for id in ids {
+            var recipe = DAMDatabase.shared.loadEdits(assetId: id) ?? DAMEditState()
+            recipe.rotateQuarterTurns = (recipe.rotateQuarterTurns + delta) % 4
+            try? DAMDatabase.shared.saveEdits(assetId: id, recipe)
+        }
+    }
+
+    // MARK: - Privacy / screen-recording redaction
+
+    /// Toggle global privacy mode. When enabled, existing redaction layers are
+    /// shown and any visible/likely-visible asset without redactions gets a
+    /// quick AI face-redaction pass.
+    func togglePrivacyMode() {
+        privacyModeActive.toggle()
+        if privacyModeActive {
+            showRedactions = true
+            Task.detached { [weak self] in
+                await self?.applyPrivacyRedactionsToVisibleAssets()
+            }
+        } else {
+            showRedactions = false
+        }
+    }
+
+    /// Ensure visible + next-scroll assets are redacted.
+    private func applyPrivacyRedactionsToVisibleAssets() async {
+        let targets = await MainActor.run { [weak self] in
+            self?.privacyTargetAssets() ?? []
+        }
+        guard !targets.isEmpty else { return }
+
+        await MainActor.run { [weak self] in
+            self?.privacyScanningCount = targets.count
+        }
+        defer {
+            Task { @MainActor [weak self] in
+                self?.privacyScanningCount = 0
+            }
+        }
+
+        let options = DAMRedactionDetectorService.Options(
+            detectFaces: true,
+            detectText: true,
+            detectBarcodes: true,
+            textPatterns: DAMRedactionDetectorService.Options.piiPatterns,
+            minimumConfidence: 0.3,
+            kind: .blur
+        )
+
+        for (index, asset) in targets.enumerated() {
+            guard let assetId = asset.id else { continue }
+            var recipe = DAMDatabase.shared.loadEdits(assetId: assetId) ?? DAMEditState()
+            _ = recipe.defaultRedactionLayerID()
+
+            // Make any existing hidden layers visible.
+            var madeVisible = false
+            for i in recipe.redactionLayers.indices where !recipe.redactionLayers[i].isVisible {
+                recipe.redactionLayers[i].isVisible = true
+                madeVisible = true
+            }
+
+            // If visible redactions already exist, just persist visibility.
+            if !recipe.visibleRedactions().isEmpty {
+                if madeVisible {
+                    try? DAMDatabase.shared.saveEdits(assetId: assetId, recipe)
+                }
+                await MainActor.run { [weak self] in
+                    self?.privacyScanningCount = targets.count - index - 1
+                }
+                continue
+            }
+
+            // No redactions yet — run a fast face-only detection pass.
+            guard FileManager.default.fileExists(atPath: asset.path) else {
+                await MainActor.run { [weak self] in
+                    self?.privacyScanningCount = targets.count - index - 1
+                }
+                continue
+            }
+            do {
+                let detected = try await DAMRedactionDetectorService.shared.detect(
+                    at: asset.path, options: options)
+                if !detected.isEmpty {
+                    let privacyLayer = DAMEditState.RedactionLayer(
+                        name: "Privacy", isVisible: true)
+                    recipe.redactionLayers.append(privacyLayer)
+                    recipe.redactions.append(contentsOf: detected.map { box in
+                        var copy = box
+                        copy.id = UUID()
+                        copy.layerID = privacyLayer.id
+                        return copy
+                    })
+                    try? DAMDatabase.shared.saveEdits(assetId: assetId, recipe)
+                }
+            } catch {
+                NSLog("[Privacy] detection failed for %@: %@", asset.path, "\(error)")
+            }
+
+            await MainActor.run { [weak self] in
+                self?.privacyScanningCount = targets.count - index - 1
+            }
+        }
+    }
+
+    /// Assets that should be redacted for privacy mode: current selection
+    /// first, then the first portion of the loaded page as a prefetch buffer.
+    @MainActor
+    private func privacyTargetAssets() -> [DAMAsset] {
+        var result: [DAMAsset] = []
+        let selected = assets.filter { selection.contains($0.id) }
+        result.append(contentsOf: selected)
+        let selectedIDs = Set(selected.compactMap(\.id))
+        let remaining = assets.filter { !selectedIDs.contains($0.id ?? 0) }
+            .prefix(privacyPrefetchCount)
+        result.append(contentsOf: remaining)
+        return result
+    }
+
+    private let privacyPrefetchCount = 100
+
     /// Reveal an asset given its filesystem path: select it, switch to the
     /// metadata workspace, and scope the folder tree. If the path isn't in the
     /// catalog yet, import its parent folder first.
@@ -222,6 +365,13 @@ final class DAMViewModel {
     private var canLoadMore = true
     private var searchTask: Task<Void, Never>?
     private var importTask: Task<Int, any Error>?
+
+    // MARK: - Offload
+
+    private(set) var isOffloading = false
+    private(set) var offloadProgress = DAMOffloadProgress()
+    private(set) var offloadResult: DAMOffloadResult?
+    private var offloadTask: Task<Void, Never>?
 
     private let database: DAMDatabase
 
@@ -843,6 +993,36 @@ final class DAMViewModel {
     /// scan loop will throw and unwind the enumerator.
     func cancelImport() {
         importTask?.cancel()
+    }
+
+    // MARK: - Offload & ingest
+
+    /// Start an offload: copy files from source to primary (and optional backup),
+    /// verify with SHA-256, rename via templates, then import primary copies.
+    func startOffload(options: DAMOffloadOptions) {
+        guard !isOffloading, options.isValid else { return }
+        isOffloading = true
+        offloadProgress = DAMOffloadProgress()
+        offloadResult = nil
+
+        offloadTask = Task { [weak self] in
+            guard let self else { return }
+            let result = await DAMOffloadService.shared.offload(options: options, database: self.database) { progress in
+                Task { @MainActor [weak self] in
+                    self?.offloadProgress = progress
+                }
+            }
+            await MainActor.run { [weak self] in
+                self?.offloadResult = result
+                self?.isOffloading = false
+            }
+            await self.reload()
+            await self.refreshFolderTree()
+        }
+    }
+
+    func cancelOffload() {
+        offloadTask?.cancel()
     }
 
     // MARK: - Lightroom CSV import
