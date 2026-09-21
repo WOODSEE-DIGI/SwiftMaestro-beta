@@ -68,8 +68,9 @@ echo "=== Standalone Mach-O files signed: $SIGNED (failed: $FAILED) ==="
 sealed=0
 while IFS= read -r bundle; do
     # Skip directories that merely have a code-bundle extension but are not
-    # actual bundles (e.g. raw node_module folders named *.app).
-    [ -f "$bundle/Contents/Info.plist" ] || continue
+    # actual bundles (e.g. raw node_module folders named *.app). Frameworks
+    # keep Info.plist in Resources/, while .app/.xpc keep it in Contents/.
+    [ -f "$bundle/Contents/Info.plist" ] || [ -f "$bundle/Resources/Info.plist" ] || continue
 
     # Preserve the original bundle identifier and entitlements when re-signing
     # third-party nested code (Chromium, Sparkle, Python extensions, etc.).
