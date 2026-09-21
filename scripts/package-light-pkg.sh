@@ -103,6 +103,13 @@ echo "Bundling Homebrew dylibs…"
 APP_PATH="$APP_STAGE" SIGN_IDENTITY="$APP_SIGN_IDENTITY" ENTITLEMENTS="$ENTITLEMENTS" \
     "$(dirname "$0")/bundle-dylibs.sh"
 
+# Sign every nested Mach-O (mcp-servers venvs, ffmpeg, Chromium, etc.) so
+# notarization doesn't reject third-party binaries lacking secure timestamps
+# or the hardened runtime.
+echo "Signing nested Mach-O binaries…"
+APP_PATH="$APP_STAGE" SIGN_IDENTITY="$APP_SIGN_IDENTITY" ENTITLEMENTS="$ENTITLEMENTS" \
+    "$(dirname "$0")/sign-nested-binaries.sh"
+
 echo "Auditing dependency closure…"
 "$(dirname "$0")/audit-dependencies.sh" "$APP_STAGE"
 
