@@ -35,12 +35,21 @@ fi
 SIGNED=0
 FAILED=0
 
-# 1. Sign every Mach-O file anywhere in the bundle (except the main binary,
-#    which the app-level seal covers). Candidate extensions cover the known
-#    natives; the executable bit catches everything else; file(1) filters to
-#    real Mach-O so scripts/text are skipped.
+# 1. Sign only standalone Mach-O files — files that are NOT inside a nested
+#    code bundle (.app / .framework / .xpc). Those bundles are re-sealed as
+#    whole units below, letting codesign handle their internals in the right
+#    order. Signing inner binaries individually and then re-signing the parent
+#    bundle breaks complex third-party apps such as Chromium/Chrome for Testing.
 while IFS= read -r f; do
     [ "$f" = "$MAIN_BIN" ] && continue
+
+    # Skip anything already covered by a nested code bundle.
+    case "$f" in
+        *.app/Contents/*|*.framework/*|*.xpc/Contents/*)
+            continue
+            ;;
+    esac
+
     if file -b "$f" | grep -q "Mach-O"; then
         chmod u+w "$f" 2>/dev/null || true
         if codesign --force --sign "$SIGN_IDENTITY" --timestamp ${RUNTIME_OPT[@]+"${RUNTIME_OPT[@]}"} "$f" 2>/dev/null; then
@@ -52,27 +61,37 @@ while IFS= read -r f; do
     fi
 done < <(find "$APP_PATH/Contents" \( -name "*.so" -o -name "*.dylib" -o -name "*.node" -o -perm +111 \) -type f 2>/dev/null)
 
-echo "=== Nested Mach-O files signed: $SIGNED (failed: $FAILED) ==="
+echo "=== Standalone Mach-O files signed: $SIGNED (failed: $FAILED) ==="
 
-# 2. Re-seal nested bundles whose contents we just changed — XPC services
-#    first, then nested apps, then frameworks (bottom-up order).
+# 2. Re-seal every nested code bundle bottom-up (depth-first) so inner
+#    frameworks/helpers are signed before their parent app/framework.
 sealed=0
 while IFS= read -r bundle; do
-    codesign --force --sign "$SIGN_IDENTITY" --timestamp ${RUNTIME_OPT[@]+"${RUNTIME_OPT[@]}"} "$bundle"
+    # Skip directories that merely have a code-bundle extension but are not
+    # actual bundles (e.g. raw node_module folders named *.app).
+    [ -f "$bundle/Contents/Info.plist" ] || continue
+
+    # Preserve the original bundle identifier and entitlements when re-signing
+    # third-party nested code (Chromium, Sparkle, Python extensions, etc.).
+    codesign --force --sign "$SIGN_IDENTITY" --timestamp \
+        --preserve-metadata=identifier,entitlements,requirements \
+        ${RUNTIME_OPT[@]+"${RUNTIME_OPT[@]}"} "$bundle"
     sealed=$((sealed + 1))
-done < <(find "$APP_PATH/Contents" -name "*.xpc" -type d 2>/dev/null)
-while IFS= read -r bundle; do
-    codesign --force --sign "$SIGN_IDENTITY" --timestamp ${RUNTIME_OPT[@]+"${RUNTIME_OPT[@]}"} "$bundle"
-    sealed=$((sealed + 1))
-done < <(find "$APP_PATH/Contents" -name "*.app" -type d -not -path "$APP_PATH" 2>/dev/null)
-while IFS= read -r bundle; do
-    codesign --force --sign "$SIGN_IDENTITY" --timestamp ${RUNTIME_OPT[@]+"${RUNTIME_OPT[@]}"} "$bundle"
-    sealed=$((sealed + 1))
-done < <(find "$APP_PATH/Contents/Frameworks" -name "*.framework" -type d 2>/dev/null)
+done < <(find "$APP_PATH/Contents" \( -name "*.xpc" -o -name "*.framework" -o -name "*.app" \) -type d -depth -not -path "$APP_PATH" 2>/dev/null)
 
 echo "=== Nested bundles sealed: $sealed ==="
 
 # 3. Re-sign the whole app so the outer seal covers every change.
-codesign --force --sign "$SIGN_IDENTITY" --timestamp ${RUNTIME_OPT[@]+"${RUNTIME_OPT[@]}"} \
+codesign --force --sign "$SIGN_IDENTITY" --timestamp \
+    --preserve-metadata=identifier,entitlements,requirements \
+    ${RUNTIME_OPT[@]+"${RUNTIME_OPT[@]}"} \
     --entitlements "$ENTITLEMENTS" "$APP_PATH"
 echo "=== App re-signed ==="
+
+# 4. Early verification — fail fast if a nested bundle still has an invalid
+#    signature, before we spend time packaging and uploading.
+if ! codesign --verify --deep --strict --verbose=2 "$APP_PATH" 2>&1 | tail -n 20; then
+    echo "ERROR: App signature verification failed"
+    exit 1
+fi
+echo "=== App signature verified ==="
