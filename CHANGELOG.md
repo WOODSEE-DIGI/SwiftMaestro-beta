@@ -1,3 +1,19 @@
+# SwiftMaestro 0.6.3
+
+## MaestroDAM
+
+- **Toolbar Quick Look actions**: Rotate, Share, and Crop buttons now sit next to the privacy toggle, matching Finder's Quick Look toolbar.
+- **Secure share**: the Share button renders selected images with their edit recipe baked in — crops are respected, visible redaction boxes are flattened into the output so they cannot be removed, and GPS/PII metadata is scrubbed. Assets without edits share the original file.
+- **Privacy mode fixes**: image orientation is preserved when redactions are rendered, and privacy redaction now detects text (with PII patterns) and barcodes as well as faces.
+- **Resizable sidebar**: the left sidebar is split into resizable Volumes and Catalog sections, similar to Capture One.
+- **Themed progress overlay**: a consistent retro block-bar progress indicator is used for app launch, Storage Map scans, and Offload/verification workflows.
+- **Stability**: fixed an `EXC_BAD_ACCESS` crash when opening MaestroDAM.
+
+## Notes.md
+
+- **External folders**: add folders outside the vault to the sidebar as editable references; removing the reference does not delete the original folder.
+- **Import items**: copy or symlink external files and folders into the vault.
+
 # SwiftMaestro 0.6.2
 
 ## MaestroDAM
