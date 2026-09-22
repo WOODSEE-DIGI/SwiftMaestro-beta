@@ -17,8 +17,6 @@
 #   TEAM_ID=<team>           (default 3BMZ2ULZ54)
 #   APP_SIGN_IDENTITY=<name> (default "Developer ID Application")
 #   INSTALLER_SIGN_IDENTITY=<name> (default "Developer ID Installer")
-#   NOTARY_PROFILE=<name>    (default SwiftMaestroNotary)
-#   NOTARIZE=1               (opt in to notarization — skipped by default)
 #   ENTITLEMENTS=<path>      (default Sources/Resources/SwiftMaestro.entitlements)
 #   SKIP_SPARKLE_ZIP=1       (skip the app-only Sparkle update archive)
 set -euo pipefail
@@ -39,7 +37,6 @@ CODER_MODEL_PATH="${CODER_MODEL_PATH:-$HOME/Ai-models/models/swiftmaestro-models
 TEAM_ID="${TEAM_ID:-3BMZ2ULZ54}"
 APP_SIGN_IDENTITY="${APP_SIGN_IDENTITY:-Developer ID Application}"
 INSTALLER_SIGN_IDENTITY="${INSTALLER_SIGN_IDENTITY:-Developer ID Installer}"
-NOTARY_PROFILE="${NOTARY_PROFILE:-SwiftMaestroNotary}"
 ENTITLEMENTS="${ENTITLEMENTS:-Sources/Resources/SwiftMaestro.entitlements}"
 APP_PATH="build/Release/${APP_NAME}.app"
 
@@ -193,21 +190,6 @@ if [ "${SKIP_SPARKLE_ZIP:-0}" != "1" ]; then
     ditto -c -k --keepParent --sequesterRsrc "$APP_STAGE" "$ZIP"
 else
     echo "SKIP_SPARKLE_ZIP=1 — skipping Sparkle update archive."
-fi
-
-# Optional notarization of the installer.
-if [ "${NOTARIZE:-0}" = "1" ]; then
-    echo "Submitting installer for notarization…"
-    SUBMIT_OUT="$(xcrun notarytool submit "$PKG" --keychain-profile "$NOTARY_PROFILE" --wait 2>&1 || true)"
-    echo "$SUBMIT_OUT"
-    SUBMISSION_ID="$(echo "$SUBMIT_OUT" | awk '/id:/{print $2; exit}')"
-    if ! echo "$SUBMIT_OUT" | grep -q "status: Accepted"; then
-        echo "ERROR: notarization failed"
-        [ -n "$SUBMISSION_ID" ] && xcrun notarytool log "$SUBMISSION_ID" --keychain-profile "$NOTARY_PROFILE" || true
-        exit 1
-    fi
-    echo "Stapling notarization ticket…"
-    xcrun stapler staple "$PKG"
 fi
 
 # Clean up the staging area but leave the output artifacts.
