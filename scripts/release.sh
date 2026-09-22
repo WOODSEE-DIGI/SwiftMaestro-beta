@@ -167,7 +167,7 @@ stage_preflight() {
     fi
 
     # CHANGELOG mention (warning only).
-    if [ -f "CHANGELOG.md" ] && ! grep -qE "^## \[?${VERSION}\]?" CHANGELOG.md; then
+    if [ -f "CHANGELOG.md" ] && ! grep -qE "^(#|##) .*\b${VERSION}\b" CHANGELOG.md; then
         echo "WARNING: CHANGELOG.md has no '## $VERSION' entry"
     fi
 
