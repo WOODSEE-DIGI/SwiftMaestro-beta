@@ -43,8 +43,11 @@ FAILED=0
 while IFS= read -r f; do
     [ "$f" = "$MAIN_BIN" ] && continue
 
-    # Skip anything already covered by a nested code bundle.
-    case "$f" in
+    # Skip anything already covered by a nested code bundle. Use a path
+    # relative to the main app's Contents so we don't accidentally skip the
+    # outer app itself (every file path contains SwiftMaestro.app/Contents/).
+    rel="${f#$APP_PATH/Contents/}"
+    case "$rel" in
         *.app/Contents/*|*.framework/*|*.xpc/Contents/*)
             continue
             ;;
