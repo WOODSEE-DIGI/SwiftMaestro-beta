@@ -101,7 +101,7 @@ notary_submit() {
     local submit_out id
     echo "Submitting $(basename "$file") for notarization…"
     submit_out="$(xcrun notarytool submit "$file" --keychain-profile "$NOTARY_PROFILE" --no-wait 2>&1)"
-    echo "$submit_out"
+    echo "$submit_out" >&2
     id="$(echo "$submit_out" | awk '/id:/{print $2; exit}')"
     [ -n "$id" ] || die "failed to submit $(basename "$file") for notarization"
     state_mark "$state_name" "{\"id\":\"$id\",\"file\":\"$file\",\"status\":\"In Progress\"}"
