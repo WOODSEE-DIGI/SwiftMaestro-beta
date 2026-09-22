@@ -111,8 +111,11 @@ notary_submit() {
 notary_wait_id() {
     local id="$1"
     local file="$2"
+    local out
     echo "Waiting for notarization $id ($(basename "$file"))…"
-    if xcrun notarytool wait "$id" --keychain-profile "$NOTARY_PROFILE" -v 2>&1; then
+    out="$(xcrun notarytool wait "$id" --keychain-profile "$NOTARY_PROFILE" -v 2>&1)"
+    echo "$out"
+    if echo "$out" | grep -q "status: Accepted"; then
         echo "Notarization accepted: $(basename "$file")"
         return 0
     else

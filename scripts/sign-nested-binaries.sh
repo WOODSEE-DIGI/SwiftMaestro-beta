@@ -35,23 +35,12 @@ fi
 SIGNED=0
 FAILED=0
 
-# 1. Sign only standalone Mach-O files — files that are NOT inside a nested
-#    code bundle (.app / .framework / .xpc). Those bundles are re-sealed as
-#    whole units below, letting codesign handle their internals in the right
-#    order. Signing inner binaries individually and then re-signing the parent
-#    bundle breaks complex third-party apps such as Chromium/Chrome for Testing.
+# 1. Sign every Mach-O file in the bundle (except the main executable, which
+#    the final app-level seal covers). Notarization rejects ANY unsigned or
+#    timestamp-less Mach-O, including loose dylibs inside Chromium's
+#    Frameworks/Libraries directory and plain helper executables.
 while IFS= read -r f; do
     [ "$f" = "$MAIN_BIN" ] && continue
-
-    # Skip anything already covered by a nested code bundle. Use a path
-    # relative to the main app's Contents so we don't accidentally skip the
-    # outer app itself (every file path contains SwiftMaestro.app/Contents/).
-    rel="${f#$APP_PATH/Contents/}"
-    case "$rel" in
-        *.app/Contents/*|*.framework/*|*.xpc/Contents/*)
-            continue
-            ;;
-    esac
 
     if file -b "$f" | grep -q "Mach-O"; then
         chmod u+w "$f" 2>/dev/null || true
@@ -64,7 +53,7 @@ while IFS= read -r f; do
     fi
 done < <(find "$APP_PATH/Contents" \( -name "*.so" -o -name "*.dylib" -o -name "*.node" -o -perm +111 \) -type f 2>/dev/null)
 
-echo "=== Standalone Mach-O files signed: $SIGNED (failed: $FAILED) ==="
+echo "=== Mach-O files signed: $SIGNED (failed: $FAILED) ==="
 
 # 2. Re-seal every nested code bundle bottom-up (depth-first) so inner
 #    frameworks/helpers are signed before their parent app/framework.
