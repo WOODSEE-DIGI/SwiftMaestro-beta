@@ -638,6 +638,23 @@ final class DAMViewModel {
         }
     }
 
+    /// Physically move a catalog folder under a new parent folder and update
+    /// every affected asset path. The folder tree and current selection are
+    /// refreshed afterwards.
+    func moveFolder(path: String, toParent parentPath: String) async {
+        guard parentPath != path, !parentPath.hasPrefix(path + "/") else {
+            errorMessage = "Cannot move a folder into itself or one of its descendants."
+            return
+        }
+        do {
+            let newPath = try database.moveFolder(from: path, toParent: parentPath)
+            await refreshFolderTree()
+            if selectedFolder == path { selectedFolder = newPath }
+        } catch {
+            errorMessage = "Failed to move folder: \(error.localizedDescription)"
+        }
+    }
+
     /// Delete a collection. Original assets are not affected.
     func deleteCollection(id: Int64) async {
         do {

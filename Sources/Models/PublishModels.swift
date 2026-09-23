@@ -287,3 +287,239 @@ struct PublishHistoryEntry: Identifiable, Codable, Sendable {
         self.publishedAt = publishedAt
     }
 }
+
+// MARK: - Social cross-posting
+
+/// Supported social platforms for one-click cross-posting from Publish.
+enum SocialPlatform: String, Codable, CaseIterable, Identifiable, Sendable {
+    case bluesky
+    case mastodon
+    case patreon
+    case facebook
+    case instagram
+    case threads
+    case twitter
+    case linkedin
+    case tumblr
+    case youtube
+    case vimeo
+    case dailymotion
+    case peertube
+    case tiktok
+    case vk
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .bluesky: return String(localized: "Bluesky")
+        case .mastodon: return String(localized: "Mastodon")
+        case .patreon: return String(localized: "Patreon")
+        case .facebook: return String(localized: "Facebook")
+        case .instagram: return String(localized: "Instagram")
+        case .threads: return String(localized: "Threads")
+        case .twitter: return String(localized: "Twitter / X")
+        case .linkedin: return String(localized: "LinkedIn")
+        case .tumblr: return String(localized: "Tumblr")
+        case .youtube: return String(localized: "YouTube")
+        case .vimeo: return String(localized: "Vimeo")
+        case .dailymotion: return String(localized: "Dailymotion")
+        case .peertube: return String(localized: "PeerTube")
+        case .tiktok: return String(localized: "TikTok")
+        case .vk: return String(localized: "VK Video")
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .bluesky: return "at"
+        case .mastodon: return "bubble.left.and.text.bubble.right"
+        case .patreon: return "heart.circle"
+        case .facebook: return "f.circle"
+        case .instagram: return "camera.circle"
+        case .threads: return "text.bubble"
+        case .twitter: return "x.circle"
+        case .linkedin: return "person.line.dotted.person"
+        case .tumblr: return "t.circle"
+        case .youtube: return "play.rectangle"
+        case .vimeo: return "play.circle"
+        case .dailymotion: return "play.square"
+        case .peertube: return "network"
+        case .tiktok: return "music.note"
+        case .vk: return "film"
+        }
+    }
+
+    /// Maximum length for a single post on this platform.
+    var characterLimit: Int {
+        switch self {
+        case .bluesky: return 300
+        case .mastodon, .threads: return 500
+        case .twitter: return 280
+        case .linkedin: return 3000
+        case .facebook: return 63206
+        case .instagram: return 2200
+        case .patreon, .tumblr, .youtube, .vimeo, .dailymotion, .peertube, .tiktok, .vk:
+            return 0
+        }
+    }
+
+    /// Whether the platform currently supports creating posts through the API.
+    var supportsPosting: Bool {
+        switch self {
+        case .bluesky, .mastodon, .facebook, .instagram, .threads, .twitter, .linkedin, .youtube, .vimeo, .dailymotion, .peertube, .tiktok, .vk:
+            return true
+        case .patreon, .tumblr:
+            return false
+        }
+    }
+
+    /// A short hint shown in the UI for what account identifier this platform needs.
+    var accountIdentifierHint: String {
+        switch self {
+        case .bluesky, .patreon, .tumblr:
+            return ""
+        case .mastodon:
+            return "Instance URL (e.g. mastodon.social)"
+        case .facebook:
+            return "Page ID"
+        case .instagram:
+            return "Instagram Business Account ID"
+        case .threads:
+            return "Threads User ID"
+        case .twitter:
+            return "Twitter username (for display only)"
+        case .linkedin:
+            return "Author URN (e.g. urn:li:person:123)"
+        case .youtube:
+            return "YouTube channel ID (optional)"
+        case .vimeo:
+            return "Vimeo user ID (optional)"
+        case .dailymotion:
+            return "Dailymotion profile ID (optional)"
+        case .peertube:
+            return "PeerTube instance URL (e.g. https://peertube.tv)"
+        case .tiktok:
+            return "TikTok open ID (optional)"
+        case .vk:
+            return "VK group ID (optional, for group uploads)"
+        }
+    }
+}
+
+/// A configured social-media account that Publish can cross-post to.
+struct SocialDestinationConfig: Identifiable, Codable, Sendable, Equatable {
+    var id: UUID
+    var platform: SocialPlatform
+    /// User-facing label, e.g. "@alice on mastodon.social".
+    var label: String
+    /// Keychain account name that holds the access token.
+    /// For Mastodon this is typically `plugin.mastodon.accessToken`.
+    /// For Bluesky the tokens are read from the plugin's fixed keychain keys,
+    /// so this field is ignored.
+    var secretName: String
+    /// Mastodon instance URL (e.g. `https://mastodon.social`). Unused for Bluesky.
+    var serverURL: String?
+    /// Platform-specific account identifier (page ID, user ID, URN, etc.).
+    var accountIdentifier: String?
+    var isEnabled: Bool
+    var createdAt: Date
+
+    init(
+        id: UUID = UUID(),
+        platform: SocialPlatform,
+        label: String,
+        secretName: String = "",
+        serverURL: String? = nil,
+        accountIdentifier: String? = nil,
+        isEnabled: Bool = true,
+        createdAt: Date = Date()
+    ) {
+        self.id = id
+        self.platform = platform
+        self.label = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.secretName = secretName.trimmingCharacters(in: .whitespaces)
+        self.serverURL = serverURL?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.accountIdentifier = accountIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.isEnabled = isEnabled
+        self.createdAt = createdAt
+    }
+
+    var normalizedServerURL: String? {
+        guard let serverURL, !serverURL.isEmpty else { return nil }
+        var url = serverURL
+        if !url.lowercased().hasPrefix("http://"), !url.lowercased().hasPrefix("https://") {
+            url = "https://" + url
+        }
+        return url.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+}
+
+/// Result of a single cross-post attempt.
+struct CrossPostResult: Codable, Sendable, Identifiable {
+    var id: UUID
+    var destinationID: UUID
+    var platform: SocialPlatform
+    var label: String
+    var success: Bool
+    var message: String
+    var postedURL: String?
+    var timestamp: Date
+
+    init(
+        destinationID: UUID,
+        platform: SocialPlatform,
+        label: String,
+        success: Bool,
+        message: String,
+        postedURL: String? = nil,
+        timestamp: Date = Date()
+    ) {
+        self.id = UUID()
+        self.destinationID = destinationID
+        self.platform = platform
+        self.label = label
+        self.success = success
+        self.message = message
+        self.postedURL = postedURL
+        self.timestamp = timestamp
+    }
+}
+
+/// A history record for social cross-posts.
+struct SocialPostHistoryEntry: Identifiable, Codable, Sendable {
+    var id: UUID
+    var draftID: String
+    var draftTitle: String
+    var destinationID: UUID
+    var platform: SocialPlatform
+    var label: String
+    var success: Bool
+    var message: String
+    var postedURL: String?
+    var publishedAt: Date
+
+    init(
+        id: UUID = UUID(),
+        draftID: String,
+        draftTitle: String,
+        destinationID: UUID,
+        platform: SocialPlatform,
+        label: String,
+        success: Bool,
+        message: String,
+        postedURL: String? = nil,
+        publishedAt: Date = Date()
+    ) {
+        self.id = id
+        self.draftID = draftID
+        self.draftTitle = draftTitle
+        self.destinationID = destinationID
+        self.platform = platform
+        self.label = label
+        self.success = success
+        self.message = message
+        self.postedURL = postedURL
+        self.publishedAt = publishedAt
+    }
+}

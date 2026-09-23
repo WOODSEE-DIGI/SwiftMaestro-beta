@@ -32,6 +32,8 @@ struct PublishView: View {
     @State private var editingFeed: PublishFeed? = nil
     @State private var showingNeocitiesSheet = false
     @State private var editingNeocities: NeocitiesConfig? = nil
+    @State private var showingSocialSheet = false
+    @State private var editingSocial: SocialDestinationConfig? = nil
     @State private var selectedFeedID: UUID = PublishStore.defaultFeed.id
 
     var body: some View {
@@ -59,6 +61,12 @@ struct PublishView: View {
         }
         .sheet(item: $editingNeocities) { config in
             EditNeocitiesSheet(config: config) { editingNeocities = nil }
+        }
+        .sheet(isPresented: $showingSocialSheet) {
+            socialManagementSheet
+        }
+        .sheet(item: $editingSocial) { config in
+            EditSocialSheet(config: config) { editingSocial = nil }
         }
     }
 
@@ -89,10 +97,17 @@ struct PublishView: View {
                     Label("Manage Feeds", systemImage: "wave.3.forward")
                 }
             } else if viewMode == .destinations {
-                Button {
-                    showingNeocitiesSheet = true
-                } label: {
-                    Label("Manage Neocities", systemImage: "network")
+                HStack(spacing: 12) {
+                    Button {
+                        showingSocialSheet = true
+                    } label: {
+                        Label("Social Accounts", systemImage: "person.2")
+                    }
+                    Button {
+                        showingNeocitiesSheet = true
+                    } label: {
+                        Label("Manage Neocities", systemImage: "network")
+                    }
                 }
             } else if store.isScanning {
                 HStack(spacing: 6) {
@@ -130,7 +145,7 @@ struct PublishView: View {
         case .feeds:
             PublishFeedsView()
         case .destinations:
-            PublishDestinationsView(editingConfig: $editingNeocities)
+            PublishDestinationsView(editingConfig: $editingNeocities, editingSocial: $editingSocial)
         case .history:
             PublishHistoryView()
         }
@@ -211,6 +226,12 @@ struct PublishView: View {
     @State private var newNeocitiesSitename = ""
     @State private var newNeocitiesSecretName = ""
     @State private var newNeocitiesBasePath = ""
+
+    @State private var newSocialPlatform: SocialPlatform = .bluesky
+    @State private var newSocialLabel = ""
+    @State private var newSocialSecretName = ""
+    @State private var newSocialServerURL = ""
+    @State private var newSocialAccountIdentifier = ""
 
     private var feedManagementSheet: some View {
         NavigationStack {
@@ -798,6 +819,9 @@ private struct PublishDraftDetailSheet: View {
     @State private var selectedNeocitiesConfigID: UUID?
     @State private var neocitiesOutputPath: String?
     @State private var isUploadingToNeocities = false
+    @State private var selectedSocialDestinationIDs: Set<UUID> = []
+    @State private var crossPostResults: [CrossPostResult] = []
+    @State private var isCrossPosting = false
     @Environment(\.dismiss) private var dismiss
 
     init(draft: PublishDraft, selectedFeedID: Binding<UUID>) {
@@ -907,6 +931,73 @@ private struct PublishDraftDetailSheet: View {
                         }
                     }
                 }
+
+                if !store.socialDestinations.isEmpty {
+                    Section("Cross-post") {
+                        ForEach(store.socialDestinations) { config in
+                            Toggle(isOn: Binding(
+                                get: { selectedSocialDestinationIDs.contains(config.id) },
+                                set: { isSelected in
+                                    if isSelected {
+                                        selectedSocialDestinationIDs.insert(config.id)
+                                    } else {
+                                        selectedSocialDestinationIDs.remove(config.id)
+                                    }
+                                }
+                            )) {
+                                HStack {
+                                    Image(systemName: config.platform.icon)
+                                        .foregroundStyle(.secondary)
+                                    Text(config.label)
+                                    Spacer()
+                                    Text(config.platform.displayName)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .disabled(!config.isEnabled)
+                        }
+
+                        Button {
+                            let ids = Array(selectedSocialDestinationIDs)
+                            guard !ids.isEmpty else { return }
+                            store.setStatus(draftID: draft.id, to: selectedStatus)
+                            isCrossPosting = true
+                            Task {
+                                crossPostResults = await store.crossPost(draftID: draft.id, destinationIDs: ids)
+                                isCrossPosting = false
+                            }
+                        } label: {
+                            if isCrossPosting {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Label("Cross-post Now", systemImage: "arrow.up.forward.square")
+                            }
+                        }
+                        .disabled(selectedSocialDestinationIDs.isEmpty || isCrossPosting)
+
+                        if !crossPostResults.isEmpty {
+                            ForEach(crossPostResults) { result in
+                                HStack(alignment: .top, spacing: 6) {
+                                    Image(systemName: result.success ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                        .foregroundStyle(result.success ? .green : .red)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(result.label)
+                                            .font(.system(size: 12, weight: .medium))
+                                        Text(result.message)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                        if let urlString = result.postedURL, let url = URL(string: urlString) {
+                                            Link(urlString, destination: url)
+                                                .font(.caption)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
             .formStyle(.grouped)
             .navigationTitle("Draft Details")
@@ -919,7 +1010,43 @@ private struct PublishDraftDetailSheet: View {
                 }
             }
             .frame(minWidth: 420, minHeight: 500)
+            .onAppear {
+                selectedSocialDestinationIDs = Set(store.socialDestinations.filter(\.isEnabled).map(\.id))
+            }
         }
+    }
+}
+
+// MARK: - Social platform UI helpers
+
+private func platformSecretHint(for platform: SocialPlatform) -> String {
+    switch platform {
+    case .mastodon:
+        return "Use the same secret name saved in the Mastodon plugin (usually plugin.mastodon.accessToken)."
+    case .facebook:
+        return "Store a Facebook Page access token in Keychain and use its account name here."
+    case .threads:
+        return "Store a Threads Graph API user access token in Keychain and use its account name here."
+    case .twitter:
+        return "Store a Twitter/X OAuth 2.0 user access token in Keychain and use its account name here."
+    case .linkedin:
+        return "Store a LinkedIn OAuth 2.0 access token in Keychain and use its account name here."
+    case .instagram:
+        return "Store an Instagram Graph API access token in Keychain and use its account name here."
+    case .youtube:
+        return "Store a YouTube Data API OAuth 2.0 access token in Keychain and use its account name here."
+    case .vimeo:
+        return "Store a Vimeo API access token in Keychain and use its account name here."
+    case .dailymotion:
+        return "Store a Dailymotion API access token in Keychain and use its account name here."
+    case .peertube:
+        return "Store a PeerTube OAuth 2.0 access token in Keychain and use its account name here."
+    case .tiktok:
+        return "Store a TikTok Content Posting API access token in Keychain and use its account name here."
+    case .vk:
+        return "Store a VKontakte access token in Keychain and use its account name here."
+    default:
+        return ""
     }
 }
 
@@ -969,37 +1096,74 @@ private struct PublishHTMLPreviewWebView: NSViewRepresentable {
 private struct PublishDestinationsView: View {
     @State private var store = PublishStore.shared
     @Binding var editingConfig: NeocitiesConfig?
+    @Binding var editingSocial: SocialDestinationConfig?
 
     var body: some View {
         VStack(spacing: 0) {
-            if store.neocitiesConfigs.isEmpty {
+            if store.neocitiesConfigs.isEmpty && store.socialDestinations.isEmpty {
                 ContentUnavailableView(
-                    "No Neocities destinations",
+                    "No Destinations",
                     systemImage: "network",
-                    description: Text("Add a Neocities site in Manage Neocities to publish HTML drafts remotely.")
+                    description: Text("Add a Neocities site or a social account to publish remotely.")
                 )
             } else {
                 List {
-                    Section("Neocities Sites") {
-                        ForEach(store.neocitiesConfigs) { config in
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(config.sitename)
-                                        .font(.system(size: 13, weight: .medium))
-                                    Text(config.basePath?.isEmpty == false ? "Path: /\(config.basePath!)" : "Root upload")
-                                        .font(.caption)
+                    if !store.socialDestinations.isEmpty {
+                        Section("Social Accounts") {
+                            ForEach(store.socialDestinations) { config in
+                                HStack {
+                                    Image(systemName: config.platform.icon)
                                         .foregroundStyle(.secondary)
-                                        .lineLimit(1)
+                                        .frame(width: 20)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(config.label)
+                                            .font(.system(size: 13, weight: .medium))
+                                        Text(config.platform.displayName)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                    Spacer()
+                                    if !config.isEnabled {
+                                        Text("Disabled")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Button {
+                                        editingSocial = config
+                                    } label: {
+                                        Image(systemName: "pencil")
+                                    }
+                                    .buttonStyle(.borderless)
                                 }
-                                Spacer()
-                                Button {
-                                    editingConfig = config
-                                } label: {
-                                    Image(systemName: "pencil")
-                                }
-                                .buttonStyle(.borderless)
+                                .contentShape(Rectangle())
+                                .opacity(config.isEnabled ? 1.0 : 0.6)
                             }
-                            .contentShape(Rectangle())
+                        }
+                    }
+
+                    if !store.neocitiesConfigs.isEmpty {
+                        Section("Neocities Sites") {
+                            ForEach(store.neocitiesConfigs) { config in
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(config.sitename)
+                                            .font(.system(size: 13, weight: .medium))
+                                        Text(config.basePath?.isEmpty == false ? "Path: /\(config.basePath!)" : "Root upload")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                    Spacer()
+                                    Button {
+                                        editingConfig = config
+                                    } label: {
+                                        Image(systemName: "pencil")
+                                    }
+                                    .buttonStyle(.borderless)
+                                }
+                                .contentShape(Rectangle())
+                            }
                         }
                     }
                 }
@@ -1072,6 +1236,259 @@ extension PublishView {
                 .frame(minWidth: 400, minHeight: 400)
             }
         }
+    }
+}
+
+// MARK: - Social management sheet
+
+extension PublishView {
+
+    private var socialManagementSheet: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Picker("Platform", selection: $newSocialPlatform) {
+                        ForEach(SocialPlatform.allCases.filter(\.supportsPosting)) { platform in
+                            Label(platform.displayName, systemImage: platform.icon).tag(platform)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                } header: {
+                    Text("Add Social Account")
+                } footer: {
+                    Text("Choose the platform you want to publish to. Each platform needs its own access token stored in Keychain.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Account Details") {
+                    TextField("Label (e.g. @alice)", text: $newSocialLabel)
+                        .textFieldStyle(.roundedBorder)
+
+                    if !newSocialPlatform.accountIdentifierHint.isEmpty {
+                        TextField(newSocialPlatform.accountIdentifierHint, text: $newSocialAccountIdentifier)
+                            .textFieldStyle(.roundedBorder)
+                    }
+
+                    if newSocialPlatform == .mastodon {
+                        TextField("Instance URL (e.g. mastodon.social)", text: $newSocialServerURL)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                }
+
+                Section {
+                    if newSocialPlatform == .bluesky {
+                        Text("Sign in via the Bluesky plugin panel first. No extra secret is needed here.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        TextField("Keychain secret name", text: $newSocialSecretName)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                } header: {
+                    Text("Credentials")
+                } footer: {
+                    if newSocialPlatform != .bluesky {
+                        Text(platformSecretHint(for: newSocialPlatform))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Section {
+                    HStack {
+                        Spacer()
+                        Button("Add Account") {
+                            let label = newSocialLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard !label.isEmpty else { return }
+                            let destination = SocialDestinationConfig(
+                                platform: newSocialPlatform,
+                                label: label,
+                                secretName: newSocialSecretName.trimmingCharacters(in: .whitespaces),
+                                serverURL: newSocialServerURL.isEmpty ? nil : newSocialServerURL,
+                                accountIdentifier: newSocialAccountIdentifier.isEmpty ? nil : newSocialAccountIdentifier
+                            )
+                            store.addSocialDestination(destination)
+                            newSocialLabel = ""
+                            newSocialSecretName = ""
+                            newSocialServerURL = ""
+                            newSocialAccountIdentifier = ""
+                            newSocialPlatform = .bluesky
+                        }
+                        .disabled(!canAddSocialAccount)
+                        .controlSize(.large)
+                        Spacer()
+                    }
+                }
+
+                Section("Configured Accounts") {
+                    ForEach(store.socialDestinations) { config in
+                        HStack {
+                            Image(systemName: config.platform.icon)
+                                .foregroundStyle(.secondary)
+                                .frame(width: 20)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(config.label)
+                                    .font(.system(size: 13, weight: .medium))
+                                Text(config.platform.displayName)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                            Toggle("Enabled", isOn: Binding(
+                                get: { config.isEnabled },
+                                set: { newValue in
+                                    var updated = config
+                                    updated.isEnabled = newValue
+                                    store.updateSocialDestination(updated)
+                                }
+                            ))
+                            .toggleStyle(.switch)
+                            .labelsHidden()
+                            Button(role: .destructive) {
+                                store.removeSocialDestination(id: config.id)
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            editingSocial = config
+                        }
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle("Social Destinations")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { showingSocialSheet = false }
+                }
+            }
+            .frame(minWidth: 520, minHeight: 540)
+        }
+    }
+
+    private var canAddSocialAccount: Bool {
+        let label = newSocialLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !label.isEmpty else { return false }
+        if newSocialPlatform == .bluesky { return true }
+        return !newSocialSecretName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+// MARK: - Social editing sheet
+
+private struct EditSocialSheet: View {
+    let config: SocialDestinationConfig
+    let onDismiss: () -> Void
+
+    @State private var platform: SocialPlatform
+    @State private var label: String
+    @State private var secretName: String
+    @State private var serverURL: String
+    @State private var accountIdentifier: String
+    @State private var isEnabled: Bool
+    @Environment(\.dismiss) private var dismiss
+
+    init(config: SocialDestinationConfig, onDismiss: @escaping () -> Void) {
+        self.config = config
+        self.onDismiss = onDismiss
+        _platform = State(initialValue: config.platform)
+        _label = State(initialValue: config.label)
+        _secretName = State(initialValue: config.secretName)
+        _serverURL = State(initialValue: config.serverURL ?? "")
+        _accountIdentifier = State(initialValue: config.accountIdentifier ?? "")
+        _isEnabled = State(initialValue: config.isEnabled)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Account") {
+                    Picker("Platform", selection: $platform) {
+                        ForEach(SocialPlatform.allCases.filter(\.supportsPosting)) { platform in
+                            Label(platform.displayName, systemImage: platform.icon).tag(platform)
+                        }
+                    }
+                    .pickerStyle(.menu)
+
+                    TextField("Label", text: $label)
+                        .textFieldStyle(.roundedBorder)
+
+                    if !platform.accountIdentifierHint.isEmpty {
+                        TextField(platform.accountIdentifierHint, text: $accountIdentifier)
+                            .textFieldStyle(.roundedBorder)
+                    }
+
+                    Toggle("Enabled", isOn: $isEnabled)
+                }
+
+                if platform == .mastodon {
+                    Section("Mastodon Instance") {
+                        TextField("Instance URL", text: $serverURL)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                }
+
+                Section {
+                    if platform == .bluesky {
+                        Text("Sign in via the Bluesky plugin panel first. No extra secret is needed here.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        TextField("Keychain secret name", text: $secretName)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                } header: {
+                    Text("Credentials")
+                } footer: {
+                    if platform != .bluesky {
+                        Text(platformSecretHint(for: platform))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle("Edit Social Account")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismissSheet() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !trimmedLabel.isEmpty else { return }
+                        var updated = config
+                        updated.platform = platform
+                        updated.label = trimmedLabel
+                        updated.secretName = secretName.trimmingCharacters(in: .whitespaces)
+                        updated.serverURL = serverURL.isEmpty ? nil : serverURL
+                        updated.accountIdentifier = accountIdentifier.isEmpty ? nil : accountIdentifier
+                        updated.isEnabled = isEnabled
+                        PublishStore.shared.updateSocialDestination(updated)
+                        dismissSheet()
+                    }
+                    .disabled(!canSave)
+                }
+            }
+            .frame(minWidth: 440, minHeight: 360)
+        }
+    }
+
+    private var canSave: Bool {
+        let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedLabel.isEmpty else { return false }
+        if platform == .bluesky { return true }
+        return !secretName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func dismissSheet() {
+        dismiss()
+        onDismiss()
     }
 }
 

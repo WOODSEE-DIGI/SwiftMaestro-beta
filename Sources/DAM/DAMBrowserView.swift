@@ -32,6 +32,11 @@ struct DAMBrowserView: View {
     /// of the selected image above the list (persisted across launches).
     @AppStorage("dam.metadataViewMode") private var metadataViewMode: MetadataViewMode = .list
 
+    /// Multi-selected folder paths for drag-and-drop operations.
+    @State private var selectedFolderPaths: Set<String> = []
+    /// Paths currently highlighted as drop targets.
+    @State private var dropTargetedPaths: Set<String> = []
+
     /// Local spacebar monitor for the Finder-style Quick Look preview panel.
     @State private var quickLookMonitor: Any?
 
@@ -138,6 +143,12 @@ struct DAMBrowserView: View {
                 UserDefaults.standard.removeObject(forKey: "crm.pendingDAMAssetPath")
                 await viewModel.revealAsset(atPath: path)
             }
+        }
+        .onChange(of: viewModel.selectedFolder) { _, newValue in
+            if newValue == nil { selectedFolderPaths.removeAll() }
+        }
+        .onChange(of: viewModel.selectedCollectionID) { _, _ in
+            selectedFolderPaths.removeAll()
         }
         .onAppear {
             quickLookMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak viewModel] event in
@@ -614,9 +625,21 @@ struct DAMBrowserView: View {
                     if !viewModel.folderTree.isEmpty {
                         Section("Folders") {
                             OutlineGroup(viewModel.folderTree, children: \.children) { node in
-                                folderRow(for: node)
-                                    .tag(node.path)
-                                    .contextMenu { folderContextMenu(for: node) }
+                                Button {
+                                    handleFolderTap(node.path)
+                                } label: {
+                                    folderRow(for: node)
+                                }
+                                .buttonStyle(.plain)
+                                .contentShape(Rectangle())
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(viewModel.selectedFolder == node.path ? Color.accentColor.opacity(0.25) : Color.clear)
+                                .tag(node.path)
+                                .onDrag { folderDragPayload(for: node.path) }
+                                .onDrop(of: [UTType.plainText.identifier], isTargeted: dropBinding(for: node.path)) { providers, _ in
+                                    handleFolderDrop(providers: providers, onto: node.path)
+                                }
+                                .contextMenu { folderContextMenu(for: node) }
                             }
                         }
                     }
@@ -660,21 +683,30 @@ struct DAMBrowserView: View {
                 if let id = viewModel.selectedCollectionID {
                     return "collection:\(id)"
                 }
-                guard let folder = viewModel.selectedFolder else { return "" }
-                return volumePaths.contains(folder) ? nil : folder
+                // Folders are managed by the OutlineGroup's own selection binding.
+                if viewModel.selectedFolder != nil {
+                    return nil
+                }
+                return ""
             },
             set: { tag in
                 if let tag, tag.hasPrefix("collection:") {
                     let idString = String(tag.dropFirst("collection:".count))
                     viewModel.selectedCollectionID = Int64(idString)
                     viewModel.selectedFolder = nil
+                    selectedFolderPaths.removeAll()
                 } else {
                     viewModel.selectedCollectionID = nil
                     viewModel.selectedFolder = (tag?.isEmpty == false) ? tag : nil
+                    selectedFolderPaths.removeAll()
+                    if let tag, !tag.isEmpty {
+                        selectedFolderPaths.insert(tag)
+                    }
                 }
             }
         )
     }
+
 
     private var volumesSidebarSelection: Binding<String?> {
         Binding<String?>(
@@ -1048,6 +1080,133 @@ struct DAMBrowserView: View {
         } label: {
             Label("Generate Tags for Folder", systemImage: "folder.badge.sparkles")
         }
+
+        let eligible = eligibleFolderTargets(excluding: node.path)
+        if !eligible.isEmpty {
+            Menu {
+                ForEach(eligible, id: \.path) { target in
+                    Button {
+                        Task { await viewModel.moveFolder(path: node.path, toParent: target.path) }
+                    } label: {
+                        Text(target.name)
+                    }
+                }
+            } label: {
+                Label("Move into…", systemImage: "folder")
+            }
+        }
+
+        if let topParent = topLevelParent(for: node.path),
+           topParent != (node.path as NSString).deletingLastPathComponent {
+            Button {
+                Task { await viewModel.moveFolder(path: node.path, toParent: topParent) }
+            } label: {
+                Label("Move to Top Level", systemImage: "arrow.up.backward")
+            }
+        }
+    }
+
+    // MARK: - Folder tree helpers
+
+    private func handleFolderTap(_ path: String) {
+        if NSEvent.modifierFlags.contains(.command) {
+            selectedFolderPaths.formSymmetricDifference([path])
+        } else {
+            selectedFolderPaths = [path]
+        }
+        viewModel.selectedFolder = path
+    }
+
+    private func dropBinding(for path: String) -> Binding<Bool> {
+        Binding(
+            get: { dropTargetedPaths.contains(path) },
+            set: { newValue in
+                if newValue {
+                    dropTargetedPaths.insert(path)
+                } else {
+                    dropTargetedPaths.remove(path)
+                }
+            }
+        )
+    }
+
+    private func folderDragPayload(for path: String) -> NSItemProvider {
+        let sourcePaths = Array(selectedFolderPaths.contains(path) ? selectedFolderPaths : [path])
+        let prefix = "folders-json:"
+        let json = (try? JSONEncoder().encode(sourcePaths))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        return NSItemProvider(object: "\(prefix)\(json)" as NSString)
+    }
+
+    private func handleFolderDrop(providers: [NSItemProvider], onto targetPath: String) -> Bool {
+        guard let provider = providers.first else { return false }
+        Task { @MainActor in
+            do {
+                let string = try await loadString(from: provider)
+                let sourcePaths: [String]
+                if string.hasPrefix("folders-json:"),
+                   let data = String(string.dropFirst("folders-json:".count)).data(using: .utf8),
+                   let decoded = try? JSONDecoder().decode([String].self, from: data) {
+                    sourcePaths = decoded
+                } else if string.hasPrefix("folder:") {
+                    sourcePaths = [String(string.dropFirst("folder:".count))]
+                } else {
+                    viewModel.setErrorMessage("Dropped item was not a catalog folder.")
+                    return
+                }
+                for source in sourcePaths {
+                    guard source != targetPath,
+                          !targetPath.hasPrefix(source + "/") else { continue }
+                    await viewModel.moveFolder(path: source, toParent: targetPath)
+                }
+            } catch {
+                viewModel.setErrorMessage("Drop failed: \(error.localizedDescription)")
+            }
+        }
+        return true
+    }
+
+    private func loadString(from provider: NSItemProvider) async throws -> String {
+        try await withCheckedThrowingContinuation { continuation in
+            provider.loadObject(ofClass: String.self) { object, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else if let string = object {
+                    continuation.resume(returning: string)
+                } else {
+                    continuation.resume(throwing: NSError(
+                        domain: "DAMBrowserView",
+                        code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "Dropped payload could not be decoded."]
+                    ))
+                }
+            }
+        }
+    }
+
+    private func eligibleFolderTargets(excluding sourcePath: String) -> [DAMFolderNode] {
+        var result: [DAMFolderNode] = []
+        func visit(_ nodes: [DAMFolderNode]) {
+            for node in nodes {
+                if node.path != sourcePath, !node.path.hasPrefix(sourcePath + "/") {
+                    result.append(node)
+                }
+                if let children = node.children {
+                    visit(children)
+                }
+            }
+        }
+        visit(viewModel.folderTree)
+        return result.sorted {
+            $0.path.localizedStandardCompare($1.path) == .orderedAscending
+        }
+    }
+
+    private func topLevelParent(for sourcePath: String) -> String? {
+        let parent = (sourcePath as NSString).deletingLastPathComponent
+        let grandparent = (parent as NSString).deletingLastPathComponent
+        guard grandparent != parent, !grandparent.isEmpty else { return nil }
+        return grandparent
     }
 
     @ViewBuilder

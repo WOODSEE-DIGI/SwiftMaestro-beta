@@ -788,6 +788,68 @@ final class DAMDatabase: Sendable {
         }
     }
 
+    /// Physically move a catalog folder on disk and rewrite all affected asset
+    /// paths in the database. Returns the new folder path.
+    ///
+    /// - Parameters:
+    ///   - sourcePath: Absolute path of the folder to move.
+    ///   - parentPath: Absolute path of the destination parent directory.
+    ///
+    /// - Throws: If the source or parent does not exist, the destination already
+    ///   exists, the move would create a cycle, or the filesystem move fails.
+    @discardableResult
+    func moveFolder(from sourcePath: String, toParent parentPath: String) throws -> String {
+        let sourceURL = URL(fileURLWithPath: sourcePath)
+        let parentURL = URL(fileURLWithPath: parentPath)
+        let sourceName = sourceURL.lastPathComponent
+        let destinationPath = parentURL.appendingPathComponent(sourceName).path
+        let destinationURL = URL(fileURLWithPath: destinationPath)
+
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: sourcePath, isDirectory: &isDir), isDir.boolValue else {
+            throw NSError(domain: "DAMDatabase", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Source folder does not exist: \(sourcePath)"
+            ])
+        }
+        isDir = false
+        guard fm.fileExists(atPath: parentPath, isDirectory: &isDir), isDir.boolValue else {
+            throw NSError(domain: "DAMDatabase", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "Destination parent does not exist: \(parentPath)"
+            ])
+        }
+        guard parentPath != sourcePath, !parentPath.hasPrefix(sourcePath + "/") else {
+            throw NSError(domain: "DAMDatabase", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "Cannot move a folder into itself or one of its descendants."
+            ])
+        }
+        guard !fm.fileExists(atPath: destinationPath) else {
+            throw NSError(domain: "DAMDatabase", code: 4, userInfo: [
+                NSLocalizedDescriptionKey: "A folder named '\(sourceName)' already exists at the destination."
+            ])
+        }
+
+        try fm.moveItem(at: sourceURL, to: destinationURL)
+
+        try dbQueue.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE asset
+                    SET path    = ? || substr(path,    length(?) + 1),
+                        folder  = ? || substr(folder, length(?) + 1)
+                    WHERE folder = ? OR folder LIKE ?
+                    """,
+                arguments: [
+                    destinationPath, sourcePath,
+                    destinationPath, sourcePath,
+                    sourcePath, sourcePath + "/%"
+                ]
+            )
+        }
+
+        return destinationPath
+    }
+
     /// Evaluate a smart collection's predicate and rebuild its membership.
     func applySmartCollection(id: Int64) throws {
         guard let collection = try collection(id: id),

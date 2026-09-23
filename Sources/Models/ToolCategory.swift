@@ -42,7 +42,20 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     case browser
     case scraping
     case bluesky
+    case mastodon
     case patreon
+    case facebook
+    case instagram
+    case threads
+    case twitter
+    case linkedin
+    case tumblr
+    case youtube
+    case vimeo
+    case dailymotion
+    case peertube
+    case tiktok
+    case vk
     case vault
     case database
     case dam
@@ -91,8 +104,10 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             return false
         case .file, .documents, .books, .shell, .server, .index, .system, .sqlite,
              .notes, .kanban, .excalidraw, .numbers, .maps, .photos, .stocks, .news,
-             .mail, .whatsapp, .discord, .web, .browser, .scraping, .bluesky, .patreon, .vault, .database, .dam,
-             .blockchain, .overlayBuilder, .calendar, .reminders, .contacts, .mediaPlayer:
+             .mail, .whatsapp, .discord, .web, .browser, .scraping,
+             .bluesky, .mastodon, .patreon, .facebook, .instagram, .threads, .twitter, .linkedin, .tumblr,
+             .youtube, .vimeo, .dailymotion, .peertube, .tiktok, .vk,
+             .vault, .database, .dam, .blockchain, .overlayBuilder, .calendar, .reminders, .contacts, .mediaPlayer:
             return true
         }
     }
@@ -129,7 +144,20 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .browser: return "Browser"
         case .scraping: return "Scraping"
         case .bluesky: return "Bluesky"
+        case .mastodon: return "Mastodon"
         case .patreon: return "Patreon"
+        case .facebook: return "Facebook"
+        case .instagram: return "Instagram"
+        case .threads: return "Threads"
+        case .twitter: return "Twitter / X"
+        case .linkedin: return "LinkedIn"
+        case .tumblr: return "Tumblr"
+        case .youtube: return "YouTube"
+        case .vimeo: return "Vimeo"
+        case .dailymotion: return "Dailymotion"
+        case .peertube: return "PeerTube"
+        case .tiktok: return "TikTok"
+        case .vk: return "VK Video"
         case .vault: return "Vault"
         case .database: return "Database"
         case .dam: return "DAM"
@@ -174,7 +202,20 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .browser: return "safari"
         case .scraping: return "tray.and.arrow.down"
         case .bluesky: return "at"
+        case .mastodon: return "bubble.left.and.text.bubble.right"
         case .patreon: return "heart.circle"
+        case .facebook: return "f.circle"
+        case .instagram: return "camera.circle"
+        case .threads: return "text.bubble"
+        case .twitter: return "x.circle"
+        case .linkedin: return "person.line.dotted.person"
+        case .tumblr: return "t.circle"
+        case .youtube: return "play.rectangle"
+        case .vimeo: return "play.circle"
+        case .dailymotion: return "play.square"
+        case .peertube: return "network"
+        case .tiktok: return "music.note"
+        case .vk: return "film"
         case .vault: return "lock.square"
         case .database: return "cylinder"
         case .dam: return "photo.on.rectangle.angled"
@@ -318,11 +359,37 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
                 "like_bluesky_post", "unlike_bluesky_post",
                 "repost_bluesky_post", "unrepost_bluesky_post",
             ]
+        case .mastodon:
+            return ["post_mastodon"]
         case .patreon:
             return [
                 "get_patreon_campaign", "list_patreon_members",
                 "list_patreon_posts", "get_patreon_memberships",
             ]
+        case .facebook:
+            return ["post_facebook_page"]
+        case .instagram:
+            return ["post_instagram"]
+        case .threads:
+            return ["post_threads"]
+        case .twitter:
+            return ["post_twitter"]
+        case .linkedin:
+            return ["post_linkedin"]
+        case .tumblr:
+            return []
+        case .youtube:
+            return ["upload_youtube_video"]
+        case .vimeo:
+            return ["upload_vimeo_video"]
+        case .dailymotion:
+            return ["upload_dailymotion_video"]
+        case .peertube:
+            return ["upload_peertube_video"]
+        case .tiktok:
+            return ["upload_tiktok_video"]
+        case .vk:
+            return ["upload_vk_video"]
         case .vault:
             return ["obsidian_search_vault", "obsidian_read_note", "obsidian_write_note", "obsidian_list_vault"]
         case .database:
@@ -399,7 +466,10 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .bus: return [.busMonitor]
         case .file, .server, .index, .memory, .messaging,
              .system, .mcp, .sqlite, .workspace, .rules, .time,
-             .news, .web, .scraping, .bluesky, .patreon, .vault:
+             .news, .web, .scraping,
+             .bluesky, .mastodon, .patreon, .facebook, .instagram, .threads, .twitter, .linkedin, .tumblr,
+             .youtube, .vimeo, .dailymotion, .peertube, .tiktok, .vk,
+             .vault:
             return []
         }
     }
@@ -413,13 +483,17 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .navigator:
             return [
                 .workspace, .memory, .bus, .system, .rules, .time, .web, .browser, .scraping, .vault, .documents, .books,
-                .notes, .kanban, .excalidraw, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky, .patreon, .database, .dam, .blockchain,
+                .notes, .kanban, .excalidraw, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky, .mastodon, .patreon, .facebook, .instagram, .threads, .twitter, .linkedin, .tumblr,
+                .youtube, .vimeo, .dailymotion, .peertube, .tiktok, .vk,
+                .database, .dam, .blockchain,
                 .overlayBuilder, .calendar, .reminders, .contacts,
             ]
         case .project:
             return [
                 .file, .documents, .books, .shell, .server, .index, .memory, .messaging, .bus, .system, .mcp, .sqlite, .web, .browser, .scraping, .vault,
-                .notes, .kanban, .excalidraw, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky, .patreon, .database, .dam, .blockchain,
+                .notes, .kanban, .excalidraw, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky, .mastodon, .patreon, .facebook, .instagram, .threads, .twitter, .linkedin, .tumblr,
+                .youtube, .vimeo, .dailymotion, .peertube, .tiktok, .vk,
+                .database, .dam, .blockchain,
                 .overlayBuilder, .calendar, .reminders, .contacts,
             ]
         case .swiftHelper:
@@ -462,6 +536,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
                 .notes, .kanban, .excalidraw, .numbers, .maps, .photos, .stocks,
                 .news, .mail, .whatsapp, .discord, .bluesky, .patreon, .database,
                 .dam, .blockchain, .overlayBuilder, .calendar, .reminders, .contacts,
+                .youtube, .vimeo, .dailymotion, .peertube, .tiktok, .vk,
             ]
             return base
         case .search:

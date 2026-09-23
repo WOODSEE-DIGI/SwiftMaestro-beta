@@ -70,6 +70,7 @@ struct ResizablePanelHost: View {
                         maxHeight: axis == .vertical ? (pane.length == nil ? .infinity : nil) : .infinity
                     )
                     .clipped()
+                    .contentShape(Rectangle())
 
                 if index < panes.count - 1 {
                     let next = panes[index + 1]

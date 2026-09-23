@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import MLXLMCommon
 
 /// Central store for the Publish app.
 /// Tracks draft content across SwiftMaestro apps, manages monitored tags,
@@ -15,6 +16,8 @@ final class PublishStore {
     private(set) var history: [PublishHistoryEntry] = []
     internal(set) var feeds: [PublishFeed] = []
     internal(set) var neocitiesConfigs: [NeocitiesConfig] = []
+    internal(set) var socialDestinations: [SocialDestinationConfig] = []
+    internal(set) var socialHistory: [SocialPostHistoryEntry] = []
     private(set) var isScanning = false
     internal(set) var lastError: String?
 
@@ -26,6 +29,8 @@ final class PublishStore {
     private var historyURL: URL { SwiftMaestroPaths.publishDir.appendingPathComponent("history.json") }
     private var feedsURL: URL { SwiftMaestroPaths.publishDir.appendingPathComponent("feeds.json") }
     private var neocitiesURL: URL { SwiftMaestroPaths.publishDir.appendingPathComponent("neocities.json") }
+    private var socialDestinationsURL: URL { SwiftMaestroPaths.publishDir.appendingPathComponent("socialDestinations.json") }
+    private var socialHistoryURL: URL { SwiftMaestroPaths.publishDir.appendingPathComponent("socialHistory.json") }
 
     /// Default system tags the Publish app monitors. Users can rename these,
     /// but their workflow role (and therefore kanban column mapping) stays fixed.
@@ -58,6 +63,8 @@ final class PublishStore {
         history = loadJSON(url: historyURL, defaultValue: [])
         feeds = loadJSON(url: feedsURL, defaultValue: [Self.defaultFeed])
         neocitiesConfigs = loadJSON(url: neocitiesURL, defaultValue: [])
+        socialDestinations = loadJSON(url: socialDestinationsURL, defaultValue: [])
+        socialHistory = loadJSON(url: socialHistoryURL, defaultValue: [])
     }
 
     private func loadJSON<T: Codable>(url: URL, defaultValue: T) -> T {
@@ -99,6 +106,32 @@ final class PublishStore {
     func removeNeocitiesConfig(id: UUID) {
         neocitiesConfigs.removeAll { $0.id == id }
         saveNeocitiesConfigs()
+    }
+
+    // MARK: - Social destinations
+
+    func saveSocialDestinations() {
+        saveJSON(socialDestinations, url: socialDestinationsURL)
+    }
+
+    func saveSocialHistory() {
+        saveJSON(socialHistory, url: socialHistoryURL)
+    }
+
+    func addSocialDestination(_ destination: SocialDestinationConfig) {
+        socialDestinations.append(destination)
+        saveSocialDestinations()
+    }
+
+    func updateSocialDestination(_ destination: SocialDestinationConfig) {
+        guard let index = socialDestinations.firstIndex(where: { $0.id == destination.id }) else { return }
+        socialDestinations[index] = destination
+        saveSocialDestinations()
+    }
+
+    func removeSocialDestination(id: UUID) {
+        socialDestinations.removeAll { $0.id == id }
+        saveSocialDestinations()
     }
 
     private func saveJSON<T: Codable>(_ value: T, url: URL) {
@@ -499,5 +532,354 @@ final class PublishStore {
     func clearHistory() {
         history.removeAll()
         saveHistory()
+    }
+
+    // MARK: - Social cross-posting
+
+    /// Cross-post a single draft to the selected social destinations.
+    /// - Returns: one result per destination attempted.
+    func crossPost(draftID: String, destinationIDs: [UUID]) async -> [CrossPostResult] {
+        guard let draftIndex = drafts.firstIndex(where: { $0.id == draftID }) else { return [] }
+        let draft = drafts[draftIndex]
+        var results: [CrossPostResult] = []
+
+        for destinationID in destinationIDs {
+            guard let destination = socialDestinations.first(where: { $0.id == destinationID && $0.isEnabled }) else { continue }
+
+            let text = SocialCrossPostFormatter.text(for: draft, platform: destination.platform)
+            let call: ToolCall
+
+            switch destination.platform {
+            case .bluesky:
+                call = ToolCall(function: .init(name: "post_bluesky", arguments: ["text": text]))
+            case .mastodon:
+                call = ToolCall(function: .init(name: "post_mastodon", arguments: [
+                    "text": text,
+                    "server_url": destination.normalizedServerURL ?? "",
+                    "secret_name": destination.secretName,
+                ]))
+            case .facebook:
+                call = ToolCall(function: .init(name: "post_facebook_page", arguments: [
+                    "text": text,
+                    "page_id": destination.accountIdentifier ?? "",
+                    "secret_name": destination.secretName,
+                ]))
+            case .threads:
+                call = ToolCall(function: .init(name: "post_threads", arguments: [
+                    "text": text,
+                    "user_id": destination.accountIdentifier ?? "",
+                    "secret_name": destination.secretName,
+                ]))
+            case .twitter:
+                call = ToolCall(function: .init(name: "post_twitter", arguments: [
+                    "text": text,
+                    "secret_name": destination.secretName,
+                ]))
+            case .linkedin:
+                call = ToolCall(function: .init(name: "post_linkedin", arguments: [
+                    "text": text,
+                    "author_urn": destination.accountIdentifier ?? "",
+                    "secret_name": destination.secretName,
+                ]))
+            case .patreon:
+                results.append(CrossPostResult(
+                    destinationID: destination.id,
+                    platform: destination.platform,
+                    label: destination.label,
+                    success: false,
+                    message: String(localized: "Patreon does not expose a post-creation API.")))
+                continue
+            case .instagram:
+                guard let mediaURL = await instagramMediaURL(for: draft) else {
+                    results.append(CrossPostResult(
+                        destinationID: destination.id,
+                        platform: destination.platform,
+                        label: destination.label,
+                        success: false,
+                        message: String(localized: "Instagram needs an image/video asset and a Neocities destination to host it temporarily.")))
+                    continue
+                }
+                call = ToolCall(function: .init(name: "post_instagram", arguments: [
+                    "caption": text,
+                    "user_id": destination.accountIdentifier ?? "",
+                    "secret_name": destination.secretName,
+                    "media_url": mediaURL.url,
+                    "media_type": mediaURL.mediaType,
+                ]))
+            case .tumblr:
+                results.append(CrossPostResult(
+                    destinationID: destination.id,
+                    platform: destination.platform,
+                    label: destination.label,
+                    success: false,
+                    message: String(localized: "Tumblr posting requires OAuth 1.0a and is not supported yet.")))
+                continue
+            case .youtube:
+                guard let videoPath = draft.assetPaths.first(where: { isVideoFile($0) }) else {
+                    results.append(CrossPostResult(
+                        destinationID: destination.id,
+                        platform: destination.platform,
+                        label: destination.label,
+                        success: false,
+                        message: String(localized: "YouTube upload requires a video asset attached to the draft.")))
+                    continue
+                }
+                call = ToolCall(function: .init(name: "upload_youtube_video", arguments: [
+                    "video_path": videoPath,
+                    "title": draft.title,
+                    "description": text,
+                    "privacy_status": "unlisted",
+                    "secret_name": destination.secretName,
+                ]))
+            case .vimeo:
+                guard let videoPath = draft.assetPaths.first(where: { isVideoFile($0) }) else {
+                    results.append(CrossPostResult(
+                        destinationID: destination.id,
+                        platform: destination.platform,
+                        label: destination.label,
+                        success: false,
+                        message: String(localized: "Vimeo upload requires a video asset attached to the draft.")))
+                    continue
+                }
+                call = ToolCall(function: .init(name: "upload_vimeo_video", arguments: [
+                    "video_path": videoPath,
+                    "title": draft.title,
+                    "description": text,
+                    "privacy": "unlisted",
+                    "secret_name": destination.secretName,
+                ]))
+            case .dailymotion:
+                guard let videoPath = draft.assetPaths.first(where: { isVideoFile($0) }) else {
+                    results.append(CrossPostResult(
+                        destinationID: destination.id,
+                        platform: destination.platform,
+                        label: destination.label,
+                        success: false,
+                        message: String(localized: "Dailymotion upload requires a video asset attached to the draft.")))
+                    continue
+                }
+                call = ToolCall(function: .init(name: "upload_dailymotion_video", arguments: [
+                    "video_path": videoPath,
+                    "title": draft.title,
+                    "description": text,
+                    "profile_id": destination.accountIdentifier ?? "",
+                    "secret_name": destination.secretName,
+                ]))
+            case .peertube:
+                guard let videoPath = draft.assetPaths.first(where: { isVideoFile($0) }) else {
+                    results.append(CrossPostResult(
+                        destinationID: destination.id,
+                        platform: destination.platform,
+                        label: destination.label,
+                        success: false,
+                        message: String(localized: "PeerTube upload requires a video asset attached to the draft.")))
+                    continue
+                }
+                call = ToolCall(function: .init(name: "upload_peertube_video", arguments: [
+                    "video_path": videoPath,
+                    "title": draft.title,
+                    "description": text,
+                    "instance_url": destination.normalizedServerURL ?? destination.accountIdentifier ?? "",
+                    "secret_name": destination.secretName,
+                ]))
+            case .tiktok:
+                guard let videoPath = draft.assetPaths.first(where: { isVideoFile($0) }) else {
+                    results.append(CrossPostResult(
+                        destinationID: destination.id,
+                        platform: destination.platform,
+                        label: destination.label,
+                        success: false,
+                        message: String(localized: "TikTok upload requires a video asset attached to the draft.")))
+                    continue
+                }
+                call = ToolCall(function: .init(name: "upload_tiktok_video", arguments: [
+                    "video_path": videoPath,
+                    "title": draft.title,
+                    "privacy_level": "SELF_ONLY",
+                    "secret_name": destination.secretName,
+                ]))
+            case .vk:
+                guard let videoPath = draft.assetPaths.first(where: { isVideoFile($0) }) else {
+                    results.append(CrossPostResult(
+                        destinationID: destination.id,
+                        platform: destination.platform,
+                        label: destination.label,
+                        success: false,
+                        message: String(localized: "VK Video upload requires a video asset attached to the draft.")))
+                    continue
+                }
+                call = ToolCall(function: .init(name: "upload_vk_video", arguments: [
+                    "video_path": videoPath,
+                    "title": draft.title,
+                    "description": text,
+                    "group_id": destination.accountIdentifier ?? "",
+                    "secret_name": destination.secretName,
+                ]))
+            }
+
+            let output = await MaestroTools.execute(call)
+            let (success, message, postedURL) = Self.parseCrossPostOutput(output, platform: destination.platform)
+
+            results.append(CrossPostResult(
+                destinationID: destination.id,
+                platform: destination.platform,
+                label: destination.label,
+                success: success,
+                message: message,
+                postedURL: postedURL
+            ))
+
+            socialHistory.append(SocialPostHistoryEntry(
+                draftID: draft.id,
+                draftTitle: draft.title,
+                destinationID: destination.id,
+                platform: destination.platform,
+                label: destination.label,
+                success: success,
+                message: message,
+                postedURL: postedURL
+            ))
+
+            if success {
+                drafts[draftIndex].modifiedAt = Date()
+            }
+        }
+
+        saveSocialHistory()
+        saveDrafts()
+        PublishMaestroDBBridge.shared.pushToDB()
+        return results
+    }
+
+    private static func parseCrossPostOutput(_ output: String, platform: SocialPlatform) -> (success: Bool, message: String, url: String?) {
+        // Tool errors are emitted as JSON containing an `error` key.
+        if let data = output.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let error = object["error"] as? String {
+            return (false, error, nil)
+        }
+
+        var url: String?
+        if let data = output.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let posted = object["posted"] as? Bool, posted {
+                url = object["url"] as? String ?? object["uri"] as? String
+                return (true, "Posted to \(platform.displayName).", url)
+            }
+        }
+
+        return (true, output, nil)
+    }
+}
+
+// MARK: - Instagram media upload helper
+
+private extension PublishStore {
+    struct InstagramMediaURL {
+        let url: String
+        let mediaType: String
+    }
+
+    private func isVideoFile(_ path: String) -> Bool {
+        let videoExtensions = Set(["mp4", "mov", "m4v", "avi", "mkv", "webm", "flv", "wmv"])
+        return videoExtensions.contains(URL(fileURLWithPath: path).pathExtension.lowercased())
+    }
+
+    /// Uploads the first suitable image/video asset from a draft to the first
+    /// configured Neocities site and returns a public HTTPS URL that Instagram
+    /// can fetch. Returns nil if no asset or no Neocities destination exists.
+    func instagramMediaURL(for draft: PublishDraft) async -> InstagramMediaURL? {
+        guard let config = neocitiesConfigs.first else { return nil }
+        guard let apiKey = try? KeychainService.read(account: config.apiKeySecretName, allowUI: false),
+              !apiKey.isEmpty else { return nil }
+
+        let supportedImage = Set(["jpg", "jpeg", "png", "heic", "heif", "webp"])
+        let supportedVideo = Set(["mp4", "mov", "m4v"])
+
+        for path in draft.assetPaths {
+            let url = URL(fileURLWithPath: path)
+            let ext = url.pathExtension.lowercased()
+            guard supportedImage.contains(ext) || supportedVideo.contains(ext) else { continue }
+            guard let data = try? Data(contentsOf: url) else { continue }
+
+            let mimeType: String
+            if supportedImage.contains(ext) {
+                mimeType = "image/\(ext == "jpg" ? "jpeg" : ext)"
+            } else {
+                mimeType = "video/mp4"
+            }
+
+            let filename = "\(UUID().uuidString)-\(url.lastPathComponent)"
+            let remotePath = config.remotePath(for: filename)
+
+            do {
+                _ = try await NeocitiesAPIClient.upload(
+                    sitename: config.sitename,
+                    apiKey: apiKey,
+                    path: remotePath,
+                    data: data,
+                    mimeType: mimeType
+                )
+                let publicURL = "https://\(config.sitename).neocities.org/\(remotePath)"
+                let mediaType = supportedVideo.contains(ext) ? "VIDEO" : "IMAGE"
+                return InstagramMediaURL(url: publicURL, mediaType: mediaType)
+            } catch {
+                NSLog("[PUBLISH] Instagram asset upload failed: \(error)")
+                continue
+            }
+        }
+        return nil
+    }
+}
+
+// MARK: - Cross-post text formatter
+
+private enum SocialCrossPostFormatter {
+    static func text(for draft: PublishDraft, platform: SocialPlatform) -> String {
+        let limit = platform.characterLimit
+        guard limit > 0 else { return draft.title }
+
+        var parts: [String] = []
+        let title = draft.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let summary = draft.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if !title.isEmpty {
+            parts.append(title)
+        }
+        if !summary.isEmpty {
+            parts.append(summary)
+        } else {
+            let bodyPreview = draft.bodyMarkdown
+                .replacingOccurrences(of: #"!\[.*?\]\(.*?\)"#, with: "", options: .regularExpression)
+                .replacingOccurrences(of: #"\[([^\]]+)\]\([^)]+\)"#, with: "$1", options: .regularExpression)
+                .replacingOccurrences(of: #"[#*_>`-]"#, with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !bodyPreview.isEmpty {
+                parts.append(bodyPreview)
+            }
+        }
+
+        // Append tags as hashtags.
+        let hashtags = draft.tags
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && !$0.contains(" ") }
+            .map { "#\($0)" }
+        if !hashtags.isEmpty {
+            parts.append(hashtags.joined(separator: " "))
+        }
+
+        let joined = parts.joined(separator: "\n\n")
+        if joined.count <= limit { return joined }
+
+        // Truncate with ellipsis, preserving hashtags if possible.
+        let reserve = 3
+        let maxBody = limit - reserve
+        var body = joined.prefix(maxBody)
+        // Drop partial word at the end for cleanliness.
+        if let lastBreak = body.lastIndex(where: { $0.isWhitespace || $0.isNewline }) {
+            let trimmed = String(body[..<lastBreak]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { body = Substring(trimmed) }
+        }
+        return String(body) + "…"
     }
 }

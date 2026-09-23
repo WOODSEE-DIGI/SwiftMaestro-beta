@@ -44,16 +44,15 @@ Currently SwiftMaestro is A native macOS AI assistant that runs large language m
 
 ---
 
-## What's New in 0.6.2
+## What's New in 0.6.3
 
-- **MaestroDAM redaction hardening** — expanded PII detection for VIN, rego, certificate/transaction IDs, SSN, ABN/ACN/TFN, Centrelink CRN, Medicare, passport, concession cards, driver licences, WWCC, police/firearms permits, bank accounts, and BSB.
-- **Custom redaction patterns** — define your own regex patterns, persisted per machine, and apply them in single-asset Edit or batch AI Options.
-- **Precise text redaction** — only the sensitive value is redacted via `VNRecognizedText.boundingBox(for:)`, leaving surrounding labels readable.
-- **Edit workspace refinements** — the batch sidebar (Edit, Batch Rating, Batch Keywords, Redaction Layout) stays visible while editing; the primary action bar is now pinned at the top.
-- **Image watermarks** — PNG/JPEG/TIFF/HEIC watermark support with live preview, 1–100% size, and 0–25% margin.
-- **Export sizing slider** — replace the Max Dimension preset picker with a continuous 512–8192 px slider, numeric text field, and quick preset buttons.
-- **Export file naming** — choose Original name, Job name + original, or Job name + sequence; live sample preview.
-- **Crash fix** — resolved an `EXC_BAD_ACCESS` in the Edit/Output workspace switch by correcting the sidebar `List(selection:)` binding and hardening the watermark renderer.
+- **MaestroDAM Quick Look toolbar** — Rotate, Share, and Crop buttons sit next to the privacy toggle, matching Finder's Quick Look toolbar.
+- **Secure share** — shared images render with edits and visible redactions baked in, crops are respected, and GPS/PII metadata is scrubbed.
+- **Privacy redaction improvements** — orientation is preserved when redactions are rendered; redaction now detects text (with PII patterns) and barcodes as well as faces.
+- **Resizable sidebar** — the left sidebar is split into resizable Volumes and Catalog sections, similar to Capture One.
+- **Themed progress overlay** — a consistent retro block-bar progress indicator is used for app launch, Storage Map scans, and Offload/verification workflows.
+- **Notes.md external folders** — add folders outside the vault to the sidebar as editable references, and import external files/folders via copy or symlink.
+- **Stability** — fixed an `EXC_BAD_ACCESS` crash when opening MaestroDAM.
 
 See [CHANGELOG.md](CHANGELOG.md) for earlier releases.
 

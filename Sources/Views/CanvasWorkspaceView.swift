@@ -301,6 +301,7 @@ struct CanvasTileView: View {
             }
             .frame(width: frame.width, height: frame.height)
             .clipped()
+            .contentShape(Rectangle())
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
