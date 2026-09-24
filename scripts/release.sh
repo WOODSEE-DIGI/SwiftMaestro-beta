@@ -626,11 +626,21 @@ LPFTP
         echo "SM_SFTP_USER/SM_SFTP_HOST not set — skipping 1984 appcast upload"
     fi
 
+    # Update website release notes, checksums, and version strings.
+    local website_dir
+    website_dir="$(dirname "$deploy_script")"
+    if [ -x "$PWD/scripts/update-website-release-notes.py" ] && [ -f "$website_dir/download.html" ]; then
+        echo "Updating website download page for v$VERSION…"
+        python3 "$PWD/scripts/update-website-release-notes.py" "$VERSION" "$website_dir" "$DIST_DIR" "$PWD/CHANGELOG.md" || die "website release notes update failed"
+    else
+        echo "WARNING: website release-notes updater not available"
+    fi
+
     # Website deploy.
     if [ -x "$deploy_script" ]; then
         local site_appcast site_appcast_light
-        site_appcast="$(dirname "$deploy_script")/download/appcast.xml"
-        site_appcast_light="$(dirname "$deploy_script")/download/appcast-light.xml"
+        site_appcast="$website_dir/download/appcast.xml"
+        site_appcast_light="$website_dir/download/appcast-light.xml"
         if [ -d "$(dirname "$site_appcast")" ]; then
             cp "$DIST_DIR/appcast.xml" "$site_appcast"
             cp "$DIST_DIR/appcast-light.xml" "$site_appcast_light"
@@ -639,6 +649,22 @@ LPFTP
         "$deploy_script" || die "website deploy failed"
     else
         echo "Deploy script not found at $deploy_script — skipping website deploy"
+    fi
+
+    # GitHub Release (notes only — installers are too large for GitHub attachments).
+    if command -v gh >/dev/null 2>&1; then
+        local release_notes
+        release_notes="$(mktemp)"
+        awk '/^# SwiftMaestro '"$VERSION"'/{flag=1; next} /^# SwiftMaestro /{flag=0} flag' "$PWD/CHANGELOG.md" > "$release_notes"
+        if [ -s "$release_notes" ]; then
+            echo "Creating GitHub Release v$VERSION…"
+            gh release create "v$VERSION" --repo WOODSEE-DIGI/SwiftMaestro --title "SwiftMaestro $VERSION" --notes-file "$release_notes" || echo "WARNING: GitHub Release creation failed"
+        else
+            echo "WARNING: could not extract release notes for GitHub Release"
+        fi
+        rm -f "$release_notes"
+    else
+        echo "WARNING: gh CLI not found — skipping GitHub Release"
     fi
 
     state_mark upload "ok"

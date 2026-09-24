@@ -51,3 +51,4 @@ docs/outreach/
 outreach/
 
 logs/
+__pycache__/

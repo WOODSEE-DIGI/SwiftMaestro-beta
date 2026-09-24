@@ -2,12 +2,12 @@
 
 ## MaestroDAM
 
-- **Folder tree selection & drag-and-drop**: left-clicking a folder now selects it reliably, and dragging a folder onto another folder moves it on disk and updates the catalog.
-- **Workspace tile hit-testing**: tiles in the Canvas workspace no longer clip over neighbouring panels, so close buttons and sidebars respond correctly even when a tile is narrow.
+- **MaestroDAM folder tree selection & drag-and-drop**: left-clicking a folder now selects it reliably, and dragging a folder onto another folder moves it on disk and updates the catalog.
+- **Canvas workspace tile hit-testing**: tiles in the Canvas workspace no longer clip over neighbouring panels, so close buttons and sidebars respond correctly even when a tile is narrow.
 
 ## Publish
 
-- **Social destinations redesign**: the Add/Edit Social Account sheet now uses a clear platform picker, grouped settings, and larger default sizes, and warns when a platform requires a Keychain secret.
+- **Publish social destinations redesign**: the Add/Edit Social Account sheet now uses a clear platform picker, grouped settings, and larger default sizes, and warns when a platform requires a Keychain secret.
 
 ## Build & Release
 
