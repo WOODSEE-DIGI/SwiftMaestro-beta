@@ -154,13 +154,9 @@ productbuild \
     --version "$VERSION" \
     "$UNSIGNED_PKG"
 
-echo "Signing installer package…"
-productsign --sign "$INSTALLER_SIGN_IDENTITY" --timestamp "$UNSIGNED_PKG" "$PKG"
-
-pkgutil --check-signature "$PKG" >/dev/null || {
-    echo "ERROR: installer package signature check failed"
-    exit 1
-}
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib/sign-installer.sh"
+sign_installer_pkg "$INSTALLER_SIGN_IDENTITY" "$UNSIGNED_PKG" "$PKG"
 
 # App-only Sparkle update archive.
 if [ "${SKIP_SPARKLE_ZIP:-0}" != "1" ]; then

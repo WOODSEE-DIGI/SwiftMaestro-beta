@@ -173,14 +173,9 @@ productbuild \
     "$UNSIGNED_PKG"
 
 # Sign the installer with the Developer ID Installer certificate.
-echo "Signing installer package…"
-productsign --sign "$INSTALLER_SIGN_IDENTITY" --timestamp "$UNSIGNED_PKG" "$PKG"
-
-# Verify the installer signature.
-pkgutil --check-signature "$PKG" >/dev/null || {
-    echo "ERROR: installer package signature check failed"
-    exit 1
-}
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib/sign-installer.sh"
+sign_installer_pkg "$INSTALLER_SIGN_IDENTITY" "$UNSIGNED_PKG" "$PKG"
 
 # Produce an app-only zip for Sparkle updates. This must NOT include models,
 # otherwise generate_appcast will OOM again trying to diff 37 GB archives.

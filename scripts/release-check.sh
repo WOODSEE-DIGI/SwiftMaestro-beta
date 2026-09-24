@@ -83,12 +83,18 @@ if [ "$CONFLICT" -ne 0 ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 4. CHANGELOG mention (warning only).
+# 4. CHANGELOG entry is required before release.
 # ---------------------------------------------------------------------------
 if [ -f "CHANGELOG.md" ]; then
-    if ! grep -qE "^## \[?${CURRENT_VERSION}\]?" CHANGELOG.md; then
-        echo "WARNING: CHANGELOG.md has no '## $CURRENT_VERSION' entry."
+    if ! grep -qE "^#+ .*${CURRENT_VERSION}" CHANGELOG.md; then
+        echo "ERROR: CHANGELOG.md has no entry for $CURRENT_VERSION."
+        echo "       Add a '# SwiftMaestro $CURRENT_VERSION' section before releasing."
+        exit 1
     fi
+    echo "OK: CHANGELOG.md mentions $CURRENT_VERSION"
+else
+    echo "ERROR: CHANGELOG.md not found"
+    exit 1
 fi
 
 echo "OK: pre-release checks passed for $CURRENT_VERSION"

@@ -33,6 +33,10 @@
 #
 set -euo pipefail
 
+# Print a loud banner if the pipeline exits with an error so a failure is
+# never silent when the terminal output is truncated or the session ends.
+trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "" >&2; echo "##########################################################" >&2; echo "#  RELEASE PIPELINE FAILED WITH EXIT CODE $rc" >&2; echo "#  Inspect logs in ${RELEASE_STATE_DIR:-$PWD/build/release-state}" >&2; echo "##########################################################" >&2; fi' EXIT
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -169,9 +173,13 @@ stage_preflight() {
         echo "OK: version $VERSION is newer than tag $latest_tag"
     fi
 
-    # CHANGELOG mention (warning only).
-    if [ -f "CHANGELOG.md" ] && ! grep -qE "^(#|##) .*\b${VERSION}\b" CHANGELOG.md; then
-        echo "WARNING: CHANGELOG.md has no '## $VERSION' entry"
+    # CHANGELOG entry is required before release.
+    if [ -f "CHANGELOG.md" ]; then
+        if ! grep -qE "^(#|##) .*\b${VERSION}\b" CHANGELOG.md; then
+            die "CHANGELOG.md has no entry for $VERSION"
+        fi
+    else
+        die "CHANGELOG.md not found"
     fi
 
     # Dist conflict check only when not resuming a previous run.
