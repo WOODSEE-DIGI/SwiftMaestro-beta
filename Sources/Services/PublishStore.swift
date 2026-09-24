@@ -18,6 +18,7 @@ final class PublishStore {
     internal(set) var neocitiesConfigs: [NeocitiesConfig] = []
     internal(set) var socialDestinations: [SocialDestinationConfig] = []
     internal(set) var socialHistory: [SocialPostHistoryEntry] = []
+    internal(set) var pocketBaseConfigs: [PocketBaseConfig] = []
     private(set) var isScanning = false
     internal(set) var lastError: String?
 
@@ -31,6 +32,7 @@ final class PublishStore {
     private var neocitiesURL: URL { SwiftMaestroPaths.publishDir.appendingPathComponent("neocities.json") }
     private var socialDestinationsURL: URL { SwiftMaestroPaths.publishDir.appendingPathComponent("socialDestinations.json") }
     private var socialHistoryURL: URL { SwiftMaestroPaths.publishDir.appendingPathComponent("socialHistory.json") }
+    private var pocketBaseURL: URL { SwiftMaestroPaths.publishDir.appendingPathComponent("pocketbase.json") }
 
     /// Default system tags the Publish app monitors. Users can rename these,
     /// but their workflow role (and therefore kanban column mapping) stays fixed.
@@ -65,6 +67,7 @@ final class PublishStore {
         neocitiesConfigs = loadJSON(url: neocitiesURL, defaultValue: [])
         socialDestinations = loadJSON(url: socialDestinationsURL, defaultValue: [])
         socialHistory = loadJSON(url: socialHistoryURL, defaultValue: [])
+        pocketBaseConfigs = loadJSON(url: pocketBaseURL, defaultValue: [])
     }
 
     private func loadJSON<T: Codable>(url: URL, defaultValue: T) -> T {
@@ -106,6 +109,28 @@ final class PublishStore {
     func removeNeocitiesConfig(id: UUID) {
         neocitiesConfigs.removeAll { $0.id == id }
         saveNeocitiesConfigs()
+    }
+
+    // MARK: - PocketBase configs
+
+    func savePocketBaseConfigs() {
+        saveJSON(pocketBaseConfigs, url: pocketBaseURL)
+    }
+
+    func addPocketBaseConfig(_ config: PocketBaseConfig) {
+        pocketBaseConfigs.append(config)
+        savePocketBaseConfigs()
+    }
+
+    func updatePocketBaseConfig(_ config: PocketBaseConfig) {
+        guard let index = pocketBaseConfigs.firstIndex(where: { $0.id == config.id }) else { return }
+        pocketBaseConfigs[index] = config
+        savePocketBaseConfigs()
+    }
+
+    func removePocketBaseConfig(id: UUID) {
+        pocketBaseConfigs.removeAll { $0.id == id }
+        savePocketBaseConfigs()
     }
 
     // MARK: - Social destinations

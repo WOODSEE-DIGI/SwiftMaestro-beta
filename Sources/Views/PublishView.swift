@@ -34,6 +34,8 @@ struct PublishView: View {
     @State private var editingNeocities: NeocitiesConfig? = nil
     @State private var showingSocialSheet = false
     @State private var editingSocial: SocialDestinationConfig? = nil
+    @State private var showingPocketBaseSheet = false
+    @State private var editingPocketBase: PocketBaseConfig? = nil
     @State private var selectedFeedID: UUID = PublishStore.defaultFeed.id
 
     var body: some View {
@@ -68,6 +70,12 @@ struct PublishView: View {
         .sheet(item: $editingSocial) { config in
             EditSocialSheet(config: config) { editingSocial = nil }
         }
+        .sheet(isPresented: $showingPocketBaseSheet) {
+            pocketBaseManagementSheet
+        }
+        .sheet(item: $editingPocketBase) { config in
+            EditPocketBaseSheet(config: config) { editingPocketBase = nil }
+        }
     }
 
     // MARK: - Toolbar
@@ -98,6 +106,11 @@ struct PublishView: View {
                 }
             } else if viewMode == .destinations {
                 HStack(spacing: 12) {
+                    Button {
+                        showingPocketBaseSheet = true
+                    } label: {
+                        Label("PocketBase", systemImage: "server.rack")
+                    }
                     Button {
                         showingSocialSheet = true
                     } label: {
@@ -232,6 +245,12 @@ struct PublishView: View {
     @State private var newSocialSecretName = ""
     @State private var newSocialServerURL = ""
     @State private var newSocialAccountIdentifier = ""
+
+    // MARK: - PocketBase sheet state
+    @State private var newPocketBaseLabel = ""
+    @State private var newPocketBaseURL = "http://127.0.0.1:8090"
+    @State private var newPocketBaseEmail = ""
+    @State private var newPocketBasePassword = ""
 
     private var feedManagementSheet: some View {
         NavigationStack {
@@ -1239,6 +1258,97 @@ extension PublishView {
     }
 }
 
+// MARK: - PocketBase management sheet
+
+extension PublishView {
+
+    private var pocketBaseManagementSheet: some View {
+        NavigationStack {
+            Form {
+                Section("Add PocketBase Server") {
+                    TextField("Label", text: $newPocketBaseLabel)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("Base URL", text: $newPocketBaseURL)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("Admin email", text: $newPocketBaseEmail)
+                        .textFieldStyle(.roundedBorder)
+                    SecureField("Admin password", text: $newPocketBasePassword)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Add") {
+                        guard !newPocketBaseLabel.isEmpty,
+                              !newPocketBaseURL.isEmpty,
+                              !newPocketBaseEmail.isEmpty,
+                              !newPocketBasePassword.isEmpty else { return }
+                        let config = PocketBaseConfig(
+                            label: newPocketBaseLabel,
+                            baseURL: newPocketBaseURL,
+                            adminEmail: newPocketBaseEmail
+                        )
+                        do {
+                            try KeychainService.store(
+                                account: config.passwordKeychainAccount,
+                                value: newPocketBasePassword,
+                                synchronizable: false
+                            )
+                            store.addPocketBaseConfig(config)
+                            newPocketBaseLabel = ""
+                            newPocketBaseURL = "http://127.0.0.1:8090"
+                            newPocketBaseEmail = ""
+                            newPocketBasePassword = ""
+                        } catch {
+                            store.lastError = "Failed to save password: \(error.localizedDescription)"
+                        }
+                    }
+                    .disabled(newPocketBaseLabel.isEmpty || newPocketBaseURL.isEmpty || newPocketBaseEmail.isEmpty || newPocketBasePassword.isEmpty)
+                }
+
+                Section("Configured Servers") {
+                    ForEach(store.pocketBaseConfigs) { config in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(config.label)
+                                    .font(.system(size: 13, weight: .medium))
+                                Text(config.baseURL)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                            Button {
+                                if let url = config.adminURL {
+                                    WebBrowserStore.shared.addTab(url: url, activate: true)
+                                }
+                            } label: {
+                                Image(systemName: "globe")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Open admin in SwiftBrowser")
+                            Button(role: .destructive) {
+                                store.removePocketBaseConfig(id: config.id)
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            editingPocketBase = config
+                        }
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle("PocketBase Servers")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { showingPocketBaseSheet = false }
+                }
+            }
+            .frame(minWidth: 480, minHeight: 400)
+        }
+    }
+}
+
 // MARK: - Social management sheet
 
 extension PublishView {
@@ -1545,6 +1655,73 @@ private struct EditNeocitiesSheet: View {
                 }
             }
             .frame(minWidth: 360, minHeight: 280)
+        }
+    }
+
+    private func dismissSheet() {
+        dismiss()
+        onDismiss()
+    }
+}
+
+// MARK: - PocketBase editing sheet
+
+private struct EditPocketBaseSheet: View {
+    let config: PocketBaseConfig
+    let onDismiss: () -> Void
+
+    @State private var label: String
+    @State private var baseURLString: String
+    @State private var adminEmail: String
+    @Environment(\.dismiss) private var dismiss
+
+    init(config: PocketBaseConfig, onDismiss: @escaping () -> Void) {
+        self.config = config
+        self.onDismiss = onDismiss
+        _label = State(initialValue: config.label)
+        _baseURLString = State(initialValue: config.baseURL)
+        _adminEmail = State(initialValue: config.adminEmail)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Server") {
+                    TextField("Label", text: $label)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("Base URL", text: $baseURLString)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                Section("Admin Credentials") {
+                    TextField("Email", text: $adminEmail)
+                        .textFieldStyle(.roundedBorder)
+                    Text("The admin password is read from Keychain using the account name '\(config.passwordKeychainAccount)'.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle("Edit PocketBase Server")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismissSheet() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        var updated = config
+                        updated.label = label.trimmingCharacters(in: .whitespacesAndNewlines)
+                        updated.baseURL = baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+                        updated.adminEmail = adminEmail.trimmingCharacters(in: .whitespaces)
+                        PublishStore.shared.updatePocketBaseConfig(updated)
+                        dismissSheet()
+                    }
+                    .disabled(label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                              baseURLString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                              adminEmail.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+            .frame(minWidth: 400, minHeight: 320)
         }
     }
 
