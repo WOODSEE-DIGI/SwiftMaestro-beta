@@ -36,6 +36,7 @@ struct PublishView: View {
     @State private var editingSocial: SocialDestinationConfig? = nil
     @State private var showingPocketBaseSheet = false
     @State private var editingPocketBase: PocketBaseConfig? = nil
+    @State private var showingMyStoryPublisherSheet = false
     @State private var selectedFeedID: UUID = PublishStore.defaultFeed.id
 
     var body: some View {
@@ -76,6 +77,9 @@ struct PublishView: View {
         .sheet(item: $editingPocketBase) { config in
             EditPocketBaseSheet(config: config) { editingPocketBase = nil }
         }
+        .sheet(isPresented: $showingMyStoryPublisherSheet) {
+            myStoryPublisherSheet
+        }
     }
 
     // MARK: - Toolbar
@@ -106,6 +110,11 @@ struct PublishView: View {
                 }
             } else if viewMode == .destinations {
                 HStack(spacing: 12) {
+                    Button {
+                        showingMyStoryPublisherSheet = true
+                    } label: {
+                        Label("Publish MyStory", systemImage: "video.badge.checkmark")
+                    }
                     Button {
                         showingPocketBaseSheet = true
                     } label: {
@@ -1346,6 +1355,12 @@ extension PublishView {
             }
             .frame(minWidth: 480, minHeight: 400)
         }
+    }
+
+    // MARK: - MyStory publisher sheet
+
+    private var myStoryPublisherSheet: some View {
+        MyStoryPublisherSheet { showingMyStoryPublisherSheet = false }
     }
 }
 
