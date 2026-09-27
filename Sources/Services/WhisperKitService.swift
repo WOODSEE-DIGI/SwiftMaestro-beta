@@ -389,6 +389,13 @@ final class WhisperKitService: @unchecked Sendable {
                 NSLog("[WhisperKit] Saved input device ID \(selectedInputDeviceID!) is no longer available; falling back to default input device.")
             }
 
+            // Captured up front: `recordingWriter` is MainActor-isolated, so
+            // reading it inside the @Sendable buffer callback would need an
+            // actor hop (and a Task per buffer). The writer is @unchecked
+            // Sendable and serialises its own file state, so handing the
+            // reference to the callback is safe and keeps writes ordered.
+            let dictationWriter = recordingWriter
+
             let streamer = AudioStreamTranscriber(
                 audioEncoder: kit.audioEncoder,
                 featureExtractor: kit.featureExtractor,
@@ -401,11 +408,8 @@ final class WhisperKitService: @unchecked Sendable {
                 silenceThreshold: silenceThreshold,
                 useVAD: useVAD,
                 inputDeviceID: validatedInputDeviceID,
-                audioBufferHandler: { [weak self] samples in
-                    guard let self else { return }
-                    Task {
-                        try? await self.recordingWriter?.append(samples: samples)
-                    }
+                audioBufferHandler: { samples in
+                    try? dictationWriter?.append(samples: samples)
                 }
             ) { @Sendable [weak self] _, newState in
                 Task { @MainActor [weak self] in
@@ -486,7 +490,7 @@ final class WhisperKitService: @unchecked Sendable {
             var recordedURL: URL?
             if let writer = self.recordingWriter {
                 let url = writer.fileURL
-                try? await writer.close()
+                try? writer.close()
                 self.recordingWriter = nil
                 recordedURL = url
 
@@ -587,7 +591,7 @@ final class WhisperKitService: @unchecked Sendable {
         }
 
         recordingWriter = AudioRecordingWriter(fileURL: fileURL, sampleRate: Double(WhisperKit.sampleRate))
-        Task { try? await recordingWriter?.open() }
+        Task { try? recordingWriter?.open() }
     }
 
     private func saveTranscriptionToNotes(_ text: String) {

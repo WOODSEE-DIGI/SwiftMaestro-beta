@@ -33,6 +33,18 @@ final class SpectrumAnalyzer: @unchecked Sendable {
     /// Call once per engine build, on the setup thread, before taps run.
     func prepare(sampleRate: Float) {
         let n = bufferSize
+
+        // A degenerate configuration would trap further down (Int() on a
+        // non-finite quotient, or a vDSP transform sized smaller than the
+        // buffers, which writes past their end). Clear state and report
+        // silence instead — process() short-circuits on a nil fftSetup.
+        guard bandCount > 0, n > 1, n.nonzeroBitCount == 1,
+              sampleRate > 0, sampleRate.isFinite else {
+            fftSetup = nil
+            bandBins = []
+            return
+        }
+
         fftSetup = vDSP.FFT(log2n: UInt(log2(Float(n))), radix: .radix2,
                             ofType: DSPSplitComplex.self)
         window = vDSP.window(ofType: Float.self,
@@ -44,12 +56,30 @@ final class SpectrumAnalyzer: @unchecked Sendable {
         magnitudes = [Float](repeating: 0, count: n / 2)
 
         // Log-spaced band edges 20 Hz to 20 kHz mapped to FFT bin index groups.
-        let binHz = sampleRate / Float(n)
+        //
+        // The display range is fixed at 20 Hz...20 kHz, but the magnitudes array
+        // only reaches Nyquist (bin n/2 - 1). On any device or media file below
+        // 40 kHz the top bands' LOWER edge lands past that point, so clamping
+        // only the upper edge inverts the range and traps. Clamp both edges to
+        // the last real bin: a band straddling Nyquist is truncated to it, and a
+        // band entirely above it becomes empty — which process() already reads
+        // as silence.
+        let maxBin = (n / 2) - 1
+        let binHz = Double(sampleRate) / Double(n)
+
+        func bin(forFrequency hz: Double) -> Int {
+            let ratio = hz / binHz
+            guard ratio.isFinite else { return maxBin }
+            return min(maxBin, max(1, Int(ratio)))
+        }
+
         bandBins = (0..<bandCount).map { band in
             let lo = 20.0 * pow(1000.0, Double(band) / Double(bandCount))
             let hi = 20.0 * pow(1000.0, Double(band + 1) / Double(bandCount))
-            let loBin = max(1, Int(lo / Double(binHz)))
-            let hiBin = min(n / 2 - 1, max(loBin + 1, Int(hi / Double(binHz))))
+            let loBin = bin(forFrequency: lo)
+            // loBin <= maxBin, so the outer min keeps hiBin >= loBin and the
+            // range well-formed even when the whole band sits above Nyquist.
+            let hiBin = min(maxBin, max(loBin + 1, bin(forFrequency: hi)))
             return Array(loBin..<hiBin)
         }
     }

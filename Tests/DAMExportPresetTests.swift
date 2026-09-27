@@ -226,7 +226,7 @@ final class DAMExportPresetTests: XCTestCase {
         let text = CGSize(width: 200, height: 40)
         let margin: CGFloat = 30
         for position in DAMExportPreset.WatermarkSettings.Position.allCases {
-            let point = position.point(canvas: canvas, textSize: text, margin: margin)
+            let point = position.point(canvas: canvas, size: text, margin: margin)
             XCTAssertGreaterThanOrEqual(point.x, 0, "\(position) off-canvas left")
             XCTAssertGreaterThanOrEqual(point.y, 0, "\(position) off-canvas bottom")
             XCTAssertLessThanOrEqual(point.x + text.width, canvas.width,
@@ -236,7 +236,7 @@ final class DAMExportPresetTests: XCTestCase {
         }
         // Spot-check the geometry: bottomRight hugs the trailing edge.
         let br = DAMExportPreset.WatermarkSettings.Position.bottomRight
-            .point(canvas: canvas, textSize: text, margin: margin)
+            .point(canvas: canvas, size: text, margin: margin)
         XCTAssertEqual(br.x, canvas.width - margin - text.width, accuracy: 0.01)
         XCTAssertEqual(br.y, margin, accuracy: 0.01)
     }

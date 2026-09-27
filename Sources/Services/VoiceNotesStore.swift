@@ -76,6 +76,9 @@ final class VoiceNotesStore {
 
     private var engine: AVAudioEngine?
     private var writer: AudioRecordingWriter?
+    /// True if the live-input meter was running when a voice note started;
+    /// the meter is stopped for the recording and restarted afterwards.
+    private var wasMeterRunningBeforeRecording = false
     /// True while a detached recording-start is in flight. Prevents a second
     /// tap of the record button from racing two engine startups.
     private var isStartingRecording = false
@@ -251,6 +254,13 @@ final class VoiceNotesStore {
             whisper.toggleRecording()
         }
 
+        // The live-input meter and a voice note also can't share the same mic.
+        // Remember whether it was running so we can resume it when done.
+        let restartMeter = AudioMeterEngine.shared.running
+        if restartMeter {
+            AudioMeterEngine.shared.stop()
+        }
+
         // Snapshot everything the detached worker needs — it must NOT touch
         // MainActor state (and definitely not run engine startup on the main
         // thread: starting AVAudioEngine on main right after the TCC grant
@@ -267,7 +277,8 @@ final class VoiceNotesStore {
                 selectedDeviceID: deviceID,
                 indexDir: indexDir,
                 recordingsFolder: folder,
-                fileURL: fileURL
+                fileURL: fileURL,
+                restartMeterOnFailure: restartMeter
             )
         }
     }
@@ -278,9 +289,11 @@ final class VoiceNotesStore {
         selectedDeviceID: AudioDeviceID?,
         indexDir: URL,
         recordingsFolder: URL,
-        fileURL: URL
+        fileURL: URL,
+        restartMeterOnFailure: Bool
     ) async {
         guard await AudioProcessor.requestRecordPermission() else {
+            if restartMeterOnFailure { AudioMeterEngine.shared.start() }
             await MainActor.run {
                 self.errorMessage = "Microphone access denied. Allow SwiftMaestro in System Settings → Privacy & Security → Microphone."
                 self.isStartingRecording = false
@@ -293,15 +306,23 @@ final class VoiceNotesStore {
         // Apply the chosen microphone (if any) BEFORE the tap/start.
         // Device IDs go stale across reboots and unplugged hardware, so
         // validate first — an invalid ID crashes AVAudioEngine.
-        if let deviceID = AudioDeviceManager.shared.validInputDeviceID(selectedDeviceID),
-           let audioUnit = engine.inputNode.audioUnit {
-            var id = deviceID
-            AudioUnitSetProperty(
-                audioUnit,
-                AudioUnitPropertyID(kAudioOutputUnitProperty_CurrentDevice),
-                kAudioUnitScope_Global, 0,
-                &id, UInt32(MemoryLayout<AudioDeviceID>.size)
-            )
+        if let deviceID = AudioDeviceManager.shared.validInputDeviceID(selectedDeviceID) {
+            // Setting kAudioOutputUnitProperty_CurrentDevice after the
+            // inputNode has been instantiated is unreliable on some USB
+            // interfaces (e.g. Rode A1). Make the selected mic the system
+            // default first, then also set it on the engine's audio unit.
+            if AudioDeviceManager.shared.defaultInputDeviceID != deviceID {
+                AudioDeviceManager.shared.setDefaultInputDevice(id: deviceID)
+            }
+            if let audioUnit = engine.inputNode.audioUnit {
+                var id = deviceID
+                AudioUnitSetProperty(
+                    audioUnit,
+                    AudioUnitPropertyID(kAudioOutputUnitProperty_CurrentDevice),
+                    kAudioUnitScope_Global, 0,
+                    &id, UInt32(MemoryLayout<AudioDeviceID>.size)
+                )
+            }
         } else if selectedDeviceID != nil {
             // Saved device vanished — fall back to default and say so.
             await MainActor.run {
@@ -313,6 +334,7 @@ final class VoiceNotesStore {
         let hwFormat = input.inputFormat(forBus: 0)
         // Guard the classic installTap crash on bogus device formats.
         guard hwFormat.sampleRate > 0, hwFormat.channelCount > 0 else {
+            if restartMeterOnFailure { AudioMeterEngine.shared.start() }
             await MainActor.run {
                 self.errorMessage = "No usable microphone found."
                 self.isStartingRecording = false
@@ -321,9 +343,20 @@ final class VoiceNotesStore {
         }
 
         // Insert the shared 8-band EQ BEFORE the tap and writer: recordings
-        // and the level meter both see the EQ'd signal. The EQ node connects
-        // through to the (muted) main mixer so the render graph has a full
-        // pull path; outputVolume 0 keeps it silent — no feedback.
+        // and the level meter both see the EQ'd signal.
+        //
+        // The graph must NOT reach mainMixerNode. Routing through the output
+        // mixer put the Apple mixer AU (aumx/mcmx/appl) in the input-side
+        // render chain, which imposed the *output* device's mMaxFramesPerSlice
+        // (e.g. 941) on input capture. When the input device asked for a
+        // different slice (e.g. 960 from a USB mic like the Rode A1) the mixer
+        // failed every cycle with kAudioUnitErr_TooManyFramesToProcess
+        // (-10874) and the recording captured silence while the UI still showed
+        // healthy levels.
+        //
+        // Instead, the graph ends at a silent AVAudioSinkNode. That gives the
+        // engine a pull target (so the eqNode tap actually fires and the input
+        // node renders) without opening an output device or involving the mixer.
         let eqNode = AudioEQSettings.makeEQUnit(from: await AudioEQSettings.shared.snapshot)
 
         // Spectrum analyzer for the retro panel strip — computed from the same
@@ -332,13 +365,16 @@ final class VoiceNotesStore {
         analyzer.prepare(sampleRate: Float(hwFormat.sampleRate))
         engine.attach(eqNode)
         engine.connect(input, to: eqNode, format: hwFormat)
-        engine.connect(eqNode, to: engine.mainMixerNode, format: hwFormat)
-        engine.mainMixerNode.outputVolume = 0
+
+        let sinkNode = AVAudioSinkNode { _, _, _ in noErr }
+        engine.attach(sinkNode)
+        engine.connect(eqNode, to: sinkNode, format: hwFormat)
 
         try? FileManager.default.createDirectory(at: indexDir, withIntermediateDirectories: true)
         do {
             try FileManager.default.createDirectory(at: recordingsFolder, withIntermediateDirectories: true)
         } catch {
+            if restartMeterOnFailure { AudioMeterEngine.shared.start() }
             await MainActor.run {
                 self.errorMessage = "Couldn't create the recordings folder: \(error.localizedDescription)"
                 self.isStartingRecording = false
@@ -354,8 +390,9 @@ final class VoiceNotesStore {
             channels: 1
         )
         do {
-            try await writer.open()
+            try writer.open()
         } catch {
+            if restartMeterOnFailure { AudioMeterEngine.shared.start() }
             await MainActor.run {
                 self.errorMessage = "Couldn't create the recording file: \(error.localizedDescription)"
                 self.isStartingRecording = false
@@ -371,24 +408,44 @@ final class VoiceNotesStore {
             let frames = Int(buffer.frameLength)
             guard frames > 0, let channelData = buffer.floatChannelData else { return }
 
-            // Channel 0 only (mono); de-interleave if the device insists on it.
+            // Mix all channels down to mono. The original code read only
+            // channel 0, which is silent on some USB interfaces (e.g. Rode A1)
+            // that present the microphone on a different channel or as
+            // interleaved stereo with one empty channel.
             let channelCount = Int(buffer.format.channelCount)
-            let stride = buffer.format.isInterleaved ? channelCount : 1
-            var samples = [Float]()
-            samples.reserveCapacity(frames)
+            let isInterleaved = buffer.format.isInterleaved
+            var samples = [Float](repeating: 0, count: frames)
             var sumSquares: Float = 0
-            for i in 0..<frames {
-                let s = channelData[0][i * stride]
-                samples.append(s)
-                sumSquares += s * s
+
+            if isInterleaved {
+                for i in 0..<frames {
+                    var mixed: Float = 0
+                    for c in 0..<channelCount {
+                        mixed += channelData[0][i * channelCount + c]
+                    }
+                    mixed /= Float(channelCount)
+                    samples[i] = mixed
+                    sumSquares += mixed * mixed
+                }
+            } else {
+                for i in 0..<frames {
+                    var mixed: Float = 0
+                    for c in 0..<channelCount {
+                        mixed += channelData[c][i]
+                    }
+                    mixed /= Float(channelCount)
+                    samples[i] = mixed
+                    sumSquares += mixed * mixed
+                }
             }
+
             let rawRMS = sqrt(sumSquares / Float(frames))
             let rms = min(1, rawRMS * 3)
             let bands = analyzer.process(buffer)
 
-            Task {
-                try? await writer.appendSlice(samples)
-            }
+            // O(1) enqueue onto the writer's serial queue — no Task allocation
+            // on the realtime thread, and no disk I/O while it is blocked.
+            writer.enqueue(slice: samples)
             Task { @MainActor [weak self] in
                 guard let self, self.isRecording else { return }
                 self.recordingFrames += Int64(frames)
@@ -414,8 +471,9 @@ final class VoiceNotesStore {
             try engine.start()
         } catch {
             eqNode.removeTap(onBus: 0)
-            try? await writer.close()
+            try? writer.close()
             try? FileManager.default.removeItem(at: fileURL)
+            if restartMeterOnFailure { AudioMeterEngine.shared.start() }
             await MainActor.run {
                 self.engine = nil
                 self.writer = nil
@@ -428,6 +486,7 @@ final class VoiceNotesStore {
         // Commit on the main actor: the note enters the list the moment
         // recording starts — the user sees it existing while they talk.
         await MainActor.run {
+            self.wasMeterRunningBeforeRecording = restartMeterOnFailure
             self.engine = engine
             self.writer = writer
             self.recordingSampleRate = hwFormat.sampleRate
@@ -487,7 +546,7 @@ final class VoiceNotesStore {
         let elapsed = Double(recordingFrames) / max(1, recordingSampleRate)
 
         Task {
-            try? await writer?.close()
+            try? writer?.close()
             self.writer = nil
         }
 
@@ -501,6 +560,12 @@ final class VoiceNotesStore {
             enqueueTranscription(id)
         }
         activeNoteID = nil
+
+        // Resume the live meter if it was running before this recording.
+        if wasMeterRunningBeforeRecording {
+            wasMeterRunningBeforeRecording = false
+            AudioMeterEngine.shared.start()
+        }
     }
 
     /// Best-effort finalize on quit. The launch-time orphan scan is the real
@@ -516,13 +581,18 @@ final class VoiceNotesStore {
         let id = activeNoteID
         let elapsed = Double(recordingFrames) / max(1, recordingSampleRate)
         Task {
-            try? await writer?.close()
+            try? writer?.close()
             await MainActor.run { [weak self] in
                 guard let self, let id,
                       let idx = self.notes.firstIndex(where: { $0.id == id }) else { return }
                 self.notes[idx].duration = elapsed
                 self.saveIndex()
             }
+        }
+
+        if wasMeterRunningBeforeRecording {
+            wasMeterRunningBeforeRecording = false
+            AudioMeterEngine.shared.start()
         }
     }
 

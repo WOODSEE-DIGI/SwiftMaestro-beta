@@ -7,11 +7,12 @@ import CoreAudio
 /// state, and a list of notes with their transcripts inline. Recording streams
 /// to disk immediately; transcription happens in the background afterwards.
 struct VoiceNotesPanel: View {
-    @State private var store = VoiceNotesStore.shared
+    @Bindable private var store = VoiceNotesStore.shared
     @State private var expandedNoteIDs: Set<UUID> = []
     @State private var notePendingDeletion: VoiceNote?
     @State private var exportMessage: String?
     @State private var inputDevices: [AudioDevice] = []
+    @State private var deviceListenerToken: UUID?
     /// Below this panel height the settings section auto-collapses so the
     /// notes list keeps the room. A manual toggle overrides it until the
     /// panel next crosses the threshold (then automatic behavior resumes).
@@ -20,8 +21,24 @@ struct VoiceNotesPanel: View {
 
     private static let compactHeightThreshold: CGFloat = 500
 
+    /// Tag type for the microphone Picker. Using an enum instead of a raw
+    /// AudioDeviceID avoids a SwiftUI runtime bug where UInt32 tags inferred
+    /// inside a ForEach fail to match the current selection.
+    private enum MicPickerTag: Hashable {
+        case systemDefault
+        case device(AudioDeviceID)
+    }
+
     private var settingsExpanded: Bool {
         settingsExpandedOverride ?? !isCompact
+    }
+
+    private var selectedMicrophoneName: String {
+        if let id = store.selectedInputDeviceID,
+           let device = inputDevices.first(where: { $0.id == id }) {
+            return device.name
+        }
+        return "System Default"
     }
 
     var body: some View {
@@ -121,17 +138,30 @@ struct VoiceNotesPanel: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .frame(width: 110, alignment: .trailing)
-                    Picker("Microphone", selection: Binding<AudioDeviceID?>(
-                        get: { store.selectedInputDeviceID },
-                        set: { store.selectedInputDeviceID = $0 }
-                    )) {
-                        Text("System Default").tag(nil as AudioDeviceID?)
-                        ForEach(inputDevices) { device in
-                            Text(device.name).tag(device.id as AudioDeviceID?)
+                    // SwiftUI's Picker tag matching has repeatedly failed here
+                    // ("selection X is invalid and does not have an associated tag"),
+                    // so use a Menu with direct assignments instead. This is functionally
+                    // identical to a menu-style Picker but bypasses tag resolution.
+                    Menu {
+                        Button("System Default") {
+                            store.selectedInputDeviceID = nil
                         }
+                        ForEach(inputDevices) { device in
+                            Button(device.name) {
+                                store.selectedInputDeviceID = device.id
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(selectedMicrophoneName)
+                                .lineLimit(1)
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
+                    .menuStyle(.borderlessButton)
                 }
 
                 // Save location
@@ -162,9 +192,25 @@ struct VoiceNotesPanel: View {
         }
         .padding(.horizontal)
         .padding(.vertical, 10)
-        .onAppear {
-            inputDevices = AudioDeviceManager.shared.inputDevices
+        .task {
+            refreshInputDevices()
+            deviceListenerToken = AudioDeviceManager.shared.addDevicesChangedHandler {
+                refreshInputDevices()
+            }
         }
+        .onDisappear {
+            if let token = deviceListenerToken {
+                AudioDeviceManager.shared.removeDevicesChangedHandler(token)
+                deviceListenerToken = nil
+            }
+        }
+    }
+
+    private func refreshInputDevices() {
+        inputDevices = AudioDeviceManager.shared.inputDevices
+        // If the saved selection no longer exists, leave it as-is so a
+        // hot-replug will resume using it; VoiceNotesStore validates and
+        // falls back at record time if the device is truly gone.
     }
 
     private func chooseRecordingsFolder() {
