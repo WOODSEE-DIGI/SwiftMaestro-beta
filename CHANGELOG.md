@@ -1,3 +1,11 @@
+# SwiftMaestro 0.6.6
+
+## Agent Macros & Task Dock
+
+- **Agent Macros panel**: a right-side panel of one-click prompt buttons per agent kind. Built-in macros ship with the app; users can add, edit, and delete their own.
+- **Chat Todo Dock**: an opencode-style collapsible task bar above the chat input that shows progress and the active todo at a glance.
+- **Macro store**: macros are persisted across launches and scoped by agent kind.
+
 # SwiftMaestro 0.6.5
 
 ## Plans
