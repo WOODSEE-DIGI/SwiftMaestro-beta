@@ -82,6 +82,10 @@ final class SwiftWeaverStore {
     var cssSource: String = SwiftWeaverDefaults.css
     var fileURL: URL? = nil
 
+    /// Set by AppDelegate when an .html file is opened from Finder. The
+    /// SwiftWeaver panel consumes this and loads the document.
+    var pendingOpenFileURL: URL?
+
     // MARK: Preview
 
     var fluidPreview: Bool = true
@@ -170,6 +174,12 @@ final class SwiftWeaverStore {
         try documentHTML.write(to: url, atomically: true, encoding: .utf8)
         fileURL = url
     }
+}
+
+extension Notification.Name {
+    /// Posted by AppDelegate when the user opens an .html file from Finder with
+    /// SwiftMaestro, so the SwiftWeaver panel loads the file.
+    static let swiftWeaverOpenFileRequested = Notification.Name("swiftWeaverOpenFileRequested")
 }
 
 // MARK: - Color hex helpers (used by the font panel + CSS variables panel)

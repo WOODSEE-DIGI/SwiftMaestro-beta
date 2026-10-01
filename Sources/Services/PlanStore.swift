@@ -136,6 +136,10 @@ final class PlanStore {
     /// Plans keyed by scope key (insertion order preserved).
     private(set) var plansByScope: [String: [Plan]] = [:]
 
+    init() {
+        loadArchivedScopes()
+    }
+
     func plans(in scope: PlanScope) -> [Plan] {
         if let cached = plansByScope[scope.key] { return cached }
         let loaded = Self.load(scope)
@@ -247,6 +251,73 @@ final class PlanStore {
         plansByScope[scope.key] = []
         invalidateScopeNameCache()
         Self.save([], scope)
+    }
+
+    // MARK: - Scope archival
+
+    /// Keys of project scopes the user has explicitly archived.
+    private(set) var archivedScopeKeys: Set<String> = []
+    private static let archivedScopesKey = "planStore.archivedScopes"
+
+    func loadArchivedScopes() {
+        if let saved = UserDefaults.standard.array(forKey: Self.archivedScopesKey) as? [String] {
+            archivedScopeKeys = Set(saved)
+        } else {
+            archivedScopeKeys = []
+        }
+    }
+
+    private func saveArchivedScopes() {
+        UserDefaults.standard.set(Array(archivedScopeKeys), forKey: Self.archivedScopesKey)
+    }
+
+    func isArchived(_ scope: PlanScope) -> Bool {
+        archivedScopeKeys.contains(scope.key)
+    }
+
+    func archive(_ scope: PlanScope) {
+        guard case .project = scope else { return }
+        archivedScopeKeys.insert(scope.key)
+        saveArchivedScopes()
+        invalidateScopeNameCache()
+    }
+
+    func unarchive(_ scope: PlanScope) {
+        archivedScopeKeys.remove(scope.key)
+        saveArchivedScopes()
+        invalidateScopeNameCache()
+    }
+
+    /// Project-scope names with plans that are NOT archived.
+    func activeProjectNames() -> [String] {
+        knownProjectNames().filter { !isArchived(.project($0)) }
+    }
+
+    /// Project-scope names with plans that ARE archived.
+    func archivedProjectNames() -> [String] {
+        knownProjectNames().filter { isArchived(.project($0)) }
+    }
+
+    /// Automatically archive any project scope whose newest plan hasn't been
+    /// updated in `days` or more. Returns the names archived.
+    @discardableResult
+    func archiveInactiveProjectScopes(days: Int = 60) -> [String] {
+        let threshold = Date().addingTimeInterval(-Double(days) * 24 * 60 * 60)
+        var archived: [String] = []
+        for name in knownProjectNames() {
+            let scope = PlanScope.project(name)
+            guard !isArchived(scope) else { continue }
+            let items = plans(in: scope)
+            let lastUpdate = items.map(\.updatedAt).max() ?? .distantPast
+            if lastUpdate < threshold {
+                archive(scope)
+                archived.append(name)
+            }
+        }
+        if !archived.isEmpty {
+            NSLog("[PLANSTORE] auto-archived \(archived.count) inactive scope(s): \(archived.joined(separator: ", "))")
+        }
+        return archived
     }
 
     // MARK: - Shared-memory persistence

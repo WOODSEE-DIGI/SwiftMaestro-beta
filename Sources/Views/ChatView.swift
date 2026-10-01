@@ -14,7 +14,10 @@ struct ChatView: View {
     @Environment(\.openWindow) private var openWindow
     @StateObject var vm: ChatViewModel
     @Environment(PanelLayoutState.self) private var layoutState
-    @State private var showingPlans = false
+    /// Single plan-sheet destination. Using one `sheet(item:)` avoids the
+    /// duplicate-sheet crash that happened when two `.sheet(isPresented:)`
+    /// modifiers were attached to this view.
+    @State private var activePlanSheet: ActivePlanSheet?
     // Markdown export driven from the Plans panel's context menu.
     @State private var exporting = false
     @State private var exportDocument: MarkdownDocument?
@@ -24,6 +27,19 @@ struct ChatView: View {
     /// Optional override for the window/tab title. Used when this chat is shown
     /// in a detached agent window so the title bar shows the agent name.
     let title: String?
+
+    /// Current plan UI sheet: either the full browser or the direct editor.
+    private enum ActivePlanSheet: Identifiable {
+        case browser(projects: [String], defaultProjectName: String?)
+        case newPlan(projects: [String], defaultProjectName: String?)
+
+        var id: String {
+            switch self {
+            case .browser: return "browser"
+            case .newPlan: return "newPlan"
+            }
+        }
+    }
 
     init(vm: ChatViewModel, title: String? = nil) {
         _vm = StateObject(wrappedValue: vm)
@@ -141,13 +157,23 @@ struct ChatView: View {
                 }
             }
         }
-        .sheet(isPresented: $showingPlans) {
-            PlansSheet(
-                agentId: vm.agent.id,
-                projects: planScopeProjects,
-                defaultProjectName: vm.agent.kind == .navigator ? nil : vm.projectName
-            )
-            .environment(planStore)
+        .sheet(item: $activePlanSheet) { destination in
+            switch destination {
+            case .browser(let projects, let defaultProjectName):
+                PlansSheet(
+                    agentId: vm.agent.id,
+                    projects: projects,
+                    defaultProjectName: defaultProjectName
+                )
+                .environment(planStore)
+            case .newPlan(let projects, let defaultProjectName):
+                NewPlanSheet(
+                    agentId: vm.agent.id,
+                    projects: projects,
+                    defaultProjectName: defaultProjectName
+                )
+                .environment(planStore)
+            }
         }
     }
 
@@ -165,6 +191,17 @@ struct ChatView: View {
             names.append(extra)
         }
         return names
+    }
+
+    /// Projects shown in the direct New Plan editor. Keeps the picker small and
+    /// relevant (current project for project agents; workspace projects for
+    /// Maestro) instead of every project scope ever persisted on disk.
+    /// Archived project scopes are hidden here to reduce clutter.
+    private var newPlanScopeProjects: [String] {
+        let base = vm.agent.kind == .navigator
+            ? workspace.visibleProjects.map(\.name)
+            : (vm.projectName.map { [$0] } ?? [])
+        return base.filter { !planStore.isArchived(.project($0)) }
     }
 
     /// Plans visible to this agent (personal + its project scopes), paired with
@@ -619,12 +656,27 @@ struct ChatView: View {
     private var plansSidePanelContent: some View {
         let items = visiblePlans
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 Spacer()
                 Text("\(items.count)")
                     .font(.caption)
                     .foregroundStyle(theme.plansPanelText)
-                Button { showingPlans = true } label: {
+                Button {
+                    activePlanSheet = .newPlan(
+                        projects: newPlanScopeProjects,
+                        defaultProjectName: vm.agent.kind == .navigator ? nil : vm.projectName)
+                } label: {
+                    Label("New Plan", systemImage: "plus")
+                        .font(.caption)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .help("Create a new plan")
+                Button {
+                    activePlanSheet = .browser(
+                        projects: planScopeProjects,
+                        defaultProjectName: vm.agent.kind == .navigator ? nil : vm.projectName)
+                } label: {
                     Image(systemName: "rectangle.expand.vertical")
                 }
                 .buttonStyle(.plain)

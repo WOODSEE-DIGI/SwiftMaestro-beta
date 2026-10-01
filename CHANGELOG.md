@@ -1,3 +1,26 @@
+# SwiftMaestro 0.6.5
+
+## Plans
+
+- **Direct New Plan editor**: the New Plan button now opens a single markdown-capable editor instead of a nested plan browser.
+- **Import plans**: bring plans in from Apple Notes or Reminders so agents can follow them.
+- **Scope management**: archive, unarchive, or permanently delete old project scopes. Archived scopes are hidden from the New Plan picker but their plans stay on disk.
+- **Auto-archive**: project scopes whose plans haven't been updated in 60 days are automatically archived on launch.
+- **Duplicate toggle removed**: the redundant Plans show/hide icon next to the agent name is gone; the remaining toggle stays with the other header icons.
+
+## MaestroDocs
+
+- **Page Setup**: choose paper size, orientation, and margins. Margins can be edited in inches, millimetres, or centimetres, and the default unit follows the system locale.
+- **Open Word documents from Finder**: double-click `.docx` / `.doc` files to open them in MaestroDocs.
+
+## Files & Finder
+
+- **Reopen from Finder**: `.excalidraw`, `.md`/`.markdown`, and `.html`/`.htm` files opened from Finder now route to the correct Maestro panels.
+
+## Voice Notes
+
+- **Recording fix**: restored Voice Notes recording with Rode A1 and USB microphones.
+
 # SwiftMaestro 0.6.4
 
 ## MaestroDAM

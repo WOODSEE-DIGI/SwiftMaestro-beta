@@ -12,6 +12,9 @@ final class ExcalidrawStore {
 
     var serverURL: URL?
     var isServerRunning = false
+    /// Set by AppDelegate when the app is asked to open a .excalidraw file from
+    /// Finder. The Excalidraw webview consumes this on didFinish navigation.
+    var pendingOpenFileURL: URL?
 
     private var listener: NWListener?
     private var connections: [NWConnection] = []

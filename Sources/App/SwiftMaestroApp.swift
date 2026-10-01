@@ -86,6 +86,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         SetupProgressService.shared.plan()
     }
 
+    func application(_ sender: NSApplication, openFile filename: String) -> Bool {
+        let url = URL(fileURLWithPath: filename)
+        let ext = url.pathExtension.lowercased()
+
+        switch ext {
+        case "excalidraw":
+            ExcalidrawStore.shared.pendingOpenFileURL = url
+            WorkspaceLayoutState.shared.open(.canvas)
+            NotificationCenter.default.post(
+                name: .excalidrawBoardExternallyModified,
+                object: nil,
+                userInfo: ["boardURL": url, "shouldOpen": true]
+            )
+            return true
+
+        case "md", "markdown":
+            WorkspaceLayoutState.shared.open(.notesMD)
+            NotificationCenter.default.post(
+                name: .notesOpenFileRequested,
+                object: nil,
+                userInfo: ["fileURL": url]
+            )
+            return true
+
+        case "html", "htm":
+            WorkspaceLayoutState.shared.open(.htmlBuilder)
+            SwiftWeaverStore.shared.pendingOpenFileURL = url
+            NotificationCenter.default.post(
+                name: .swiftWeaverOpenFileRequested,
+                object: nil,
+                userInfo: ["fileURL": url]
+            )
+            return true
+
+        case "docx", "doc":
+            WorkspaceLayoutState.shared.open(.maestroDocs)
+            MaestroDocsStore.shared.pendingOpenFileURL = url
+            NotificationCenter.default.post(
+                name: .maestroDocsOpenFileRequested,
+                object: nil,
+                userInfo: ["fileURL": url]
+            )
+            return true
+
+        default:
+            return false
+        }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // After a crash, macOS may restore stale windows from its own state
         // restoration that don't correspond to any live SwiftUI WindowGroup.
@@ -307,6 +356,9 @@ struct SwiftMaestroApp: App {
                     // Recover plans from previous builds and migrate them to the shared
                     // memory store so they survive workspace resets and reinstalls.
                     planStore.migrateFromLegacyStorage(navigatorID: workspace.navigator.id)
+                    // Hide project scopes whose plans haven't been touched in 60 days.
+                    // They remain on disk and can be restored from Manage Scopes.
+                    planStore.archiveInactiveProjectScopes()
                     // Wire the vision proxy service to the live inference engine.
                     visionProxyService.setEngine(engine)
                     // Expose the live-todo store to the native todo tools.

@@ -87,13 +87,28 @@
           }
         });
       },
+      // Queue a load that arrived before the Excalidraw API was ready.
+      _queueLoad: function(type, payload) {
+        this._pendingLoads.push({ type: type, payload: payload });
+      },
+      // Drain any load requests that arrived before the API was ready.
+      _drainPendingLoads: function() {
+        while (this._pendingLoads.length && window.excalidrawAPI) {
+          var pending = this._pendingLoads.shift();
+          if (pending.type === "json") {
+            this.loadJSON(pending.payload);
+          } else {
+            this.loadFile(pending.payload);
+          }
+        }
+      },
       // Load a board from a localhost URL.
       loadFile: function(url) {
         var self = this;
         if (!window.excalidrawAPI) {
           console.warn("loadFile called before excalidrawAPI ready; queueing", url);
           self.postMessage("console", { level: "warn", message: "loadFile queued (API not ready): " + url });
-          self._pendingLoads.push(url);
+          self._queueLoad("url", url);
           return;
         }
         // Bust caches and avoid reusing a stale failed response.
@@ -108,32 +123,36 @@
             return response.text();
           })
           .then(function(text) {
-            var data = JSON.parse(text);
-            var elements = data.elements || [];
-            // Use Excalidraw API to load the scene
-            if (window.excalidrawAPI) {
-              window.excalidrawAPI.updateScene({
-                elements: elements,
-                appState: data.appState || {}
-              });
-              // Defer centering so Excalidraw has laid out the canvas.
-              setTimeout(function() {
-                self._centerElements(elements);
-              }, 50);
-              self.postMessage("fileLoaded", { url: url, elements: elements.length });
-            } else {
-              throw new Error("excalidrawAPI disappeared after fetch");
-            }
+            self.loadJSON(text);
+            self.postMessage("fileLoaded", { url: url });
           })
           .catch(function(e) {
             console.error("Load file failed:", e);
             self.postMessage("console", { level: "error", message: "Load file failed: " + (e && e.message ? e.message : String(e)) });
           });
       },
-      // Drain any load requests that arrived before the API was ready.
-      _drainPendingLoads: function() {
-        while (this._pendingLoads.length && window.excalidrawAPI) {
-          this.loadFile(this._pendingLoads.shift());
+      // Load a board from a raw JSON string.
+      loadJSON: function(jsonString) {
+        var self = this;
+        if (!window.excalidrawAPI) {
+          self.postMessage("console", { level: "warn", message: "loadJSON queued (API not ready)" });
+          self._queueLoad("json", jsonString);
+          return;
+        }
+        try {
+          var data = JSON.parse(jsonString);
+          var elements = data.elements || [];
+          window.excalidrawAPI.updateScene({
+            elements: elements,
+            appState: data.appState || {}
+          });
+          // Defer centering so Excalidraw has laid out the canvas.
+          setTimeout(function() {
+            self._centerElements(elements);
+          }, 50);
+          self.postMessage("fileLoaded", { elements: elements.length });
+        } catch (e) {
+          self.postMessage("console", { level: "error", message: "Load JSON failed: " + (e && e.message ? e.message : String(e)) });
         }
       },
       // Get current scene data as JSON string
@@ -152,12 +171,49 @@
         }
         this.postMessage("console", { level: "error", message: "getSceneData: excalidrawAPI not available" });
         return null;
+      },
+      // Export the current scene as a base64 PNG data URL
+      exportPNG: async function(options) {
+        options = options || {};
+        if (!window.excalidrawAPI || typeof window.excalidrawAPI.exportToBlob !== "function") {
+          this.postMessage("console", { level: "error", message: "exportPNG: excalidrawAPI.exportToBlob not available" });
+          return null;
+        }
+        try {
+          var appState = window.excalidrawAPI.getAppState();
+          var blob = await window.excalidrawAPI.exportToBlob({
+            elements: window.excalidrawAPI.getSceneElements(),
+            appState: appState,
+            files: appState.files || {},
+            mimeType: "image/png",
+            exportWithDarkMode: options.exportWithDarkMode !== false
+          });
+          return new Promise(function(resolve, reject) {
+            var reader = new FileReader();
+            reader.onloadend = function() { resolve(reader.result); };
+            reader.onerror = function() { reject(reader.error); };
+            reader.readAsDataURL(blob);
+          });
+        } catch (e) {
+          this.postMessage("console", { level: "error", message: "exportPNG failed: " + (e && e.message ? e.message : String(e)) });
+          return null;
+        }
       }
     };
 
     // Called from Swift to load a file
     window.__swiftmaestro_loadFile = function(url) {
       window.__swiftmaestro.loadFile(url);
+    };
+
+    // Called from Swift to load a base64-encoded JSON string
+    window.__swiftmaestro_loadBase64 = function(base64) {
+      try {
+        var jsonString = atob(base64);
+        window.__swiftmaestro.loadJSON(jsonString);
+      } catch (e) {
+        window.__swiftmaestro.postMessage("console", { level: "error", message: "loadBase64 failed: " + (e && e.message ? e.message : String(e)) });
+      }
     };
   </script>
   <!-- Force Excalidraw to load fonts and dynamic chunks from the local bundle. -->
@@ -212,16 +268,6 @@
         window.__swiftmaestro.postMessage("console", { level: "error", message: msg });
       }
     }, 100);
-
-    // Expose save/load for Swift notifications
-    window.addEventListener("message", function(event) {
-      if (event.data && event.data.type === "save") {
-        var data = window.__swiftmaestro.getSceneData();
-        if (data) {
-          window.__swiftmaestro.postMessage("save", { data: data });
-        }
-      }
-    });
 
     // Handle keyboard shortcuts for save
     document.addEventListener("keydown", function(e) {

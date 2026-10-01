@@ -51,6 +51,13 @@ struct NotesView: View {
         // smaller floating window's own sizing, producing a corrupted layout.
         .task {
             await viewModel.load()
+            await viewModel.openPendingFileIfNeeded()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .notesOpenFileRequested)) { _ in
+            Task {
+                await viewModel.load()
+                await viewModel.openPendingFileIfNeeded()
+            }
         }
         .alert("New Note", isPresented: $showingNewNoteSheet) {
             TextField("Name", text: $newNoteName)

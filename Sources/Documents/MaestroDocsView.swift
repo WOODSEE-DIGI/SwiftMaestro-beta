@@ -39,6 +39,15 @@ final class MaestroDocsViewModel {
     enum PageViewMode { case single, twoUp }
     var pageViewMode: PageViewMode = .single
 
+    /// Page layout settings used for both on-screen page display and PDF export.
+    var pageSettings = DocPageSettings.loadDefaults() {
+        didSet {
+            if oldValue != pageSettings {
+                pageSettings.saveDefaults()
+            }
+        }
+    }
+
     var pdfDocument: PDFDocument?
     var richContent: NSAttributedString?
     var plainText = ""
@@ -646,8 +655,8 @@ final class MaestroDocsViewModel {
         }
     }
 
-    /// Paginates text content into a PDF via the print system (offscreen
-    /// text view, US Letter with 0.75" margins, no panels).
+    /// Paginates text content into a PDF via the print system, using the
+    /// user's Page Setup settings for paper size, orientation, and margins.
     private func printTextToPDF(_ dest: URL) throws {
         let content: NSAttributedString
         switch kind {
@@ -666,19 +675,21 @@ final class MaestroDocsViewModel {
             content = storage
         }
 
-        let printableWidth: CGFloat = 612 - 108
+        let settings = pageSettings
+        let printableWidth = settings.contentWidth
+        let printableHeight = settings.contentHeight
         let textView = NSTextView(
-            frame: NSRect(x: 0, y: 0, width: printableWidth, height: 792 - 108))
+            frame: NSRect(x: 0, y: 0, width: printableWidth, height: printableHeight))
         textView.textStorage?.setAttributedString(content)
 
         let operation = NSPrintOperation(view: textView)
         let info = operation.printInfo
         info.jobDisposition = .save
-        info.paperSize = NSSize(width: 612, height: 792)
-        info.topMargin = 54
-        info.bottomMargin = 54
-        info.leftMargin = 54
-        info.rightMargin = 54
+        info.paperSize = NSSize(width: settings.paperWidth, height: settings.paperHeight)
+        info.topMargin = settings.topMargin
+        info.bottomMargin = settings.bottomMargin
+        info.leftMargin = settings.leftMargin
+        info.rightMargin = settings.rightMargin
         info.dictionary()[NSPrintInfo.AttributeKey.jobSavingURL] = dest
         operation.showsPrintPanel = false
         operation.showsProgressPanel = false
@@ -738,6 +749,8 @@ struct MaestroDocsView: View {
 
     @State private var viewModel = MaestroDocsViewModel()
     @AppStorage("maestrodocs.showRecents") private var showRecents = true
+    @State private var showingPageSetup = false
+    private let store = MaestroDocsStore.shared
 
     var body: some View {
             VStack(spacing: 0) {
@@ -784,6 +797,17 @@ struct MaestroDocsView: View {
         // oversized welcome state overflows at the bottom edge (clipped by the
         // panel container) instead of pushing the toolbar up out of view.
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .sheet(isPresented: $showingPageSetup) {
+            PageSetupSheet(settings: viewModel.pageSettings) { newSettings in
+                viewModel.pageSettings = newSettings
+            }
+        }
+        .onAppear {
+            openPendingFileIfNeeded()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .maestroDocsOpenFileRequested)) { _ in
+            openPendingFileIfNeeded()
+        }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             guard let provider = providers.first else { return false }
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
@@ -899,6 +923,16 @@ struct MaestroDocsView: View {
             .clipShape(RoundedRectangle(cornerRadius: 4))
     }
 
+    private var pageSetupButton: some View {
+        Button {
+            showingPageSetup = true
+        } label: {
+            Image(systemName: "doc.text.magnifyingglass")
+        }
+        .help("Page Setup…")
+        .disabled(viewModel.kind == .none || viewModel.kind == .pdf || viewModel.kind == .iWork || viewModel.kind == .spreadsheet)
+    }
+
     private var wideToolbar: some View {
         HStack(spacing: 10) {
             recentsToggle
@@ -921,6 +955,7 @@ struct MaestroDocsView: View {
             saveButton
             revealButton
             exportMenu
+            pageSetupButton
 
             if viewModel.isDirty { dirtyDot }
 
@@ -984,6 +1019,8 @@ struct MaestroDocsView: View {
             }
             .help("Publish / export this document")
             .disabled(viewModel.currentURL == nil)
+
+            pageSetupButton
 
             if viewModel.isDirty { dirtyDot }
 
@@ -1049,7 +1086,8 @@ struct MaestroDocsView: View {
                         isPlain: false,
                         isEditable: viewModel.isEditableKind,
                         onChange: { viewModel.isDirty = true },
-                        ref: viewModel.textViewRef)
+                        ref: viewModel.textViewRef,
+                        pageSettings: viewModel.pageSettings)
                 }
 
             case .plainText:
@@ -1058,7 +1096,8 @@ struct MaestroDocsView: View {
                     isPlain: true,
                     isEditable: true,
                     onChange: { viewModel.isDirty = true },
-                    ref: viewModel.textViewRef)
+                    ref: viewModel.textViewRef,
+                    pageSettings: viewModel.pageSettings)
 
             case .spreadsheet:
                 VStack(spacing: 0) {
@@ -1105,9 +1144,11 @@ struct MaestroDocsView: View {
     private func pageColumnWithRulers(
         @ViewBuilder _ content: () -> some View
     ) -> some View {
-        let a4Width: CGFloat = 595
+        let settings = viewModel.pageSettings
+        let pageWidth = settings.paperWidth
+        let pageHeight = settings.paperHeight
         let scale = viewModel.zoomLevel / 100.0
-        let scaledWidth = a4Width * scale
+        let scaledWidth = pageWidth * scale
 
         return VStack(spacing: 0) {
             horizontalRuler
@@ -1118,20 +1159,23 @@ struct MaestroDocsView: View {
                     // Two pages side by side
                     HStack(spacing: 24) {
                         content()
-                            .frame(width: a4Width)
+                            .frame(width: pageWidth)
+                            .frame(minHeight: pageHeight, alignment: .top)
                             .scaleEffect(scale, anchor: .topLeading)
-                            .frame(width: scaledWidth, height: 842 * scale)
+                            .frame(width: scaledWidth, alignment: .top)
                         content()
-                            .frame(width: a4Width)
+                            .frame(width: pageWidth)
+                            .frame(minHeight: pageHeight, alignment: .top)
                             .scaleEffect(scale, anchor: .topLeading)
-                            .frame(width: scaledWidth, height: 842 * scale)
+                            .frame(width: scaledWidth, alignment: .top)
                     }
                 } else {
                     // Single page with zoom
                     content()
-                        .frame(width: a4Width)
+                        .frame(width: pageWidth)
+                        .frame(minHeight: pageHeight, alignment: .top)
                         .scaleEffect(scale, anchor: .topLeading)
-                        .frame(width: scaledWidth)
+                        .frame(width: scaledWidth, alignment: .top)
                 }
                 Spacer(minLength: 0)
             }
@@ -1391,6 +1435,13 @@ struct MaestroDocsView: View {
             }
         }
     }
+
+    /// Opens a file that was passed in from Finder via MaestroDocsStore.
+    private func openPendingFileIfNeeded() {
+        guard let url = store.pendingOpenFileURL else { return }
+        store.pendingOpenFileURL = nil
+        viewModel.open(url)
+    }
 }
 
 // MARK: - PDFKit bridge
@@ -1426,25 +1477,30 @@ struct TextDocumentEditor: NSViewRepresentable {
     let isEditable: Bool
     let onChange: () -> Void
     let ref: TextViewRef
+    let pageSettings: DocPageSettings
 
     init(text: Binding<String>, isPlain: Bool, isEditable: Bool,
-         onChange: @escaping () -> Void, ref: TextViewRef) {
+         onChange: @escaping () -> Void, ref: TextViewRef,
+         pageSettings: DocPageSettings) {
         self.text = text
         self.richContent = nil
         self.isPlain = isPlain
         self.isEditable = isEditable
         self.onChange = onChange
         self.ref = ref
+        self.pageSettings = pageSettings
     }
 
     init(richContent: NSAttributedString?, isPlain: Bool, isEditable: Bool,
-         onChange: @escaping () -> Void, ref: TextViewRef) {
+         onChange: @escaping () -> Void, ref: TextViewRef,
+         pageSettings: DocPageSettings) {
         self.text = nil
         self.richContent = richContent
         self.isPlain = isPlain
         self.isEditable = isEditable
         self.onChange = onChange
         self.ref = ref
+        self.pageSettings = pageSettings
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
@@ -1473,13 +1529,10 @@ struct TextDocumentEditor: NSViewRepresentable {
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
 
-        // A4 page: 595pt wide × 842pt tall. With 72pt margins = 451pt text area.
-        // Use a slightly wider margin to match Word's default A4 look.
-        let pageWidth: CGFloat = 595   // A4 width in points
-        let margin: CGFloat = 72       // 1 inch margins
-        let textWidth = pageWidth - margin * 2  // 451pt content width
+        let settings = pageSettings
+        let textWidth = settings.contentWidth
 
-        textView.textContainerInset = NSSize(width: margin, height: margin)
+        textView.textContainerInset = NSSize(width: settings.leftMargin, height: settings.topMargin)
         textView.textContainer?.lineFragmentPadding = 0
         textView.textContainer?.size = NSSize(width: textWidth, height: CGFloat.greatestFiniteMagnitude)
         textView.maxSize = NSSize(width: textWidth, height: CGFloat.greatestFiniteMagnitude)
@@ -1533,6 +1586,13 @@ struct TextDocumentEditor: NSViewRepresentable {
         if isPlain, let bound = text?.wrappedValue, textView.string != bound {
             textView.string = bound
         }
+        // Page setup changes: resize the text container and margins.
+        let settings = pageSettings
+        let textWidth = settings.contentWidth
+        textView.textContainerInset = NSSize(width: settings.leftMargin, height: settings.topMargin)
+        textView.textContainer?.size = NSSize(width: textWidth, height: CGFloat.greatestFiniteMagnitude)
+        textView.maxSize = NSSize(width: textWidth, height: CGFloat.greatestFiniteMagnitude)
+        textView.needsLayout = true
     }
 }
 

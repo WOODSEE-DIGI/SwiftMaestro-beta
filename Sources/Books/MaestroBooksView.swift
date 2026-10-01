@@ -1369,7 +1369,8 @@ private struct TemplatePage: View {
                 isPlain: false,
                 isEditable: true,
                 onChange: { docsVM.isDirty = true },
-                ref: docsVM.textViewRef)
+                ref: docsVM.textViewRef,
+                pageSettings: docsVM.pageSettings)
             .id(templateReloadID)
         }
     }

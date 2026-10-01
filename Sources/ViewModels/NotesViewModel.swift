@@ -70,6 +70,10 @@ final class NotesViewModel {
     /// Last error message surfaced to the UI.
     private(set) var errorMessage: String?
 
+    /// Set by AppDelegate when a .md file is opened from Finder. Consumed by
+    /// NotesView after the vault tree has loaded.
+    var pendingOpenFileURL: URL?
+
     private var service: NotesService
 
     /// Exposed so other stores (e.g. `ChatCompaction`, which archives superseded
@@ -96,6 +100,19 @@ final class NotesViewModel {
         ) { [weak self] _ in
             guard let self else { return }
             Task { @MainActor in await self.load() }
+        }
+
+        // Handle Finder "Open with SwiftMaestro" requests for .md files.
+        NotificationCenter.default.addObserver(
+            forName: .notesOpenFileRequested, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let url = note.userInfo?["fileURL"] as? URL else { return }
+            Task { @MainActor in
+                guard let self else { return }
+                self.pendingOpenFileURL = url
+                await self.load()
+                await self.openPendingFileIfNeeded()
+            }
         }
 
         // One-time migration: move the old app-support notes vault into Documents.
@@ -193,6 +210,43 @@ final class NotesViewModel {
         } catch {
             errorMessage = "Could not load notes vault: \(error.localizedDescription)"
             NSLog("[NOTES] load failed: \(error)")
+        }
+    }
+
+    /// Select and load a file opened from Finder. If the file is outside the
+    /// vault, its parent folder is added as an external folder first.
+    func openPendingFileIfNeeded() async {
+        guard let url = pendingOpenFileURL else { return }
+        pendingOpenFileURL = nil
+
+        let folder = url.deletingLastPathComponent()
+        let isInsideVault = url.path.hasPrefix(vaultURL.path)
+        if !isInsideVault {
+            var paths = UserDefaults.standard.stringArray(forKey: Self.externalFolderPathsKey) ?? []
+            if !paths.contains(folder.path) {
+                paths.append(folder.path)
+                UserDefaults.standard.set(paths, forKey: Self.externalFolderPathsKey)
+            }
+            externalRootItems = await loadExternalFolders()
+        }
+
+        // Find the matching NoteItem in the tree.
+        let allItems = rootItems + externalRootItems
+        func findNote(in items: [NoteItem]) -> NoteItem? {
+            for item in items {
+                if item.url.standardizedFileURL == url.standardizedFileURL { return item }
+                if let children = item.children,
+                   let found = findNote(in: children) { return found }
+            }
+            return nil
+        }
+
+        if let item = findNote(in: allItems) {
+            selectedItem = item
+        } else {
+            // Fall back to a direct item so the editor still opens even if the
+            // tree scan missed it (e.g. iCloud placeholder mid-sync).
+            selectedItem = NoteItem(url: url, isFolder: false, modifiedAt: Date())
         }
     }
 
@@ -678,4 +732,8 @@ extension Notification.Name {
     /// Posted after an external writer (e.g. the Web Clipper) adds or modifies
     /// files in the Notes vault, so open Notes panels reload the tree.
     static let notesVaultContentChanged = Notification.Name("notesVaultContentChanged")
+
+    /// Posted by AppDelegate when the user opens a .md file from Finder with
+    /// SwiftMaestro, so the Notes panel selects and loads the file.
+    static let notesOpenFileRequested = Notification.Name("notesOpenFileRequested")
 }

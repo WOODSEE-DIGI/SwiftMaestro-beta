@@ -126,54 +126,113 @@ struct ExcalidrawPanelView: View {
     }
 
     private func saveCurrentFile() {
-        NotificationCenter.default.post(
-            name: .excalidrawRequestSave,
-            object: currentFileURL
-        )
+        Task {
+            guard let data = await currentSceneData() else { return }
+            if let url = currentFileURL {
+                do {
+                    try data.write(to: url, atomically: true, encoding: .utf8)
+                    isEdited = false
+                } catch {
+                    loadError = error.localizedDescription
+                }
+            } else {
+                await presentSaveAsPanel(withData: data)
+            }
+        }
     }
 
     private func saveAsFile() {
+        Task {
+            guard let data = await currentSceneData() else { return }
+            await presentSaveAsPanel(withData: data)
+        }
+    }
+
+    @MainActor
+    private func presentSaveAsPanel(withData data: String) {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [UTType(filenameExtension: "excalidraw") ?? .json]
         panel.nameFieldStringValue = "\(fileName).excalidraw"
         panel.canCreateDirectories = true
-        panel.begin { response in
-            if response == .OK, let url = panel.url {
+        let response = panel.runModal()
+        if response == .OK, let url = panel.url {
+            do {
+                try data.write(to: url, atomically: true, encoding: .utf8)
                 currentFileURL = url
                 fileName = url.deletingPathExtension().lastPathComponent
-                NotificationCenter.default.post(
-                    name: .excalidrawRequestSave,
-                    object: url
-                )
+                isEdited = false
+            } catch {
+                loadError = error.localizedDescription
             }
         }
     }
 
     private func exportAsJSON() {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.json]
-        panel.nameFieldStringValue = "\(fileName).excalidraw"
-        panel.begin { response in
+        Task {
+            guard let data = await currentSceneData() else { return }
+            let panel = NSSavePanel()
+            panel.allowedContentTypes = [.json]
+            panel.nameFieldStringValue = "\(fileName).excalidraw"
+            panel.canCreateDirectories = true
+            let response = panel.runModal()
             if response == .OK, let url = panel.url {
-                NotificationCenter.default.post(
-                    name: .excalidrawRequestExportJSON,
-                    object: url
-                )
+                do {
+                    try data.write(to: url, atomically: true, encoding: .utf8)
+                } catch {
+                    loadError = error.localizedDescription
+                }
             }
         }
     }
 
     private func exportAsPNG() {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.png]
-        panel.nameFieldStringValue = "\(fileName).png"
-        panel.begin { response in
-            if response == .OK, let url = panel.url {
-                NotificationCenter.default.post(
-                    name: .excalidrawRequestExportPNG,
-                    object: url
-                )
+        guard let webView else {
+            loadError = "Excalidraw editor is not ready."
+            return
+        }
+        Task {
+            do {
+                let base64 = try await webView.evaluateJavaScriptAsync("window.__swiftmaestro.exportPNG()") ?? ""
+                guard !base64.isEmpty else {
+                    loadError = "Could not export PNG."
+                    return
+                }
+                let panel = NSSavePanel()
+                panel.allowedContentTypes = [.png]
+                panel.nameFieldStringValue = "\(fileName).png"
+                panel.canCreateDirectories = true
+                let response = panel.runModal()
+                if response == .OK, let url = panel.url {
+                    let prefix = "data:image/png;base64,"
+                    let cleaned = base64.hasPrefix(prefix) ? String(base64.dropFirst(prefix.count)) : base64
+                    guard let imageData = Data(base64Encoded: cleaned) else {
+                        loadError = "Invalid PNG data."
+                        return
+                    }
+                    try imageData.write(to: url)
+                }
+            } catch {
+                loadError = error.localizedDescription
             }
+        }
+    }
+
+    @MainActor
+    private func currentSceneData() async -> String? {
+        guard let webView else {
+            loadError = "Excalidraw editor is not ready."
+            return nil
+        }
+        do {
+            let data = try await webView.evaluateJavaScriptAsync("window.__swiftmaestro.getSceneData()") ?? ""
+            if data.isEmpty {
+                loadError = "Could not read the current scene."
+                return nil
+            }
+            return data
+        } catch {
+            loadError = error.localizedDescription
+            return nil
         }
     }
 
@@ -466,19 +525,27 @@ private struct ExcalidrawWebView: NSViewRepresentable {
         webView.load(request)
     }
 
-    /// Loads the current board file through the local HTTP server. The board's
-    /// file:// URL is translated to `http://localhost:<port>/board/<name>` so the
-    /// webview can fetch it without hitting sandbox restrictions.
+    /// Loads the current board file by reading it in Swift and injecting the
+    /// JSON into the webview via base64. This avoids file:// sandbox issues and
+    /// works for any file path (Documents, iCloud Drive, etc.), not just the
+    /// app's bundled boards directory.
     private func loadCurrentBoard(into webView: WKWebView, coordinator: Coordinator) {
         guard let fileURL = currentFileURL,
-              coordinator.lastLoadedFileURL != fileURL,
-              let serverBoardURL = store.serverURL(for: fileURL)
+              coordinator.lastLoadedFileURL != fileURL
         else { return }
         coordinator.lastLoadedFileURL = fileURL
-        // serverBoardURL is already percent-encoded for the path; do not
-        // encode it again or fetch() will treat the whole URL as a relative
-        // path and hit the SPA fallback (text/html).
-        webView.evaluateJavaScript("window.__swiftmaestro_loadFile('\(serverBoardURL.absoluteString)')")
+
+        do {
+            let data = try Data(contentsOf: fileURL)
+            let base64 = data.base64EncodedString()
+            webView.evaluateJavaScript("window.__swiftmaestro_loadBase64('\(base64)')")
+        } catch {
+            NSLog("[ExcalidrawPanelView] failed to read board at \(fileURL.path): \(error.localizedDescription)")
+            // Fall back to the local HTTP server for bundled/default boards.
+            if let serverBoardURL = store.serverURL(for: fileURL) {
+                webView.evaluateJavaScript("window.__swiftmaestro_loadFile('\(serverBoardURL.absoluteString)')")
+            }
+        }
     }
 
     func makeCoordinator() -> Coordinator {
@@ -623,7 +690,17 @@ private struct ExcalidrawWebView: NSViewRepresentable {
             let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
             webView.evaluateJavaScript("document.documentElement.classList.toggle('dark', \(isDark))")
 
-            // If we have a file to load, send it via the local HTTP server.
+            // If the app was launched by opening a .excalidraw file from Finder,
+            // consume the pending URL before loading the regular board.
+            if let pendingURL = parent.store.pendingOpenFileURL {
+                parent.store.pendingOpenFileURL = nil
+                parent.currentFileURL = pendingURL
+                parent.fileName = pendingURL.deletingPathExtension().lastPathComponent
+                parent.isEdited = false
+                lastLoadedFileURL = nil
+            }
+
+            // If we have a file to load, inject it directly into the webview.
             parent.loadCurrentBoard(into: webView, coordinator: self)
         }
 
@@ -745,11 +822,16 @@ final class ExcalidrawBridge: NSObject, WKScriptMessageHandler {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [UTType(filenameExtension: "excalidraw") ?? .json]
         panel.nameFieldStringValue = "\(coordinator?.parent.fileName ?? "Untitled").excalidraw"
-        panel.begin { response in
-            if response == .OK, let url = panel.url {
-                try? dataString.write(to: url, atomically: true, encoding: .utf8)
-                self.coordinator?.parent.currentFileURL = url
-                self.coordinator?.parent.isEdited = false
+        panel.canCreateDirectories = true
+        let response = panel.runModal()
+        if response == .OK, let url = panel.url {
+            do {
+                try dataString.write(to: url, atomically: true, encoding: .utf8)
+                coordinator?.parent.currentFileURL = url
+                coordinator?.parent.fileName = url.deletingPathExtension().lastPathComponent
+                coordinator?.parent.isEdited = false
+            } catch {
+                NSLog("[ExcalidrawBridge] save failed: \(error.localizedDescription)")
             }
         }
     }

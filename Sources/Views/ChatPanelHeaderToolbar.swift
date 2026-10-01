@@ -8,11 +8,13 @@ struct ChatPanelHeaderToolbar: View {
 
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(AgentMessageStore.self) private var messageStore
+    @Environment(PlanStore.self) private var planStore
     @Environment(\.openWindow) private var openWindow
     @State private var layout = WorkspaceLayoutState.shared
     @Environment(PanelLayoutState.self) private var panelLayout
     @State private var showingMessages = false
     @State private var showingClearChatConfirm = false
+    @State private var showingNewPlan = false
 
     var body: some View {
         HStack(spacing: 6) {
@@ -27,6 +29,23 @@ struct ChatPanelHeaderToolbar: View {
             }
             .help(panelLayout.hiddenPanels.contains(.plans)
                 ? "Show Plans panel" : "Hide Plans panel")
+
+            // New plan — create a plan manually without asking the agent
+            Button {
+                showingNewPlan = true
+            } label: {
+                Image(systemName: "doc.badge.plus")
+            }
+            .buttonStyle(.plain)
+            .help("Create a new plan")
+            .sheet(isPresented: $showingNewPlan) {
+                NewPlanSheet(
+                    agentId: agentID,
+                    projects: newPlanScopeProjects,
+                    defaultProjectName: defaultProjectName
+                )
+                .environment(planStore)
+            }
 
             // Tasks/Todo toggle — show/hide the Tasks side panel
             Button {
@@ -88,6 +107,25 @@ struct ChatPanelHeaderToolbar: View {
 
     private var agentName: String {
         workspace.agent(id: agentID)?.name ?? "Agent"
+    }
+
+    private var agent: AgentRecord? {
+        workspace.agent(id: agentID)
+    }
+
+    /// Project names selectable as plan scopes in the new-plan sheet: Maestro
+    /// sees workspace projects; project agents see only their own project.
+    /// Keeping the list short avoids the confusing horizontal scope picker.
+    private var newPlanScopeProjects: [String] {
+        guard let agent else { return [] }
+        return agent.kind == .navigator
+            ? workspace.visibleProjects.map(\.name)
+            : (workspace.projectName(for: agent).map { [$0] } ?? [])
+    }
+
+    private var defaultProjectName: String? {
+        guard let agent, agent.kind != .navigator else { return nil }
+        return workspace.projectName(for: agent)
     }
 
     /// Open this agent's chat in a tracked floating workspace panel, or bring

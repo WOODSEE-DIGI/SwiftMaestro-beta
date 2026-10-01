@@ -101,24 +101,6 @@ struct WorkspacePanelContainer<Content: View>: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
 
-            // Plans quick-toggle: left side near agent name for easy access
-            if case .agentChat = kind {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        panelLayout.toggleVisibility(.plans)
-                    }
-                } label: {
-                    Image(systemName: panelLayout.hiddenPanels.contains(.plans)
-                        ? "list.bullet.rectangle" : "list.bullet.rectangle.fill")
-                        .font(.caption)
-                        .foregroundStyle(panelLayout.hiddenPanels.contains(.plans)
-                            ? .secondary : Color.accentColor)
-                }
-                .buttonStyle(.plain)
-                .help(panelLayout.hiddenPanels.contains(.plans)
-                    ? "Show Plans panel" : "Hide Plans panel")
-            }
-
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 10)

@@ -16,6 +16,7 @@ struct PlansSheet: View {
     @State private var selectedScopeKey: String
     @State private var selectedPlanID: UUID?
     @State private var exporting = false
+    @State private var showingDeleteScopeConfirm = false
 
     init(agentId: UUID, projects: [String], defaultProjectName: String?) {
         self.agentId = agentId
@@ -36,6 +37,15 @@ struct PlansSheet: View {
         scopes.first { $0.scope.key == selectedScopeKey }?.scope ?? .agent(agentId)
     }
 
+    private var selectedScopeLabel: String {
+        scopes.first { $0.scope.key == selectedScopeKey }?.label ?? "Personal"
+    }
+
+    private var canDeleteSelectedScope: Bool {
+        if case .project = selectedScope { return true }
+        return false
+    }
+
     /// The plan currently selected in the list (for export).
     private var selectedPlan: Plan? {
         (planStore.plansByScope[selectedScope.key] ?? []).first { $0.id == selectedPlanID }
@@ -43,10 +53,21 @@ struct PlansSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 6) {
+            HStack(spacing: 12) {
                 Image(systemName: "doc.text")
+                    .font(.title3)
+                    .foregroundStyle(Color.accentColor)
                 Text("Plans").font(.headline)
                 Spacer()
+                if canDeleteSelectedScope {
+                    Button(role: .destructive) {
+                        showingDeleteScopeConfirm = true
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.plain)
+                    .help("Delete all plans in \(selectedScopeLabel)")
+                }
                 Button("Done") { dismiss() }
             }
             .padding(12)
@@ -68,27 +89,42 @@ struct PlansSheet: View {
             let plans = planStore.plansByScope[selectedScope.key] ?? []
             if plans.isEmpty {
                 Spacer()
-                Text("No plans in this scope yet. Ask the agent to create one.")
+                Text("No plans in this scope yet. Use the New Plan button in the chat sidebar, or ask the agent.")
                     .foregroundStyle(.secondary)
                 Spacer()
             } else {
                 HStack(spacing: 0) {
                     List(plans, selection: $selectedPlanID) { plan in
-                        Text(plan.title).lineLimit(2).tag(plan.id)
+                        Text(plan.title)
+                            .lineLimit(3)
+                            .tag(plan.id)
                     }
-                    .frame(width: 220)
+                    .frame(width: 260)
                     Divider()
                     detail(for: plans)
                 }
             }
         }
-        .frame(width: 760, height: 560)
+        .frame(minWidth: 900, idealWidth: 1020, minHeight: 600, idealHeight: 720)
         .fileExporter(
             isPresented: $exporting,
             document: selectedPlan.map { MarkdownDocument(text: "# \($0.title)\n\n\($0.content)\n") },
             contentType: MarkdownDocument.markdown,
             defaultFilename: selectedPlan?.title
         ) { _ in }
+        .confirmationDialog(
+            "Delete all plans in \(selectedScopeLabel)?",
+            isPresented: $showingDeleteScopeConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Delete All Plans", role: .destructive) {
+                planStore.clear(in: selectedScope)
+                selectedPlanID = nil
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will remove every plan in this project scope. It cannot be undone.")
+        }
         .task(id: selectedScopeKey) {
             _ = planStore.plans(in: selectedScope)
             if selectedPlanID == nil
@@ -140,14 +176,16 @@ struct PlansSheet: View {
                 .padding(12)
                 Divider()
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 16) {
                         metadataSection(for: plan)
                         Divider()
                         Text(Self.rendered(plan.content))
+                            .font(.body)
+                            .lineSpacing(2)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .padding(12)
+                    .padding(16)
                 }
             }
         } else {

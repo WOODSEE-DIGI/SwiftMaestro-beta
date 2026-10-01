@@ -17,6 +17,22 @@ struct SwiftWeaverView: View {
             SwiftWeaverEditorView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .task {
+            loadPendingFile()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .swiftWeaverOpenFileRequested)) { _ in
+            loadPendingFile()
+        }
+    }
+
+    private func loadPendingFile() {
+        guard let url = store.pendingOpenFileURL else { return }
+        store.pendingOpenFileURL = nil
+        do {
+            try store.openDocument(from: url)
+        } catch {
+            NSLog("[SwiftWeaverView] could not open \(url.path): \(error.localizedDescription)")
+        }
     }
 
     private var templatesRail: some View {
