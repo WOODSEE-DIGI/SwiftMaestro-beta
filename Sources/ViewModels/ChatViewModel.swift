@@ -164,6 +164,20 @@ class ChatViewModel: ObservableObject {
         MaestroTools.workspace?.setWorkingDirectory(workingDirectory, for: agent.id)
     }
 
+    /// Run a one-click macro: set the input to the macro's prompt and submit.
+    /// Built-in compact macro bypasses the model and triggers manual compaction.
+    func runMacro(_ macro: AgentMacro, engine: MLXInferenceEngine, catalog: ModelCatalog, model: MaestroModel?) {
+        if macro.id == AgentMacro.builtInCompactID {
+            guard !isStreaming else { return }
+            inputText = "compact this chat"
+            send(engine: engine, catalog: catalog, model: model)
+            return
+        }
+        guard !isStreaming else { return }
+        inputText = macro.prompt
+        send(engine: engine, catalog: catalog, model: model)
+    }
+
     func send(engine: MLXInferenceEngine, catalog: ModelCatalog, model: MaestroModel?) {
         guard !isStreaming else { return }
         // Retain engine reference for memory pressure compaction.

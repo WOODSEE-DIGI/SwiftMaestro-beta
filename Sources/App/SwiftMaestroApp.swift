@@ -242,6 +242,7 @@ struct SwiftMaestroApp: App {
     @State private var whatsAppService = WhatsAppService()
     @State private var discordService = DiscordService()
     @State private var pluginService = PluginService()
+    @State private var macroStore = MacroStore()
     @State private var busWorker: BusWorker? = nil
     @State private var sparkleUpdater = SparkleUpdaterService.shared
     @State private var webBrowserStore = WebBrowserStore.shared
@@ -274,6 +275,7 @@ struct SwiftMaestroApp: App {
                 .environment(whatsAppService)
                 .environment(discordService)
                 .environment(pluginService)
+                .environment(macroStore)
                 .environment(webBrowserStore)
                 .task {
                     appDelegate.mcpService = mcpService
@@ -519,6 +521,7 @@ struct SwiftMaestroApp: App {
                 .environment(messageStore)
                 .environment(theme)
                 .environment(whisperService)
+                .environment(macroStore)
         }
         .defaultSize(width: 960, height: 720)
         .windowResizability(.contentMinSize)
@@ -528,9 +531,12 @@ struct SwiftMaestroApp: App {
         WindowGroup("Panel", id: "floating-panel-window", for: FloatingPanelWindowID.self) { $target in
             if let target {
                 FloatingPanelWindowView(target: target)
+                    .environment(engine)
+                    .environment(catalog)
                     .environment(todoStore)
                     .environment(planStore)
                     .environment(theme)
+                    .environment(macroStore)
             }
         }
         .defaultSize(width: 380, height: 520)
@@ -554,6 +560,7 @@ struct SwiftMaestroApp: App {
                     .environment(messageStore)
                     .environment(theme)
                     .environment(whisperService)
+                    .environment(macroStore)
                     .environment(notesViewModel)
                     .environment(eventKitStore)
                     .environment(appleNotesService)
@@ -589,6 +596,7 @@ struct SwiftMaestroApp: App {
                     .environment(messageStore)
                     .environment(theme)
                     .environment(whisperService)
+                    .environment(macroStore)
                     .environment(notesViewModel)
                     .environment(eventKitStore)
                     .environment(appleNotesService)
@@ -620,6 +628,7 @@ struct SwiftMaestroApp: App {
                 .environment(theme)
                 .environment(skinStore)
                 .environment(whisperService)
+                .environment(macroStore)
                 .environment(\.mcpClientService, mcpService)
                 // The Settings → Apps tab lists installed plugins, so it needs the
                 // same PluginService the main window uses (the single @State instance
@@ -809,8 +818,9 @@ private struct PanelCommands: Commands {
 
     // MARK: Agent sub-panels (Plans / Tasks)
 
-    /// Toggle visibility of Plans and Tasks sub-panels inside agent chats.
+    /// Toggle visibility of Plans and Macros sub-panels inside agent chats.
     /// These are per-chat side panels managed by PanelLayoutState.
+    /// Tasks no longer live in a side panel; they were moved to the composer dock.
     @ViewBuilder
     private var agentSubPanelsMenu: some View {
         Section("Agent Panels") {
@@ -824,12 +834,12 @@ private struct PanelCommands: Commands {
                 )
             }
             Button {
-                withAnimation { panelLayout.toggleVisibility(.tasks) }
+                withAnimation { panelLayout.toggleVisibility(.macros) }
             } label: {
                 Label(
-                    panelLayout.hiddenPanels.contains(.tasks) ? "Show Tasks" : "Hide Tasks",
-                    systemImage: panelLayout.hiddenPanels.contains(.tasks)
-                        ? "checklist" : "checklist.checked"
+                    panelLayout.hiddenPanels.contains(.macros) ? "Show Macros" : "Hide Macros",
+                    systemImage: panelLayout.hiddenPanels.contains(.macros)
+                        ? "button.programmable" : "button.programmable.fill"
                 )
             }
         }

@@ -9,12 +9,22 @@ struct ChatPanelHeaderToolbar: View {
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(AgentMessageStore.self) private var messageStore
     @Environment(PlanStore.self) private var planStore
+    @Environment(MacroStore.self) private var macroStore
     @Environment(\.openWindow) private var openWindow
     @State private var layout = WorkspaceLayoutState.shared
     @Environment(PanelLayoutState.self) private var panelLayout
     @State private var showingMessages = false
     @State private var showingClearChatConfirm = false
     @State private var showingNewPlan = false
+
+    private var agent: AgentRecord? {
+        workspace.agent(id: agentID)
+    }
+
+    private var hasMacros: Bool {
+        guard let agent else { return false }
+        return !macroStore.macros(for: agent.kind).isEmpty
+    }
 
     var body: some View {
         HStack(spacing: 6) {
@@ -47,17 +57,20 @@ struct ChatPanelHeaderToolbar: View {
                 .environment(planStore)
             }
 
-            // Tasks/Todo toggle — show/hide the Tasks side panel
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    panelLayout.toggleVisibility(.tasks)
+            // Macros toggle — show/hide the Macros side panel.
+            // Available for any agent that has macros scoped to its kind.
+            if hasMacros {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        panelLayout.toggleVisibility(.macros)
+                    }
+                } label: {
+                    Image(systemName: panelLayout.hiddenPanels.contains(.macros)
+                        ? "button.programmable" : "button.programmable.fill")
                 }
-            } label: {
-                Image(systemName: panelLayout.hiddenPanels.contains(.tasks)
-                    ? "checklist" : "checklist.checked")
+                .help(panelLayout.hiddenPanels.contains(.macros)
+                    ? "Show Macros panel" : "Hide Macros panel")
             }
-            .help(panelLayout.hiddenPanels.contains(.tasks)
-                ? "Show Tasks panel" : "Hide Tasks panel")
 
             Button {
                 floatOrFocus()
@@ -106,11 +119,7 @@ struct ChatPanelHeaderToolbar: View {
     }
 
     private var agentName: String {
-        workspace.agent(id: agentID)?.name ?? "Agent"
-    }
-
-    private var agent: AgentRecord? {
-        workspace.agent(id: agentID)
+        agent?.name ?? "Agent"
     }
 
     /// Project names selectable as plan scopes in the new-plan sheet: Maestro

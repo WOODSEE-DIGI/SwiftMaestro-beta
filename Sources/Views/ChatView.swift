@@ -11,6 +11,7 @@ struct ChatView: View {
     @Environment(AgentMessageStore.self) private var messageStore
     @Environment(ThemeStore.self) private var theme
     @Environment(WhisperKitService.self) private var whisper
+    @Environment(MacroStore.self) private var macroStore
     @Environment(\.openWindow) private var openWindow
     @StateObject var vm: ChatViewModel
     @Environment(PanelLayoutState.self) private var layoutState
@@ -24,6 +25,8 @@ struct ChatView: View {
     @State private var exportName = "Plan"
     /// Monitor for Cmd+V image paste before the TextField consumes it.
     @State private var pasteMonitor: Any?
+    /// Opencode-style collapsible task dock above the input bar.
+    @State private var todoDockCollapsed = true
     /// Optional override for the window/tab title. Used when this chat is shown
     /// in a detached agent window so the title bar shows the agent name.
     let title: String?
@@ -739,15 +742,24 @@ struct ChatView: View {
     /// Ordered list of visible panels from mainSlots, excluding floating and hidden ones.
     /// The chat panel is always included (it cannot float or be hidden).
     /// Plans are excluded when there are no plans to show.
+    /// Tasks are no longer rendered as a side panel — they live in the composer dock.
+    /// Macros are shown when macros exist for the current agent kind.
     private var orderedPanels: [PanelType] {
         layoutState.mainSlots
             .filter { slot in
                 if slot.type == .chat { return true }
                 if slot.isFloating || layoutState.hiddenPanels.contains(slot.type) { return false }
                 if slot.type == .plans && visiblePlans.isEmpty { return false }
+                if slot.type == .tasks { return false }
+                if slot.type == .macros && !shouldShowMacrosPanel { return false }
                 return true
             }
             .map(\.type)
+    }
+
+    /// Macros panel is visible when macros exist for this agent's kind.
+    private var shouldShowMacrosPanel: Bool {
+        !macroStore.macros(for: vm.agent.kind).isEmpty
     }
 
     /// The chat body — always rendered, expands to fill available space.
@@ -763,6 +775,14 @@ struct ChatView: View {
             errorBanner
             streamingStatus
             attachmentStrip
+            if !todos.isEmpty {
+                ChatTodoDock(
+                    todos: todos,
+                    collapsed: todoDockCollapsed,
+                    onToggle: { todoDockCollapsed.toggle() },
+                    onClear: { todoStore.clear(for: vm.agent.id) }
+                )
+            }
             FeatureTipPopup(
                 key: FeatureTip.memory,
                 message: "I can remember things across sessions. Just ask naturally — \"remember that I prefer X\" or \"what did we discuss about Y?\" — and I'll store or recall context automatically.",
@@ -772,6 +792,11 @@ struct ChatView: View {
             }
         }
         .background(theme.chatBackground)
+    }
+
+    /// Live task list for the composer-area dock.
+    private var todos: [TodoItem] {
+        todoStore.lists[vm.agent.id] ?? []
     }
 
     /// Always-visible per-agent tool category toggles rendered inside the chat
@@ -836,9 +861,20 @@ struct ChatView: View {
                 openWindow(id: "floating-panel-window",
                            value: FloatingPanelWindowID(panelType: type.rawValue, agentID: vm.agent.id))
             })
+        case .macros:
+            PanelContainer(panelType: .macros, agentId: vm.agent.id, content: {
+                ChatMacrosPanel(agent: vm.agent, onRun: runMacro)
+            }, onFloat: { type in
+                openWindow(id: "floating-panel-window",
+                           value: FloatingPanelWindowID(panelType: type.rawValue, agentID: vm.agent.id))
+            })
         case .chat:
             EmptyView()
         }
+    }
+
+    private func runMacro(_ macro: AgentMacro) {
+        vm.runMacro(macro, engine: engine, catalog: catalog, model: effectiveModelForAgent)
     }
 
     private func openPlanWindow(_ entry: (scope: PlanScope, plan: Plan)) {

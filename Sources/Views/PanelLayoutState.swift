@@ -7,6 +7,7 @@ enum PanelType: String, CaseIterable, Identifiable, Codable, Sendable {
     case plans
     case chat
     case tasks
+    case macros
     // Terminal moved out of this per-agent chat panel system entirely â it's
     // now a top-level `WorkspacePanelKind.terminal` under "Swift Apps",
     // openable/dockable/floatable independent of any specific agent's chat.
@@ -18,6 +19,7 @@ enum PanelType: String, CaseIterable, Identifiable, Codable, Sendable {
         case .plans: return "Plans"
         case .chat: return "Chat"
         case .tasks: return "Tasks"
+        case .macros: return "Macros"
         }
     }
 
@@ -26,13 +28,14 @@ enum PanelType: String, CaseIterable, Identifiable, Codable, Sendable {
         case .plans: return "list.bullet.rectangle"
         case .chat: return "bubble.left.and.bubble.right"
         case .tasks: return "checklist"
+        case .macros: return "button.programmable"
         }
     }
 
     /// Whether this panel can be popped out to a floating window.
     var supportsFloat: Bool {
         switch self {
-        case .plans, .tasks: return true
+        case .plans, .tasks, .macros: return true
         case .chat: return false
         }
     }

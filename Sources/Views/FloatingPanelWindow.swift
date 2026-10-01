@@ -12,8 +12,11 @@ struct FloatingPanelWindowID: Hashable, Codable {
 struct FloatingPanelWindowView: View {
     let target: FloatingPanelWindowID
 
+    @Environment(MLXInferenceEngine.self) private var engine
+    @Environment(ModelCatalog.self) private var catalog
     @Environment(TodoStore.self) private var todoStore
     @Environment(PlanStore.self) private var planStore
+    @Environment(MacroStore.self) private var macroStore
     @Environment(ThemeStore.self) private var theme
     @State private var layoutState = PanelLayoutState()
     /// Keep this window in front of all others. Opt-in, off by default.
@@ -74,6 +77,8 @@ struct FloatingPanelWindowView: View {
                 floatingTasksContent
             case .plans:
                 floatingPlansContent
+            case .macros:
+                floatingMacrosContent
             default:
                 Text("Unknown panel")
                     .foregroundStyle(.secondary)
@@ -128,6 +133,28 @@ struct FloatingPanelWindowView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+    }
+
+    // MARK: - Macros Content
+
+    @ViewBuilder
+    private var floatingMacrosContent: some View {
+        if let agentID = target.agentID, let agent = workspaceAgent(id: agentID) {
+            ChatMacrosPanel(agent: agent) { macro in
+                let vm = ChatViewModelCache.shared.viewModel(
+                    for: agent, projectName: MaestroTools.workspace?.projectName(for: agent))
+                let model = catalog.effectiveModel(for: agent)
+                vm.runMacro(macro, engine: engine, catalog: catalog, model: model)
+            }
+        } else {
+            Text("Agent not found")
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private func workspaceAgent(id: UUID) -> AgentRecord? {
+        MaestroTools.workspace?.agent(id: id)
     }
 
     // MARK: - Plans Content

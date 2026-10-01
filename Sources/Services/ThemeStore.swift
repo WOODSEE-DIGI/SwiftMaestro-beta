@@ -249,6 +249,16 @@ final class ThemeStore {
     /// Task (todo) title text for open items — computed against the panel's
     /// effective background unless explicitly overridden.
     var tasksText: Color { tasksTextOverride ?? Self.contrastText(forBackground: tasksPanel) }
+    /// Macros side panel background. Defaults to the tasks panel color so
+    /// existing skins keep working without a dedicated macro override.
+    var macrosPanel: Color { tasksPanelOverride ?? defaultContentBackground }
+    /// Macros panel text (count badge, empty state) — contrast-computed.
+    var macrosPanelText: Color { Self.contrastText(forBackground: macrosPanel) }
+    /// Macro card background. Defaults to the plans card color so existing
+    /// skins keep working without a dedicated macro override.
+    var macrosCard: Color { plansCardOverride ?? accent }
+    /// Macro card title text. Defaults to the plans card text color.
+    var macrosCardText: Color { plansTextOverride ?? Self.contrastText(forBackground: macrosCard) }
     /// Generic view background (e.g. Notes editor).
     var background: Color { backgroundOverride ?? defaultContentBackground }
     /// Generic secondary background (e.g. Notes toolbar/search bar).
