@@ -468,7 +468,6 @@ stage_appcast() {
 
     local key_dir key_file
     key_dir="$(mktemp -d)"
-    trap 'rm -rf "$key_dir"' EXIT
     key_file="$key_dir/sparkle-key.pem"
     "$SPARKLE_BIN/generate_keys" -x "$key_file" >/dev/null || die "failed to export Sparkle private key"
     [ -s "$key_file" ] || die "Sparkle key export produced empty file"
@@ -547,6 +546,7 @@ stage_appcast() {
     require_file "$DIST_DIR/appcast.xml"
     require_file "$DIST_DIR/appcast-light.xml"
 
+    rm -rf "$key_dir"
     state_mark appcast "ok"
     echo "Appcasts OK."
 }
@@ -630,7 +630,7 @@ LPFTP
     local website_dir
     website_dir="$(dirname "$deploy_script")"
     if [ -x "$PWD/scripts/update-website-release-notes.py" ] && [ -f "$website_dir/download.html" ]; then
-        echo "Updating website download page for v$VERSION…"
+        echo "Updating website download page for v$VERSION..."
         python3 "$PWD/scripts/update-website-release-notes.py" "$VERSION" "$website_dir" "$DIST_DIR" "$PWD/CHANGELOG.md" || die "website release notes update failed"
     else
         echo "WARNING: website release-notes updater not available"
