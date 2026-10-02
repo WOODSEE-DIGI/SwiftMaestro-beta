@@ -657,7 +657,7 @@ LPFTP
         release_notes="$(mktemp)"
         awk '/^# SwiftMaestro '"$VERSION"'/{flag=1; next} /^# SwiftMaestro /{flag=0} flag' "$PWD/CHANGELOG.md" > "$release_notes"
         if [ -s "$release_notes" ]; then
-            echo "Creating GitHub Release v$VERSION…"
+            echo "Creating GitHub Release v$VERSION..."
             gh release create "v$VERSION" --repo WOODSEE-DIGI/SwiftMaestro --title "SwiftMaestro $VERSION" --notes-file "$release_notes" || echo "WARNING: GitHub Release creation failed"
         else
             echo "WARNING: could not extract release notes for GitHub Release"
