@@ -3,6 +3,12 @@
 ## Remote Backends
 
 - **Empty assistant message fix**: Moonshot and other OpenAI-compatible APIs reject assistant messages with empty `content`. The agent executor now drops empty assistant bubbles and removes empty `content` from tool-call turns before sending.
+- **Self-healing for remote model errors**: if a backend returns a healable HTTP 400/422 validation error, the agent executor sanitizes the conversation and retries once before surfacing the failure.
+
+## Maestro Agent Tools
+
+- **Maestro reads files directly**: the navigator agent now has `read_file` by default and is prompted to use it directly instead of delegating to Swift Helper.
+- **Maestro has shell access by default**: the navigator agent now has the `execute_command` family of shell tools enabled by default.
 
 ## Maestro File Reading
 
