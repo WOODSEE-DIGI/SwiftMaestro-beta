@@ -1,3 +1,9 @@
+# SwiftMaestro 0.6.9
+
+## Tools & Compact Mode
+
+- **File and shell tools are never hidden by Compact Tool Mode**: `read_file`, `write_file`, `execute_command`, and the rest of the file/shell tool families are now always advertised directly, even when Compact Tool Mode is on. They were previously deferred behind `search_tools`/`call_tool`, which made remote models such as Kimi K2.7 via Moonshot believe they couldn't read files or run shell commands.
+
 # SwiftMaestro 0.6.8
 
 ## Remote Backends
