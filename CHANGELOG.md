@@ -1,3 +1,14 @@
+# SwiftMaestro 0.6.7
+
+## Maestro File Reading
+
+- **Maestro reads files directly**: the navigator agent now has `read_file` by default and is prompted to use it directly instead of delegating to Swift Helper.
+- **Streaming reads**: `read_file` inspects file size first, supports `offset`/`limit` chunking and `tail=N` for large files, and returns actionable errors instead of silent failures.
+- **Model-aware byte caps**: the single-read cap now scales with each model's context window:
+  - Local MLX models: 512 KB floor / 2 MB ceiling
+  - Self-hosted remote (LM Studio/Ollama): 1 MB floor / 4 MB ceiling
+  - Hosted online API models: 2 MB floor / 8 MB ceiling
+
 # SwiftMaestro 0.6.6
 
 ## Agent Macros & Task Dock
