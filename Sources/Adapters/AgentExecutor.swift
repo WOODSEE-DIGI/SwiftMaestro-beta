@@ -356,6 +356,7 @@ final class AgentExecutor: Sendable {
                         // page dumps accumulating until MLX hits metal::malloc at ~70K
                         // tokens (the 14:39 crash). Keep only the last few results full.
                         Self.elideOldToolResults(&convo)
+                        Self.sanitizeWireConvo(&convo)
 
                         NSLog("[AGENT] round \(round): calling streamRound (tools=%d, convo=%d messages)",
                               specsThisRound.count, convo.count)
@@ -1745,6 +1746,38 @@ final class AgentExecutor: Sendable {
             parts.append(["type": "image_url", "image_url": ["url": uri]])
         }
         return ["role": message.role.rawValue, "content": parts]
+    }
+
+    /// Remove or repair assistant messages that OpenAI-compatible servers reject.
+    /// LM Studio / Kimi / etc. require assistant `content` to be non-empty unless
+    /// the message carries `tool_calls`. Empty placeholders are dropped; tool-call
+    /// turns with empty content have the content key removed.
+    private static func sanitizeWireConvo(_ convo: inout [[String: Any]]) {
+        var removed = 0
+        convo = convo.compactMap { msg in
+            guard msg["role"] as? String == "assistant" else { return msg }
+            let content = msg["content"]
+            let isEmptyContent: Bool = {
+                if let text = content as? String { return text.isEmpty }
+                if let array = content as? [Any] { return array.isEmpty }
+                return false
+            }()
+            let hasToolCalls = (msg["tool_calls"] as? [Any])?.isEmpty == false
+            if isEmptyContent {
+                if hasToolCalls {
+                    var repaired = msg
+                    repaired.removeValue(forKey: "content")
+                    return repaired
+                } else {
+                    removed += 1
+                    return nil
+                }
+            }
+            return msg
+        }
+        if removed > 0 {
+            NSLog("[AGENT] sanitized conversation: removed %d empty assistant message(s)", removed)
+        }
     }
 
     // MARK: - Tool execution (shared across backends)
