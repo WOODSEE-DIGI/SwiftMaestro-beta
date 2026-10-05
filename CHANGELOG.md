@@ -1,5 +1,9 @@
 # SwiftMaestro 0.6.7
 
+## Remote Backends
+
+- **Empty assistant message fix**: Moonshot and other OpenAI-compatible APIs reject assistant messages with empty `content`. The agent executor now drops empty assistant bubbles and removes empty `content` from tool-call turns before sending.
+
 ## Maestro File Reading
 
 - **Maestro reads files directly**: the navigator agent now has `read_file` by default and is prompted to use it directly instead of delegating to Swift Helper.
