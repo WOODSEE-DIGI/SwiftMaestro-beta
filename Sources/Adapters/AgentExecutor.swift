@@ -1796,6 +1796,47 @@ final class AgentExecutor: Sendable {
         "execute_sqlite",
     ]
 
+    /// Per-model read-file byte budget.
+    ///
+    /// The cap scales with the model's advertised context window so large-context
+    /// models can read larger files, while small-context models stay safe. It is
+    /// bounded by source-specific floors/ceilings:
+    ///   - Local in-process MLX: 512 KB floor, 2 MB ceiling
+    ///   - Self-hosted remote (LM Studio/Ollama): 1 MB floor, 4 MB ceiling
+    ///   - Hosted online API: 2 MB floor, 8 MB ceiling
+    ///
+    /// We budget 1/2 of the context window (at ~4 bytes/token) for a single read,
+    /// leaving the other half for chat history, system prompt, and tool results.
+    @MainActor
+    private func maxReadBytesForCurrentModel() -> Int? {
+        guard let catalog = catalog else { return nil }
+        guard let model = catalog.model(forID: modelID) else { return nil }
+
+        let contextLength = model.tunedContextLength
+        // Budget 1/2 of context tokens, approximated at 4 bytes/token.
+        let contextBasedCap = (contextLength / 2) * 4
+
+        let (floor, ceiling): (Int, Int)
+        if model.isRemote, let kind = model.remoteProviderKind {
+            switch kind {
+            case .online:
+                floor = 2 * 1024 * 1024
+                ceiling = 8 * 1024 * 1024
+            case .lmStudio, .ollama:
+                floor = 1 * 1024 * 1024
+                ceiling = 4 * 1024 * 1024
+            default:
+                floor = 1 * 1024 * 1024
+                ceiling = 4 * 1024 * 1024
+            }
+        } else {
+            floor = 512 * 1024
+            ceiling = 2 * 1024 * 1024
+        }
+
+        return min(max(contextBasedCap, floor), ceiling)
+    }
+
     private func executeTool(
         _ tc: RoundToolCall, mcp: MCPClientService?, project: String?,
         workingDirectory: String? = nil, agentID: String? = nil
@@ -1893,7 +1934,9 @@ final class AgentExecutor: Sendable {
             let result = await ToolCallGuardian.shared.run(
                 name: tc.name, argsJSON: argsJSON, modelID: modelID
             ) {
-                await MaestroTools.execute(Self.toolCall(name: tc.name, argumentsJSON: argsJSON))
+                await MaestroTools.$currentMaxReadBytes.withValue(maxReadBytesForCurrentModel()) {
+                    await MaestroTools.execute(Self.toolCall(name: tc.name, argumentsJSON: argsJSON))
+                }
             }
             NSLog("[executeTool] result for %@: %@", tc.name, String(result.prefix(300)))
             AIBroadcastService.broadcastToolCompleted(
@@ -1921,7 +1964,9 @@ final class AgentExecutor: Sendable {
         let result = await ToolCallGuardian.shared.run(
             name: tc.name, argsJSON: argsJSON, modelID: modelID
         ) {
-            await MaestroTools.execute(Self.toolCall(name: tc.name, argumentsJSON: argsJSON))
+            await MaestroTools.$currentMaxReadBytes.withValue(maxReadBytesForCurrentModel()) {
+                await MaestroTools.execute(Self.toolCall(name: tc.name, argumentsJSON: argsJSON))
+            }
         }
         AIBroadcastService.broadcastToolCompleted(
             name: tc.name, id: toolID, duration: Date().timeIntervalSince(toolStartTime))

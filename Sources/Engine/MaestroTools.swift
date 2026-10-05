@@ -62,6 +62,12 @@ enum MaestroTools {
     /// directory.
     nonisolated(unsafe) static var delegatedAgentWorkingDirectories: [String] = []
 
+    /// Per-task override for the maximum bytes `read_file` will load for the
+    /// current model. Local models keep the conservative default; remote/online
+    /// models get a larger cap because they run out-of-process with bigger
+    /// context windows and no local memory pressure.
+    @TaskLocal static var currentMaxReadBytes: Int? = nil
+
     /// Returns the calling agent's authorized roots (global Settings + working
     /// directory) so delegation can pass them to the child.
     static func authorizedRootsForParent() -> [String] {
@@ -696,14 +702,16 @@ enum MaestroTools {
                 name: "ask_swiftHelper",
                 description:
                     "Ask Swift Helper — SwiftMaestro's built-in support agent — to "
-                    + "diagnose or fix a problem. Swift Helper has the tools you don't: "
+                    + "diagnose or fix a SwiftMaestro APP problem. Swift Helper handles: "
                     + "shell commands (execute_command), crash/console diagnostics, settings "
-                    + "backup/restore, and bug-report filing. USE THIS whenever the user asks "
-                    + "you to run a command (brew, defaults, git, scripts), change a system or "
-                    + "app setting, diagnose a crash/hang/slowdown, or fix something that isn't "
-                    + "working. NEVER tell the user you 'can't run commands' — hand the task to "
-                    + "Swift Helper instead. Write the task as clear instructions with full "
-                    + "context; Swift Helper reports back what it did.",
+                    + "backup/restore, MCP/server config, and bug-report filing. USE THIS only "
+                    + "when the user asks you to run a system command, change a system/app "
+                    + "setting, diagnose a crash/hang/slowdown in SwiftMaestro, or fix an "
+                    + "app/MCP/server configuration. DO NOT use ask_swiftHelper to read user "
+                    + "files or answer questions about file contents — you have read_file and "
+                    + "list_dir for that. NEVER tell the user you 'can't run commands' for "
+                    + "system/app tasks — hand those to Swift Helper instead. Write the task "
+                    + "as clear instructions with full context; Swift Helper reports back what it did.",
                 properties: [
                     "task": ["type": "string", "description": "What Swift Helper should do, with all needed context (e.g. 'Run brew update and brew upgrade, then report what was upgraded')."],
                 ],
@@ -713,12 +721,11 @@ enum MaestroTools {
                 name: "ask_search",
                 description:
                     "Ask the Searcher — SwiftMaestro's built-in search agent — to find "
-                    + "information FAST from any source: web, local files, network drives, "
-                    + "Maps, or Obsidian vaults. The Searcher is FASTER than manual Google "
-                    + "search because it searches multiple sources simultaneously. USE THIS "
-                    + "whenever the user asks you to search, find, look up, or research "
-                    + "anything. The Searcher knows when it has enough info to search and "
-                    + "when to ask for clarification. Write the task as a clear search query "
+                    + "information FAST from multiple sources: web, local files, network drives, "
+                    + "Maps, or Obsidian vaults. USE THIS for broad research questions where "
+                    + "the user did not give you an exact file path. DO NOT use ask_search "
+                    + "when the user provided a specific file path — read that file directly "
+                    + "with read_file instead. Write the task as a clear search query "
                     + "with location/context when relevant.",
                 properties: [
                     "task": ["type": "string", "description": "What to search for, with all needed context (e.g. 'Find HVAC installers in Sydney 2010 with phone numbers')."],

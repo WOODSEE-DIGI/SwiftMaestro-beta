@@ -487,6 +487,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
                 .youtube, .vimeo, .dailymotion, .peertube, .tiktok, .vk,
                 .database, .dam, .blockchain,
                 .overlayBuilder, .calendar, .reminders, .contacts,
+                .file,
             ]
         case .project:
             return [

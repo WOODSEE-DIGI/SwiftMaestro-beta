@@ -1047,6 +1047,9 @@ class ChatViewModel: ObservableObject {
         - For creating/overwriting files, use write_file. NEVER paste file contents in chat.
         - For surgical edits, use edit_file with old_string/new_string.
         - For finding files, use glob_files. For searching contents, use grep_code.
+        - For reading a user file, use read_file yourself; do NOT delegate it to another agent.
+        - For files larger than the read cap, use read_file with tail=500 (last 500 lines) \
+        or offset/limit to read chunks. Do NOT ask the user before retrying.
         - For git, use git_status/git_diff/git_log/git_branch.
 
         SEARCH RULES:
@@ -1632,20 +1635,27 @@ class ChatViewModel: ObservableObject {
                 call ask_project_agent with the question/task instead of guessing.
 
                 TOOLS:
-                - ask_swiftHelper: Swift Helper is the built-in support engineer \
-                with shell commands, file edits, crash/console diagnostics, settings \
-                backup/restore, and bug-report filing. Use it when the user explicitly \
-                asks you to TAKE ACTION on their Mac ("run ...", "update ...", \
-                "install ...", "fix ...", "diagnose ...", "check why ..."). For casual \
-                chat, explanations, or questions about how something works, answer \
-                directly instead of delegating. NEVER answer "I can't run commands" \
-                when the user clearly wants action — Swift Helper can. Report back \
-                what Swift Helper did.
-                - ask_project_agent / ask_project_agents: Delegate project work to \
-                project agents (research, writing, code). For system/app/support \
-                tasks, prefer ask_swiftHelper only when the user wants action taken.
-                - ask_search: Delegate search tasks to the Searcher agent. For any \
-                search, lookup, or research request, call ask_search with the query.
+                - read_file / list_dir / glob_files / grep_code: YOU have these file \
+                tools. When the user gives you a file path or asks about a specific \
+                file/directory, read or list it YOURSELF with read_file/list_dir. Do \
+                NOT delegate a simple file read to another agent — you are the large \
+                model and should handle it directly. \
+                LARGE FILE RULE: if read_file returns "file too large", immediately \
+                retry with tail=500 to read the last 500 lines (the user's usual \
+                continuation point). Do NOT ask the user for permission first.
+                - ask_swiftHelper: Swift Helper is the built-in support engineer for \
+                SwiftMaestro APP diagnostics only (crash/console logs, settings \
+                backup/restore, MCP/server config, bug-report filing, or running shell \
+                commands that change the system/app). Use it ONLY when the user asks \
+                you to diagnose or fix SwiftMaestro itself, run a shell command, or \
+                change a system/app setting. NEVER use ask_swiftHelper just to read a \
+                user file or answer a question about file contents — use read_file yourself.
+                - ask_project_agent / ask_project_agents: Delegate multi-step PROJECT \
+                work to an existing project agent (large research, writing, code). Do \
+                NOT delegate simple file reads.
+                - ask_search: Delegate broad research/search tasks to the Searcher agent \
+                (web, local, Maps). Do NOT call ask_search when the user already gave \
+                you an exact file path — read that file directly with read_file.
                 - list_workspace: See all projects and agents if unsure.
 
                 SWIFTBROWSER PLUGIN TOOLS — USE THESE FOR CUSTOM BROWSER FEATURES:
@@ -1683,16 +1693,22 @@ class ChatViewModel: ObservableObject {
 
                 DIRECT SWIFTHELPER COMMAND:
                 - If the user explicitly says "run ...", "update ...", "install ...", \
-                "fix ...", "diagnose ...", "check why ...", or asks for anything that \
-                needs shell access or system changes, call ask_swiftHelper IMMEDIATELY. \
-                Do NOT write "I will ask..." or a plan first — just emit the tool call.
+                "fix ...", "diagnose ...", "check why ..." AND the task is about \
+                SwiftMaestro itself or needs shell access / system changes, call \
+                ask_swiftHelper IMMEDIATELY. Do NOT write "I will ask..." or a plan first \
+                — just emit the tool call.
+                - If the user gives you a file path, calls the file by name, or asks \
+                what is in a file, call read_file or list_dir IMMEDIATELY yourself. \
+                Do NOT delegate file reads to Swift Helper or any project agent.
                 - If the user is chatting, explaining, asking "how do I...", or using \
                 words like "about" or "tell me", answer directly.
 
                 DIRECT SEARCH COMMAND:
-                - If the user says "search ...", "find ...", "look up ...", "where ...", \
-                "who ...", "what ...", or asks any question that needs information \
+                - If the user asks a broad research question ("search ...", "find ...", \
+                "look up ...", "what do people say about ...") that needs information \
                 from the web, local files, or Maps, call ask_search IMMEDIATELY.
+                - If the user already provided an exact file path, do NOT call ask_search; \
+                read the file directly with read_file.
 
                 LANGUAGE RULE: Respond in English only. All tool arguments in English.
 

@@ -126,7 +126,7 @@ final class MaestroToolsTests: XCTestCase {
         XCTAssertTrue(names.contains("open_url"))
         XCTAssertTrue(names.contains("list_notes"))
         XCTAssertTrue(names.contains("list_kanban_boards"))
-        XCTAssertTrue(names.contains("whiteboard_list_boards"))
+        XCTAssertTrue(names.contains("excalidraw_list_boards"))
         XCTAssertTrue(names.contains("list_numbers_documents"))
         XCTAssertTrue(names.contains("read_numbers_table"))
     }
@@ -396,6 +396,87 @@ final class MaestroToolsTests: XCTestCase {
         let read = makeCall(name: "read_file", args: ["path": .string(path)])
         let readResult = await MaestroTools.execute(read)
         XCTAssertTrue(readResult.contains("Hello, SwiftMaestro file tools!"))
+    }
+
+    func testReadLargeTextFileWithOffsetLimit() async throws {
+        let dir = tempTestDirectory()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        MaestroTools.workingDirectory = dir.path
+        defer { MaestroTools.workingDirectory = nil }
+
+        let path = dir.appendingPathComponent("large.txt").path
+        var lines: [String] = []
+        for i in 1...1000 {
+            lines.append("Line \(i) of the large test file")
+        }
+        try lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+
+        // The file is larger than maxReadBytes only if each line is tiny; force
+        // the streaming path by explicitly requesting offset/limit regardless.
+        let read = makeCall(name: "read_file", args: [
+            "path": .string(path),
+            "offset": .int(101),
+            "limit": .int(5),
+        ])
+        let readResult = await MaestroTools.execute(read)
+        XCTAssertTrue(readResult.contains("Lines 101-105:"))
+        XCTAssertTrue(readResult.contains("Line 101 of the large test file"))
+        XCTAssertTrue(readResult.contains("Line 105 of the large test file"))
+        XCTAssertFalse(readResult.contains("Line 100 of the large test file"))
+        XCTAssertFalse(readResult.contains("Line 106 of the large test file"))
+    }
+
+    func testReadTextFileTail() async throws {
+        let dir = tempTestDirectory()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        MaestroTools.workingDirectory = dir.path
+        defer { MaestroTools.workingDirectory = nil }
+
+        let path = dir.appendingPathComponent("tail.txt").path
+        var lines: [String] = []
+        for i in 1...100 {
+            lines.append("Line \(i)")
+        }
+        try lines.joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+
+        let read = makeCall(name: "read_file", args: [
+            "path": .string(path),
+            "tail": .int(10),
+        ])
+        let readResult = await MaestroTools.execute(read)
+        XCTAssertTrue(readResult.contains("Lines 91-100 (last 10 lines):"))
+        XCTAssertTrue(readResult.contains("Line 91"))
+        XCTAssertTrue(readResult.contains("Line 100"))
+        XCTAssertFalse(readResult.contains("Line 90"))
+    }
+
+    func testReadFileCapRaisedForRemoteModels() async throws {
+        let dir = tempTestDirectory()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        MaestroTools.workingDirectory = dir.path
+        defer { MaestroTools.workingDirectory = nil }
+
+        let path = dir.appendingPathComponent("big.txt").path
+        // Write a 600KB text file — larger than the 512KB local floor but smaller
+        // than the 1MB remote floor.
+        let bigText = String(repeating: "A", count: 600 * 1024)
+        try bigText.write(toFile: path, atomically: true, encoding: .utf8)
+
+        let read = makeCall(name: "read_file", args: ["path": .string(path)])
+
+        // Local-model default cap should reject it.
+        let localResult = await MaestroTools.execute(read)
+        XCTAssertTrue(localResult.contains("file too large"))
+
+        // Remote-model override should allow the read.
+        let remoteResult = await MaestroTools.$currentMaxReadBytes.withValue(1 * 1024 * 1024) {
+            await MaestroTools.execute(read)
+        }
+        XCTAssertTrue(remoteResult.contains("Lines 1-1 of 1:"))
+        XCTAssertTrue(remoteResult.contains(bigText))
     }
 
     func testWriteAndReadBinaryFile() async throws {

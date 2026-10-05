@@ -62,8 +62,15 @@ extension MaestroTools {
 
 
 
-    /// Cap on a single read so a huge file can't blow up the model's context.
-    private static let maxReadBytes = 256 * 1024
+    /// Conservative cap for local in-process models. Remote/online models can
+    /// override this via `MaestroTools.currentMaxReadBytes` (set by the executor
+    /// before each tool call) because they run out-of-process with larger context
+    /// windows and no local unified-memory pressure.
+    private static let defaultMaxReadBytes = 256 * 1024
+    /// Effective cap for the current task. Uses the per-model override if set.
+    private static var effectiveMaxReadBytes: Int {
+        MaestroTools.currentMaxReadBytes ?? defaultMaxReadBytes
+    }
     /// Default character limit for read_file output to keep prompt small.
     private static let defaultReadLimit = 4096
 
@@ -73,11 +80,15 @@ extension MaestroTools {
                 "Read any file. Text files return UTF-8 content. Documents "
                 + "(.docx, .pdf, .rtf, .odt, .pages, .html) are extracted to plain text. "
                 + "Images and other binary files return base64 data with MIME type. "
-                + "Use offset (line number) and limit (max lines) for text/document output.",
+                + "LARGE FILES: if a file exceeds the single-read byte cap, use tail "
+                + "to read the LAST N lines (the part you most likely want to continue "
+                + "from), or use offset (start line, 1-based) and limit (max lines) to "
+                + "read from the top. Do not use offset/limit together with tail.",
                 properties: [
                     "path": ["type": "string", "description": "Absolute path to the file."],
-                    "offset": ["type": "integer", "description": "Start line (1-based). For text/document extraction only. Default 1."],
-                    "limit": ["type": "integer", "description": "Max lines to return. For text/document extraction only. Default ~100."],
+                    "offset": ["type": "integer", "description": "Start line (1-based). For text/document extraction only. Default 1. Ignored if tail is set."],
+                    "limit": ["type": "integer", "description": "Max lines to return. For text/document extraction only. Default ~100. Ignored if tail is set."],
+                    "tail": ["type": "integer", "description": "Read the LAST N lines of the file. Use this for large files where you want to continue from the end. Overrides offset/limit."],
                 ], required: ["path"]),
             rawSpec("write_file",
                 "Create or overwrite any file. Default is UTF-8 text. Set encoding='base64' "
@@ -178,6 +189,7 @@ extension MaestroTools {
         let path: String?
         let offset: LenientInt?
         let limit: LenientInt?
+        let tail: LenientInt?
     }
     // `append` is LenientBool: small models emit it as "false"/"true"
     // strings, which failed the whole decode and made write_file report
@@ -519,6 +531,107 @@ extension MaestroTools {
         return truncated + (actualPath == path ? "" : "\n[resolved path: \(actualPath)]")
     }
 
+    // MARK: - Streaming text-file reader for large files
+
+    /// Reads a line-oriented slice from a text file without loading the whole
+    /// file into memory. Used when the caller supplies offset/limit and the
+    /// file exceeds `maxReadBytes`.
+    private struct BufferedLineReader {
+        private let fileHandle: FileHandle
+        private var buffer = Data()
+        private var finished = false
+        private let chunkSize = 64 * 1024
+
+        init(fileHandle: FileHandle) { self.fileHandle = fileHandle }
+
+        mutating func readLine() -> String? {
+            while true {
+                if let newlineIndex = buffer.firstIndex(of: UInt8(ascii: "\n")) {
+                    let lineData = buffer.prefix(newlineIndex)
+                    buffer.removeSubrange(...newlineIndex)
+                    let data = normalizeLineEnding(Data(lineData))
+                    return String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
+                }
+                if finished {
+                    if buffer.isEmpty { return nil }
+                    let lineData = buffer
+                    buffer.removeAll()
+                    return String(data: lineData, encoding: .utf8) ?? String(decoding: lineData, as: UTF8.self)
+                }
+                let chunk = fileHandle.readData(ofLength: chunkSize)
+                if chunk.isEmpty {
+                    finished = true
+                } else {
+                    buffer.append(chunk)
+                }
+            }
+        }
+
+        private func normalizeLineEnding(_ data: Data) -> Data {
+            guard !data.isEmpty, data.last == UInt8(ascii: "\r") else { return data }
+            var copy = data
+            copy.removeLast()
+            return copy
+        }
+    }
+
+    private static func readTextFileChunk(
+        at actualPath: String, path resolved: String, offset: Int?, limit: Int?
+    ) -> String {
+        let startLine = max(1, offset ?? 1)
+        let maxLines = max(1, limit ?? (defaultReadLimit / 4))
+        guard let handle = FileHandle(forReadingAtPath: actualPath) else {
+            return errorJSON("could not open '\(actualPath)' for streaming read")
+        }
+        defer { handle.closeFile() }
+        var reader = BufferedLineReader(fileHandle: handle)
+        var currentLine = 0
+        var collected: [String] = []
+        collected.reserveCapacity(maxLines)
+        while let line = reader.readLine() {
+            currentLine += 1
+            guard currentLine >= startLine else { continue }
+            collected.append(line)
+            if collected.count >= maxLines { break }
+        }
+        let endLine = startLine + max(0, collected.count - 1)
+        let prefix = collected.isEmpty
+            ? "Lines \(startLine)-\(startLine) (no lines in range):"
+            : "Lines \(startLine)-\(endLine):"
+        let note = actualPath == resolved ? "" : "\n[resolved path: \(actualPath)]"
+        return prefix + "\n" + collected.joined(separator: "\n") + note
+    }
+
+    private static func readTextFileTail(
+        at actualPath: String, path resolved: String, tail: Int
+    ) -> String {
+        let tailCount = max(1, tail)
+        guard let handle = FileHandle(forReadingAtPath: actualPath) else {
+            return errorJSON("could not open '\(actualPath)' for tail read")
+        }
+        defer { handle.closeFile() }
+        var reader = BufferedLineReader(fileHandle: handle)
+        var ring: [String] = []
+        ring.reserveCapacity(tailCount)
+        var totalLines = 0
+        while let line = reader.readLine() {
+            totalLines += 1
+            if ring.count < tailCount {
+                ring.append(line)
+            } else {
+                ring.removeFirst()
+                ring.append(line)
+            }
+        }
+        let startLine = max(1, totalLines - ring.count + 1)
+        let endLine = max(1, totalLines)
+        let prefix = ring.isEmpty
+            ? "Lines \(startLine)-\(endLine) (empty file):"
+            : "Lines \(startLine)-\(endLine) (last \(ring.count) lines):"
+        let note = actualPath == resolved ? "" : "\n[resolved path: \(actualPath)]"
+        return prefix + "\n" + ring.joined(separator: "\n") + note
+    }
+
     static func readFile(_ call: ToolCall) async -> String {
         guard let args = decodeArgs(call, as: ReadFileArgs.self),
               let raw = args.path?.trimmingCharacters(in: .whitespaces), !raw.isEmpty else {
@@ -539,21 +652,63 @@ extension MaestroTools {
             NSLog("[read_file] no file at '%@' (resolved: '%@')", raw, actualPath)
             return errorJSON("no file at '\(resolved)'.\(didYouMean(path: resolved, wantDirectory: false))")
         }
-        guard let data = FileManager.default.contents(atPath: actualPath) else {
-            NSLog("[read_file] could not read contents of '%@'", actualPath)
-            return errorJSON("could not read '\(actualPath)'")
+        let fileSize: UInt64
+        do {
+            let attrs = try FileManager.default.attributesOfItem(atPath: actualPath)
+            fileSize = attrs[.size] as? UInt64 ?? 0
+        } catch {
+            NSLog("[read_file] could not inspect '%@': %@", actualPath, error.localizedDescription)
+            return errorJSON("could not inspect '\(actualPath)': \(error.localizedDescription)")
         }
-        NSLog("[read_file] success: raw='%@' resolved='%@' size=%d bytes", raw, actualPath, data.count)
-        guard data.count <= maxReadBytes else {
-            return errorJSON("file too large (\(data.count) bytes; limit \(maxReadBytes)).")
-        }
+        NSLog("[read_file] raw='%@' resolved='%@' size=%llu bytes", raw, actualPath, fileSize)
 
         let category = FileContentExtractor.category(for: actualPath)
+        let requestedOffset = args.offset?.value
+        let requestedLimit = args.limit?.value
+        let requestedTail = args.tail?.value
+        let canStreamText = category == .text
+            && (requestedOffset != nil || requestedLimit != nil || requestedTail != nil)
+
+        let cap = effectiveMaxReadBytes
+        if fileSize > cap {
+            switch category {
+            case .image, .binary:
+                return errorJSON(
+                    "file too large (\(fileSize) bytes; limit \(cap)). "
+                    + "Binary files cannot be chunked via read_file — use shell tools to inspect or split the file.")
+            case .pdf, .document:
+                return errorJSON(
+                    "file too large (\(fileSize) bytes; limit \(cap)). "
+                    + "Documents cannot be read in chunks — use shell tools to extract pages or text.")
+            case .text:
+                guard canStreamText else {
+                    return errorJSON(
+                        "file too large (\(fileSize) bytes; limit \(cap)). "
+                        + "Use tail=N to read the last N lines (e.g. tail=500), or offset/limit to read from the top.")
+                }
+            }
+        }
 
         switch category {
         case .text:
+            if let requestedTail {
+                let result = readTextFileTail(
+                    at: actualPath, path: resolved, tail: requestedTail)
+                NSLog("[read_file] returning tail text result: %@", String(result.prefix(200)))
+                return result
+            }
+            if canStreamText {
+                let result = readTextFileChunk(
+                    at: actualPath, path: resolved,
+                    offset: requestedOffset, limit: requestedLimit)
+                NSLog("[read_file] returning streamed text result: %@", String(result.prefix(200)))
+                return result
+            }
+            guard let data = FileManager.default.contents(atPath: actualPath) else {
+                return errorJSON("could not read '\(actualPath)'")
+            }
             if let text = FileContentExtractor.extractText(from: actualPath) {
-                let result = applyLineLimit(text, offset: args.offset?.value, limit: args.limit?.value,
+                let result = applyLineLimit(text, offset: requestedOffset, limit: requestedLimit,
                                             totalSource: text, path: resolved, actualPath: actualPath)
                 NSLog("[read_file] returning text result: %@", String(result.prefix(200)))
                 return result
@@ -561,8 +716,11 @@ extension MaestroTools {
             return readBinaryContent(data: data, path: actualPath)
 
         case .pdf, .document:
+            guard let data = FileManager.default.contents(atPath: actualPath) else {
+                return errorJSON("could not read '\(actualPath)'")
+            }
             if let text = FileContentExtractor.extractText(from: actualPath), !text.isEmpty {
-                let result = applyLineLimit(text, offset: args.offset?.value, limit: args.limit?.value,
+                let result = applyLineLimit(text, offset: requestedOffset, limit: requestedLimit,
                                             totalSource: text, path: resolved, actualPath: actualPath)
                 NSLog("[read_file] returning document result: %@", String(result.prefix(200)))
                 return result
@@ -571,6 +729,9 @@ extension MaestroTools {
             return readBinaryContent(data: data, path: actualPath)
 
         case .image, .binary:
+            guard let data = FileManager.default.contents(atPath: actualPath) else {
+                return errorJSON("could not read '\(actualPath)'")
+            }
             return readBinaryContent(data: data, path: actualPath)
         }
     }
