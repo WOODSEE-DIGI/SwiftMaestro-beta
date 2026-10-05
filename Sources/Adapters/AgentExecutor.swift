@@ -360,14 +360,16 @@ final class AgentExecutor: Sendable {
 
                         NSLog("[AGENT] round \(round): calling streamRound (tools=%d, convo=%d messages)",
                               specsThisRound.count, convo.count)
-                        let (content, _, rawToolCalls) = try await backend.streamRound(
-                            convo: convo,
+                        let (content, _, rawToolCalls) = try await Self.streamRoundWithSelfHeal(
+                            backend: backend,
+                            convo: &convo,
                             toolSpecs: specsThisRound,
                             temperature: temperature,
                             topP: topP,
                             thinkingEnabled: thinkingEnabled,
                             maxTokens: maxTokens,
-                            continuation: continuation
+                            continuation: continuation,
+                            round: round
                         )
                         NSLog("[AGENT] round \(round): streamRound returned (content=%d chars, toolCalls=%d)",
                               content.count, rawToolCalls.count)
@@ -1778,6 +1780,92 @@ final class AgentExecutor: Sendable {
         if removed > 0 {
             NSLog("[AGENT] sanitized conversation: removed %d empty assistant message(s)", removed)
         }
+    }
+
+    /// Self-healing wrapper for remote backend model requests. OpenAI-compatible
+    /// servers (Moonshot, LM Studio, etc.) sometimes reject the conversation with
+    /// HTTP 400/422 errors such as "assistant must not be empty". When the error
+    /// matches a known healable pattern, we mutate the conversation and retry
+    /// once before giving up — this is the Swift Helper / self-healing path for
+    /// model request failures.
+    private static func streamRoundWithSelfHeal(
+        backend: GenerationBackend,
+        convo: inout [[String: Any]],
+        toolSpecs: [ToolSpec],
+        temperature: Double,
+        topP: Double,
+        thinkingEnabled: Bool,
+        maxTokens: Int,
+        continuation: AsyncThrowingStream<AgentOutput, Error>.Continuation,
+        round: Int
+    ) async throws -> (content: String, reasoning: String?, toolCalls: [RoundToolCall]) {
+        do {
+            return try await backend.streamRound(
+                convo: convo,
+                toolSpecs: toolSpecs,
+                temperature: temperature,
+                topP: topP,
+                thinkingEnabled: thinkingEnabled,
+                maxTokens: maxTokens,
+                continuation: continuation
+            )
+        } catch {
+            guard let healed = Self.healRemoteModelError(error, convo: convo) else {
+                throw error
+            }
+            NSLog("[AGENT] self-healing remote backend error for round %d (strategy: %@), retrying...",
+                  round, healed.strategy)
+            convo = healed.convo
+            do {
+                let result = try await backend.streamRound(
+                    convo: convo,
+                    toolSpecs: toolSpecs,
+                    temperature: temperature,
+                    topP: topP,
+                    thinkingEnabled: thinkingEnabled,
+                    maxTokens: maxTokens,
+                    continuation: continuation
+                )
+                NSLog("[AGENT] self-heal succeeded for round %d", round)
+                return result
+            } catch {
+                NSLog("[AGENT] self-heal retry failed for round %d: %@", round, error.localizedDescription)
+                throw error
+            }
+        }
+    }
+
+    private struct HealedRemoteRequest {
+        let convo: [[String: Any]]
+        let strategy: String
+    }
+
+    /// Inspect a remote backend error and, if it matches a known healable pattern,
+    /// return a repaired conversation plus the strategy name. Returns nil when the
+    /// error is not recognized as self-healable.
+    private static func healRemoteModelError(
+        _ error: Error,
+        convo: [[String: Any]]
+    ) -> HealedRemoteRequest? {
+        // Only HTTP 4xx validation errors from remote backends are candidates.
+        guard let remoteError = error as? RemoteModelError,
+              case .httpError(let code, let body) = remoteError,
+              (400...499).contains(code)
+        else { return nil }
+
+        let lower = body.lowercased()
+
+        // Empty assistant message rejected by Moonshot / OpenAI-compatible APIs.
+        if lower.contains("assistant") && lower.contains("must not be empty") {
+            var repaired = convo
+            Self.sanitizeWireConvo(&repaired)
+            // If sanitization removed/repaired messages, retry with the clean slate.
+            return repaired.count != convo.count
+                ? HealedRemoteRequest(convo: repaired, strategy: "removed empty assistant messages")
+                : nil
+        }
+
+        return nil
     }
 
     // MARK: - Tool execution (shared across backends)
