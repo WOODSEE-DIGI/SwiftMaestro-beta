@@ -1,4 +1,4 @@
-# SwiftMaestro 0.6.7
+# SwiftMaestro 0.6.8
 
 ## Remote Backends
 
@@ -7,8 +7,9 @@
 
 ## Maestro Agent Tools
 
-- **Maestro reads files directly**: the navigator agent now has `read_file` by default and is prompted to use it directly instead of delegating to Swift Helper.
 - **Maestro has shell access by default**: the navigator agent now has the `execute_command` family of shell tools enabled by default.
+
+# SwiftMaestro 0.6.7
 
 ## Maestro File Reading
 
