@@ -100,9 +100,15 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     /// service too — a reasonable follow-up, not done here.
     var isDeferrable: Bool {
         switch self {
+        // Core control and coordination categories are always advertised.
         case .workspace, .memory, .messaging, .bus, .rules, .time, .mcp:
             return false
-        case .file, .documents, .books, .shell, .server, .index, .system, .sqlite,
+        // File and shell tools are essential for almost every agent (read_file,
+        // execute_command, etc.), so they are never hidden behind compact mode.
+        case .file, .shell:
+            return false
+        // Everything else can be deferred to search_tools/call_tool in compact mode.
+        case .documents, .books, .server, .index, .system, .sqlite,
              .notes, .kanban, .excalidraw, .numbers, .maps, .photos, .stocks, .news,
              .mail, .whatsapp, .discord, .web, .browser, .scraping,
              .bluesky, .mastodon, .patreon, .facebook, .instagram, .threads, .twitter, .linkedin, .tumblr,
