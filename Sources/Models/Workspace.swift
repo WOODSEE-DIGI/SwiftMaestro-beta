@@ -234,17 +234,27 @@ final class WorkspaceStore {
     /// is always advertised regardless of which panels are open.
     var onlineCoder: AgentRecord {
         if var c = agents.first(where: { $0.kind == .onlineCoder }) {
+            var changed = false
             if c.autoToolCategories ?? true {
                 c.autoToolCategories = false
-                if let idx = agents.firstIndex(where: { $0.id == c.id }) {
-                    agents[idx] = c
-                    save()
-                }
+                changed = true
+            }
+            // Compact Tool Mode costs an extra API round trip per deferrable tool.
+            // For remote high-capacity models used as OpenCode-style coders, inline
+            // the tools by default so the experience is fast and direct.
+            if c.compactToolMode == nil {
+                c.compactToolMode = false
+                changed = true
+            }
+            if changed, let idx = agents.firstIndex(where: { $0.id == c.id }) {
+                agents[idx] = c
+                save()
             }
             return c
         }
         var c = AgentRecord(name: "Online Coder", kind: .onlineCoder)
         c.autoToolCategories = false
+        c.compactToolMode = false
         // No explicit category: sidebar grouping infers .coding from the name,
         // while the kind-level default toolset supplies the broad parity surface.
         let insertAt = agents.isEmpty ? 0 : min(3, agents.count)  // after navigator + swiftHelper + local Coder

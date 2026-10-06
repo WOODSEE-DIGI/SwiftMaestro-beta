@@ -307,6 +307,7 @@ actor MCPClientService {
         "whatsapp": .whatsapp,
         "xcodebuildmcp": .shell,
         "swift-terminals": .shell,
+        "utm-mcp": .shell,
         // ai-context-bridge intentionally NOT mapped to .memory.
         // SwiftMaestro has native memory tools; exposing the bridge to agents
         // duplicates 32 tools and bloats the prompt. It falls back to .mcp

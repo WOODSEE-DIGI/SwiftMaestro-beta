@@ -3190,6 +3190,16 @@ struct MCPServerEntry: Identifiable, Codable {
             enabled: true,
             notes: "Persistent terminal sessions and shell execution."
         ),
+        MCPServerEntry(
+            name: "utm-mcp",
+            command: bundledNode,
+            scriptPath: "\(NSHomeDirectory())/GitHub/UTM-MCP/dist/index.js",
+            env: "",
+            workingDir: "\(NSHomeDirectory())/GitHub/UTM-MCP",
+            timeout: 15,
+            enabled: false,
+            notes: "UTM VM control for SMArchyOS development. Requires: npm install && npm run build"
+        ),
         // ── Communication ──
         MCPServerEntry(
             name: "whatsapp",

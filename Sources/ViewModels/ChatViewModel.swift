@@ -2079,15 +2079,11 @@ class ChatViewModel: ObservableObject {
         }
         if let mcp {
             // Maestro gets NO MCP tools — it delegates everything.
-            // Coding agents get ALL enabled MCP tools directly (OpenCode-style).
-            // Other project agents only get MCP tools if their category filter
-            // includes .mcp.
+            // Other agents only get MCP tools when their enabled categories include
+            // the relevant category (.mcp/.web/.browser/.scraping). This keeps the
+            // default coding prompt lean for remote API models; users who want the
+            // full MCP surface can enable the .mcp category explicitly.
             if !isNavigator {
-                // Coding agents also respect the category filter for MCP tools.
-                // Without this, every enabled MCP server (WhatsApp, Discord, Mail,
-                // etc.) is advertised, producing 200+ tool schemas that slow down
-                // remote models and hurt tool-call accuracy. The .mcp/.web/.browser
-                // categories still give the OpenCode-style surface.
                 if let filteredCategories,
                    filteredCategories.contains(ToolCategory.mcp)
                     || filteredCategories.contains(.web)
@@ -2096,13 +2092,12 @@ class ChatViewModel: ObservableObject {
                     let mcpSchemas = await mcp.currentSchemas(forCategories: filteredCategories)
                     let existingNames = Set(specs.compactMap { MaestroTools.toolName(from: $0) })
                     specs += mcpSchemas.filter { MaestroTools.toolName(from: $0).map { !existingNames.contains($0) } ?? true }
-                } else if isCodingAgent {
-                    let mcpSchemas = await mcp.currentSchemas()
-                    let existingNames = Set(specs.compactMap { MaestroTools.toolName(from: $0) })
-                    specs += mcpSchemas.filter { MaestroTools.toolName(from: $0).map { !existingNames.contains($0) } ?? true }
-                } else {
+                } else if filteredCategories == nil {
+                    // Legacy / uncategorized agents: expose every MCP tool.
                     specs += await mcp.currentSchemas()
                 }
+                // If filteredCategories is set but excludes MCP-related categories,
+                // no MCP tools are added.
             }
         }
         return specs

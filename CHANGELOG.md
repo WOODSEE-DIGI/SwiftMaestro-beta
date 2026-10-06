@@ -1,3 +1,15 @@
+# SwiftMaestro 0.6.10
+
+## Remote/API Coding Speed
+
+- **Online Coder defaults to inline tools**: the Online Coder agent now has Compact Tool Mode off by default, so remote models like Kimi K2.7 Code make tool calls in a single API round trip instead of the `search_tools`/`call_tool` double hop.
+- **Coding agents no longer inherit every MCP tool**: the coding-agent special case that dumped all enabled MCP tools into the prompt has been removed. Coding agents now only see MCP tools when `.mcp`/`.web`/`.browser`/`.scraping` categories are explicitly enabled, keeping the prompt lean for API models.
+- **Remote models are valid delegation targets**: delegated sub-agents such as Builder no longer get silently promoted to a tiny local helper when configured to use a remote tool-calling model.
+
+## SMArchyOS / UTM Integration
+
+- **UTM-MCP ships in the default MCP registry**: `utm-mcp` is now pre-configured (disabled by default) for UTM VM control on macOS, mapped to the `.shell` category so project and Online Coder agents can start/stop/configure the Arch development VM.
+
 # SwiftMaestro 0.6.9
 
 ## Tools & Compact Mode
