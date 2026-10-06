@@ -344,14 +344,15 @@ class ChatViewModel: ObservableObject {
 
                     func isCapable(_ m: MaestroModel) -> Bool {
                         // Respect the user's explicit model choice for project agents.
-                        // A model is "capable" if it is present locally, advertises tools,
-                        // and is not Gemma 4 (whose tool-call format is currently unreliable
-                        // for delegated build work). We no longer reject MoE models just because
-                        // their active parameter count is small — Qwen 3.6 35B-A3B
-                        // and Gemma 4 26B are the user's chosen models.
-                        m.localPath != nil
-                            && m.advertisesTools
+                        // A model is "capable" if it advertises tools, is not Gemma 4
+                        // (whose tool-call format is currently unreliable for delegated
+                        // build work), and is either present locally OR reachable via a
+                        // remote backend. Remote providers (Kimi, LM Studio, Ollama) use
+                        // OpenAI function calling, so they can handle delegated work as
+                        // long as supportsTools is true.
+                        m.advertisesTools
                             && !m.huggingFaceID.lowercased().contains("gemma-4")
+                            && (m.localPath != nil || m.isRemote)
                     }
 
                     let effectiveModel: MaestroModel
