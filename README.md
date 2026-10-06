@@ -44,19 +44,19 @@ Currently SwiftMaestro is A native macOS AI assistant that runs large language m
 
 ---
 
-## What's New in 0.6.3
+## What's New in 0.6.10
 
-- **MaestroDAM Quick Look toolbar** — Rotate, Share, and Crop buttons sit next to the privacy toggle, matching Finder's Quick Look toolbar.
-- **Secure share** — shared images render with edits and visible redactions baked in, crops are respected, and GPS/PII metadata is scrubbed.
-- **Privacy redaction improvements** — orientation is preserved when redactions are rendered; redaction now detects text (with PII patterns) and barcodes as well as faces.
-- **Resizable sidebar** — the left sidebar is split into resizable Volumes and Catalog sections, similar to Capture One.
-- **Themed progress overlay** — a consistent retro block-bar progress indicator is used for app launch, Storage Map scans, and Offload/verification workflows.
-- **Notes.md external folders** — add folders outside the vault to the sidebar as editable references, and import external files/folders via copy or symlink.
-- **Stability** — fixed an `EXC_BAD_ACCESS` crash when opening MaestroDAM.
+### Remote/API Coding Speed
+
+- **Online Coder defaults to inline tools**: the Online Coder agent now has Compact Tool Mode off by default, so remote models like Kimi K2.7 Code make tool calls in a single API round trip instead of the `search_tools`/`call_tool` double hop.
+- **Coding agents no longer inherit every MCP tool**: the coding-agent special case that dumped all enabled MCP tools into the prompt has been removed. Coding agents now only see MCP tools when `.mcp`/`.web`/`.browser`/`.scraping` categories are explicitly enabled, keeping the prompt lean for API models.
+- **Remote models are valid delegation targets**: delegated sub-agents such as Builder no longer get silently promoted to a tiny local helper when configured to use a remote tool-calling model.
+
+### SMArchyOS / UTM Integration
+
+- **UTM-MCP ships in the default MCP registry**: `utm-mcp` is now pre-configured (disabled by default) for UTM VM control on macOS, mapped to the `.shell` category so project and Online Coder agents can start/stop/configure the Arch development VM.
 
 See [CHANGELOG.md](CHANGELOG.md) for earlier releases.
-
----
 
 ## Screenshots
 

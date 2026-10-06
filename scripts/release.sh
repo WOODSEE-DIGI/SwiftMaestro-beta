@@ -636,6 +636,14 @@ LPFTP
         echo "WARNING: website release-notes updater not available"
     fi
 
+    # Update README.md "What's New" section from CHANGELOG.md.
+    if [ -x "$PWD/scripts/update-readme-whatsnew.py" ] && [ -f "$PWD/README.md" ]; then
+        echo "Updating README.md 'What's New' section for v$VERSION..."
+        python3 "$PWD/scripts/update-readme-whatsnew.py" "$VERSION" "$PWD/README.md" "$PWD/CHANGELOG.md" || echo "WARNING: README.md update failed"
+    else
+        echo "WARNING: README.md updater not available"
+    fi
+
     # Website deploy.
     if [ -x "$deploy_script" ]; then
         local site_appcast site_appcast_light
