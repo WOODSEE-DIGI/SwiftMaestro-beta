@@ -21,6 +21,7 @@ struct MaestroBooksView: View {
         case reminders = "Reminders"
         case template = "Template"
         case xero = "Xero"
+        case p2pBlacklist = "P2P Blacklist"
         var id: String { rawValue }
     }
 
@@ -84,6 +85,8 @@ struct MaestroBooksView: View {
                 TemplatePage(viewModel: viewModel)
             case .xero:
                 XeroPage(viewModel: viewModel)
+            case .p2pBlacklist:
+                P2PBlacklistPage()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
