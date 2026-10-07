@@ -462,11 +462,12 @@ final class BooksViewModel {
     @discardableResult
     func findOrCreateClient(named name: String, email: String? = nil) throws -> BooksClient {
         if let existing = try database.client(named: name) { return existing }
+        let defaultClientReporting = UserDefaults.standard.object(forKey: "sm_p2p_default_client_reportable") as? Bool ?? true
         var client = BooksClient(
             id: nil, name: name, email: email, phone: nil,
             poAddressLine1: nil, poAddressLine2: nil, poCity: nil, poRegion: nil,
             poPostalCode: nil, poCountry: nil, taxNumber: nil, notes: nil,
-            xeroID: nil, reportToBlacklist: true, createdAt: Date(), updatedAt: Date())
+            xeroID: nil, reportToBlacklist: defaultClientReporting, createdAt: Date(), updatedAt: Date())
         let saved = try database.saveClient(&client)
         clients = try database.clients()
         return saved
@@ -486,13 +487,23 @@ final class BooksViewModel {
         // Overrides let agents invoice a foreign client in their currency;
         // everything else follows the Business settings snapshot.
         let resolvedTaxRate = taxRate ?? seller.taxRate
-        let invoice = try database.createInvoice(
+        var invoice = try database.createInvoice(
             clientID: clientID, items: items,
             dueDate: due, notes: notes, accountCode: seller.defaultAccountCode,
             currency: currency ?? seller.currency, taxRate: resolvedTaxRate,
             taxType: resolvedTaxRate == seller.taxRate ? seller.taxType
                 : BooksSeller.taxDefaults(forCurrency: currency ?? seller.currency).taxType,
             taxLabel: taxLabel ?? seller.taxLabel)
+
+        // Apply the user's default invoice reporting preference. When inheritance
+        // is disabled, new invoices start opted out so they are never reported
+        // unless explicitly enabled.
+        let defaultInvoiceInherit = UserDefaults.standard.object(forKey: "sm_p2p_default_invoice_inherit") as? Bool ?? true
+        if !defaultInvoiceInherit, let invoiceID = invoice.id {
+            try database.setInvoiceReportToBlacklist(invoiceID, false)
+            invoice.reportToBlacklist = false
+        }
+
         invoices = try database.invoices()
         statusMessage = "Created \(invoice.number)"
         return invoice

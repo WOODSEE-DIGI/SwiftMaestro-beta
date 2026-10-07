@@ -122,7 +122,7 @@ struct P2PBlacklistPage: View {
 
                 VStack(alignment: .leading, spacing: 6) {
                     Toggle("New invoices inherit the client setting", isOn: $defaultInvoiceInherit)
-                    Text("When on, a new invoice follows its client's allow/block choice. You can override any invoice before it becomes eligible for reporting.")
+                    Text("When on, a new invoice follows its client's allow/block choice. When off, new invoices are created with Do not report this invoice selected by default.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
