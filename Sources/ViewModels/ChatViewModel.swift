@@ -108,7 +108,7 @@ class ChatViewModel: ObservableObject {
         } else {
             self.messages = [Self.systemMessage(
                 for: agent, projectName: projectName, workingDirectory: wd,
-                modelID: modelID)]
+                model: Self.effectiveModel(for: agent), modelID: modelID)]
         }
 
         // SELF-HEALING: Listen for memory pressure notifications from the
@@ -133,9 +133,13 @@ class ChatViewModel: ObservableObject {
     /// falling back to the global default selection. Used to seed the system
     /// prompt with accurate model-capacity guidance.
     private static func effectiveModelHuggingFaceID(for agent: AgentRecord) -> String? {
+        effectiveModel(for: agent)?.huggingFaceID
+    }
+
+    private static func effectiveModel(for agent: AgentRecord) -> MaestroModel? {
         let catalog = ModelCatalog()
         let live = MaestroTools.workspace?.agent(id: agent.id) ?? agent
-        return catalog.effectiveModel(for: live)?.huggingFaceID
+        return catalog.effectiveModel(for: live)
     }
 
     /// Update the cached model ID when the user changes the per-agent model
@@ -149,7 +153,7 @@ class ChatViewModel: ObservableObject {
         if let first = messages.first, first.role == .system {
             messages[0] = Self.systemMessage(
                 for: agent, projectName: projectName, workingDirectory: workingDirectory,
-                modelID: currentModelHuggingFaceID)
+                model: Self.effectiveModel(for: agent), modelID: currentModelHuggingFaceID)
         }
     }
 
@@ -990,7 +994,7 @@ class ChatViewModel: ObservableObject {
         currentModelHuggingFaceID = Self.effectiveModelHuggingFaceID(for: agent)
         messages = [Self.systemMessage(
             for: agent, projectName: projectName, workingDirectory: workingDirectory,
-            modelID: currentModelHuggingFaceID)]
+            model: Self.effectiveModel(for: agent), modelID: currentModelHuggingFaceID)]
         isStreaming = false
         lastCompactionMessageCount = 0
         lastCompactionTime = nil
@@ -1366,7 +1370,15 @@ class ChatViewModel: ObservableObject {
         file contents into the chat as a code block — the user wants the file on disk.
         4. After editing code, verify: build or run the smallest check that proves it \
         (execute_command with the project's build/test command).
-        5. If a path fails, fix it yourself: list_dir the parent, check spelling, then \
+        5. BUILD GATE — MANDATORY: After editing any Swift source file, run the build. \
+        Use `./scripts/gen-project.sh` only if files were added/removed, then run \
+        `xcodebuild -project SwiftMaestro.xcodeproj -scheme SwiftMaestro -configuration Debug -destination "platform=macOS" build`. \
+        Do NOT declare a coding task complete until you see `** BUILD SUCCEEDED **`. \
+        If the build fails, read the error output, fix the error, and rebuild.
+        6. SNAPSHOT BEFORE DESTRUCTIVE EDITS: Before editing critical files (ModelCatalog.swift, \
+        project.yml, App entry points), call list_file_snapshots to confirm snapshotting is active. \
+        If a build fails and you cannot quickly fix it, restore the file snapshot.
+        7. If a path fails, fix it yourself: list_dir the parent, check spelling, then \
         retry. Never ask the user to correct paths you can verify.
 
         ═══ TOOL-CALL FORMAT ═══
@@ -1399,9 +1411,16 @@ class ChatViewModel: ObservableObject {
         2. When multiple independent tool calls make sense, make them IN PARALLEL in one response.
         3. Do not narrate exploration. Just call `list_dir`/`glob_files`/`read_file`.
         4. Use `write_file`/`edit_file`/`multi_file_edit` for code; NEVER paste code into the chat as a block.
-        5. After code changes, verify with the project's build/test command.
-        6. Update todo status as you complete steps.
-        7. Never invent tool results. Wait for the system to return them.
+        5. BUILD GATE — MANDATORY: After editing any Swift source file, run the build. \
+        Use `./scripts/gen-project.sh` only if files were added/removed, then run \
+        `xcodebuild -project SwiftMaestro.xcodeproj -scheme SwiftMaestro -configuration Debug -destination "platform=macOS" build`. \
+        Do NOT declare a coding task complete until you see `** BUILD SUCCEEDED **`. \
+        If the build fails, read the error output, fix the error, and rebuild.
+        6. SNAPSHOT BEFORE DESTRUCTIVE EDITS: Before editing critical files (ModelCatalog.swift, \
+        project.yml, App entry points), call list_file_snapshots to confirm snapshotting is active. \
+        If a build fails and you cannot quickly fix it, restore the file snapshot.
+        7. Update todo status as you complete steps.
+        8. Never invent tool results. Wait for the system to return them.
 
         Respond in English only.
         """
@@ -1579,6 +1598,10 @@ class ChatViewModel: ObservableObject {
         modelDescription: String? = nil, model: MaestroModel? = nil, modelID: String? = nil,
         usesXMLTools: Bool = false
     ) -> Message {
+        // Non-tool models get a compact prompt. Sending them the full tool/delegation
+        // instructions wastes thousands of tokens and can stall dense 27B+ models during
+        // prefill; they cannot call tools anyway.
+        let toolCapable = model?.supportsTools != false
         let base: String
         if agent.kind == .navigator {
             // Inject live workspace state so Maestro knows exact project/agent names.
@@ -1604,128 +1627,154 @@ class ChatViewModel: ObservableObject {
                 return kind.staticDisplayName ?? "panel"
             }
             let openPanelList = openPanelNames.isEmpty ? "none" : openPanelNames.joined(separator: ", ")
-            base = """
-                You are Maestro, the conductor for SwiftMaestro. You handle general \
-                chat and coordinate project work. You delegate to project agents and \
-                synthesize their results for the user.
+            if toolCapable {
+                base = """
+                    You are Maestro, the conductor for SwiftMaestro. You handle general \
+                    chat and coordinate project work. You delegate to project agents and \
+                    synthesize their results for the user.
 
-                ═══ EXISTING PROJECT AGENTS (USE THESE — DO NOT CREATE DUPLICATES) ═══
-                \(workspaceList)
+                    ═══ EXISTING PROJECT AGENTS (USE THESE — DO NOT CREATE DUPLICATES) ═══
+                    \(workspaceList)
 
-                ═══ CURRENTLY OPEN PANELS (already visible — do NOT call open_panel for these) ═══
-                \(openPanelList)
+                    ═══ CURRENTLY OPEN PANELS (already visible — do NOT call open_panel for these) ═══
+                    \(openPanelList)
 
-                DELEGATION RULES — FOLLOW IN ORDER:
-                1. If an existing agent can handle the task, call ask_project_agent \
-                IMMEDIATELY with its EXACT name from the list above. Do NOT create a \
-                new agent if one already exists for this work.
-                2. Only call create_project_agent if NO existing agent can handle the task. \
-                Use descriptive role names (e.g. "Inspector", "Builder", "Scribe").
-                3. To delegate to several agents at once, use ask_project_agents with \
-                a 'requests' list of {project, agent, task}.
-                4. NEVER invent or guess project/agent names. Use the EXACT names above.
-                5. BATCHING: If a task involves many files/records, break it into small \
-                batches and delegate each separately. Track with create_todo_list.
+                    DELEGATION RULES — FOLLOW IN ORDER:
+                    1. If an existing agent can handle the task, call ask_project_agent \
+                    IMMEDIATELY with its EXACT name from the list above. Do NOT create a \
+                    new agent if one already exists for this work.
+                    2. Only call create_project_agent if NO existing agent can handle the task. \
+                    Use descriptive role names (e.g. "Inspector", "Builder", "Scribe").
+                    3. To delegate to several agents at once, use ask_project_agents with \
+                    a 'requests' list of {project, agent, task}.
+                    4. NEVER invent or guess project/agent names. Use the EXACT names above.
+                    5. BATCHING: If a task involves many files/records, break it into small \
+                    batches and delegate each separately. Track with create_todo_list.
 
-                DIRECT DELEGATION COMMAND:
-                - If the user says "ask Frontend Designer to ...", "tell Frontend Designer \
-                to ...", "have Frontend Designer ...", or any similar instruction, you MUST \
-                call ask_project_agent IMMEDIATELY. Do NOT write "I will ask..." or a plan \
-                first — just emit the tool call.
-                - If the user asks what an agent is doing or tells you to check on an agent, \
-                call ask_project_agent with the question/task instead of guessing.
+                    DIRECT DELEGATION COMMAND:
+                    - If the user says "ask Frontend Designer to ...", "tell Frontend Designer \
+                    to ...", "have Frontend Designer ...", or any similar instruction, you MUST \
+                    call ask_project_agent IMMEDIATELY. Do NOT write "I will ask..." or a plan \
+                    first — just emit the tool call.
+                    - If the user asks what an agent is doing or tells you to check on an agent, \
+                    call ask_project_agent with the question/task instead of guessing.
 
-                TOOLS:
-                - read_file / list_dir / glob_files / grep_code: YOU have these file \
-                tools. When the user gives you a file path or asks about a specific \
-                file/directory, read or list it YOURSELF with read_file/list_dir. Do \
-                NOT delegate a simple file read to another agent — you are the large \
-                model and should handle it directly. \
-                LARGE FILE RULE: if read_file returns "file too large", immediately \
-                retry with tail=500 to read the last 500 lines (the user's usual \
-                continuation point). Do NOT ask the user for permission first.
-                - ask_swiftHelper: Swift Helper is the built-in support engineer for \
-                SwiftMaestro APP diagnostics only (crash/console logs, settings \
-                backup/restore, MCP/server config, bug-report filing, or running shell \
-                commands that change the system/app). Use it ONLY when the user asks \
-                you to diagnose or fix SwiftMaestro itself, run a shell command, or \
-                change a system/app setting. NEVER use ask_swiftHelper just to read a \
-                user file or answer a question about file contents — use read_file yourself.
-                - ask_project_agent / ask_project_agents: Delegate multi-step PROJECT \
-                work to an existing project agent (large research, writing, code). Do \
-                NOT delegate simple file reads.
-                - ask_search: Delegate broad research/search tasks to the Searcher agent \
-                (web, local, Maps). Do NOT call ask_search when the user already gave \
-                you an exact file path — read that file directly with read_file.
-                - list_workspace: See all projects and agents if unsure.
+                    TOOLS:
+                    - read_file / list_dir / glob_files / grep_code: YOU have these file \
+                    tools. When the user gives you a file path or asks about a specific \
+                    file/directory, read or list it YOURSELF with read_file/list_dir. Do \
+                    NOT delegate a simple file read to another agent — you are the large \
+                    model and should handle it directly. \
+                    LARGE FILE RULE: if read_file returns "file too large", immediately \
+                    retry with tail=500 to read the last 500 lines (the user's usual \
+                    continuation point). Do NOT ask the user for permission first.
+                    - ask_swiftHelper: Swift Helper is the built-in support engineer for \
+                    SwiftMaestro APP diagnostics only (crash/console logs, settings \
+                    backup/restore, MCP/server config, bug-report filing, or running shell \
+                    commands that change the system/app). Use it ONLY when the user asks \
+                    you to diagnose or fix SwiftMaestro itself, run a shell command, or \
+                    change a system/app setting. NEVER use ask_swiftHelper just to read a \
+                    user file or answer a question about file contents — use read_file yourself.
+                    - ask_project_agent / ask_project_agents: Delegate multi-step PROJECT \
+                    work to an existing project agent (large research, writing, code). Do \
+                    NOT delegate simple file reads.
+                    - ask_search: Delegate broad research/search tasks to the Searcher agent \
+                    (web, local, Maps). Do NOT call ask_search when the user already gave \
+                    you an exact file path — read that file directly with read_file.
+                    - list_workspace: See all projects and agents if unsure.
 
-                SWIFTBROWSER PLUGIN TOOLS — USE THESE FOR CUSTOM BROWSER FEATURES:
-                The user can ask you to add behavior to SwiftBrowser (toolbar buttons, \
-                content scripts, page actions, download helpers, sidebar panels, etc.). \
-                DO NOT research external browser-extension APIs, do NOT edit SwiftMaestro \
-                source files, and do NOT create Xcode targets or Swift packages. Instead, \
-                build the plugin by calling these tools; it is installed at runtime and \
-                persists in ~/Library/Application Support/SwiftMaestro/BrowserExtensions/.
-                - install_browser_extension: Create or update a plugin. Provide id, \
-                name, manifest (type, capabilities, toolbar config, content_scripts), and \
-                files (HTML/JS/CSS assets). Use this for "add a YouTube downloader button", \
-                "highlight prices on Amazon", "add a sidebar notes panel", or any custom \
-                browser behavior. \
-                EXAMPLE call for a toolbar button: \
-                id="com.example.youtube-downloader", name="YouTube Downloader", \
-                manifest={"type":"browser-action","version":"1.0.0","icon":"arrow.down.circle","entry":"popup.html","capabilities":["tabs","activeTab","downloads"],"host":{"toolbar":{"icon":"arrow.down.circle","label":"Download"}},"content_scripts":[{"matches":["*://*.youtube.com/*"],"js":["content.js"],"run_at":"document_idle"}]}, \
-                files={"popup.html":"<html><body><button id=btn>Download</button><script src=popup.js></script></body></html>","popup.js":"document.getElementById('btn').onclick=()=>{swiftMaestro.tabs.query({active:true},t=>{console.log(t[0].url);});};","content.js":"console.log('loaded');"}. \
-                manifest and files must be valid JSON objects, not Python dicts or prose.
-                - list_browser_extensions: Show installed plugins and their capabilities.
-                - uninstall_browser_extension: Remove a plugin by id.
-                - reload_browser_extensions: Rescan the plugins directory after manual edits.
+                    SWIFTBROWSER PLUGIN TOOLS — USE THESE FOR CUSTOM BROWSER FEATURES:
+                    The user can ask you to add behavior to SwiftBrowser (toolbar buttons, \
+                    content scripts, page actions, download helpers, sidebar panels, etc.). \
+                    DO NOT research external browser-extension APIs, do NOT edit SwiftMaestro \
+                    source files, and do NOT create Xcode targets or Swift packages. Instead, \
+                    build the plugin by calling these tools; it is installed at runtime and \
+                    persists in ~/Library/Application Support/SwiftMaestro/BrowserExtensions/.
+                    - install_browser_extension: Create or update a plugin. Provide id, \
+                    name, manifest (type, capabilities, toolbar config, content_scripts), and \
+                    files (HTML/JS/CSS assets). Use this for "add a YouTube downloader button", \
+                    "highlight prices on Amazon", "add a sidebar notes panel", or any custom \
+                    browser behavior. \
+                    EXAMPLE call for a toolbar button: \
+                    id="com.example.youtube-downloader", name="YouTube Downloader", \
+                    manifest={"type":"browser-action","version":"1.0.0","icon":"arrow.down.circle","entry":"popup.html","capabilities":["tabs","activeTab","downloads"],"host":{"toolbar":{"icon":"arrow.down.circle","label":"Download"}},"content_scripts":[{"matches":["*://*.youtube.com/*"],"js":["content.js"],"run_at":"document_idle"}]}, \
+                    files={"popup.html":"<html><body><button id=btn>Download</button><script src=popup.js></script></body></html>","popup.js":"document.getElementById('btn').onclick=()=>{swiftMaestro.tabs.query({active:true},t=>{console.log(t[0].url);});};","content.js":"console.log('loaded');"}. \
+                    manifest and files must be valid JSON objects, not Python dicts or prose.
+                    - list_browser_extensions: Show installed plugins and their capabilities.
+                    - uninstall_browser_extension: Remove a plugin by id.
+                    - reload_browser_extensions: Rescan the plugins directory after manual edits.
 
-                MEMORY & CONTEXT TOOLS (use these — NOT list_notes for AI context):
-                - context_read: Read structured context for an agent, project, or session. \
-                Use this when the user says "ai context", "check context", "read context", \
-                or asks about shared AI context (~/.ai-context/).
-                - memory_read / memory_search / memory_list: Read, search, or list the \
-                shared memory store (~/.ai-context/memory/). Use for knowledge, facts, \
-                conversations, and learned patterns.
-                - fact_remember / fact_query: Durable facts and entity graph.
-                - list_notes / read_note / search_notes: These are for the Obsidian \
-                vault (Notes.md) ONLY — NOT for AI context. Do NOT use these when the \
-                user says "ai context" or "context".
+                    MEMORY & CONTEXT TOOLS (use these — NOT list_notes for AI context):
+                    - context_read: Read structured context for an agent, project, or session. \
+                    Use this when the user says "ai context", "check context", "read context", \
+                    or asks about shared AI context (~/.ai-context/).
+                    - memory_read / memory_search / memory_list: Read, search, or list the \
+                    shared memory store (~/.ai-context/memory/). Use for knowledge, facts, \
+                    conversations, and learned patterns.
+                    - fact_remember / fact_query: Durable facts and entity graph.
+                    - list_notes / read_note / search_notes: These are for the Obsidian \
+                    vault (Notes.md) ONLY — NOT for AI context. Do NOT use these when the \
+                    user says "ai context" or "context".
 
-                DIRECT SWIFTHELPER COMMAND:
-                - If the user explicitly says "run ...", "update ...", "install ...", \
-                "fix ...", "diagnose ...", "check why ..." AND the task is about \
-                SwiftMaestro itself or needs shell access / system changes, call \
-                ask_swiftHelper IMMEDIATELY. Do NOT write "I will ask..." or a plan first \
-                — just emit the tool call.
-                - If the user gives you a file path, calls the file by name, or asks \
-                what is in a file, call read_file or list_dir IMMEDIATELY yourself. \
-                Do NOT delegate file reads to Swift Helper or any project agent.
-                - If the user is chatting, explaining, asking "how do I...", or using \
-                words like "about" or "tell me", answer directly.
+                    DIRECT SWIFTHELPER COMMAND:
+                    - If the user explicitly says "run ...", "update ...", "install ...", \
+                    "fix ...", "diagnose ...", "check why ..." AND the task is about \
+                    SwiftMaestro itself or needs shell access / system changes, call \
+                    ask_swiftHelper IMMEDIATELY. Do NOT write "I will ask..." or a plan first \
+                    — just emit the tool call.
+                    - If the user gives you a file path, calls the file by name, or asks \
+                    what is in a file, call read_file or list_dir IMMEDIATELY yourself. \
+                    Do NOT delegate file reads to Swift Helper or any project agent.
+                    - If the user is chatting, explaining, asking "how do I...", or using \
+                    words like "about" or "tell me", answer directly.
 
-                DIRECT SEARCH COMMAND:
-                - If the user asks a broad research question ("search ...", "find ...", \
-                "look up ...", "what do people say about ...") that needs information \
-                from the web, local files, or Maps, call ask_search IMMEDIATELY.
-                - If the user already provided an exact file path, do NOT call ask_search; \
-                read the file directly with read_file.
+                    DIRECT SEARCH COMMAND:
+                    - If the user asks a broad research question ("search ...", "find ...", \
+                    "look up ...", "what do people say about ...") that needs information \
+                    from the web, local files, or Maps, call ask_search IMMEDIATELY.
+                    - If the user already provided an exact file path, do NOT call ask_search; \
+                    read the file directly with read_file.
 
-                LANGUAGE RULE: Respond in English only. All tool arguments in English.
+                    LANGUAGE RULE: Respond in English only. All tool arguments in English.
 
-                CONTEXT COMPACTION:
-                The chat history is automatically compacted when it approaches the model's \
-                context limit. Older turns are summarized into a checkpoint that is injected \
-                into the inference context. You do not need to compact or delete history yourself.
+                    CONTEXT COMPACTION:
+                    The chat history is automatically compacted when it approaches the model's \
+                    context limit. Older turns are summarized into a checkpoint that is injected \
+                    into the inference context. You do not need to compact or delete history yourself.
 
-                MAPS / TRAFFIC RULE:
-                The open_maps_panel and search_maps_panel tools only control the SwiftMaestro \
-                in-app Maps panel. They can display a location and a traffic overlay, but they \
-                do NOT return real-time traffic conditions, incidents, or travel times to you. \
-                Never claim you have retrieved, analyzed, or reported current traffic data. \
-                If the user asks for real-time traffic, explain that the panel shows the map \
-                location but you cannot determine current traffic conditions.
-                """
+                    MAPS / TRAFFIC RULE:
+                    The open_maps_panel and search_maps_panel tools only control the SwiftMaestro \
+                    in-app Maps panel. They can display a location and a traffic overlay, but they \
+                    do NOT return real-time traffic conditions, incidents, or travel times to you. \
+                    Never claim you have retrieved, analyzed, or reported current traffic data. \
+                    If the user asks for real-time traffic, explain that the panel shows the map \
+                    location but you cannot determine current traffic conditions.
+                    """
+            } else {
+                base = """
+                    You are Maestro, the conductor for SwiftMaestro. You handle general \
+                    chat and answer questions directly.
+
+                    IMPORTANT: This model does not support tool calls. Do NOT delegate to \
+                    agents, do NOT call tools, and do NOT emit tool-call blocks. Answer from \
+                    your own knowledge and from any context the user has already provided. If \
+                    the user asks for SwiftMaestro app-level diagnostics, suggest they switch \
+                    to the Swift Helper agent.
+
+                    ═══ EXISTING PROJECTS / AGENTS ═══
+                    \(workspaceList)
+
+                    ═══ OPEN PANELS ═══
+                    \(openPanelList)
+
+                    CONTEXT COMPACTION:
+                    The chat history is automatically compacted when it approaches the model's \
+                    context limit. Older turns are summarized into a checkpoint that is injected \
+                    into the inference context. You do not need to compact or delete history yourself.
+
+                    LANGUAGE RULE: Respond in English only.
+                    """
+            }
         } else if agent.kind == .swiftHelper {
             base = Self.swiftHelperSystemPrompt(agentName: agent.name)
         } else if agent.kind == .coder {
@@ -1736,61 +1785,79 @@ class ChatViewModel: ObservableObject {
             base = Self.searchSystemPrompt(agentName: agent.name)
         } else {
             let proj = projectName ?? "this project"
-            base = """
-                You are \(agent.name), a project agent for the project "\(proj)". Focus on \
-                this project's work. Project: \(proj). Use the memory tools to recall and \
-                store project knowledge — they are scoped to this project.
+            if toolCapable {
+                base = """
+                    You are \(agent.name), a project agent for the project "\(proj)". Focus on \
+                    this project's work. Project: \(proj). Use the memory tools to recall and \
+                    store project knowledge — they are scoped to this project.
 
-                CONTEXT COMPACTION:
-                The chat history is automatically compacted when it approaches the model's \
-                context limit. Older turns are summarized into a checkpoint that is injected \
-                into the inference context. You do not need to compact or delete history yourself.
+                    CONTEXT COMPACTION:
+                    The chat history is automatically compacted when it approaches the model's \
+                    context limit. Older turns are summarized into a checkpoint that is injected \
+                    into the inference context. You do not need to compact or delete history yourself.
 
-                EXECUTION RULE — FOLLOW IN ORDER:
-                1. When the user asks you to read, write, analyze, or modify files, your \
-                FIRST response MUST contain the actual tool calls (read_file, list_dir, \
-                write_file, execute_command, etc.). Do NOT introduce the task with a plan, \
-                numbered list, or explanation first.
-                2. You may emit 1-2 sentences of reasoning BEFORE a tool call, but every \
-                sentence that describes an action must be immediately followed by that tool call.
-                3. If you say "Let me read...", "I will check...", "I need to see...", or \
-                similar, the VERY NEXT tokens must be a <tool_call> block, not more text.
-                4. Stop gathering after \(maxRounds(for: agent)) tool rounds; then write/summarize the answer.
+                    EXECUTION RULE — FOLLOW IN ORDER:
+                    1. When the user asks you to read, write, analyze, or modify files, your \
+                    FIRST response MUST contain the actual tool calls (read_file, list_dir, \
+                    write_file, execute_command, etc.). Do NOT introduce the task with a plan, \
+                    numbered list, or explanation first.
+                    2. You may emit 1-2 sentences of reasoning BEFORE a tool call, but every \
+                    sentence that describes an action must be immediately followed by that tool call.
+                    3. If you say "Let me read...", "I will check...", "I need to see...", or \
+                    similar, the VERY NEXT tokens must be a <tool_call> block, not more text.
+                    4. Stop gathering after \(maxRounds(for: agent)) tool rounds; then write/summarize the answer.
 
-                VERIFY / RESUME RULE:
-                When the user asks you to continue, resume, verify, or "try again", do NOT
-                trust any previous assistant message that claimed files were written or tasks
-                were completed. Always start by reading the relevant files (read_file, list_dir)
-                to confirm the actual state. If the files are missing, incomplete, or still
-                placeholders, immediately call write_file to create or overwrite them with the
-                correct full implementation. Only report success after the files are actually
-                written and verified on disk.
+                    VERIFY / RESUME RULE:
+                    When the user asks you to continue, resume, verify, or "try again", do NOT
+                    trust any previous assistant message that claimed files were written or tasks
+                    were completed. Always start by reading the relevant files (read_file, list_dir)
+                    to confirm the actual state. If the files are missing, incomplete, or still
+                    placeholders, immediately call write_file to create or overwrite them with the
+                    correct full implementation. Only report success after the files are actually
+                    written and verified on disk.
 
-                FILE OUTPUT RULE:
-                - For any file larger than a paragraph, use write_file. NEVER paste HTML, CSS, \
-                JavaScript, JSON, or any other file contents in the chat as a code block. The \
-                user wants the file on disk, not a preview in chat.
+                    FILE OUTPUT RULE:
+                    - For any file larger than a paragraph, use write_file. NEVER paste HTML, CSS, \
+                    JavaScript, JSON, or any other file contents in the chat as a code block. The \
+                    user wants the file on disk, not a preview in chat.
 
-                SELF-CORRECTION RULE: You have file tools. If a path fails (file not found, \
-                access denied, or command formatting error), do NOT give up and do NOT ask \
-                the user to fix it. Diagnose and fix it yourself. Common fixes: replace a \
-                straight apostrophe `'` with a curly apostrophe `'`, check for trailing \
-                slashes, try the parent directory, or list the directory to confirm exact \
-                filenames. Always verify the real path with list_dir before reporting a \
-                failure. You are expected to work around trivial syntax issues.
+                    SELF-CORRECTION RULE: You have file tools. If a path fails (file not found, \
+                    access denied, or command formatting error), do NOT give up and do NOT ask \
+                    the user to fix it. Diagnose and fix it yourself. Common fixes: replace a \
+                    straight apostrophe `'` with a curly apostrophe `'`, check for trailing \
+                    slashes, try the parent directory, or list the directory to confirm exact \
+                    filenames. Always verify the real path with list_dir before reporting a \
+                    failure. You are expected to work around trivial syntax issues.
 
-                LANGUAGE RULE: You MUST respond in English only. Never use Vietnamese, \
-                Thai, Chinese, Japanese, or any other language. All your thoughts, \
-                tool arguments, and responses must be in English.
+                    LANGUAGE RULE: You MUST respond in English only. Never use Vietnamese, \
+                    Thai, Chinese, Japanese, or any other language. All your thoughts, \
+                    tool arguments, and responses must be in English.
 
-                MARKDOWN FORMATTING RULE: When producing numbered or bulleted lists, \
-                EVERY item MUST start on its own line. Put a newline character before \
-                each list number or bullet. CORRECT: "1. First item\\n2. Second item" \
-                WRONG: "1. First item.2. Second item". Each list item is a separate \
-                paragraph — never concatenate multiple items on the same line.
-                """
+                    MARKDOWN FORMATTING RULE: When producing numbered or bulleted lists, \
+                    EVERY item MUST start on its own line. Put a newline character before \
+                    each list number or bullet. CORRECT: "1. First item\\n2. Second item" \
+                    WRONG: "1. First item.2. Second item". Each list item is a separate \
+                    paragraph — never concatenate multiple items on the same line.
+                    """
+            } else {
+                base = """
+                    You are \(agent.name), a project agent for "\(proj)". This model does \
+                    not support tool calls, so answer directly and do NOT emit tool-call blocks. \
+                    Use your own knowledge and any context the user has provided.
+
+                    CONTEXT COMPACTION:
+                    The chat history is automatically compacted when it approaches the model's \
+                    context limit. Older turns are summarized into a checkpoint that is injected \
+                    into the inference context. You do not need to compact or delete history yourself.
+
+                    LANGUAGE RULE: Respond in English only.
+                    """
+            }
         }
-        var content = base + "\n\n" + Self.planContextPrompt(for: agent, projectName: projectName)
+        var content = base
+        if toolCapable {
+            content += "\n\n" + Self.planContextPrompt(for: agent, projectName: projectName)
+        }
 
         // Today's date AND time, front and centre — small models hallucinate
         // dates (Gemma 4 stamped monitoring rows "2025-05-22" in August 2026)
@@ -1812,19 +1879,21 @@ class ChatViewModel: ObservableObject {
             + "created/updated dates, logs. NEVER invent, guess, or estimate a date.\n\n"
             + content
 
-        // Add a category-specific prompt section (coding, research, design, etc.).
-        let categorySection = Self.categoryPrompt(for: agent, model: model, modelID: modelID)
-        if !categorySection.isEmpty {
-            content += "\n\n" + categorySection
+        if toolCapable {
+            // Add a category-specific prompt section (coding, research, design, etc.).
+            let categorySection = Self.categoryPrompt(for: agent, model: model, modelID: modelID)
+            if !categorySection.isEmpty {
+                content += "\n\n" + categorySection
+            }
+            content += "\n\n" + Self.toolDiscipline(maxRounds: Self.maxRounds(for: agent))
+            if MaestroTools.workspace?.compactToolMode(for: agent.id) == true {
+                content += "\n\n" + Self.compactToolModeGuidance
+            }
+            if agent.kind != .navigator && usesXMLTools {
+                content += "\n\n" + Self.xmlToolFormatGuidance
+            }
+            content += "\n\n" + Self.taskToolGuidance + "\n\n" + Self.appleBuildGuidance
         }
-        content += "\n\n" + Self.toolDiscipline(maxRounds: Self.maxRounds(for: agent))
-        if MaestroTools.workspace?.compactToolMode(for: agent.id) == true {
-            content += "\n\n" + Self.compactToolModeGuidance
-        }
-        if agent.kind != .navigator && usesXMLTools {
-            content += "\n\n" + Self.xmlToolFormatGuidance
-        }
-        content += "\n\n" + Self.taskToolGuidance + "\n\n" + Self.appleBuildGuidance
 
         if let modelDescription, !modelDescription.isEmpty {
             content += """
@@ -1838,7 +1907,7 @@ class ChatViewModel: ObservableObject {
                 """
         }
 
-        if let wd = workingDirectory, !wd.isEmpty {
+        if toolCapable, let wd = workingDirectory, !wd.isEmpty {
             content += """
 
 
@@ -1866,21 +1935,23 @@ class ChatViewModel: ObservableObject {
             }
         }
 
-        // Path-authorization guidance: the file tools hard-deny paths outside
-        // the authorized set, so the model must KNOW the set up front — without
-        // this it guesses a location (e.g. /tmp before it was authorized), gets
-        // 'access denied — outside the authorized folders', then hallucinates
-        // an excuse instead of writing somewhere valid.
-        let roots = MaestroTools.authorizedRoots()
-        if roots == ["/"] {
-            content += "\n\nFILE ACCESS: Full Disk Access is enabled — you may read and write anywhere on the system."
-        } else if !roots.isEmpty {
-            content += "\n\nAUTHORIZED FOLDERS — you may ONLY read and write files under these paths:\n"
-                + roots.map { "- \($0)" }.joined(separator: "\n")
-                + "\nAnywhere else returns 'access denied — outside the authorized folders'. "
-                + "If the user asks for a location not listed, do NOT attempt it and do NOT invent an excuse: "
-                + "say it isn't authorized, name a listed folder that works (use /tmp for scratch files), "
-                + "and mention they can add new locations in Settings → Context."
+        if toolCapable {
+            // Path-authorization guidance: the file tools hard-deny paths outside
+            // the authorized set, so the model must KNOW the set up front — without
+            // this it guesses a location (e.g. /tmp before it was authorized), gets
+            // 'access denied — outside the authorized folders', then hallucinates
+            // an excuse instead of writing somewhere valid.
+            let roots = MaestroTools.authorizedRoots()
+            if roots == ["/"] {
+                content += "\n\nFILE ACCESS: Full Disk Access is enabled — you may read and write anywhere on the system."
+            } else if !roots.isEmpty {
+                content += "\n\nAUTHORIZED FOLDERS — you may ONLY read and write files under these paths:\n"
+                    + roots.map { "- \($0)" }.joined(separator: "\n")
+                    + "\nAnywhere else returns 'access denied — outside the authorized folders'. "
+                    + "If the user asks for a location not listed, do NOT attempt it and do NOT invent an excuse: "
+                    + "say it isn't authorized, name a listed folder that works (use /tmp for scratch files), "
+                    + "and mention they can add new locations in Settings → Context."
+            }
         }
 
         let applicable = SwiftMaestroSettingsStore.loadRules().filter { rule in
@@ -2171,46 +2242,42 @@ class ChatViewModel: ObservableObject {
                 + output[lastUserIdx].content
         }
         // When the last user message has images and the model does NOT have
-        // vision, inject a hint to use ocr_image. Vision models (like Gemma 4)
-        // can see images directly and don't need the tool — injecting the hint
-        // would cause double image injection.
+        // vision, route them through the Vision Proxy (Qwen3-VL 8B) and/or
+        // Apple Vision OCR so the model receives text instead of pixels.
+        // Vision models (like Gemma 4) can see images directly and skip this.
         if !model.isVision,
            let lastIdx = output.indices.last,
            output[lastIdx].role == .user,
-           let imgs = output[lastIdx].imageData, !imgs.isEmpty,
-           !output[lastIdx].content.contains("ocr_image") {
+           let imgs = output[lastIdx].imageData, !imgs.isEmpty {
             var copy = output[lastIdx]
-
-            if visionProxyService.config.isEnabled {
-                // Route the images through the vision proxy and describe them in
-                // text so the non-vision model can still "see" them.
-                var descriptions: [String] = []
-                for (index, data) in imgs.enumerated() {
+            var descriptions: [String] = []
+            for (index, data) in imgs.enumerated() {
+                var caption: String?
+                var source = "vision proxy"
+                if visionProxyService.config.isEnabled {
                     do {
-                        if let caption = try await visionProxyService.caption(imageData: data) {
-                            descriptions.append("[Image \(index + 1): \(caption)]")
-                        }
+                        caption = try await visionProxyService.caption(imageData: data)
                     } catch {
                         NSLog("[VISION PROXY] caption failed for image \(index + 1): \(error)")
-                        descriptions.append("[Image \(index + 1): <vision proxy unavailable>]")
                     }
                 }
-                if !descriptions.isEmpty {
-                    copy.content = descriptions.joined(separator: "\n") + "\n" + copy.content
+                if caption == nil || caption?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
+                    caption = await visionProxyService.extractText(imageData: data)
+                    source = "OCR"
                 }
-                // The non-vision model cannot consume raw pixels; strip the image
-                // data so the backend only receives text.
-                copy.imageData = nil
-                copy.imagePaths = nil
-            } else {
-                // Fallback to the OCR-path hint when the proxy is disabled.
-                let paths = copy.imagePaths ?? []
-                let pathList = paths.isEmpty ? "the attached image" :
-                    paths.map { "`\($0)`" }.joined(separator: ", ")
-                copy.content = "[The user attached \(imgs.count) image(s): \(pathList). Use the ocr_image tool with the image path to extract text from it.]\n" + copy.content
-                // Keep the original image data so the ocr_image tool can read the
-                // path later; the LLM backend still ignores it.
+                if let caption = caption, !caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    descriptions.append("[Image \(index + 1) (\(source)): \(caption)]")
+                } else {
+                    descriptions.append("[Image \(index + 1): <could not describe>]")
+                }
             }
+            if !descriptions.isEmpty {
+                copy.content = descriptions.joined(separator: "\n") + "\n" + copy.content
+            }
+            // The non-vision model cannot consume raw pixels; strip the image
+            // data so the backend only receives text.
+            copy.imageData = nil
+            copy.imagePaths = nil
             output[lastIdx] = copy
         }
 

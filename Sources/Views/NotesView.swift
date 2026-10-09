@@ -59,6 +59,11 @@ struct NotesView: View {
                 await viewModel.openPendingFileIfNeeded()
             }
         }
+        .overlay {
+            if viewModel.isLoading && viewModel.rootItems.isEmpty && viewModel.externalRootItems.isEmpty {
+                loadingOverlay
+            }
+        }
         .alert("New Note", isPresented: $showingNewNoteSheet) {
             TextField("Name", text: $newNoteName)
             Button("Cancel", role: .cancel) { newNoteName = "" }
@@ -134,22 +139,37 @@ struct NotesView: View {
             searchBar
             Divider()
             List(selection: selectionBinding) {
-                Section("External Folders") {
-                    if viewModel.externalRootItems.isEmpty {
-                        Text("No external folders")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(viewModel.externalRootItems) { item in
+                if viewModel.searchQuery.isEmpty {
+                    Section("External Folders") {
+                        if viewModel.externalRootItems.isEmpty {
+                            Text("No external folders")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(viewModel.externalRootItems) { item in
+                                OutlineGroup([item], children: \.children) { child in
+                                    treeRow(for: child)
+                                }
+                            }
+                        }
+                    }
+                    Section("Vault") {
+                        ForEach(viewModel.rootItems) { item in
                             OutlineGroup([item], children: \.children) { child in
                                 treeRow(for: child)
                             }
                         }
                     }
-                }
-                Section("Vault") {
-                    ForEach(viewModel.rootItems) { item in
-                        OutlineGroup([item], children: \.children) { child in
-                            treeRow(for: child)
+                } else {
+                    Section("Search Results") {
+                        if viewModel.isSearching {
+                            searchProgressView
+                        } else if viewModel.searchResults.isEmpty {
+                            Text("No notes found")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(viewModel.searchResults) { item in
+                                treeRow(for: item)
+                            }
                         }
                     }
                 }
@@ -160,6 +180,51 @@ struct NotesView: View {
             Divider()
             sidebarFooter
         }
+    }
+
+    /// Spinner shown in the sidebar while a search is running, so the user
+    /// doesn't stare at "No notes found" while the plan-mirror scan is still
+    /// happening.
+    private var searchProgressView: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+            Text("Searching…")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(.vertical, 4)
+    }
+
+    /// Full-panel loading overlay shown while the vault tree is first populated.
+    /// Uses the same themed block-bar graphic as MaestroDAM so the UI is consistent.
+    private var loadingOverlay: some View {
+        VStack(spacing: 20) {
+            Spacer()
+            TimelineView(.periodic(from: .now, by: 0.5)) { _ in
+                DAMThemeProgressOverlay(
+                    message: "Loading notes vault…",
+                    fraction: nil,
+                    countText: nil,
+                    etaText: nil,
+                    elapsedSeconds: nil,
+                    currentItem: nil,
+                    secondaryFraction: nil,
+                    secondaryCountText: nil,
+                    secondaryEtaText: nil
+                )
+            }
+            Text("Notes is loading your vault. This may take a moment for large vaults.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 360)
+                .padding(.horizontal, 24)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.ultraThinMaterial)
     }
 
     @ViewBuilder
@@ -321,8 +386,15 @@ struct NotesView: View {
 
     private func selectItem(withID id: String?) async {
         if let id, let item = findItem(withID: id, in: viewModel.rootItems)
-            ?? findItem(withID: id, in: viewModel.externalRootItems) {
+            ?? findItem(withID: id, in: viewModel.externalRootItems)
+            ?? viewModel.searchResults.first(where: { $0.id == id }) {
             viewModel.selectedItem = item
+        } else if let id, FileManager.default.fileExists(atPath: id) {
+            // Search result or dropped file that isn't currently loaded in the
+            // visible tree (e.g. a plan mirror from deep in AI Memory).
+            let url = URL(fileURLWithPath: id)
+            let isFolder = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            viewModel.selectedItem = NoteItem(url: url, isFolder: isFolder, modifiedAt: Date())
         } else {
             viewModel.selectedItem = nil
         }

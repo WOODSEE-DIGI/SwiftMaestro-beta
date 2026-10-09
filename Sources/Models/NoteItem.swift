@@ -19,6 +19,10 @@ struct NoteItem: Identifiable, Hashable, Sendable {
     /// delete without the user explicitly unlocking after a backup warning.
     var isReadOnly = false
 
+    /// Optional display title override. Used for generated search results (e.g.
+    /// plan mirrors) where the filename is not human-readable.
+    var displayTitle: String? = nil
+
     init(url: URL, isFolder: Bool, modifiedAt: Date, children: [NoteItem]? = nil) {
         self.url = url
         self.name = url.deletingPathExtension().lastPathComponent
@@ -26,6 +30,14 @@ struct NoteItem: Identifiable, Hashable, Sendable {
         self.modifiedAt = modifiedAt
         self.children = children
         self.id = url.path
+    }
+
+    static func == (lhs: NoteItem, rhs: NoteItem) -> Bool {
+        lhs.id == rhs.id
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
     }
 
     /// True for `.md` files; false for folders and other files.
@@ -49,8 +61,10 @@ struct NoteItem: Identifiable, Hashable, Sendable {
         }
     }
 
-    /// Display title derived from the filename.
+    /// Display title derived from the filename, with an optional override for
+    /// generated results where the filename is not meaningful.
     var title: String {
-        isFolder ? name : url.deletingPathExtension().lastPathComponent
+        if let displayTitle { return displayTitle }
+        return isFolder ? name : url.deletingPathExtension().lastPathComponent
     }
 }

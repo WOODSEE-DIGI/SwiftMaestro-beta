@@ -104,6 +104,13 @@ final class ModelVisibilityStore {
             bySource[sid]!.models.append(model)
         }
 
+        // Sort models within each source alphabetically for predictable picking.
+        for sid in bySource.keys {
+            bySource[sid]!.models.sort {
+                $0.displayName.localizedCompare($1.displayName) == .orderedAscending
+            }
+        }
+
         // Stable ordering: local, lmStudio, ollama, then online providers alphabetically.
         return bySource.keys.sorted { lhs, rhs in
             let order: (String) -> Int = { id in

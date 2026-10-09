@@ -610,12 +610,12 @@ final class ModelCatalog {
 
         // Vision+Text — Gemma 4 MoE with native image understanding.
         // 26B total, 4B active, 8-bit, ~26 GB. Default model on launch.
-        // Low active params → compact early to avoid gen speed cliff.
+        // Best on 32 GB+ Macs. Low active params → compact early to avoid gen speed cliff.
         MaestroModel(
             id: "local-gemma4-26b",
             displayName: "Gemma 4 26B-A4B (Vision+Text, 8-bit)",
             huggingFaceID: "lmstudio-community/gemma-4-26B-A4B-it-MLX-8bit",
-            description: "Default vision+text model. Native image understanding, 128K context, fits most Apple Silicon Macs.",
+            description: "Default vision+text model for 32 GB+ Macs. Native image understanding, 128K context.",
             isVision: true,
             localPath: localIfPresent(["swiftmaestro-models/gemma-4-26B-A4B-it-MLX-8bit", "lmstudio-community/gemma-4-26B-A4B-it-MLX-8bit"]),
             estimatedMemoryGB: 26,
@@ -626,6 +626,46 @@ final class ModelCatalog {
             activeParamsB: 4,
             compactionThreshold: 20_000,
             downloadURL: "https://huggingface.co/lmstudio-community/gemma-4-26B-A4B-it-MLX-8bit"
+        ),
+
+        // Vision+Text — Gemma 4 E4B dense vision+text model for 16 GB Macs.
+        // ~4B parameters, 4-bit quantization, ~5 GB weights, 128K context.
+        // Uses the same gemma4 tool template as the 26B-A4B default.
+        MaestroModel(
+            id: "local-gemma4-e4b-4bit",
+            displayName: "Gemma 4 E4B (Vision+Text, 4-bit — 16 GB Macs)",
+            huggingFaceID: "mlx-community/gemma-4-e4b-it-4bit",
+            description: "Lightweight vision+text model for 16 GB Macs. Native image understanding, 128K context, ~5 GB weights.",
+            isVision: true,
+            localPath: localIfPresent(["swiftmaestro-models/gemma-4-e4b-it-4bit", "mlx-community/gemma-4-e4b-it-4bit"]),
+            estimatedMemoryGB: 6,
+            supportsTools: true,
+            toolCallFormat: .gemma4,
+            recTemperature: 0.7, recTopP: 0.9, recRepetitionPenalty: 1.1,
+            recContextLength: 128_000,
+            activeParamsB: 4,
+            compactionThreshold: 20_000,
+            downloadURL: "https://huggingface.co/mlx-community/gemma-4-e4b-it-4bit"
+        ),
+
+        // Vision+Text — Gemma 4 31B dense flagship for 128 GB Macs.
+        // Highest-quality Gemma 4 vision+text model. 31B active params, 8-bit,
+        // ~31 GB weights, 128K context. Wired as chat/vision-only because the
+        // dense 31B active path is too slow for the multi-tool agent loop.
+        MaestroModel(
+            id: "local-gemma4-31b-8bit",
+            displayName: "Gemma 4 31B (Vision+Text, 8-bit — 128 GB Macs)",
+            huggingFaceID: "lmstudio-community/gemma-4-31B-it-MLX-8bit",
+            description: "Highest-quality Gemma 4 vision+text model for 128 GB Macs. Dense 31B, 8-bit, ~31 GB weights. Best for chat/vision, not the agent tool loop.",
+            isVision: true,
+            localPath: localIfPresent(["swiftmaestro-models/gemma-4-31B-it-MLX-8bit", "lmstudio-community/gemma-4-31B-it-MLX-8bit"]),
+            estimatedMemoryGB: 31,
+            supportsTools: false,
+            toolCallFormat: nil,
+            recTemperature: 0.7, recTopP: 0.9, recRepetitionPenalty: 1.1,
+            recContextLength: 128_000,
+            activeParamsB: 31,
+            downloadURL: "https://huggingface.co/lmstudio-community/gemma-4-31B-it-MLX-8bit"
         ),
 
         // ── Alternative: Large Dense ───────────────────────────────────────
@@ -653,20 +693,6 @@ final class ModelCatalog {
             recTemperature: 0.6, recTopP: 0.95, recRepetitionPenalty: 1.05,
             recContextLength: 128_000,
             activeParamsB: 2
-        ),
-
-        // Open-weight alternative — dense architecture, ~60 GB.
-        MaestroModel(
-            id: "local-gpt-oss-120b",
-            displayName: "GPT-OSS 120B",
-            huggingFaceID: "mlx-community/gpt-oss-120b-4bit",
-            description: "Open-weight dense alternative. 120B parameters, 128K context.",
-            isVision: false,
-            localPath: localIfPresent(["swiftmaestro-models/gpt-oss-120b-4bit", "mlx-community/gpt-oss-120b-4bit"]),
-            estimatedMemoryGB: 60,
-            supportsTools: true,
-            recTemperature: 1.0, recTopP: 0.95, recRepetitionPenalty: 1.05,
-            recContextLength: 128_000
         ),
 
         // Fast MoE alternative — 35B total, 3B active, ~20 GB.
@@ -754,8 +780,19 @@ final class ModelCatalog {
         let report = ModelCapabilityValidator.validate(modelDirectory: localPath)
         var model = models[index]
 
-        if report.supportsTools {
+        // Promote tool support only for user-added (discovered / Hub) models.
+        // Built-in registry entries are authoritative: the validator was
+        // overriding `supportsTools=false` on entries such as Qwen 3.8 27B,
+        // stampeding them with 170+ tool schemas and a ~38k-token prefill.
+        let isUserAdded = model.id.hasPrefix("discovered-") || model.id.hasPrefix("hub-")
+        if report.supportsTools && (isUserAdded || model.supportsTools) {
             model.supportsTools = true
+            // Large discovered models get compact tool mode by default so they
+            // don't drown in the full tool surface.
+            if isUserAdded,
+               (model.estimatedMemoryGB >= 16 || model.activeParamsB ?? 0 >= 27) {
+                model.prefersCompactToolMode = true
+            }
         }
         if let format = report.toolCallFormat, model.toolCallFormat == nil {
             model.toolCallFormat = format
@@ -849,6 +886,59 @@ final class ModelCatalog {
         return candidates
     }
 
+    /// Recursively calculate the total size of a directory's regular files.
+    /// `attributesOfItem(atPath:)[.size]` returns only the directory inode size,
+    /// which is why discovered models were all showing ~1 GB.
+    private nonisolated static func recursiveSizeOfDirectory(at url: URL) -> Int64 {
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else { return 0 }
+
+        var total: Int64 = 0
+        for case let fileURL as URL in enumerator {
+            guard let isRegular = try? fileURL.resourceValues(
+                forKeys: [.isRegularFileKey]).isRegularFile,
+                  isRegular else { continue }
+            if let size = try? fileURL.resourceValues(
+                forKeys: [.fileSizeKey]).fileSize {
+                total += Int64(size)
+            }
+        }
+        return total
+    }
+
+    /// Inspect a model's `config.json` to guess whether it supports image input.
+    /// Looks for common vision indicators: a `vision_config`/`visual` key, or
+    /// architecture/auto-map names containing "VL" or "Vision".
+    private nonisolated static func modelIsVision(modelDirectory: URL) -> Bool {
+        let configURL = modelDirectory.appendingPathComponent("config.json")
+        guard let data = try? Data(contentsOf: configURL),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return false }
+
+        if json["vision_config"] != nil { return true }
+        if json["visual"] != nil { return true }
+
+        if let architectures = json["architectures"] as? [String] {
+            for arch in architectures {
+                let lower = arch.lowercased()
+                if lower.contains("vl") || lower.contains("vision") { return true }
+            }
+        }
+
+        if let autoMap = json["auto_map"] as? [String: String] {
+            for value in autoMap.values {
+                let lower = value.lowercased()
+                if lower.contains("vl") || lower.contains("vision") { return true }
+            }
+        }
+
+        return false
+    }
+
     /// Auto-discover MLX model directories under `modelsRoot` that aren't
     /// already in the catalog. A valid model directory contains `config.json`
     /// (standard MLX/HuggingFace config) or `Weights.plist` (MLX weight index).
@@ -901,15 +991,17 @@ final class ModelCatalog {
                     let org = orgEntry.lastPathComponent
                     let huggingFaceID = "\(org)/\(repoName)"
 
-                    // Estimate memory from directory size (rough heuristic).
-                    let sizeBytes = (try? FileManager.default.attributesOfItem(atPath: repoEntry.path)[.size] as? Int64) ?? 0
+                    // Estimate memory from the actual recursive directory size
+                    // and infer vision capability from the model's config.json.
+                    let sizeBytes = Self.recursiveSizeOfDirectory(at: repoEntry)
                     let sizeGB = max(1, Int(sizeBytes / (1024 * 1024 * 1024)))
+                    let isVision = Self.modelIsVision(modelDirectory: repoEntry)
 
                     let discovered = MaestroModel(
                         id: "discovered-\(repoName)",
                         displayName: repoName,
                         huggingFaceID: huggingFaceID,
-                        isVision: false,
+                        isVision: isVision,
                         localPath: repoEntry.path,
                         estimatedMemoryGB: sizeGB
                     )

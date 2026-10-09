@@ -693,6 +693,26 @@ final class DAMDatabase: Sendable {
         try assetCount(folder: folder, minRating: 0)
     }
 
+    /// Lightweight IDs of every asset inside a folder.
+    /// When `recursive` is true (the default) the subtree is returned.
+    func assetIds(inFolder path: String, recursive: Bool = true) throws -> [Int64] {
+        try dbQueue.read { db in
+            if recursive {
+                return try Int64.fetchAll(db, sql: """
+                    SELECT id FROM asset
+                    WHERE folder = ? OR folder LIKE ?
+                    ORDER BY filename
+                    """, arguments: [path, path + "/%"])
+            } else {
+                return try Int64.fetchAll(db, sql: """
+                    SELECT id FROM asset
+                    WHERE folder = ?
+                    ORDER BY filename
+                    """, arguments: [path])
+            }
+        }
+    }
+
     /// All assets inside a folder. When `recursive` is true the subtree
     /// (all descendants) is returned; otherwise only direct children.
     func assets(inFolder path: String, recursive: Bool = true) throws -> [DAMAsset] {
@@ -723,6 +743,15 @@ final class DAMDatabase: Sendable {
         }
     }
 
+    /// Number of assets currently linked to a collection/album.
+    func collectionAssetCount(collectionId: Int64) throws -> Int {
+        try dbQueue.read { db in
+            try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM collectionAsset WHERE collectionId = ?
+                """, arguments: [collectionId]) ?? 0
+        }
+    }
+
     /// All collections/albums in the catalog.
     func allCollections() throws -> [DAMCollection] {
         try dbQueue.read { db in
@@ -737,7 +766,123 @@ final class DAMDatabase: Sendable {
         try dbQueue.write { db in
             try collection.insert(db)
         }
+        NSLog("[DAM] createCollection returned id=%lld for '%@'", collection.id ?? -1, collection.name)
         return collection
+    }
+
+    /// Create a new collection and add a list of asset IDs in a single
+    /// transaction. This avoids the race/visibility issues that can produce
+    /// a foreign-key constraint failure when the collection row is not yet
+    /// committed before the membership rows are inserted.
+    @discardableResult
+    func createCollectionWithAssets(
+        name: String,
+        kind: DAMCollection.Kind = .manual,
+        predicateJSON: String? = nil,
+        parentId: Int64? = nil,
+        assetIds: [Int64]
+    ) throws -> DAMCollection {
+        try dbQueue.write { db in
+            var collection = DAMCollection(
+                id: nil,
+                name: name,
+                kind: kind,
+                predicateJSON: predicateJSON,
+                parentId: parentId
+            )
+            try collection.insert(db)
+            guard let collectionId = collection.id else {
+                throw NSError(
+                    domain: "DAMDatabase",
+                    code: 10,
+                    userInfo: [NSLocalizedDescriptionKey: "Inserted album has no row ID"]
+                )
+            }
+            for (index, assetId) in assetIds.enumerated() {
+                let link = DAMCollectionAsset(
+                    collectionId: collectionId,
+                    assetId: assetId,
+                    position: index
+                )
+                try link.insert(db, onConflict: .ignore)
+            }
+            NSLog("[DAM] createCollectionWithAssets id=%lld name='%@' assets=%ld", collectionId, name, assetIds.count)
+            return collection
+        }
+    }
+
+    /// Create a new collection and populate it from one or more folder paths
+    /// in a single transaction. Asset IDs are resolved inside the same write so
+    /// membership rows can never reference rows that do not exist.
+    @discardableResult
+    func createCollectionWithFolderContents(
+        name: String,
+        kind: DAMCollection.Kind = .manual,
+        predicateJSON: String? = nil,
+        parentId: Int64? = nil,
+        folderPaths: [String]
+    ) throws -> DAMCollection {
+        try dbQueue.write { db in
+            var collection = DAMCollection(
+                id: nil,
+                name: name,
+                kind: kind,
+                predicateJSON: predicateJSON,
+                parentId: parentId
+            )
+            try collection.insert(db)
+            guard let collectionId = collection.id else {
+                throw NSError(
+                    domain: "DAMDatabase",
+                    code: 10,
+                    userInfo: [NSLocalizedDescriptionKey: "Inserted album has no row ID"]
+                )
+            }
+            var position = 0
+            for path in folderPaths where !path.isEmpty {
+                let ids = try Int64.fetchAll(
+                    db,
+                    sql: """
+                        SELECT id FROM asset
+                        WHERE folder = ? OR folder LIKE ?
+                        ORDER BY filename
+                        """,
+                    arguments: [path, path + "/%"]
+                )
+                NSLog("[DAM] createCollectionWithFolderContents path '%@' resolved %ld ids", path, ids.count)
+                for assetId in ids {
+                    let link = DAMCollectionAsset(
+                        collectionId: collectionId,
+                        assetId: assetId,
+                        position: position
+                    )
+                    try link.insert(db, onConflict: .ignore)
+                    position += 1
+                }
+            }
+            NSLog("[DAM] createCollectionWithFolderContents id=%lld name='%@' paths=%ld total=%d", collectionId, name, folderPaths.count, position)
+            return collection
+        }
+    }
+
+    /// Remove all membership links for assets whose `folder` column matches the
+    /// given prefix from a specific collection. Returns the number of links removed.
+    @discardableResult
+    func removeCollectionAssets(inFolderPrefix prefix: String, collectionId: Int64) throws -> Int {
+        try dbQueue.write { db in
+            try db.execute(
+                sql: """
+                    DELETE FROM collectionAsset
+                    WHERE collectionId = ?
+                      AND assetId IN (
+                          SELECT id FROM asset
+                          WHERE folder = ? OR folder LIKE ?
+                      )
+                    """,
+                arguments: [collectionId, prefix, prefix + "/%"]
+            )
+            return db.changesCount
+        }
     }
 
     /// Rename a collection.

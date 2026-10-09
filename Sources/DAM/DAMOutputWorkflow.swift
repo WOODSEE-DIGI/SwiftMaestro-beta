@@ -124,7 +124,7 @@ enum DAMExportService {
             return target
         }
 
-        if DAMFileKind.isZIPPackage(source) {
+        if DAMFileKind.isEIPPackage(source) {
             throw ExportSkip(reason: "EIP package — rendered export not supported yet")
         }
         let base = exportFilename(

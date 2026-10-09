@@ -84,6 +84,48 @@ struct AppsSettingsTab: View {
                     }
                 }
 
+                if !CraftAppCatalog.launcherApps.isEmpty {
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(CraftAppCatalog.launcherApps) { app in
+                                HStack(spacing: 10) {
+                                    Toggle(app.name, isOn: enablement.craftBinding(for: app.id))
+                                        .toggleStyle(.switch)
+                                        .disabled(!enablement.craftSectionEnabled)
+                                    Spacer()
+                                    Text(CraftAppCatalog.versions[app.id]?.version ?? "")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    if CraftAppInstallService.shared.installedGUIAppURL(for: app) != nil {
+                                        Button {
+                                            CraftAppLauncher.shared.launch(app)
+                                        } label: {
+                                            Image(systemName: "arrow.up.forward.app")
+                                        }
+                                        .buttonStyle(.borderless)
+                                        .help("Open \(app.name) as its own window")
+                                    }
+                                }
+                            }
+                            Text(CraftAppCatalog.attribution)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.top, 4)
+                        }
+                        .padding(8)
+                    } label: {
+                        HStack {
+                            Text("ArtCraft Apps")
+                                .font(categoryHeadingFont)
+                            Spacer()
+                            Toggle("Show ArtCraft Apps", isOn: enablement.craftSectionBinding())
+                                .toggleStyle(.switch)
+                                .labelsHidden()
+                        }
+                    }
+                }
+
                 HStack {
                     Spacer()
                     Button("Enable All") { enablement.enableAll() }

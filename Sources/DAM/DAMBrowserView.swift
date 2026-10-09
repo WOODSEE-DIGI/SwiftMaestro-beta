@@ -36,6 +36,17 @@ struct DAMBrowserView: View {
     @State private var selectedFolderPaths: Set<String> = []
     /// Paths currently highlighted as drop targets.
     @State private var dropTargetedPaths: Set<String> = []
+    /// Folder paths currently expanded in the Folders tree. OutlineGroup has
+    /// no binding, so we render the tree manually to support programmatic
+    /// expansion (e.g., revealing a freshly imported folder).
+    @State private var expandedFolderPaths: Set<String> = []
+    /// Collection IDs currently expanded in the Collections tree.
+    @State private var expandedCollectionIDs: Set<Int64> = []
+    /// Live search text for the folder tree.
+    @State private var folderSearchText = ""
+    /// Cached flat list of every folder node (used for fast search). Built
+    /// whenever the folder tree changes.
+    @State private var allFolderRows: [(node: DAMFolderNode, depth: Int)] = []
 
     /// Local spacebar monitor for the Finder-style Quick Look preview panel.
     @State private var quickLookMonitor: Any?
@@ -134,6 +145,9 @@ struct DAMBrowserView: View {
 
             _ = await (reload, tree)
 
+            // Build the cached folder-search index now that the tree is ready.
+            allFolderRows = flattenFolderTree(nodes: viewModel.folderTree)
+
             loadingStep = "Starting background enrichment…"
             viewModel.startBackgroundEnrichment()
 
@@ -149,6 +163,12 @@ struct DAMBrowserView: View {
         }
         .onChange(of: viewModel.selectedCollectionID) { _, _ in
             selectedFolderPaths.removeAll()
+        }
+        .onChange(of: viewModel.folderToReveal) { _, path in
+            revealFolderPath(path)
+        }
+        .onChange(of: viewModel.folderTree) { _, newTree in
+            allFolderRows = flattenFolderTree(nodes: newTree)
         }
         .onAppear {
             quickLookMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak viewModel] event in
@@ -179,6 +199,9 @@ struct DAMBrowserView: View {
         }
         .sheet(isPresented: $showingOffloadSheet) {
             DAMOffloadSheet(viewModel: viewModel)
+        }
+        .sheet(item: $viewModel.importDestination) { destination in
+            ImportDestinationSheet(destination: destination, viewModel: viewModel)
         }
     }
 
@@ -293,6 +316,34 @@ struct DAMBrowserView: View {
             }
             .disabled(viewModel.isImporting || viewModel.isImportingLightroom
                        || viewModel.isImportingLrcat || viewModel.isOffloading)
+
+            if let selectedFolder = viewModel.selectedFolder, !selectedFolder.isEmpty {
+                let folderName = (selectedFolder as NSString).lastPathComponent
+                let albums = viewModel.collections
+                    .filter { $0.kind == .manual && $0.id != nil }
+                    .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+                Menu {
+                    Button {
+                        Task { await viewModel.createAlbumAndAddFolderContents(name: folderName, folderPath: selectedFolder) }
+                    } label: {
+                        Label("New Album", systemImage: "plus.rectangle.on.rectangle")
+                    }
+                    if !albums.isEmpty {
+                        Divider()
+                        ForEach(albums) { collection in
+                            if let collectionId = collection.id {
+                                Button {
+                                    Task { await viewModel.addFolderContentsToCollection(folderPath: selectedFolder, collectionId: collectionId) }
+                                } label: {
+                                    Label("Add to \"\(collection.name)\"", systemImage: "folder.badge.plus")
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    Label("Add Folder to Album", systemImage: "folder.badge.plus")
+                }
+            }
 
             if viewModel.isImportingLrcat {
                 Button {
@@ -564,6 +615,113 @@ struct DAMBrowserView: View {
         }
     }
 
+    /// Flatten only the currently visible folder rows for rendering. This
+    /// avoids the deep `AnyView` recursion that made expanding large folders
+    /// stutter, and keeps the list size proportional to what the user has
+    /// actually expanded.
+    private var visibleFolderRows: [(node: DAMFolderNode, depth: Int)] {
+        flattenVisible(nodes: viewModel.folderTree, depth: 0)
+    }
+
+    private func flattenVisible(nodes: [DAMFolderNode], depth: Int) -> [(node: DAMFolderNode, depth: Int)] {
+        var result: [(node: DAMFolderNode, depth: Int)] = []
+        for node in nodes {
+            result.append((node, depth))
+            if let children = node.children, !children.isEmpty,
+               expandedFolderPaths.contains(node.path) {
+                result.append(contentsOf: flattenVisible(nodes: children, depth: depth + 1))
+            }
+        }
+        return result
+    }
+
+    /// All folder rows, cached for search. Searches by name and by full path.
+    private var filteredFolderRows: [(node: DAMFolderNode, depth: Int)] {
+        let query = folderSearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return [] }
+        return allFolderRows.filter { row in
+            row.node.name.localizedLowercase.contains(query)
+            || row.node.path.localizedLowercase.contains(query)
+        }
+    }
+
+    private func flattenFolderTree(nodes: [DAMFolderNode], depth: Int = 0) -> [(node: DAMFolderNode, depth: Int)] {
+        var result: [(node: DAMFolderNode, depth: Int)] = []
+        for node in nodes {
+            result.append((node, depth))
+            if let children = node.children, !children.isEmpty {
+                result.append(contentsOf: flattenFolderTree(nodes: children, depth: depth + 1))
+            }
+        }
+        return result
+    }
+
+    private func folderTreeRow(_ node: DAMFolderNode, depth: Int, revealOnTap: Bool = false) -> some View {
+        DAMContextMenuHost {
+            HStack(spacing: 2) {
+                if let children = node.children, !children.isEmpty {
+                    Button {
+                        toggleFolderExpanded(node.path)
+                    } label: {
+                        Image(systemName: expandedFolderPaths.contains(node.path)
+                              ? "chevron.down"
+                              : "chevron.right")
+                            .foregroundStyle(.secondary)
+                            .font(.system(size: 10, weight: .semibold))
+                            .frame(width: 18, height: 18)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Spacer().frame(width: 18)
+                }
+
+                folderRow(for: node)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .id(node.path)
+            .contentShape(Rectangle())
+            .background(viewModel.selectedFolder == node.path
+                        ? Color.accentColor.opacity(0.25)
+                        : Color.clear)
+            .tag(node.path)
+            .onTapGesture {
+                if revealOnTap {
+                    revealFolderPath(node.path)
+                    folderSearchText = ""
+                }
+                handleFolderTap(node.path)
+            }
+            .onDrag { folderDragPayload(for: node.path) }
+            .onDrop(of: [UTType.plainText.identifier],
+                    isTargeted: dropBinding(for: node.path)) { providers, _ in
+                handleFolderDrop(providers: providers, onto: node.path)
+            }
+            .padding(.leading, CGFloat(depth) * 14)
+        } buildMenu: { host in
+            folderContextMenu(host: host, path: node.path)
+        }
+    }
+
+    private func toggleFolderExpanded(_ path: String) {
+        if expandedFolderPaths.contains(path) {
+            expandedFolderPaths.remove(path)
+        } else {
+            expandedFolderPaths.insert(path)
+        }
+    }
+
+    /// Expand the folder tree to show `path` and all its ancestors, then
+    /// consume the reveal request.
+    private func revealFolderPath(_ path: String?) {
+        guard let path, !path.isEmpty else { return }
+        var current = path
+        while !current.isEmpty, current != "/" {
+            expandedFolderPaths.insert(current)
+            current = (current as NSString).deletingLastPathComponent
+        }
+        viewModel.folderToReveal = nil
+    }
+
     /// Catalog section: All Assets, Collections, and catalog folder tree.
     private var catalogSidebarSection: some View {
         DAMSidebarSection(
@@ -579,7 +737,7 @@ struct DAMBrowserView: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
-            .help("Rescan catalog folders, volumes, and collections")
+            .help("Rescan catalog folders, volumes, and albums")
         } content: {
             List(selection: catalogSidebarSelection) {
                     Label("All Assets", systemImage: "photo.on.rectangle.angled")
@@ -587,20 +745,25 @@ struct DAMBrowserView: View {
 
                     Section {
                         if viewModel.collections.isEmpty {
-                            Text("No collections yet")
+                            Text("No albums yet")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .tag("collections.empty")
                                 .disabled(true)
                         } else {
-                            ForEach(flattenedCollectionItems) { item in
+                            ForEach(visibleCollectionRows) { item in
                                 CollectionRow(
                                     collection: item.collection,
                                     count: viewModel.collectionAssetCounts[item.collection.id ?? -1],
                                     depth: item.depth,
+                                    hasChildren: collectionParentIDsWithChildren.contains(item.collection.id ?? -1),
+                                    isExpanded: expandedCollectionIDs.contains(item.collection.id ?? -1),
                                     viewModel: viewModel,
                                     onRename: {
                                         prepareCollectionSheet(editing: item.collection)
+                                    },
+                                    onToggleExpand: {
+                                        toggleCollectionExpanded(item.collection.id ?? -1)
                                     }
                                 )
                                 .tag(collectionTag(for: item.collection))
@@ -608,7 +771,7 @@ struct DAMBrowserView: View {
                         }
                     } header: {
                         HStack {
-                            Text("Collections")
+                            Text("Albums")
                             Spacer()
                             Button {
                                 prepareCollectionSheet(editing: nil)
@@ -618,28 +781,42 @@ struct DAMBrowserView: View {
                             }
                             .buttonStyle(.plain)
                             .foregroundStyle(.secondary)
-                            .help("Create new collection")
+                            .help("Create new album")
                         }
                     }
 
                     if !viewModel.folderTree.isEmpty {
                         Section("Folders") {
-                            OutlineGroup(viewModel.folderTree, children: \.children) { node in
-                                Button {
-                                    handleFolderTap(node.path)
-                                } label: {
-                                    folderRow(for: node)
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "magnifyingglass")
+                                        .foregroundStyle(.secondary)
+                                        .font(.caption)
+                                    TextField("Search folders", text: $folderSearchText)
+                                        .textFieldStyle(.plain)
+                                    if !folderSearchText.isEmpty {
+                                        Button {
+                                            folderSearchText = ""
+                                        } label: {
+                                            Image(systemName: "xmark.circle.fill")
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
                                 }
-                                .buttonStyle(.plain)
-                                .contentShape(Rectangle())
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(viewModel.selectedFolder == node.path ? Color.accentColor.opacity(0.25) : Color.clear)
-                                .tag(node.path)
-                                .onDrag { folderDragPayload(for: node.path) }
-                                .onDrop(of: [UTType.plainText.identifier], isTargeted: dropBinding(for: node.path)) { providers, _ in
-                                    handleFolderDrop(providers: providers, onto: node.path)
+                                .padding(6)
+                                .background(Color.secondary.opacity(0.1))
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+
+                                if folderSearchText.isEmpty {
+                                    ForEach(visibleFolderRows, id: \.node.path) { row in
+                                        folderTreeRow(row.node, depth: row.depth)
+                                    }
+                                } else {
+                                    ForEach(filteredFolderRows, id: \.node.path) { row in
+                                        folderTreeRow(row.node, depth: row.depth, revealOnTap: true)
+                                    }
                                 }
-                                .contextMenu { folderContextMenu(for: node) }
                             }
                         }
                     }
@@ -765,6 +942,37 @@ struct DAMBrowserView: View {
         return flatten(parentId: -1, depth: 0)
     }
 
+    /// Collection IDs that have at least one child collection.
+    private var collectionParentIDsWithChildren: Set<Int64> {
+        Set(viewModel.collections.compactMap { $0.parentId })
+    }
+
+    /// Only the collection rows whose ancestors are currently expanded.
+    private var visibleCollectionRows: [CollectionListItem] {
+        let byParent = Dictionary(grouping: flattenedCollectionItems) { $0.collection.parentId ?? -1 }
+        func visible(parentId: Int64) -> [CollectionListItem] {
+            let items = byParent[parentId] ?? []
+            var result: [CollectionListItem] = []
+            for item in items {
+                result.append(item)
+                let id = item.collection.id ?? -1
+                if expandedCollectionIDs.contains(id) {
+                    result.append(contentsOf: visible(parentId: id))
+                }
+            }
+            return result
+        }
+        return visible(parentId: -1)
+    }
+
+    private func toggleCollectionExpanded(_ id: Int64) {
+        if expandedCollectionIDs.contains(id) {
+            expandedCollectionIDs.remove(id)
+        } else {
+            expandedCollectionIDs.insert(id)
+        }
+    }
+
     /// IDs to drag from the grid: the current selection if this asset is part
     /// of it, otherwise just the asset under the cursor.
     private func draggedAssetIDs(for asset: DAMAsset) -> String {
@@ -790,12 +998,19 @@ struct DAMBrowserView: View {
         let collection: DAMCollection
         let count: Int?
         let depth: Int
+        let hasChildren: Bool
+        let isExpanded: Bool
         let viewModel: DAMViewModel
         let onRename: () -> Void
+        let onToggleExpand: () -> Void
         @State private var isDropTargeted = false
 
         private var collectionIcon: String {
-            collection.kind == .smart ? "gear.badge.checkmark" : "folder.badge.person.crop"
+            collection.kind == .smart ? "gearshape.2" : "rectangle.stack"
+        }
+
+        private var collectionIconColor: Color {
+            collection.kind == .smart ? .orange : .purple
         }
 
         private var draggablePayload: String {
@@ -803,9 +1018,25 @@ struct DAMBrowserView: View {
         }
 
         var body: some View {
-            HStack {
+            HStack(spacing: 2) {
+                if hasChildren {
+                    Button {
+                        onToggleExpand()
+                    } label: {
+                        Image(systemName: isExpanded
+                              ? "chevron.down"
+                              : "chevron.right")
+                            .foregroundStyle(.secondary)
+                            .font(.system(size: 10, weight: .semibold))
+                            .frame(width: 18, height: 18)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Spacer().frame(width: 18)
+                }
+
                 Image(systemName: collectionIcon)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(collectionIconColor)
                 Text(collection.name)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -834,30 +1065,42 @@ struct DAMBrowserView: View {
             }
             .onDrop(of: [UTType.plainText.identifier], isTargeted: $isDropTargeted) { providers, _ in
                 guard collection.kind == .manual, let provider = providers.first else { return false }
-                provider.loadObject(ofClass: String.self) { object, _ in
-                    guard let string = object,
-                          let targetId = collection.id else { return }
-                    if string.hasPrefix("collection:") {
-                        let movedIdString = String(string.dropFirst("collection:".count))
-                        guard let movedId = Int64(movedIdString),
-                              movedId != targetId else { return }
-                        Task { @MainActor in
+                Task { @MainActor in
+                    do {
+                        let string = try await DAMBrowserView.loadString(from: provider)
+                        guard let targetId = collection.id else { return }
+                        if string.hasPrefix("collection:") {
+                            let movedIdString = String(string.dropFirst("collection:".count))
+                            guard let movedId = Int64(movedIdString),
+                                  movedId != targetId else { return }
                             await viewModel.setCollectionParent(id: movedId, parentId: targetId)
-                        }
-                    } else {
-                        let ids = string
-                            .components(separatedBy: ",")
-                            .compactMap { Int64($0.trimmingCharacters(in: .whitespaces)) }
-                            .filter { $0 >= 0 }
-                        guard !ids.isEmpty else { return }
-                        Task { @MainActor in
+                        } else if string.hasPrefix("folders-json:"),
+                                  let data = String(string.dropFirst("folders-json:".count)).data(using: .utf8),
+                                  let paths = try? JSONDecoder().decode([String].self, from: data) {
+                            await viewModel.addFolderContentsToCollection(folderPaths: paths, collectionId: targetId)
+                        } else if string.hasPrefix("folder:") {
+                            let path = String(string.dropFirst("folder:".count))
+                            await viewModel.addFolderContentsToCollection(folderPaths: [path], collectionId: targetId)
+                        } else {
+                            let ids = string
+                                .components(separatedBy: ",")
+                                .compactMap { Int64($0.trimmingCharacters(in: .whitespaces)) }
+                                .filter { $0 >= 0 }
+                            guard !ids.isEmpty else { return }
                             await viewModel.addAssetIds(ids, to: targetId)
                         }
+                    } catch {
+                        viewModel.setErrorMessage("Drop failed: \(error.localizedDescription)")
                     }
                 }
                 return true
             }
             .background(isDropTargeted ? Color.accentColor.opacity(0.25) : Color.clear)
+            .onTapGesture {
+                guard let id = collection.id else { return }
+                viewModel.selectedCollectionID = id
+                viewModel.selectedFolder = nil
+            }
         }
 
         @ViewBuilder
@@ -1042,18 +1285,20 @@ struct DAMBrowserView: View {
         let effective: Set<DAMAsset.ID> = viewModel.selection.contains(id)
             ? viewModel.selection : [id]
 
-        let manualCollections = viewModel.collections.filter { $0.kind == .manual }
+        let manualCollections = viewModel.collections.filter { $0.kind == .manual && $0.id != nil }
         if !manualCollections.isEmpty {
             Menu {
                 ForEach(manualCollections) { collection in
-                    Button {
-                        Task { await viewModel.addSelectionToCollection(collection.id ?? -1) }
-                    } label: {
-                        Text(collection.name)
+                    if let collectionId = collection.id {
+                        Button {
+                            Task { await viewModel.addSelectionToCollection(collectionId) }
+                        } label: {
+                            Text(collection.name)
+                        }
                     }
                 }
             } label: {
-                Label("Add to Collection", systemImage: "folder.badge.plus")
+                Label("Add to Album", systemImage: "folder.badge.plus")
             }
         }
 
@@ -1063,7 +1308,7 @@ struct DAMBrowserView: View {
             Button {
                 Task { await viewModel.removeSelectionFromActiveCollection() }
             } label: {
-                Label("Remove from Collection", systemImage: "folder.badge.minus")
+                Label("Remove from Album", systemImage: "folder.badge.minus")
             }
         }
 
@@ -1073,37 +1318,67 @@ struct DAMBrowserView: View {
             ids: effective)
     }
 
-    @ViewBuilder
-    private func folderContextMenu(for node: DAMFolderNode) -> some View {
-        Button {
-            Task { await viewModel.generateTagsForFolder(node.path) }
-        } label: {
-            Label("Generate Tags for Folder", systemImage: "folder.badge.sparkles")
-        }
+    /// Builds an AppKit context menu for a folder row. Uses the concrete row
+    /// path rather than `viewModel.selectedFolder`, so the menu always acts on
+    /// the folder that was actually right-clicked.
+    private func folderContextMenu(host: ContextMenuNSView, path: String) -> NSMenu {
+        let menu = NSMenu(title: "")
+        let name = (path as NSString).lastPathComponent
 
-        let eligible = eligibleFolderTargets(excluding: node.path)
-        if !eligible.isEmpty {
-            Menu {
-                ForEach(eligible, id: \.path) { target in
-                    Button {
-                        Task { await viewModel.moveFolder(path: node.path, toParent: target.path) }
-                    } label: {
-                        Text(target.name)
-                    }
+        menu.addItem(host.item(title: "Generate Tags for Folder",
+                               imageName: "folder.badge.sparkles",
+                               color: .systemPurple) {
+            Task { await viewModel.generateTagsForFolder(path) }
+        })
+
+        menu.addItem(host.item(title: "Add to New Album",
+                               imageName: "folder.badge.plus",
+                               color: .systemPurple) {
+            Task { await viewModel.createAlbumAndAddFolderContents(name: name, folderPath: path) }
+        })
+
+        let albums = viewModel.collections
+            .filter { $0.kind == .manual && $0.id != nil }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+
+        if !albums.isEmpty {
+            menu.addItem(host.separator())
+            for collection in albums {
+                if let collectionId = collection.id {
+                    menu.addItem(host.item(title: "Add to \"\(collection.name)\"",
+                                           imageName: "folder.badge.plus",
+                                           color: .systemPurple) {
+                        Task { await viewModel.addFolderContentsToCollection(folderPath: path, collectionId: collectionId) }
+                    })
                 }
-            } label: {
-                Label("Move into…", systemImage: "folder")
             }
         }
 
-        if let topParent = topLevelParent(for: node.path),
-           topParent != (node.path as NSString).deletingLastPathComponent {
-            Button {
-                Task { await viewModel.moveFolder(path: node.path, toParent: topParent) }
-            } label: {
-                Label("Move to Top Level", systemImage: "arrow.up.backward")
+        let eligible = eligibleFolderTargets(excluding: path)
+        if !eligible.isEmpty {
+            let moveMenu = NSMenu(title: "Move into")
+            for target in eligible {
+                moveMenu.addItem(host.item(title: target.name) {
+                    Task { await viewModel.moveFolder(path: path, toParent: target.path) }
+                })
             }
+            let moveItem = NSMenuItem(title: "Move into…", action: nil, keyEquivalent: "")
+            moveItem.image = NSImage(systemSymbolName: "folder", accessibilityDescription: "Move into")?
+                .withSymbolConfiguration(NSImage.SymbolConfiguration(paletteColors: [.systemOrange]))
+            moveItem.submenu = moveMenu
+            menu.addItem(moveItem)
         }
+
+        if let topParent = topLevelParent(for: path),
+           topParent != (path as NSString).deletingLastPathComponent {
+            menu.addItem(host.item(title: "Move to Top Level",
+                                   imageName: "arrow.up.backward",
+                                   color: .systemOrange) {
+                Task { await viewModel.moveFolder(path: path, toParent: topParent) }
+            })
+        }
+
+        return menu
     }
 
     // MARK: - Folder tree helpers
@@ -1142,7 +1417,7 @@ struct DAMBrowserView: View {
         guard let provider = providers.first else { return false }
         Task { @MainActor in
             do {
-                let string = try await loadString(from: provider)
+                let string = try await Self.loadString(from: provider)
                 let sourcePaths: [String]
                 if string.hasPrefix("folders-json:"),
                    let data = String(string.dropFirst("folders-json:".count)).data(using: .utf8),
@@ -1166,7 +1441,7 @@ struct DAMBrowserView: View {
         return true
     }
 
-    private func loadString(from provider: NSItemProvider) async throws -> String {
+    private static func loadString(from provider: NSItemProvider) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
             provider.loadObject(ofClass: String.self) { object, error in
                 if let error {
@@ -1185,21 +1460,14 @@ struct DAMBrowserView: View {
     }
 
     private func eligibleFolderTargets(excluding sourcePath: String) -> [DAMFolderNode] {
-        var result: [DAMFolderNode] = []
-        func visit(_ nodes: [DAMFolderNode]) {
-            for node in nodes {
-                if node.path != sourcePath, !node.path.hasPrefix(sourcePath + "/") {
-                    result.append(node)
-                }
-                if let children = node.children {
-                    visit(children)
-                }
+        // With tens of thousands of catalog folders, listing every folder inline
+        // makes the context menu unusable. Only offer top-level roots as move
+        // targets; they are the natural reorganisation boundaries.
+        viewModel.folderTree
+            .filter { $0.path != sourcePath && !$0.path.hasPrefix(sourcePath + "/") }
+            .sorted {
+                $0.name.localizedStandardCompare($1.name) == .orderedAscending
             }
-        }
-        visit(viewModel.folderTree)
-        return result.sorted {
-            $0.path.localizedStandardCompare($1.path) == .orderedAscending
-        }
     }
 
     private func topLevelParent(for sourcePath: String) -> String? {
@@ -1223,14 +1491,14 @@ struct DAMBrowserView: View {
     private var collectionSheet: some View {
         NavigationStack {
             Form {
-                Section("Collection Name") {
+                Section("Album Name") {
                     TextField("Name", text: $newCollectionName)
                 }
 
                 Section("Type") {
                     Picker("Kind", selection: $newCollectionKind) {
                         Text("Manual Album").tag(DAMCollection.Kind.manual)
-                        Text("Smart Collection").tag(DAMCollection.Kind.smart)
+                        Text("Smart Album").tag(DAMCollection.Kind.smart)
                     }
                     .pickerStyle(.segmented)
                 }
@@ -1298,7 +1566,7 @@ struct DAMBrowserView: View {
                 }
             }
             .formStyle(.grouped)
-            .navigationTitle(editingCollection == nil ? "New Collection" : "Edit Collection")
+            .navigationTitle(editingCollection == nil ? "New Album" : "Edit Album")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
@@ -1368,6 +1636,114 @@ struct DAMBrowserView: View {
         predicateTagColor = nil
         predicateHasAIKeywords = false
         predicateHasXattrKeywords = false
+    }
+
+    // MARK: - Import destination sheet
+
+    private struct ImportDestinationSheet: View {
+        let destination: DAMViewModel.DAMImportDestination
+        let viewModel: DAMViewModel
+
+        @Environment(\.dismiss) private var dismiss
+        @State private var mode: Mode = .none
+        @State private var selectedCollectionID: Int64? = nil
+        @State private var newAlbumName: String
+
+        init(destination: DAMViewModel.DAMImportDestination, viewModel: DAMViewModel) {
+            self.destination = destination
+            self.viewModel = viewModel
+            _newAlbumName = State(initialValue: destination.folderURL.lastPathComponent)
+        }
+
+        private enum Mode {
+            case none, existing, new
+        }
+
+        private var manualCollections: [DAMCollection] {
+            viewModel.collections.filter { $0.kind == .manual }.sorted {
+                $0.name.localizedStandardCompare($1.name) == .orderedAscending
+            }
+        }
+
+        var body: some View {
+            NavigationStack {
+                Form {
+                    Section {
+                        Text("Imported \(destination.assetIds.count) item(s) from \(destination.folderURL.lastPathComponent).")
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Section("Add to album") {
+                        Picker("Destination", selection: $mode) {
+                            Text("Don’t add").tag(Mode.none)
+                            Text("Existing album").tag(Mode.existing)
+                            Text("New album").tag(Mode.new)
+                        }
+                        .pickerStyle(.segmented)
+
+                        if mode == .existing {
+                            if manualCollections.isEmpty {
+                                Text("No albums yet. Create one first.")
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                Picker("Album", selection: $selectedCollectionID) {
+                                    Text("Select an album").tag(nil as Int64?)
+                                    ForEach(manualCollections) { collection in
+                                        Text(collection.name).tag(collection.id as Int64?)
+                                    }
+                                }
+                            }
+                        } else if mode == .new {
+                            TextField("Album name", text: $newAlbumName)
+                        }
+                    }
+                }
+                .formStyle(.grouped)
+                .navigationTitle("Import Destination")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { dismiss() }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Add") {
+                            Task { await applyDestination() }
+                        }
+                        .disabled(!canConfirm)
+                    }
+                }
+                .frame(minWidth: 420, minHeight: mode == .none ? 180 : 260)
+            }
+        }
+
+        private var canConfirm: Bool {
+            switch mode {
+            case .none:
+                return true
+            case .existing:
+                return selectedCollectionID != nil && !manualCollections.isEmpty
+            case .new:
+                return !newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+        }
+
+        private func applyDestination() async {
+            switch mode {
+            case .none:
+                break
+            case .existing:
+                if let selectedCollectionID {
+                    await viewModel.addAssetIds(destination.assetIds, to: selectedCollectionID)
+                }
+            case .new:
+                let trimmed = newAlbumName.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return }
+                _ = await viewModel.createAlbumAndAddAssetIds(
+                    name: trimmed,
+                    assetIds: destination.assetIds
+                )
+            }
+            dismiss()
+        }
     }
 
     private func buildCollectionPredicateJSON() -> String? {

@@ -27,6 +27,9 @@ struct ChatView: View {
     @State private var pasteMonitor: Any?
     /// Opencode-style collapsible task dock above the input bar.
     @State private var todoDockCollapsed = true
+    /// Inline plan rename state from the plans panel context menu.
+    @State private var renamingPlanEntry: (scope: PlanScope, plan: Plan)? = nil
+    @State private var planRenameText = ""
     /// Optional override for the window/tab title. Used when this chat is shown
     /// in a detached agent window so the title bar shows the agent name.
     let title: String?
@@ -257,13 +260,20 @@ struct ChatView: View {
                         }
                     }
                     .tag("")
-                    ForEach(ModelVisibilityStore.shared.visibleModels(from: catalog.models)) { m in
-                        Label {
-                            Text(m.displayName)
-                        } icon: {
-                            Image(nsImage: Self.badgeDotImage(m.providerBadge.colorName))
+                    let groups = ModelVisibilityStore.shared.groupedModels(
+                        ModelVisibilityStore.shared.visibleModels(from: catalog.models)
+                    )
+                    ForEach(groups, id: \.sourceID) { group in
+                        Section(group.name) {
+                            ForEach(group.models) { m in
+                                Label {
+                                    Text(m.displayName)
+                                } icon: {
+                                    Image(nsImage: Self.badgeDotImage(m.providerBadge.colorName))
+                                }
+                                .tag(m.id)
+                            }
                         }
-                        .tag(m.id)
                     }
                 }
             .labelsHidden()
@@ -717,6 +727,10 @@ struct ChatView: View {
                             }
                             Divider()
                             Button("Open in Window") { openPlanWindow(entry) }
+                            Button("Rename") {
+                                renamingPlanEntry = entry
+                                planRenameText = entry.plan.title
+                            }
                             Button("Export as Markdown…") { startExport(entry.plan) }
                             Divider()
                             Button("Delete", role: .destructive) {
@@ -737,6 +751,34 @@ struct ChatView: View {
             contentType: MarkdownDocument.markdown,
             defaultFilename: exportName
         ) { _ in }
+        .alert("Rename Plan", isPresented: .init(
+            get: { renamingPlanEntry != nil },
+            set: { if !$0 { renamingPlanEntry = nil; planRenameText = "" } }
+        )) {
+            TextField("Name", text: $planRenameText)
+            Button("Cancel", role: .cancel) {
+                renamingPlanEntry = nil
+                planRenameText = ""
+            }
+            Button("Rename") {
+                guard let entry = renamingPlanEntry else { return }
+                let trimmed = planRenameText.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty && trimmed != entry.plan.title {
+                    planStore.update(
+                        id: entry.plan.id,
+                        title: trimmed,
+                        content: nil,
+                        append: false,
+                        in: entry.scope
+                    )
+                }
+                renamingPlanEntry = nil
+                planRenameText = ""
+            }
+            .disabled(planRenameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } message: {
+            Text("Enter a new name for '\(renamingPlanEntry?.plan.title ?? "")'")
+        }
     }
 
     /// Ordered list of visible panels from mainSlots, excluding floating and hidden ones.

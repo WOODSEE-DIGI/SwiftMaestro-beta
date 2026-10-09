@@ -1195,7 +1195,8 @@ actor DAMImportService {
                     existing.indexedAt = asset.indexedAt
                     try existing.update(db)
                 } else {
-                    try asset.insert(db)
+                    var assetToInsert = asset
+                    try assetToInsert.insert(db)
                 }
             }
         }

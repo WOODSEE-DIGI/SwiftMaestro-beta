@@ -31,6 +31,10 @@ dist/
 dist-old/
 dist-archive/
 BundledMCP/
+# ArtCraft Crafting App payloads — fetched + two-stage scanned by
+# scripts/fetch-craft-apps.sh (large binaries; authored manifest lives in
+# Sources/Resources/craft-apps-manifest.json and IS committed)
+BundledCraftApps/
 store/
 
 # Sparkle archive cache for delta update generation

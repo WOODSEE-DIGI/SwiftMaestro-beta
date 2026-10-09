@@ -1,5 +1,7 @@
 #import "RAWPreviewDecoder.h"
 
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+
 #include <libraw/libraw.h>
 #include <cstring>
 #include <memory>
@@ -7,6 +9,23 @@
 // MARK: - Helpers
 
 static NSString* const kRAWDecoderErrorDomain = @"com.woodseedigi.swiftmaestro.rawdecoder";
+
+/// Known camera-raw filename extensions. Used as a second-line guard because
+/// the system's UTI database can incorrectly type audio/zip/executable files
+/// as `public.raw-image`, which crashes LibRaw's parsers.
+static NSSet<NSString*>* RAWExtensions(void) {
+    static NSSet<NSString*>* set = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        set = [[NSSet alloc] initWithArray:@[
+            @"3fr", @"arw", @"cr2", @"cr3", @"crw", @"dcs", @"dcr", @"dng",
+            @"drf", @"eip", @"erf", @"fff", @"iiq", @"kdc", @"mef", @"mos",
+            @"mrw", @"nef", @"nrw", @"orf", @"pef", @"ptx", @"pxn", @"raf",
+            @"raw", @"rw2", @"rwl", @"sr2", @"srf", @"srw", @"x3f"
+        ]];
+    });
+    return set;
+}
 
 static NSError* RAWError(int librawCode, NSString* stage, NSString* path) {
     return [NSError errorWithDomain:kRAWDecoderErrorDomain
@@ -20,12 +39,33 @@ static NSError* RAWError(int librawCode, NSString* stage, NSString* path) {
 
 /// Converts a LibRaw processed image (JPEG blob or raw bitmap) into an
 /// NSImage that owns its pixel data (the LibRaw buffer is freed right after).
+/// Defensive: reject malformed LibRaw output before copying memory.
 static NSImage* _Nullable ImageFromProcessed(libraw_processed_image_t* img) {
+    if (!img || img->data_size == 0 || !img->data) { return nil; }
+
+    // Sanity cap to avoid allocating absurd bitmaps from corrupt metadata.
+    const NSUInteger kMaxPixels = 25000000; // ~25 MP
+    const NSUInteger pixelCount = (NSUInteger)img->width * (NSUInteger)img->height;
+    if (pixelCount == 0 || pixelCount > kMaxPixels) { return nil; }
+
     if (img->type == LIBRAW_IMAGE_JPEG) {
+        // Verify JPEG SOI marker before handing the buffer to NSImage.
+        if (img->data_size < 2 ||
+            ((const uint8_t*)img->data)[0] != 0xFF ||
+            ((const uint8_t*)img->data)[1] != 0xD8) {
+            return nil;
+        }
         return [[NSImage alloc] initWithData:[NSData dataWithBytes:img->data length:img->data_size]];
     }
     if (img->type == LIBRAW_IMAGE_BITMAP) {
+        if (img->bits != 8 && img->bits != 16) { return nil; }
+        if (img->colors != 1 && img->colors != 3 && img->colors != 4) { return nil; }
+
         const NSInteger bytesPerSample = img->bits / 8;
+        const NSUInteger bytesPerRow = (NSUInteger)img->width * img->colors * bytesPerSample;
+        const NSUInteger expectedSize = bytesPerRow * img->height;
+        if (img->data_size < expectedSize) { return nil; }
+
         NSBitmapImageRep* rep = [[NSBitmapImageRep alloc]
             initWithBitmapDataPlanes:NULL
             pixelsWide:img->width
@@ -35,10 +75,10 @@ static NSImage* _Nullable ImageFromProcessed(libraw_processed_image_t* img) {
             hasAlpha:NO
             isPlanar:NO
             colorSpaceName:NSCalibratedRGBColorSpace
-            bytesPerRow:img->width * img->colors * bytesPerSample
+            bytesPerRow:(NSInteger)bytesPerRow
             bitsPerPixel:img->colors * img->bits];
-        if (!rep) { return nil; }
-        memcpy(rep.bitmapData, img->data, (size_t)img->data_size);
+        if (!rep || !rep.bitmapData) { return nil; }
+        memcpy(rep.bitmapData, img->data, expectedSize);
         NSImage* image = [[NSImage alloc] initWithSize:NSMakeSize(img->width, img->height)];
         [image addRepresentation:rep];
         return image;
@@ -155,8 +195,36 @@ static NSData* _Nullable JPEGDataFromImage(NSImage* image, CGFloat maxPixelSize)
 
 + (NSData*)decodeImplAtPath:(NSString*)path
                maxPixelSize:(CGFloat)maxPixelSize
-                      error:(NSError**)error {
+                       error:(NSError**)error {
     @autoreleasepool {
+        // Hard guard: refuse anything that isn't a camera-raw UTI. LibRaw's
+        // parsers can crash (EXC_BAD_ACCESS) on audio, video, archive, or
+        // executable bytes if they are mis-typed as raw-image.
+        NSString* ext = [path.pathExtension lowercaseString];
+        if (ext.length > 0) {
+            UTType* type = [UTType typeWithFilenameExtension:ext];
+            if (![type conformsToType:UTTypeRAWImage]
+                || [type conformsToType:UTTypeAudio]
+                || [type conformsToType:UTTypeMovie]) {
+                if (error) {
+                    *error = [NSError errorWithDomain:kRAWDecoderErrorDomain
+                                                 code:-30
+                                             userInfo:@{NSLocalizedDescriptionKey:
+                                [NSString stringWithFormat:@"Refusing non-RAW file: %@", path.lastPathComponent]}];
+                }
+                return nil;
+            }
+            if (![RAWExtensions() containsObject:ext]) {
+                if (error) {
+                    *error = [NSError errorWithDomain:kRAWDecoderErrorDomain
+                                                 code:-31
+                                             userInfo:@{NSLocalizedDescriptionKey:
+                                [NSString stringWithFormat:@"Extension not in RAW allowlist: %@", path.lastPathComponent]}];
+                }
+                return nil;
+            }
+        }
+
         // LibRaw's object is very large (~MB-scale imgdata) — it must be
         // heap-allocated. Stack allocation fits the 8 MB main-thread stack
         // but overflows the 512 KB stacks of Swift concurrency cooperative

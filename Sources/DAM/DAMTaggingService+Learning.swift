@@ -233,12 +233,13 @@ extension DAMTaggingService {
                 if thresholds.autoApplyEnabled && confidence >= thresholds.autoApply {
                     try database.applyTag(name: tag, to: candidateId, source: .ai)
                     try await database.dbQueue.write { db in
-                        try DAMTagSuggestion(
+                        var suggestion = DAMTagSuggestion(
                             id: nil, assetId: candidateId, tagName: tag,
                             confidence: confidence, state: .autoApplied,
                             exemplarAssetId: assetId, basis: basis.dbBasis,
                             createdAt: Date(), resolvedAt: Date()
-                        ).insert(db)
+                        )
+                        try suggestion.insert(db)
                     }
                 } else {
                     let isNew = try database.suggestion(

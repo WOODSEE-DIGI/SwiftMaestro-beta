@@ -296,12 +296,13 @@ extension DAMDatabase {
                 }
                 return
             }
-            try DAMTagSuggestion(
+            var suggestion = DAMTagSuggestion(
                 id: nil, assetId: assetId, tagName: tagName,
                 confidence: confidence, state: .pending,
                 exemplarAssetId: exemplarAssetId, basis: basis,
                 createdAt: Date(), resolvedAt: nil
-            ).insert(db)
+            )
+            try suggestion.insert(db)
         }
     }
 

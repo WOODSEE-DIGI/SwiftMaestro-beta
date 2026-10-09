@@ -166,9 +166,30 @@ targets:
             echo "No bundled MCP servers at $SRC (skipping)"
           fi
         shell: /bin/bash
-        alwaysOutOfDate: true
+        basedOnDependencyAnalysis: false
         outputFiles:
           - $(BUILT_PRODUCTS_DIR)/$(PRODUCT_NAME).app/Contents/Resources/mcp-servers
+      - name: Bundle Craft Apps
+        script: |
+          # Copy the ArtCraft Crafting App payloads (CLI binaries + desktop
+          # apps + their legal/ notices, downloaded and two-stage scanned by
+          # scripts/fetch-craft-apps.sh) into the app bundle. They live
+          # outside Sources/ to keep the large binaries out of the xcodegen
+          # source scan. The authored manifest (craft-apps-manifest.json)
+          # ships separately via the Sources/Resources glob.
+          SRC="${SRCROOT}/BundledCraftApps"
+          DST="${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Resources/craft-apps"
+          if [ -d "$SRC" ]; then
+            mkdir -p "$DST"
+            rsync -a --delete "$SRC/" "$DST/"
+            echo "Bundled Craft Apps: $SRC -> $DST"
+          else
+            echo "No BundledCraftApps payload at $SRC (run scripts/fetch-craft-apps.sh; skipping)"
+          fi
+        shell: /bin/bash
+        basedOnDependencyAnalysis: false
+        outputFiles:
+          - $(BUILT_PRODUCTS_DIR)/$(PRODUCT_NAME).app/Contents/Resources/craft-apps
       - name: Bundle FFmpeg
         script: |
           # Copy bundled FFmpeg binaries into the app bundle's Resources directory.
@@ -192,7 +213,7 @@ targets:
             echo "No bundled FFmpeg directory at $SRC_DIR (skipping)"
           fi
         shell: /bin/bash
-        alwaysOutOfDate: true
+        basedOnDependencyAnalysis: false
         outputFiles:
           - $(BUILT_PRODUCTS_DIR)/$(PRODUCT_NAME).app/Contents/Resources/ffmpeg
           - $(BUILT_PRODUCTS_DIR)/$(PRODUCT_NAME).app/Contents/Resources/ffprobe
@@ -203,7 +224,7 @@ targets:
           # tethering works on machines without Homebrew.
           "${SRCROOT}/scripts/bundle-gphoto2.sh"
         shell: /bin/bash
-        alwaysOutOfDate: true
+        basedOnDependencyAnalysis: false
         outputFiles:
           - $(BUILT_PRODUCTS_DIR)/$(PRODUCT_NAME).app/Contents/Resources/gphoto2
       - name: Bundle WhisperKit Models
@@ -212,7 +233,7 @@ targets:
           # works on first launch without a ~3 GB download.
           "${SRCROOT}/scripts/bundle-whisperkit.sh"
         shell: /bin/bash
-        alwaysOutOfDate: true
+        basedOnDependencyAnalysis: false
         outputFiles:
           - $(BUILT_PRODUCTS_DIR)/$(PRODUCT_NAME).app/Contents/Resources/models/whisperkit
     dependencies:

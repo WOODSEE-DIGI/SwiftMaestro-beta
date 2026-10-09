@@ -142,6 +142,15 @@ final class VisionProxyService {
             maxTokens: config.maxCaptionTokens)
     }
 
+    // MARK: - Text extraction fallback
+
+    /// Extract raw text from image data using Apple's Vision framework. This is a
+    /// lightweight, no-model-load fallback when the vision-language proxy is
+    /// unavailable or doesn't return a useful caption for a non-vision model.
+    func extractText(imageData: Data) async -> String? {
+        await recognizeText(in: imageData)
+    }
+
     // MARK: - In-process model
 
     /// Build a loadable `MaestroModel` for the proxy from the configured path.

@@ -82,14 +82,21 @@ struct ContentView: View {
             }
             ToolbarItem(placement: .automatic) {
                 Menu {
-                    ForEach(ModelVisibilityStore.shared.visibleModels(from: catalog.models)) { model in
-                        Button {
-                            catalog.selectedModelID = model.id
-                        } label: {
-                            Label {
-                                Text(model.displayName)
-                            } icon: {
-                                Image(nsImage: ChatView.badgeDotImage(model.providerBadge.colorName))
+                    let groups = ModelVisibilityStore.shared.groupedModels(
+                        ModelVisibilityStore.shared.visibleModels(from: catalog.models)
+                    )
+                    ForEach(groups, id: \.sourceID) { group in
+                        Section(group.name) {
+                            ForEach(group.models) { model in
+                                Button {
+                                    catalog.selectedModelID = model.id
+                                } label: {
+                                    Label {
+                                        Text(model.displayName)
+                                    } icon: {
+                                        Image(nsImage: ChatView.badgeDotImage(model.providerBadge.colorName))
+                                    }
+                                }
                             }
                         }
                     }

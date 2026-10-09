@@ -131,6 +131,9 @@ struct AppsLauncherPanel: View {
                 ForEach(pluginService.plugins.filter { appEnablement.showsPlugin($0.id) }) { manifest in
                     iconOnlyPluginRow(manifest)
                 }
+                ForEach(craftApps) { app in
+                    craftIconOnlyRow(app)
+                }
             }
             .padding(.vertical, 6)
             .frame(maxWidth: .infinity)
@@ -174,6 +177,30 @@ struct AppsLauncherPanel: View {
             .help(manifest.name)
     }
 
+    @ViewBuilder
+    private func craftIconOnlyRow(_ app: CraftApp) -> some View {
+        craftIcon(app, size: 30)
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
+            .onTapGesture { CraftAppLauncher.shared.launch(app) }
+            .help(app.name)
+    }
+
+    /// The desktop app's own icon when installed, generic fallback before
+    /// install (SF Symbols can't render an NSImage, hence the switch).
+    @ViewBuilder
+    private func craftIcon(_ app: CraftApp, size: CGFloat) -> some View {
+        if let icon = CraftAppLauncher.icon(for: app) {
+            Image(nsImage: icon)
+                .resizable()
+                .frame(width: size, height: size)
+        } else {
+            Image(systemName: "paintpalette")
+                .font(.system(size: size))
+                .frame(width: size, height: size)
+        }
+    }
+
     // MARK: - Icons + Labels (taller than wide) — standard vertical list
 
     private var labelsContent: some View {
@@ -202,10 +229,34 @@ struct AppsLauncherPanel: View {
                     }
                 }
             }
+            if !craftApps.isEmpty {
+                collapsibleSection("ArtCraft Apps") {
+                    ForEach(craftApps) { app in
+                        craftRow(app)
+                    }
+                }
+            }
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
         .background(theme.sidebarBackground)
+    }
+
+    /// A Craft app row — shows its real icon and a hint that the app opens
+    /// as its own window (outside the workspace canvas).
+    private func craftRow(_ app: CraftApp) -> some View {
+        HStack(spacing: 8) {
+            craftIcon(app, size: 18)
+            Text(app.name)
+                .foregroundStyle(theme.sidebarText)
+            Spacer()
+            Image(systemName: "arrow.up.forward.app")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .help("Opens \(app.name) as its own window")
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { CraftAppLauncher.shared.launch(app) }
     }
 
     /// A section whose rows can be collapsed/expanded by tapping its header.
@@ -287,6 +338,13 @@ struct AppsLauncherPanel: View {
                         }
                     }
                 }
+                if !craftApps.isEmpty {
+                    horizontalSection(title: "ArtCraft Apps", kinds: []) {
+                        ForEach(craftApps) { app in
+                            craftGridCell(app)
+                        }
+                    }
+                }
             }
             .padding(12)
         }
@@ -353,12 +411,41 @@ struct AppsLauncherPanel: View {
         .onTapGesture { openPanel(kind) }
     }
 
+    @ViewBuilder
+    private func craftGridCell(_ app: CraftApp) -> some View {
+        VStack(spacing: 4) {
+            craftIcon(app, size: 28)
+            HStack(spacing: 2) {
+                Text(app.name)
+                    .font(.caption)
+                    .foregroundStyle(theme.sidebarText)
+                    .lineLimit(1)
+                Image(systemName: "arrow.up.forward.app")
+                    .font(.system(size: 8))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .frame(maxWidth: .infinity, minHeight: 56)
+        .contentShape(Rectangle())
+        .onTapGesture { CraftAppLauncher.shared.launch(app) }
+        .help("Opens \(app.name) as its own window")
+    }
+
     // MARK: - Helpers
 
     private func allVisibleKinds() -> [WorkspacePanelKind] {
         AppCategory.allCases.flatMap { category in
             appEnablement.visibleKinds(in: category)
         }
+    }
+
+    /// Fetched Craft apps that should appear in the "ArtCraft Apps" section.
+    /// Data-driven like the Plugins section (no WorkspacePanelKind cases) —
+    /// rows launch the desktop app as its own window instead of opening a
+    /// workspace panel.
+    private var craftApps: [CraftApp] {
+        CraftAppCatalog.launcherApps.filter { appEnablement.showsCraftApp($0.id) }
     }
 
     private func openPanel(_ kind: WorkspacePanelKind) {

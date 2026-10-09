@@ -112,6 +112,8 @@ final class AppEnablementStore {
     private static let disabledCategoriesKey = "settings.apps.disabledCategories"
     private static let pluginsSectionEnabledKey = "settings.apps.pluginsSectionEnabled"
     private static let disabledPluginsKey = "settings.apps.disabledPlugins"
+    private static let craftSectionEnabledKey = "settings.apps.craftSectionEnabled"
+    private static let disabledCraftAppsKey = "settings.apps.disabledCraftApps"
 
     /// `themeStorageKey`s of individually disabled apps. Empty = all enabled.
     private(set) var disabledApps: Set<String> {
@@ -133,11 +135,23 @@ final class AppEnablementStore {
         didSet { UserDefaults.standard.set(Array(disabledPlugins), forKey: Self.disabledPluginsKey) }
     }
 
+    /// Whether the ArtCraft Apps section as a whole is shown. Default true.
+    var craftSectionEnabled: Bool {
+        didSet { UserDefaults.standard.set(craftSectionEnabled, forKey: Self.craftSectionEnabledKey) }
+    }
+
+    /// Craft app ids of individually disabled apps. Empty = all enabled.
+    private(set) var disabledCraftApps: Set<String> {
+        didSet { UserDefaults.standard.set(Array(disabledCraftApps), forKey: Self.disabledCraftAppsKey) }
+    }
+
     private init() {
         disabledApps = Set(UserDefaults.standard.stringArray(forKey: Self.disabledAppsKey) ?? [])
         disabledCategories = Set(UserDefaults.standard.stringArray(forKey: Self.disabledCategoriesKey) ?? [])
         pluginsSectionEnabled = UserDefaults.standard.object(forKey: Self.pluginsSectionEnabledKey) as? Bool ?? true
         disabledPlugins = Set(UserDefaults.standard.stringArray(forKey: Self.disabledPluginsKey) ?? [])
+        craftSectionEnabled = UserDefaults.standard.object(forKey: Self.craftSectionEnabledKey) as? Bool ?? true
+        disabledCraftApps = Set(UserDefaults.standard.stringArray(forKey: Self.disabledCraftAppsKey) ?? [])
     }
 
     // MARK: - Queries
@@ -183,6 +197,20 @@ final class AppEnablementStore {
     /// `themeStorageKey` so Settings can show a friendly per-app toggle.
     func showsBuiltInPlugin(_ kind: WorkspacePanelKind) -> Bool {
         pluginsSectionEnabled && isPluginEnabled(kind.themeStorageKey)
+    }
+
+    /// Whether an individual Craft app's own toggle is on (independent of
+    /// the ArtCraft Apps section master switch). Keyed by manifest id
+    /// (e.g. `photocraft`).
+    func isCraftAppEnabled(_ id: String) -> Bool {
+        !disabledCraftApps.contains(id)
+    }
+
+    /// Whether a Craft app's row should appear in the launcher — the
+    /// ArtCraft Apps section must be enabled AND the app itself must not
+    /// be disabled.
+    func showsCraftApp(_ id: String) -> Bool {
+        craftSectionEnabled && isCraftAppEnabled(id)
     }
 
     /// Tool categories blocked by disabled Apple apps. When an Apple app is
@@ -234,12 +262,22 @@ final class AppEnablementStore {
         }
     }
 
+    func setCraftApp(_ id: String, enabled: Bool) {
+        if enabled {
+            disabledCraftApps.remove(id)
+        } else {
+            disabledCraftApps.insert(id)
+        }
+    }
+
     /// Convenience: enable every category, app, and plugin (restore defaults).
     func enableAll() {
         disabledCategories = []
         disabledApps = []
         disabledPlugins = []
         pluginsSectionEnabled = true
+        disabledCraftApps = []
+        craftSectionEnabled = true
     }
 
     // MARK: - Bindings
@@ -269,6 +307,20 @@ final class AppEnablementStore {
         Binding(
             get: { self.isPluginEnabled(id) },
             set: { self.setPlugin(id, enabled: $0) }
+        )
+    }
+
+    func craftSectionBinding() -> Binding<Bool> {
+        Binding(
+            get: { self.craftSectionEnabled },
+            set: { self.craftSectionEnabled = $0 }
+        )
+    }
+
+    func craftBinding(for id: String) -> Binding<Bool> {
+        Binding(
+            get: { self.isCraftAppEnabled(id) },
+            set: { self.setCraftApp(id, enabled: $0) }
         )
     }
 }

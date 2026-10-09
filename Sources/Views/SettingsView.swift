@@ -1630,6 +1630,7 @@ private struct ModelCatalogRow: View {
     @Environment(MLXInferenceEngine.self) private var engine
     @State private var visibility = ModelVisibilityStore.shared
     @State private var loadingModelID: String? = nil
+    @State private var startingDownloadModelID: String? = nil
     private let sampler = ModelActivitySampler.shared
 
     var body: some View {
@@ -1725,6 +1726,29 @@ private struct ModelCatalogRow: View {
                         .foregroundStyle(.secondary)
                 }
             }
+        } else if startingDownloadModelID == model.id {
+            // Immediate feedback between the click and the engine publishing
+            // the first progress value, so users don't double-click.
+            Button { } label: {
+                Label {
+                    Text(isRepairDownload ? "Repairing…" : "Downloading…")
+                        .font(.caption.weight(.semibold))
+                } icon: {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 12, height: 12)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.green.opacity(0.2))
+                )
+                .foregroundStyle(.green)
+            }
+            .buttonStyle(.plain)
+            .disabled(true)
+            .help("Download starting…")
         } else if isResident, let activity = sampler.models[model.id] {
             HStack(spacing: 6) {
                 Circle()
@@ -1847,18 +1871,19 @@ private struct ModelCatalogRow: View {
                 .foregroundStyle(.orange)
                 .help("This model's estimated memory need exceeds this Mac's model budget. Load it via a remote provider instead.")
         } else {
-            let isRepair = model.localPath != nil
             Button {
+                startingDownloadModelID = model.id
                 Task {
-                    try? await engine.downloadModel(model, repair: isRepair)
+                    try? await engine.downloadModel(model, repair: isRepairDownload)
                     catalog.refreshLocalPaths()
+                    startingDownloadModelID = nil
                 }
             } label: {
                 Label {
-                    Text(isRepair ? "Repair" : "Download \(model.estimatedMemoryGB)GB")
+                    Text(isRepairDownload ? "Repair" : "Download \(model.estimatedMemoryGB)GB")
                         .font(.caption.weight(.semibold))
                 } icon: {
-                    Image(systemName: isRepair
+                    Image(systemName: isRepairDownload
                           ? "arrow.clockwise.circle.fill"
                           : "arrow.down.circle.fill")
                 }
@@ -1866,16 +1891,18 @@ private struct ModelCatalogRow: View {
                 .padding(.vertical, 5)
                 .background(
                     RoundedRectangle(cornerRadius: 6)
-                        .fill(isRepair ? Color.orange.opacity(0.15) : Color.blue.opacity(0.15))
+                        .fill(isRepairDownload ? Color.orange.opacity(0.15) : Color.blue.opacity(0.15))
                 )
-                .foregroundStyle(isRepair ? .orange : .blue)
+                .foregroundStyle(isRepairDownload ? .orange : .blue)
             }
             .buttonStyle(.plain)
-            .help(isRepair
+            .help(isRepairDownload
                   ? "Repair incomplete download"
                   : "Download ~\(model.estimatedMemoryGB)GB from Hugging Face")
         }
     }
+
+    private var isRepairDownload: Bool { model.localPath != nil }
 
     private var fitInfo: (fits: Bool, requiredGB: Int, budgetGB: Int) {
         let requiredGB = model.estimatedMemoryGB + model.estimatedMemoryGB / 4

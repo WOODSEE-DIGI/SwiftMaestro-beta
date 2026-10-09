@@ -31,7 +31,7 @@ enum DAMTagSource: String, Codable, Sendable {
 
 /// A cataloged file. One row per file, keyed by absolute path.
 /// `Identifiable` on the database id for SwiftUI lists.
-struct DAMAsset: Codable, FetchableRecord, PersistableRecord, TableRecord,
+struct DAMAsset: Codable, FetchableRecord, MutablePersistableRecord, TableRecord,
                Identifiable, Hashable, Sendable {
     static let databaseTableName = "asset"
 
@@ -171,7 +171,7 @@ struct DAMAsset: Codable, FetchableRecord, PersistableRecord, TableRecord,
 }
 
 /// A node in the hierarchical tag tree (`/People/Family/Alex`).
-struct DAMTag: Codable, FetchableRecord, PersistableRecord, TableRecord,
+struct DAMTag: Codable, FetchableRecord, MutablePersistableRecord, TableRecord,
              Identifiable, Hashable, Sendable {
     static let databaseTableName = "tag"
 
@@ -205,7 +205,7 @@ struct DAMFolderNode: Identifiable, Hashable, Sendable {
 /// A physical or logical volume whose contents have been cataloged.
 /// MaestroDAM uses this to keep assets browsable when the drive is ejected
 /// and to run storage-health checks when it is connected.
-struct DAMVolume: Codable, FetchableRecord, PersistableRecord, TableRecord,
+struct DAMVolume: Codable, FetchableRecord, MutablePersistableRecord, TableRecord,
                   Identifiable, Hashable, Sendable {
     static let databaseTableName = "volume"
 
@@ -268,7 +268,7 @@ struct DAMAssetTag: Codable, FetchableRecord, PersistableRecord, TableRecord, Se
 
 /// Folder-backed, smart, or manual grouping of assets.
 /// Named `DAMCollection` to avoid ambiguity with `Swift.Collection`.
-struct DAMCollection: Codable, FetchableRecord, PersistableRecord, TableRecord,
+struct DAMCollection: Codable, FetchableRecord, MutablePersistableRecord, TableRecord,
                       Identifiable, Hashable, Sendable {
     static let databaseTableName = "collection"
 
@@ -358,7 +358,7 @@ enum DAMSuggestionBasis: String, Codable, Sendable {
 /// exemplar. The user accepts/rejects in the Tagging workspace; accepted
 /// suggestions become real tags AND new exemplars, so the system literally
 /// learns as you tag.
-struct DAMTagSuggestion: Codable, FetchableRecord, PersistableRecord, TableRecord,
+struct DAMTagSuggestion: Codable, FetchableRecord, MutablePersistableRecord, TableRecord,
                          Identifiable, Hashable, Sendable {
     static let databaseTableName = "tagSuggestion"
 

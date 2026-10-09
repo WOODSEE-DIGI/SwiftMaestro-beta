@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "attribution": "The Crafting Apps (PhotoCraft, PdfCraft, VectorCraft, FilmCraft, LightCraft, EffectCraft, DesignCraft, WordCraft, DeckCraft, GridCraft, CADCraft) are open-source projects by the ArtCraft team and contributors — https://getartcraft.com. Code licensed MIT OR Apache-2.0; see each app's LICENSE-MIT / LICENSE-APACHE / NOTICE / ATTRIBUTION.md shipped alongside the binaries. The ArtCraft name, wordmark and logos are trademarks of the ArtCraft Team and are used here only to identify their official builds. SwiftMaestro is not affiliated with, sponsored by, or endorsed by the ArtCraft Team.",
+  "apps": [
+    {
+      "id": "photocraft",
+      "name": "PhotoCraft",
+      "repo": "storytold/photocraft",
+      "summary": "Image editing — layers, masks, type and real PSD files",
+      "bundleID": "ai.storyteller.photocraft",
+      "mcpArgs": ["mcp"],
+      "fileExtensions": ["psd", "psb", "pcraft", "png", "jpg", "jpeg", "tif", "tiff", "webp", "gif", "bmp", "tga", "ico", "qoi", "pnm", "exr", "hdr", "avif", "heic", "heif"],
+      "advertise": true,
+      "enabledByDefault": true
+    },
+    {
+      "id": "pdfcraft",
+      "name": "PdfCraft",
+      "repo": "storytold/pdfcraft",
+      "summary": "PDF workbench — read, organize, combine, split and secure PDFs",
+      "bundleID": "ai.storyteller.pdfcraft",
+      "mcpArgs": ["mcp"],
+      "fileExtensions": ["pdf"],
+      "advertise": true,
+      "enabledByDefault": true
+    },
+    {
+      "id": "lightcraft",
+      "name": "LightCraft",
+      "repo": "storytold/lightcraft",
+      "summary": "Photo library and RAW development",
+      "bundleID": "ai.storyteller.lightcraft",
+      "mcpArgs": ["mcp"],
+      "fileExtensions": ["dng", "arw", "cr2", "cr3", "nef", "nrw", "orf", "raf", "rw2", "rwl", "srw", "raw"],
+      "advertise": false,
+      "enabledByDefault": true
+    },
+    {
+      "id": "vectorcraft",
+      "name": "VectorCraft",
+      "repo": "storytold/vectorcraft",
+      "summary": "Vector illustration",
+      "bundleID": "ai.storyteller.vectorcraft",
+      "mcpArgs": ["mcp"],
+      "fileExtensions": ["svg", "ai", "eps"],
+      "advertise": false,
+      "enabledByDefault": true
+    },
+    {
+      "id": "filmcraft",
+      "name": "FilmCraft",
+      "repo": "storytold/filmcraft",
+      "summary": "Video editing, color and sound",
+      "bundleID": "ai.storyteller.filmcraft",
+      "mcpArgs": ["mcp"],
+      "fileExtensions": ["mp4", "mov", "m4v", "mkv", "avi", "wmv", "mts", "m2ts"],
+      "advertise": false,
+      "enabledByDefault": true
+    },
+    {
+      "id": "effectcraft",
+      "name": "EffectCraft",
+      "repo": "storytold/effectcraft",
+      "summary": "Motion graphics and visual effects",
+      "bundleID": "ai.storyteller.effectcraft",
+      "mcpArgs": ["mcp"],
+      "fileExtensions": ["aep"],
+      "advertise": false,
+      "enabledByDefault": true
+    },
+    {
+      "id": "designcraft",
+      "name": "DesignCraft",
+      "repo": "storytold/designcraft",
+      "summary": "Page layout and publishing",
+      "bundleID": "ai.storyteller.designcraft",
+      "mcpArgs": ["mcp"],
+      "fileExtensions": ["indd", "idml"],
+      "advertise": false,
+      "enabledByDefault": false
+    },
+    {
+      "id": "wordcraft",
+      "name": "WordCraft",
+      "repo": "storytold/wordcraft",
+      "summary": "Word processing documents",
+      "bundleID": "ai.storyteller.wordcraft",
+      "mcpArgs": ["mcp"],
+      "fileExtensions": ["doc", "docx", "odt", "rtf"],
+      "advertise": false,
+      "enabledByDefault": false
+    },
+    {
+      "id": "deckcraft",
+      "name": "DeckCraft",
+      "repo": "storytold/deckcraft",
+      "summary": "Presentations and slide shows",
+      "bundleID": "ai.storyteller.deckcraft",
+      "mcpArgs": ["mcp"],
+      "fileExtensions": ["ppt", "pptx", "odp"],
+      "advertise": false,
+      "enabledByDefault": false
+    },
+    {
+      "id": "gridcraft",
+      "name": "GridCraft",
+      "repo": "storytold/gridcraft",
+      "summary": "Spreadsheets",
+      "bundleID": "ai.storyteller.gridcraft",
+      "mcpArgs": ["mcp"],
+      "fileExtensions": ["xls", "xlsx", "ods"],
+      "advertise": false,
+      "enabledByDefault": false
+    },
+    {
+      "id": "cadcraft",
+      "name": "CADCraft",
+      "repo": "storytold/cadcraft",
+      "summary": "CAD drafting (AutoCAD-style)",
+      "bundleID": "ai.storyteller.cadcraft",
+      "mcpArgs": ["mcp"],
+      "fileExtensions": ["dwg", "dxf"],
+      "advertise": false,
+      "enabledByDefault": false
+    }
+  ]
+}

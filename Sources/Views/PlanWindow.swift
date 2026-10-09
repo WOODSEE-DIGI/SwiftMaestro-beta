@@ -54,8 +54,10 @@ struct PlanWindowView: View {
     @State private var isPinnedToFront = false
     /// Inline markdown editing state.
     @State private var isEditing = false
+    @State private var editingTitle = ""
     @State private var editingContent = ""
     @State private var hasUnsavedChanges = false
+    @FocusState private var titleFocused: Bool
 
     private var scope: PlanScope? { target.flatMap { PlanScope(key: $0.scopeKey) } }
 
@@ -69,9 +71,24 @@ struct PlanWindowView: View {
             if let plan {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text(plan.title)
-                            .font(.title.weight(.bold))
-                            .textSelection(.enabled)
+                        if isEditing {
+                            TextField("Plan title", text: $editingTitle)
+                                .font(.title.weight(.bold))
+                                .textFieldStyle(.plain)
+                                .focused($titleFocused)
+                                .onSubmit {
+                                    if hasUnsavedChanges {
+                                        savePlan(plan)
+                                    }
+                                }
+                                .onChange(of: editingTitle) { _, new in
+                                    hasUnsavedChanges = (new != plan.title || editingContent != plan.content)
+                                }
+                        } else {
+                            Text(plan.title)
+                                .font(.title.weight(.bold))
+                                .textSelection(.enabled)
+                        }
                         metadataSection(for: plan)
                         Divider()
                         if isEditing {
@@ -80,7 +97,7 @@ struct PlanWindowView: View {
                                 .scrollContentBackground(.visible)
                                 .frame(maxWidth: .infinity, minHeight: 300, alignment: .leading)
                                 .onChange(of: editingContent) { _, new in
-                                    hasUnsavedChanges = (new != plan.content)
+                                    hasUnsavedChanges = (editingTitle != plan.title || new != plan.content)
                                 }
                         } else {
                             Text(Self.rendered(plan.content))
@@ -108,14 +125,19 @@ struct PlanWindowView: View {
                             ? "Stop keeping this window in front of all others"
                             : "Keep this window in front of all others")
                     }
-                    ToolbarItem(placement: .primaryAction) {
+                    ToolbarItem(placement: .cancellationAction) {
                         if isEditing {
                             Button("Cancel") {
                                 isEditing = false
+                                editingTitle = ""
                                 editingContent = ""
                                 hasUnsavedChanges = false
                             }
                             .keyboardShortcut(.cancelAction)
+                        }
+                    }
+                    ToolbarItem(placement: .primaryAction) {
+                        if isEditing {
                             Button("Save") {
                                 savePlan(plan)
                             }
@@ -123,13 +145,15 @@ struct PlanWindowView: View {
                             .disabled(!hasUnsavedChanges)
                         } else {
                             Button {
+                                editingTitle = plan.title
                                 editingContent = plan.content
                                 isEditing = true
                                 hasUnsavedChanges = false
+                                titleFocused = true
                             } label: {
                                 Label("Edit", systemImage: "pencil")
                             }
-                            .help("Edit plan content as raw Markdown")
+                            .help("Edit plan title and content as raw Markdown")
                         }
                     }
                     ToolbarItem(placement: .primaryAction) {
@@ -145,6 +169,13 @@ struct PlanWindowView: View {
                     contentType: MarkdownDocument.markdown,
                     defaultFilename: Self.filename(for: plan.title)
                 ) { _ in }
+                .onDisappear {
+                    // If the user closes the window while editing, persist the
+                    // changes rather than silently discarding them.
+                    if isEditing && hasUnsavedChanges {
+                        savePlan(plan)
+                    }
+                }
             } else {
                 VStack(spacing: 8) {
                     Image(systemName: "doc.text.magnifyingglass")
@@ -166,7 +197,14 @@ struct PlanWindowView: View {
     private func savePlan(_ plan: Plan) {
         guard let scope else { return }
         let trimmed = editingContent.trimmingCharacters(in: .whitespacesAndNewlines)
-        _ = planStore.update(id: plan.id, title: nil, content: trimmed, append: false, in: scope)
+        let trimmedTitle = editingTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        _ = planStore.update(
+            id: plan.id,
+            title: trimmedTitle.isEmpty ? nil : trimmedTitle,
+            content: trimmed,
+            append: false,
+            in: scope
+        )
         isEditing = false
         hasUnsavedChanges = false
     }

@@ -45,6 +45,9 @@ final class NotesViewModel {
     /// Whether a save is in flight (drives the "Saving…" toolbar state).
     private(set) var isSaving = false
 
+    /// Whether the vault tree is being loaded for the first time.
+    private(set) var isLoading = false
+
     /// Whether edits are written back automatically after a short pause.
     /// Persisted; defaults to ON. Toggle lives in the editor toolbar.
     var autosaveEnabled: Bool {
@@ -59,13 +62,27 @@ final class NotesViewModel {
     /// resulting onChange doesn't count as a user edit and trigger autosave.
     private var suppressDirtyOnce = false
 
-    /// Current search query.
+    /// Current search query. Debounced so rapid typing doesn't queue a search
+    /// for every keystroke, and previous searches are cancelled.
     var searchQuery = "" {
-        didSet { Task { await performSearch() } }
+        didSet {
+            searchTask?.cancel()
+            searchTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled else { return }
+                await performSearch()
+            }
+        }
     }
 
     /// Search results when `searchQuery` is non-empty.
     private(set) var searchResults: [NoteItem] = []
+
+    /// Whether a search is currently in flight (drives the sidebar spinner).
+    private(set) var isSearching = false
+
+    /// Ongoing search task, so new queries cancel the previous one.
+    private var searchTask: Task<Void, Never>?
 
     /// Last error message surfaced to the UI.
     private(set) var errorMessage: String?
@@ -159,6 +176,8 @@ final class NotesViewModel {
     /// Initial load of the vault tree, injecting the AI Memory folder into the root items,
     /// and loading any additional external folders registered by the user.
     func load() async {
+        isLoading = true
+        defer { isLoading = false }
         do {
             try await service.ensureVault()
             var items = try await service.listDirectory(at: vaultURL)
@@ -695,8 +714,14 @@ final class NotesViewModel {
     /// folders anywhere in memory, and may delete/rename content nested inside a
     /// kind folder. They may NOT delete or rename the memory root, top-level kind
     /// directories, or root index files — those keep the store working.
+    /// Plan mirrors are read-only in Notes.md because their canonical source is
+    /// the Plans store; edit them through the Plans panel.
     func readOnlyGuard(for item: NoteItem?, action: MemoryEditAction) -> String? {
-        guard let item, isInMemory(item) else { return nil }
+        guard let item else { return nil }
+        if item.isReadOnly {
+            return "This item is read-only in Notes.md. Open it in its native panel to edit."
+        }
+        guard isInMemory(item) else { return nil }
         switch action {
         case .write:
             // Writing/creating memory content is additive — always allowed.
@@ -714,17 +739,87 @@ final class NotesViewModel {
 
 
     private func performSearch() async {
+        isSearching = true
+        defer { isSearching = false }
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else {
             searchResults = []
             return
         }
         do {
-            searchResults = try await service.search(query: query)
+            var matches = try await service.search(query: query)
+
+            // Also search the plan markdown mirrors in the shared AI memory
+            // store. Plans are stored canonically as JSON, but PlanStore writes
+            // a `.md` mirror per plan so they are observable by other tools;
+            // we surface those mirrors here so searching Notes.md finds plans
+            // by their titles and keywords.
+            let memoryRoot = memoryRootURL
+            let planMatches = await Task.detached { [query, memoryRoot] in
+                Self.searchPlanMirrors(query: query, memoryRoot: memoryRoot)
+            }.value
+            matches.append(contentsOf: planMatches)
+
+            guard !Task.isCancelled else { return }
+
+            var seen = Set<String>()
+            searchResults = matches
+                .filter { seen.insert($0.id).inserted }
+                .sorted { $0.title.localizedCompare($1.title) == .orderedAscending }
         } catch {
             searchResults = []
             errorMessage = "Search failed: \(error.localizedDescription)"
         }
+    }
+
+    /// Search plan markdown mirrors by reading each scope's `_index.md`.
+    /// Reading the index files is much faster than scanning every plan file,
+    /// and the index already contains each plan's title and keywords.
+    private nonisolated static func searchPlanMirrors(query: String, memoryRoot: URL?) -> [NoteItem] {
+        guard let memoryRoot else { return [] }
+        let plansDir = memoryRoot.appendingPathComponent("knowledge/plans", isDirectory: true)
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: plansDir.path),
+              let scopeURLs = try? fm.contentsOfDirectory(
+                at: plansDir,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: .skipsHiddenFiles) else { return [] }
+
+        let lower = query.lowercased()
+        let indexName = "_index.md"
+        let linePattern = /^- \[(?<file>[^\]]+)\]\([^)]+\)\s*[-—]\s*(?<title>.*?)\s*(?:[-—]\s*keywords:|$)/
+        var matches: [NoteItem] = []
+
+        for scopeURL in scopeURLs {
+            if Task.isCancelled { break }
+            let isDir = (try? scopeURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            guard isDir else { continue }
+
+            let indexURL = scopeURL.appendingPathComponent(indexName)
+            guard fm.fileExists(atPath: indexURL.path),
+                  let content = try? String(contentsOf: indexURL, encoding: .utf8),
+                  content.lowercased().contains(lower) else { continue }
+
+            for line in content.components(separatedBy: .newlines) {
+                if Task.isCancelled { break }
+                guard line.lowercased().contains(lower),
+                      let match = line.firstMatch(of: linePattern) else { continue }
+
+                let fileName = String(match.output.file)
+                let title = String(match.output.title).trimmingCharacters(in: .whitespaces)
+                let planURL = scopeURL.appendingPathComponent(fileName)
+                guard fm.fileExists(atPath: planURL.path) else { continue }
+
+                let modified = (try? planURL.resourceValues(
+                    forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date()
+                var item = NoteItem(url: planURL, isFolder: false, modifiedAt: modified)
+                item.displayTitle = title.isEmpty ? fileName : title
+                item.isReadOnly = true
+                matches.append(item)
+            }
+        }
+
+        return matches
     }
 }
 

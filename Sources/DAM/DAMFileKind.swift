@@ -40,11 +40,13 @@ enum DAMFileKind {
         return uti.conforms(to: .rawImage)
     }
 
-    /// ZIP magic bytes. Capture One `.eip` packages are typed by the system
-    /// as `public.camera-raw-image` (not `com.apple.package`), so
-    /// ImageIO/QL try to parse them as images and fail — checking the
-    /// signature is the reliable guard, independent of any UTI declaration.
-    static func isZIPPackage(_ url: URL) -> Bool {
+    /// Capture One `.eip` packages are typed by the system as
+    /// `public.camera-raw-image` (not `com.apple.package`), so ImageIO/QL try
+    /// to parse them as images and fail. Only consider `.eip` files, then
+    /// verify the ZIP signature so arbitrary `.zip`/`.bundle` files never go
+    /// near LibRaw.
+    static func isEIPPackage(_ url: URL) -> Bool {
+        guard ext(url) == "eip" else { return false }
         guard let handle = try? FileHandle(forReadingFrom: url),
               let header = try? handle.read(upToCount: 4) else { return false }
         try? handle.close()
@@ -68,9 +70,9 @@ enum DAMFileKind {
 
     /// Whether the import pass should skip ImageIO metadata extraction for
     /// this file: LibRaw-only RAWs (RA30 errors on property reads) and
-    /// ZIP-packaged RAWs (not parseable as images at all).
+    /// EIP-packaged RAWs (not parseable as images at all).
     static func shouldSkipImageIO(_ url: URL) -> Bool {
-        isLibRAWOnly(url) || isZIPPackage(url)
+        isLibRAWOnly(url) || isEIPPackage(url)
     }
 
     /// Audio formats — anything the system types as `public.audio`.

@@ -337,6 +337,17 @@ struct SwiftMaestroApp: App {
                     // If bundled servers were installed, update the saved MCP server list
                     // so their resolved paths are used instead of the hardcoded defaults.
                     await MCPServerBundleService.shared.applyBundledServersIfNeeded()
+                    // Install the ArtCraft Crafting Apps payload (fetched CLI
+                    // binaries + desktop apps, two-stage scanned by
+                    // scripts/fetch-craft-apps.sh) and register their MCP
+                    // servers — must happen before startEnabledServers() below
+                    // so the agent's first turn can use them.
+                    do {
+                        try CraftAppInstallService.shared.installIfNeeded()
+                    } catch {
+                        NSLog("[SwiftMaestroApp] Craft app installation failed: %@", error.localizedDescription)
+                    }
+                    await CraftAppInstallService.shared.registerMCPEntriesIfNeeded()
                     // Install the default bundled model from the app bundle into the
                     // canonical <model-directory>/models/ root. Hardlinks are used when the app
                     // bundle and model root share a filesystem; otherwise an awaited

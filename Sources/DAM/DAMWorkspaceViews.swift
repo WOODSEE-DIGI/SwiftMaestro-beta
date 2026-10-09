@@ -979,6 +979,29 @@ enum DAMContextMenu {
                 Label(assets.count > 1 ? "Copy \(assets.count) Paths" : "Copy Path",
                       systemImage: "doc.on.doc")
             }
+            // ArtCraft Crafting Apps — route by file type; each matching app
+            // gets the subset of assets it handles. On quit, the launcher
+            // delta-imports the touched folders so the catalog picks up edits.
+            let craftMatches = CraftAppLauncher.matchingApps(for: assets)
+            if !craftMatches.isEmpty {
+                Divider()
+                Menu {
+                    ForEach(craftMatches) { app in
+                        Button {
+                            Task { @MainActor in
+                                CraftAppLauncher.shared.open(app, with: assets)
+                            }
+                        } label: {
+                            Text(CraftAppLauncher.isReady(app)
+                                 ? app.name
+                                 : "\(app.name) — not installed")
+                        }
+                        .disabled(!CraftAppLauncher.isReady(app))
+                    }
+                } label: {
+                    Label("Open in Craft App", systemImage: "paintbrush.pointed")
+                }
+            }
             Divider()
             Button {
                 Task { await viewModel.generateTags(for: ids) }

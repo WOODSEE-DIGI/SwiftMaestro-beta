@@ -62,6 +62,20 @@ final class DAMViewModel {
     var filterFlag: DAMFlag? = nil {
         didSet { Task { await reload() } }
     }
+    /// Path of a folder the view should reveal/expand after import. Consumed by
+    /// the browser view to expand the folder tree to the imported location.
+    var folderToReveal: String? = nil
+
+    /// A destination album prompt for the most recent import. The sheet lets
+    /// the user add the imported items to an existing album, a new album, or
+    /// skip it entirely.
+    struct DAMImportDestination: Identifiable {
+        let id = UUID()
+        let folderURL: URL
+        let assetIds: [Int64]
+    }
+    var importDestination: DAMImportDestination? = nil
+
     /// Whether redaction boxes are drawn on previews. Original files are never
     /// modified; this only affects the live preview/edit render and is always
     /// forced ON for exports. Useful for reviewing originals vs. redacted
@@ -601,29 +615,57 @@ final class DAMViewModel {
                 try database.allCollections()
             }.value
         } catch {
-            errorMessage = "Failed to load collections: \(error.localizedDescription)"
+            errorMessage = "Failed to load albums: \(error.localizedDescription)"
+        }
+        await refreshCollectionCounts()
+    }
+
+    /// Refresh the cached asset counts for every collection/album.
+    private func refreshCollectionCounts() async {
+        do {
+            let counts = try await Task.detached(priority: .userInitiated) { [database] in
+                try database.dbQueue.read { db in
+                    try Row.fetchAll(db, sql: """
+                        SELECT collectionId, COUNT(*) AS n FROM collectionAsset GROUP BY collectionId
+                        """)
+                    .reduce(into: [Int64: Int]()) { dict, row in
+                        let id: Int64 = row["collectionId"]
+                        let count: Int = row["n"]
+                        dict[id] = count
+                    }
+                }
+            }.value
+            collectionAssetCounts = counts
+        } catch {
+            NSLog("[DAM] failed to refresh collection counts: %@", String(describing: error))
         }
     }
 
-    /// Create or update a collection.
-    func saveCollection(id: Int64?, name: String, kind: DAMCollection.Kind, predicateJSON: String?, parentId: Int64? = nil) async {
+    /// Create or update a collection. Returns the created/updated collection,
+    /// or nil when validation fails or the save errors.
+    @discardableResult
+    func saveCollection(id: Int64?, name: String, kind: DAMCollection.Kind, predicateJSON: String?, parentId: Int64? = nil) async -> DAMCollection? {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else { return nil }
         do {
             if let id {
                 try database.updateCollection(id: id, name: trimmed, kind: kind, predicateJSON: predicateJSON, parentId: parentId)
                 if kind == .smart {
                     try database.applySmartCollection(id: id)
                 }
+                await refreshCollections()
+                return nil
             } else {
                 let collection = try database.createCollection(name: trimmed, kind: kind, predicateJSON: predicateJSON, parentId: parentId)
                 if kind == .smart, let newId = collection.id {
                     try database.applySmartCollection(id: newId)
                 }
+                await refreshCollections()
+                return collection
             }
-            await refreshCollections()
         } catch {
-            errorMessage = "Failed to save collection: \(error.localizedDescription)"
+            errorMessage = "Failed to save album: \(error.localizedDescription)"
+            return nil
         }
     }
 
@@ -634,7 +676,7 @@ final class DAMViewModel {
             try database.updateCollectionParent(id: id, parentId: parentId)
             await refreshCollections()
         } catch {
-            errorMessage = "Failed to move collection: \(error.localizedDescription)"
+            errorMessage = "Failed to move album: \(error.localizedDescription)"
         }
     }
 
@@ -662,7 +704,7 @@ final class DAMViewModel {
             if selectedCollectionID == id { selectedCollectionID = nil }
             await refreshCollections()
         } catch {
-            errorMessage = "Failed to delete collection: \(error.localizedDescription)"
+            errorMessage = "Failed to delete album: \(error.localizedDescription)"
         }
     }
 
@@ -675,14 +717,115 @@ final class DAMViewModel {
     /// Add a specific list of asset IDs to a collection.
     func addAssetIds(_ ids: [Int64], to collectionId: Int64) async {
         guard !ids.isEmpty else { return }
+        NSLog("[DAM] addAssetIds called with %ld ids for collectionId %lld", ids.count, collectionId)
         do {
             try database.addAssetsToCollection(assetIds: ids, collectionId: collectionId)
+            if let count = try? database.collectionAssetCount(collectionId: collectionId) {
+                collectionAssetCounts[collectionId] = count
+            }
             if selectedCollectionID == collectionId {
                 await reload()
             }
             await refreshCollections()
         } catch {
-            errorMessage = "Failed to add to collection: \(error.localizedDescription)"
+            errorMessage = "Failed to add to album: \(error.localizedDescription)"
+        }
+    }
+
+    /// Add every asset under one or more folders to a collection/album.
+    func addFolderContentsToCollection(folderPaths: [String], collectionId: Int64) async {
+        guard !folderPaths.isEmpty else { return }
+        NSLog("[DAM] addFolderContentsToCollection called for paths %@, collectionId %lld", folderPaths, collectionId)
+        do {
+            let ids = try Set(folderPaths.flatMap { try database.assetIds(inFolder: $0) })
+            NSLog("[DAM] resolved %ld asset ids from folder(s)", ids.count)
+            await addAssetIds(Array(ids), to: collectionId)
+        } catch {
+            errorMessage = "Failed to add folder contents to album: \(error.localizedDescription)"
+        }
+    }
+
+    /// Convenience: add every asset under a single folder to a collection.
+    func addFolderContentsToCollection(folderPath: String, collectionId: Int64) async {
+        await addFolderContentsToCollection(folderPaths: [folderPath], collectionId: collectionId)
+    }
+
+    /// Create a new manual album and populate it with every asset under one
+    /// or more folders. The whole operation runs in a single database write,
+    /// so the album row and its membership links are committed atomically.
+    func createAlbumAndAddFolderContents(name: String, folderPaths: [String]) async {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !folderPaths.isEmpty else { return }
+        NSLog("[DAM] createAlbumAndAddFolderContents name '%@' paths %@", trimmed, folderPaths)
+        do {
+            let collection = try database.createCollectionWithFolderContents(
+                name: trimmed,
+                kind: .manual,
+                folderPaths: folderPaths
+            )
+            await refreshCollections()
+            if let albumId = collection.id {
+                selectedCollectionID = albumId
+                selectedFolder = nil
+                if let count = try? database.collectionAssetCount(collectionId: albumId) {
+                    collectionAssetCounts[albumId] = count
+                }
+            }
+            NSLog("[DAM] created album '%@' id=%lld", collection.name, collection.id ?? -1)
+        } catch {
+            errorMessage = "Failed to create album: \(error.localizedDescription)"
+            NSLog("[DAM] createAlbumAndAddFolderContents failed: %@", String(describing: error))
+        }
+    }
+
+    /// Convenience overload for a single folder.
+    func createAlbumAndAddFolderContents(name: String, folderPath: String) async {
+        await createAlbumAndAddFolderContents(name: name, folderPaths: [folderPath])
+    }
+
+    /// Create a new manual album from a list of asset IDs (used by the import
+    /// destination sheet). Atomic, like the folder variant.
+    func createAlbumAndAddAssetIds(name: String, assetIds: [Int64]) async -> DAMCollection? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        do {
+            let collection = try database.createCollectionWithAssets(
+                name: trimmed,
+                kind: .manual,
+                assetIds: assetIds
+            )
+            await refreshCollections()
+            if let albumId = collection.id {
+                selectedCollectionID = albumId
+                selectedFolder = nil
+                if let count = try? database.collectionAssetCount(collectionId: albumId) {
+                    collectionAssetCounts[albumId] = count
+                }
+            }
+            return collection
+        } catch {
+            errorMessage = "Failed to create album: \(error.localizedDescription)"
+            NSLog("[DAM] createAlbumAndAddAssetIds failed: %@", String(describing: error))
+            return nil
+        }
+    }
+
+    /// Remove every asset link whose asset lives under a given folder prefix
+    /// from a specific album. Returns the number of links removed.
+    func removeCollectionAssets(inFolderPrefix prefix: String, collectionId: Int64) async -> Int {
+        do {
+            let removed = try database.removeCollectionAssets(inFolderPrefix: prefix, collectionId: collectionId)
+            if let count = try? database.collectionAssetCount(collectionId: collectionId) {
+                collectionAssetCounts[collectionId] = count
+            }
+            if selectedCollectionID == collectionId {
+                await reload()
+            }
+            await refreshCollections()
+            return removed
+        } catch {
+            errorMessage = "Failed to clean album: \(error.localizedDescription)"
+            return 0
         }
     }
 
@@ -693,10 +836,13 @@ final class DAMViewModel {
         guard !ids.isEmpty else { return }
         do {
             try database.removeAssetsFromCollection(assetIds: ids, collectionId: collectionId)
+            if let count = try? database.collectionAssetCount(collectionId: collectionId) {
+                collectionAssetCounts[collectionId] = count
+            }
             await reload()
             await refreshCollections()
         } catch {
-            errorMessage = "Failed to remove from collection: \(error.localizedDescription)"
+            errorMessage = "Failed to remove from album: \(error.localizedDescription)"
         }
     }
 
@@ -982,6 +1128,25 @@ final class DAMViewModel {
             let count = try await task.value
             importScanned = count
             importWritten = count
+
+            // Scope the browser to the imported folder and clear any active
+            // filters so the user sees exactly what was just imported.
+            searchText = ""
+            minimumRating = 0
+            filterTagColor = nil
+            filterFileType = nil
+            filterTagged = nil
+            filterFlag = nil
+            selectedCollectionID = nil
+            selectedFolder = url.path
+            folderToReveal = url.path
+
+            // Offer to add the imported items to an album.
+            let importedAssetIds = (try? database.assets(inFolder: url.path, recursive: true)
+                .compactMap(\.id)) ?? []
+            if !importedAssetIds.isEmpty {
+                importDestination = DAMImportDestination(folderURL: url, assetIds: importedAssetIds)
+            }
         } catch is CancellationError {
             errorMessage = "Import cancelled."
         } catch {
@@ -1082,7 +1247,7 @@ final class DAMViewModel {
                 lightroomSummary = "Lightroom import: \(result.scanned) rows — "
                     + "\(result.inserted) new assets, \(result.updated) updated, "
                     + "\(result.keywordsApplied) keywords/labels tagged, "
-                    + "\(result.collectionsCreated) collections created."
+                    + "\(result.collectionsCreated) albums created."
                     + (result.missingOnDisk > 0
                        ? " \(result.missingOnDisk) files not on disk (cataloged offline)."
                        : "")
@@ -1134,7 +1299,7 @@ final class DAMViewModel {
                 lrcatSummary = "Lightroom catalog: \(result.scanned) images — "
                     + "\(result.inserted) new assets, \(result.updated) updated, "
                     + "\(result.keywordsApplied) keywords applied, "
-                    + "\(result.collectionsCreated) collections created."
+                    + "\(result.collectionsCreated) albums created."
                     + (result.missingOnDisk > 0
                        ? " \(result.missingOnDisk) files not on disk (cataloged offline)."
                        : "")

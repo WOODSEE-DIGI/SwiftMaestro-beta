@@ -352,7 +352,7 @@ actor ThumbnailService {
         }
 
         // Capture One .eip (ZIP): extract inner RAW, LibRaw decode.
-        if DAMFileKind.isZIPPackage(url) {
+        if DAMFileKind.isEIPPackage(url) {
             return try await rawDecodeAndCache(url, pixelSize: pixelSize, key: key, isPackagedEIP: true)
         }
 
