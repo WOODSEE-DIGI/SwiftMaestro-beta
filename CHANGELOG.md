@@ -1,3 +1,15 @@
+# SwiftMaestro 0.7.0
+
+## MaestroDAM
+
+- **Native right-click folder menu**: SwiftUI's `.contextMenu` on folder rows caused an instant beachball, so folder rows now use a native AppKit `NSMenu`. The menu acts on the right-clicked folder path and shows colored SF Symbols icons.
+- **Folder-to-album workflow fixed**: creating a new album from a folder now uses an atomic DB transaction; inserted rows receive IDs after fixing `MutablePersistableRecord` conformance.
+- **RAW preview hardening**: LibRaw is now guarded by a known-RAW extension allowlist, JPEG SOI validation, and bitmap size/depth checks to prevent crashes on non-RAW or malformed files.
+
+## Models
+
+- **Built-in catalog cleanup**: removed stale/unwired entries and added Gemma 4 tiers for 16 GB and 128 GB Macs.
+
 # SwiftMaestro 0.6.10
 
 ## Remote/API Coding Speed
