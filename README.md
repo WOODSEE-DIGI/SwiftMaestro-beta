@@ -44,17 +44,17 @@ Currently SwiftMaestro is A native macOS AI assistant that runs large language m
 
 ---
 
-## What's New in 0.6.10
+## What's New in 0.7.0
 
-### Remote/API Coding Speed
+### MaestroDAM
 
-- **Online Coder defaults to inline tools**: the Online Coder agent now has Compact Tool Mode off by default, so remote models like Kimi K2.7 Code make tool calls in a single API round trip instead of the `search_tools`/`call_tool` double hop.
-- **Coding agents no longer inherit every MCP tool**: the coding-agent special case that dumped all enabled MCP tools into the prompt has been removed. Coding agents now only see MCP tools when `.mcp`/`.web`/`.browser`/`.scraping` categories are explicitly enabled, keeping the prompt lean for API models.
-- **Remote models are valid delegation targets**: delegated sub-agents such as Builder no longer get silently promoted to a tiny local helper when configured to use a remote tool-calling model.
+- **Native right-click folder menu**: SwiftUI's `.contextMenu` on folder rows caused an instant beachball, so folder rows now use a native AppKit `NSMenu`. The menu acts on the right-clicked folder path and shows colored SF Symbols icons.
+- **Folder-to-album workflow fixed**: creating a new album from a folder now uses an atomic DB transaction; inserted rows receive IDs after fixing `MutablePersistableRecord` conformance.
+- **RAW preview hardening**: LibRaw is now guarded by a known-RAW extension allowlist, JPEG SOI validation, and bitmap size/depth checks to prevent crashes on non-RAW or malformed files.
 
-### SMArchyOS / UTM Integration
+### Models
 
-- **UTM-MCP ships in the default MCP registry**: `utm-mcp` is now pre-configured (disabled by default) for UTM VM control on macOS, mapped to the `.shell` category so project and Online Coder agents can start/stop/configure the Arch development VM.
+- **Built-in catalog cleanup**: removed stale/unwired entries and added Gemma 4 tiers for 16 GB and 128 GB Macs.
 
 See [CHANGELOG.md](CHANGELOG.md) for earlier releases.
 
