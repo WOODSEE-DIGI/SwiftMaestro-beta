@@ -12,6 +12,7 @@ This is the single canonical release instruction set for SwiftMaestro. All agent
 
 - Confirm the exact version and build number with the user.
 - Confirm whether to upload (`UPLOAD=1`) and whether to notarize (`NOTARIZE=1`).
+- **Beta builds (SwiftMaestro-beta repo) are never notarized.** Use `NOTARIZE=0`. Do not ask the user about this again.
 - Ensure the working tree is clean. If it is not, ask the user whether to commit or stash.
 - Do not bypass `release-check.sh` unless the user explicitly says you are retrying after a failure.
 

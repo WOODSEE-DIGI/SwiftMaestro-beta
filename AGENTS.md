@@ -127,6 +127,7 @@ are non-negotiable and are repeated here because agents must not miss them.
   stalls, or anything is unclear, report it and ask the user for instructions
   before acting.
 - The ONLY sanctioned release path is `./scripts/release.sh` (optionally `UPLOAD=1`).
+  - Beta builds pushed to the `SwiftMaestro-beta` repo are **never notarized** (`NOTARIZE=0`). Do not ask the user.
 - The ONLY sanctioned upload method for the ~28 GB full installer is `mc` via
   `upload-to-onidel.sh` as wired into `release.sh`.
 - Tag only after the upload succeeds.
