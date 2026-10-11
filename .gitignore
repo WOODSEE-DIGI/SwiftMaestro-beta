@@ -35,6 +35,7 @@ BundledMCP/
 # scripts/fetch-craft-apps.sh (large binaries; authored manifest lives in
 # Sources/Resources/craft-apps-manifest.json and IS committed)
 BundledCraftApps/
+BundledCraftApps.*/
 store/
 
 # Sparkle archive cache for delta update generation
