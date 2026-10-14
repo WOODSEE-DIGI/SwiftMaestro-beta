@@ -1299,6 +1299,27 @@ struct EditWorkspaceView: View {
             }
             .disabled(viewModel.selection.isEmpty)
             .controlSize(.small)
+
+            Divider()
+
+            HStack(spacing: 12) {
+                Button {
+                    viewModel.selectAllInScope()
+                } label: {
+                    Label("Select All in Scope", systemImage: "checklist")
+                }
+                .disabled(viewModel.assets.isEmpty)
+                .controlSize(.small)
+
+                Button {
+                    viewModel.resetRedactionsForSelection()
+                    confirmation = "Cleared redactions for \(viewModel.selection.count) selected asset(s)."
+                } label: {
+                    Label("Reset Redactions", systemImage: "eye")
+                }
+                .disabled(viewModel.selection.isEmpty)
+                .controlSize(.small)
+            }
         }
         .task(id: viewModel.selection) {
             refreshClipboardLayoutCount()

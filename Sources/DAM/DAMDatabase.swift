@@ -496,6 +496,24 @@ final class DAMDatabase: Sendable {
             try db.execute(sql: "INSERT INTO assetSearch(assetSearch) VALUES('rebuild')")
         }
 
+        // v15 — PDF OCR was previously limited to page 1 and PDFs were not in
+        // the AI-indexable UTI filter at all. Clear any existing OCR/features
+        // for PDFs so the next background indexing pass re-scans every page.
+        migrator.registerMigration("v15-pdf-ocr-reindex") { db in
+            // Remove feature rows for PDFs so they re-enter the backlog.
+            try db.execute(sql: """
+                DELETE FROM assetFeature WHERE assetId IN (
+                    SELECT id FROM asset WHERE kind = 'pdf'
+                       OR uti LIKE 'com.adobe.pdf%' OR uti LIKE 'public.pdf%'
+                )
+                """)
+            // Clear the FTS5-visible OCR text as well.
+            try db.execute(sql: """
+                UPDATE asset SET ocrText = NULL WHERE kind = 'pdf'
+                   OR uti LIKE 'com.adobe.pdf%' OR uti LIKE 'public.pdf%'
+                """)
+        }
+
         return migrator
     }()
 

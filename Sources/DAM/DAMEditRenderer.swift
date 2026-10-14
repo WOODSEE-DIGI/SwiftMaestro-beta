@@ -27,14 +27,23 @@ enum DAMEditRenderer {
     /// `showRedactions` controls whether redaction layers are burned into the
     /// output; pass `false` to review the untouched original, `true` for
     /// screen-recording-safe previews and exports.
-    static func render(asset: DAMAsset, edit: DAMEditState, maxPixelSize: Int = 2000, showRedactions: Bool = true) throws -> NSImage {
-        var image = try loadCIImage(for: asset, maxPixelSize: maxPixelSize)
+    ///
+    /// `pageIndex` is used for multi-page documents (PDFs). For images it is
+    /// ignored. Redactions are filtered to the requested page.
+    static func render(
+        asset: DAMAsset,
+        edit: DAMEditState,
+        maxPixelSize: Int = 2000,
+        showRedactions: Bool = true,
+        pageIndex: Int = 0
+    ) throws -> NSImage {
+        var image = try loadCIImage(for: asset, maxPixelSize: maxPixelSize, pageIndex: pageIndex)
         image = applyGeometry(edit, to: image)
         image = applyTone(edit, to: image)
         image = applyColor(edit, to: image)
         image = applyEffects(edit, to: image)
         if showRedactions {
-            image = applyRedactions(edit, to: image)
+            image = applyRedactions(edit, to: image, pageIndex: pageIndex)
         }
         return try nsImage(from: image)
     }
@@ -44,7 +53,8 @@ enum DAMEditRenderer {
     /// Load the asset as a CIImage. RAW files decode via the vendored LibRaw
     /// path (same engine as darktable/digiKam); everything else reads
     /// directly. `maxPixelSize` bounds the RAW preview decode for interactivity.
-    private static func loadCIImage(for asset: DAMAsset, maxPixelSize: Int) throws -> CIImage {
+    /// For PDFs, `pageIndex` selects the page to render.
+    private static func loadCIImage(for asset: DAMAsset, maxPixelSize: Int, pageIndex: Int = 0) throws -> CIImage {
         let url = URL(fileURLWithPath: asset.path)
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw RenderError.cannotLoad(asset.filename)
@@ -61,7 +71,7 @@ enum DAMEditRenderer {
             baseImage = image
         } else if DAMFileKind.isPDF(url) {
             let cgImage = try DocumentThumbService.pdfCGImage(
-                url: url, maxPixelSize: maxPixelSize > 0 ? maxPixelSize : 2400)
+                url: url, maxPixelSize: maxPixelSize > 0 ? maxPixelSize : 2400, pageIndex: pageIndex)
             return CIImage(cgImage: cgImage)
         } else {
             guard let image = CIImage(contentsOf: url) else {
@@ -122,8 +132,11 @@ enum DAMEditRenderer {
     /// region's own edge pixels clamped outward first (so the blur smears
     /// with itself, not with the surroundings or transparency). Pixelate
     /// uses CIPixellate for a mosaic effect.
-    private static func applyRedactions(_ edit: DAMEditState, to image: CIImage) -> CIImage {
-        let visible = edit.visibleRedactions()
+    ///
+    /// For multi-page PDFs, pass `pageIndex` to burn in only the boxes that
+    /// belong to that page (nil pageIndex boxes are treated as page 0).
+    private static func applyRedactions(_ edit: DAMEditState, to image: CIImage, pageIndex: Int = 0) -> CIImage {
+        let visible = edit.visibleRedactions(pageIndex: pageIndex)
         guard !visible.isEmpty else { return image }
         var out = image
         let extent = out.extent
@@ -267,13 +280,19 @@ enum DAMEditRenderer {
 
     /// Render to a CGImage (export path) — the same chain as render(), ending
     /// at the bitmap so the caller can watermark and encode in any format.
-    static func renderCGImage(asset: DAMAsset, edit: DAMEditState, maxPixelSize: Int) throws -> CGImage {
-        var image = try loadCIImage(for: asset, maxPixelSize: maxPixelSize)
+    /// For PDFs, `pageIndex` selects the page to export.
+    static func renderCGImage(
+        asset: DAMAsset,
+        edit: DAMEditState,
+        maxPixelSize: Int,
+        pageIndex: Int = 0
+    ) throws -> CGImage {
+        var image = try loadCIImage(for: asset, maxPixelSize: maxPixelSize, pageIndex: pageIndex)
         image = applyGeometry(edit, to: image)
         image = applyTone(edit, to: image)
         image = applyColor(edit, to: image)
         image = applyEffects(edit, to: image)
-        image = applyRedactions(edit, to: image)
+        image = applyRedactions(edit, to: image, pageIndex: pageIndex)
         guard let cg = ciContext().createCGImage(image, from: image.extent) else {
             throw RenderError.noOutput
         }

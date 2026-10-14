@@ -22,6 +22,8 @@ enum DocumentThumbService {
     // MARK: - PDF (PDFKit)
 
     /// Renders page 1 of a PDF at the requested size (2x for retina).
+    /// The thumbnail pipeline intentionally uses page 1 for the grid; callers
+    /// that need all pages use `pdfCGImage(url:maxPixelSize:pageIndex:)`.
     static func pdfRender(url: URL, pixelSize: CGFloat, key: String) throws -> NSImage {
         guard let doc = PDFDocument(url: url) else {
             throw ThumbnailService.ThumbnailError.generationFailed
@@ -31,7 +33,7 @@ enum DocumentThumbService {
 
     /// Shared PDF painter (file-backed or in-memory — iWork preview.pdf).
     private static func pdfImage(doc: PDFDocument, pixelSize: CGFloat, key: String) throws -> NSImage {
-        let cgImage = try pdfCGImage(doc: doc, maxPixelSize: Int(pixelSize * 2))
+        let cgImage = try pdfCGImage(doc: doc, maxPixelSize: Int(pixelSize * 2), pageIndex: 0)
         let image = NSImage(cgImage: cgImage, size: NSSize(
             width: CGFloat(cgImage.width),
             height: CGFloat(cgImage.height)))
@@ -39,18 +41,20 @@ enum DocumentThumbService {
         return image
     }
 
-    /// Render page 1 of a PDF to a CGImage at the requested max pixel size.
-    /// Shared by the thumbnail pipeline, the edit preview renderer, and the
-    /// AI redaction detector so all of them can work with PDFs.
-    static func pdfCGImage(url: URL, maxPixelSize: Int) throws -> CGImage {
+    /// Render a specific page of a PDF to a CGImage at the requested max pixel size.
+    /// Shared by the thumbnail pipeline, the edit preview renderer, the OCR
+    /// indexer, and the AI redaction detector so all of them can work with PDFs.
+    /// Pass `pageIndex: 0` for the first page (default preserves existing call sites).
+    static func pdfCGImage(url: URL, maxPixelSize: Int, pageIndex: Int = 0) throws -> CGImage {
         guard let doc = PDFDocument(url: url) else {
             throw ThumbnailService.ThumbnailError.generationFailed
         }
-        return try pdfCGImage(doc: doc, maxPixelSize: maxPixelSize)
+        return try pdfCGImage(doc: doc, maxPixelSize: maxPixelSize, pageIndex: pageIndex)
     }
 
-    private static func pdfCGImage(doc: PDFDocument, maxPixelSize: Int) throws -> CGImage {
-        guard let page = doc.page(at: 0) else {
+    private static func pdfCGImage(doc: PDFDocument, maxPixelSize: Int, pageIndex: Int = 0) throws -> CGImage {
+        guard pageIndex >= 0, pageIndex < doc.pageCount,
+              let page = doc.page(at: pageIndex) else {
             throw ThumbnailService.ThumbnailError.noRepresentation
         }
         let bounds = page.bounds(for: .mediaBox)

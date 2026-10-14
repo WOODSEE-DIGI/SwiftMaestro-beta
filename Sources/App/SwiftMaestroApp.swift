@@ -419,8 +419,9 @@ struct SwiftMaestroApp: App {
                     if swiftHelper.modelID == nil, ModelCatalog.swiftHelperModelAvailable {
                         workspace.setModel(ModelCatalog.swiftHelperModelID, for: swiftHelper.id)
                     }
-                    // Ensure the bundled local coding agent exists, and once the bundled
-                    // DeepSeek Coder V2 Lite is on disk (DMG install or Models-tab
+                    // Ensure the bundled local coding agent exists, and once the
+                    // coding model is on disk (Qwen 3 Coder Next preferred,
+                    // DeepSeek Coder V2 Lite fallback; DMG install or Models-tab
                     // download), default the Local Coder to it so coding help works out
                     // of the box.
                     let coder = workspace.coder

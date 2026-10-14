@@ -2,6 +2,7 @@ import Foundation
 import Vision
 import AppKit
 import CoreGraphics
+import PDFKit
 
 // MARK: - AI Redaction Detector
 //
@@ -51,10 +52,10 @@ actor DAMRedactionDetectorService {
 
             // Vehicle / registration identifiers (label-driven, group 1 = value)
             #"(?:VIN|Vehicle\s+ID|Vehicle\s+Identification\s+Number)[\s:#]*([A-HJ-NPR-Z0-9]{17})"#,
-            #"(?:Registration\s+(?:Number|No\.?)|Rego|Reg\.?|Plate|Licence\s+Plate|License\s+Plate|Number\s+Plate)[\s:#]*([A-Z0-9]{3,8})"#,
+            #"(?:Registration\s+(?:Number|No\.?)|Rego|Reg\.?|Plate|Licence\s+Plate|License\s+Plate|Number\s+Plate)\b[\s:#]*([A-Z0-9]{3,8})"#,
 
             // Document / transaction identifiers (label-driven)
-            #"(?:Certificate\s+(?:ID|Number)|Transaction\s+(?:ID|Number)|Ref(?:erence)?\s*(?:Number|No)?|Invoice\s*(?:Number|No)?)[\s:#]*(\d[\d\s\-]{5,30})"#,
+            #"(?:Certificate\s+(?:ID|Number)|Transaction\s+(?:ID|Number)|Ref(?:erence)?\s*(?:Number|No)?|Invoice\s*(?:Number|No)?)\b[\s:#]*(\d[\d\s\-]{5,30})"#,
 
             // Government / tax identifiers (label-driven)
             #"(?:SSN|Social\s+Security\s*(?:Number|No)?)[\s:#]*(\d{3}[\-\s]\d{2}[\-\s]\d{4})"#, // US SSN
@@ -67,11 +68,11 @@ actor DAMRedactionDetectorService {
             #"(?:Concession|Health\s+Care|Pensioner|Veteran|Senior)[\s:#]*([A-Z0-9]{6,14})"#,       // Govt concession/cards
 
             // Driver licence & related permits (label-driven; formats vary by state/country)
-            #"(?:Licence|License|Lic\s*No|Licence\s*Number|License\s*Number|Driver\s*Lic|DL|Learner\s*Permit)[\s:#]*([A-Z0-9]{5,14})"#,
-            #"(?:Working\s*With\s*Children|WWCC|Police\s*Check|Firearms\s*Lic|Proof\s*Of\s*Age)[\s:#]*([A-Z0-9]{5,14})"#,
+            #"(?:Licence|License|Lic\s*No|Licence\s*Number|License\s*Number|Driver\s*Lic|DL|Learner\s*Permit)\b[\s:#]*([A-Z0-9]{5,14})"#,
+            #"(?:Working\s*With\s*Children|WWCC|Police\s*Check|Firearms\s*Lic|Proof\s*Of\s*Age)\b[\s:#]*([A-Z0-9]{5,14})"#,
 
             // Banking identifiers (label-driven)
-            #"(?:Bank\s+Account|Account\s*(?:Number|No)?|Acct\.?|Acct\s*No)[\s:#]*(\d[\d\s\-]{5,20})"#,
+            #"(?:Bank\s+Account|Account\s*(?:Number|No)?|Acct\.?|Acct\s*No)\b[\s:#]*(\d[\d\s\-]{5,20})"#,
             #"(?:BSB)[\s:#]*(\d{3}[\-\s]\d{3})"#,
 
             // Standalone heuristics (no capture group — redact the whole match)
@@ -85,17 +86,56 @@ actor DAMRedactionDetectorService {
         case visionFailed(Error)
     }
 
-    /// Detect redaction regions in an image file.
+    /// Detect redaction regions in an image file. For PDFs, detection runs on
+    /// every page and boxes are normalized to the first page's coordinate space
+    /// so the existing single-page renderer can burn them in.
     func detect(
         at path: String,
         options: Options = .default
     ) async throws -> [DAMEditState.RedactionBox] {
-        guard FileManager.default.fileExists(atPath: path),
-              let cgImage = await loadCGImage(path: path, maxPixel: 8192)
-        else {
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw DetectorError.cannotLoadImage
+        }
+        let url = URL(fileURLWithPath: path)
+        if DAMFileKind.isPDF(url) {
+            return try await detectPDF(at: url, options: options)
+        }
+        guard let cgImage = await loadCGImage(path: path, maxPixel: 8192) else {
             throw DetectorError.cannotLoadImage
         }
         return try detect(cgImage: cgImage, options: options)
+    }
+
+    /// Run detection on every PDF page and return per-page boxes. Each box
+    /// carries a `pageIndex` so the renderer/overlay can place it on the
+    /// correct page; coordinates are normalized to that page's dimensions.
+    private func detectPDF(at url: URL, options: Options) async throws -> [DAMEditState.RedactionBox] {
+        guard let doc = PDFDocument(url: url), doc.pageCount > 0 else {
+            throw DetectorError.cannotLoadImage
+        }
+
+        var allBoxes: [DAMEditState.RedactionBox] = []
+        for pageIndex in 0..<doc.pageCount {
+            guard let page = doc.page(at: pageIndex) else { continue }
+            let bounds = page.bounds(for: .mediaBox)
+            guard bounds.width > 0, bounds.height > 0 else { continue }
+            let pageImage: CGImage
+            do {
+                // 2048px is plenty for detection and keeps multi-page PDFs fast.
+                pageImage = try DocumentThumbService.pdfCGImage(
+                    url: url, maxPixelSize: 2048, pageIndex: pageIndex)
+            } catch {
+                continue
+            }
+            let pageBoxes = try detect(cgImage: pageImage, options: options)
+                .map { box -> DAMEditState.RedactionBox in
+                    var copy = box
+                    copy.pageIndex = pageIndex
+                    return copy
+                }
+            allBoxes.append(contentsOf: mergeBoxes(pageBoxes, iouThreshold: 0.5))
+        }
+        return allBoxes
     }
 
     /// Detect redaction regions from image data.
@@ -112,7 +152,7 @@ actor DAMRedactionDetectorService {
     }
 
     /// Run Vision requests on a CGImage and convert observations to boxes.
-    private nonisolated func detect(
+    private func detect(
         cgImage: CGImage,
         options: Options
     ) throws -> [DAMEditState.RedactionBox] {
@@ -137,7 +177,9 @@ actor DAMRedactionDetectorService {
     }
 
     /// Run one detection pass on a single CGImage.
-    private nonisolated func detectSingle(
+    /// Nonisolated so it can be called from both single-image and multi-page
+    /// PDF detection without hopping executors per page.
+    private func detectSingle(
         cgImage: CGImage,
         options: Options
     ) throws -> [DAMEditState.RedactionBox] {
@@ -169,7 +211,7 @@ actor DAMRedactionDetectorService {
 
     /// Run face detection on overlapping tiles and convert local coordinates
     /// back to image-normalized coordinates.
-    private nonisolated func detectTiledFaces(
+    private func detectTiledFaces(
         cgImage: CGImage,
         tileCount: Int,
         options: Options
@@ -221,7 +263,7 @@ actor DAMRedactionDetectorService {
     }
 
     /// Merge boxes using non-maximum suppression based on IOU.
-    private nonisolated func mergeBoxes(
+    private func mergeBoxes(
         _ boxes: [DAMEditState.RedactionBox],
         iouThreshold: Double
     ) -> [DAMEditState.RedactionBox] {
@@ -238,7 +280,7 @@ actor DAMRedactionDetectorService {
         return kept
     }
 
-    private nonisolated func buildRequests(options: Options) -> [VNRequest] {
+    private func buildRequests(options: Options) -> [VNRequest] {
         var requests: [VNRequest] = []
         if options.detectFaces {
             let faceRequest = VNDetectFaceRectanglesRequest()
@@ -261,7 +303,7 @@ actor DAMRedactionDetectorService {
 
     // MARK: - Face detection
 
-    private nonisolated func faceBoxes(
+    private func faceBoxes(
         from request: VNDetectFaceRectanglesRequest,
         options: Options
     ) -> [DAMEditState.RedactionBox] {
@@ -275,7 +317,7 @@ actor DAMRedactionDetectorService {
 
     // MARK: - Text detection
 
-    private nonisolated func textBoxes(
+    private func textBoxes(
         from request: VNRecognizeTextRequest,
         options: Options
     ) -> [DAMEditState.RedactionBox] {
@@ -322,7 +364,7 @@ actor DAMRedactionDetectorService {
 
     // MARK: - Barcode detection
 
-    private nonisolated func barcodeBoxes(
+    private func barcodeBoxes(
         from request: VNDetectBarcodesRequest,
         options: Options
     ) -> [DAMEditState.RedactionBox] {
@@ -338,7 +380,7 @@ actor DAMRedactionDetectorService {
 
     /// Vision uses bottom-left-origin normalized rects; the redaction recipe
     /// uses top-left-origin normalized rects (the displayed frame).
-    private nonisolated func box(
+    private func box(
         from visionRect: CGRect,
         kind: DAMEditState.RedactionBox.Kind
     ) -> DAMEditState.RedactionBox {
@@ -352,7 +394,7 @@ actor DAMRedactionDetectorService {
     }
 
     /// Load a CGImage, downscaled if needed, matching the tagging service path.
-    private nonisolated func loadCGImage(path: String, maxPixel: Int) async -> CGImage? {
+    private func loadCGImage(path: String, maxPixel: Int) async -> CGImage? {
         let url = URL(fileURLWithPath: path)
         guard FileManager.default.fileExists(atPath: path) else { return nil }
 
@@ -366,7 +408,7 @@ actor DAMRedactionDetectorService {
         }
 
         if DAMFileKind.isPDF(url) {
-            return try? DocumentThumbService.pdfCGImage(url: url, maxPixelSize: maxPixel)
+            return try? DocumentThumbService.pdfCGImage(url: url, maxPixelSize: maxPixel, pageIndex: 0)
         }
 
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }

@@ -384,6 +384,15 @@ extension MaestroTools {
         }
     }
 
+    /// Remove a single session-scoped root (e.g. the user cleared the working
+    /// directory it came from).
+    static func removeSessionAuthorizedRoot(_ path: String) {
+        let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+        sessionAuthorizedRootsLock.withLock {
+            sessionAuthorizedRoots.remove(standardized)
+        }
+    }
+
     /// Enabled authorized roots from Settings → Context, standardized to absolute
     /// paths. A target path is permitted only if it equals one of these roots or
     /// is nested inside one. The agent's working directory is always an implicit
@@ -494,7 +503,20 @@ extension MaestroTools {
         let list = roots.isEmpty ? "(none configured)" : roots.joined(separator: ", ")
         return errorJSON(
             "access denied: '\(path)' is outside the authorized folders. "
-            + "Authorized: \(list). Add it in Settings → Context.")
+            + "Authorized: \(list). Add it in Settings → Context. "
+            + "STOP — do not retry this tool call or any equivalent call for the same folder. "
+            + "Tell the user exactly this in one short message, then wait for them: "
+            + "\"I can't access '\(path)'. Please add it in Settings → Context, then ask me to try again.\"")
+    }
+
+    /// Out-of-roots path found INSIDE a file handler (after its own argument
+    /// parsing): surface the permission dock (Deny / Allow once / Allow always)
+    /// so the user sees the request, then either proceed (nil — the dock grant
+    /// added a session root) or return a stop-and-tell-the-user error. Prefer
+    /// this over bare denied(): a bare error is invisible to the user and small
+    /// models retry it in a loop instead of asking for access.
+    static func requestFolderAccess(toolName: String, path: String, call: ToolCall) async -> String? {
+        await PermissionService.shared.requestAccess(toolName: toolName, path: path, call: call)
     }
 
     // MARK: - Polymorphic file reading
@@ -642,9 +664,11 @@ extension MaestroTools {
             NSLog("[read_file] could not resolve path '%@' against working directory '%@'", raw, MaestroTools.workingDirectory ?? "(none)")
             return errorJSON("read_file requires an absolute path (got '\(raw)')")
         }
-        guard isAllowed(resolved, roots: authorizedRoots()) else {
+        if !isAllowed(resolved, roots: authorizedRoots()) {
             NSLog("[read_file] access denied for '%@' (resolved: '%@'); roots=%@", raw, resolved, authorizedRoots())
-            return denied(raw)
+            if let accessError = await requestFolderAccess(toolName: "read_file", path: raw, call: call) {
+                return accessError
+            }
         }
         let actualPath = fuzzyResolve(resolved, wantDirectory: false) ?? resolved
         var isDir: ObjCBool = false
@@ -749,7 +773,11 @@ extension MaestroTools {
         guard let resolved = resolveAbsolute(raw) else {
             return errorJSON("write_file requires an absolute path (got '\(raw)')")
         }
-        guard isAllowed(resolved, roots: authorizedRoots()) else { return denied(raw) }
+        if !isAllowed(resolved, roots: authorizedRoots()) {
+            if let accessError = await requestFolderAccess(toolName: "write_file", path: raw, call: call) {
+                return accessError
+            }
+        }
         let url = URL(fileURLWithPath: resolved)
         let encoding = args.encoding?.lowercased() ?? "utf8"
 
@@ -816,7 +844,11 @@ extension MaestroTools {
         guard let resolved = resolveAbsolute(raw) else {
             return errorJSON("list_dir requires an absolute path (got '\(raw)')")
         }
-        guard isAllowed(resolved, roots: authorizedRoots()) else { return denied(raw) }
+        if !isAllowed(resolved, roots: authorizedRoots()) {
+            if let accessError = await requestFolderAccess(toolName: "list_dir", path: raw, call: call) {
+                return accessError
+            }
+        }
         let actualPath = fuzzyResolve(resolved, wantDirectory: true) ?? resolved
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: actualPath, isDirectory: &isDir), isDir.boolValue else {
@@ -843,6 +875,20 @@ extension MaestroTools {
         guard let args = decodeArgs(call, as: MultiFileEditArgs.self),
               let edits = args.edits, !edits.isEmpty else {
             return errorJSON("multi_file_edit requires a non-empty 'edits' array")
+        }
+        // Pre-scan: surface ONE permission dock for out-of-roots paths instead of
+        // failing every edit invisibly. A dock grant adds a session root, so
+        // roots are re-read before the loop; a deny fails the batch fast with
+        // a stop-and-tell-the-user error.
+        let preDenied = edits.compactMap { edit -> String? in
+            guard let p = edit.path?.trimmingCharacters(in: .whitespaces), !p.isEmpty,
+                  let r = resolveAbsolute(p), !isAllowed(r, roots: authorizedRoots()) else { return nil }
+            return p
+        }
+        if let first = preDenied.first {
+            if let accessError = await requestFolderAccess(toolName: "multi_file_edit", path: first, call: call) {
+                return accessError
+            }
         }
         let roots = authorizedRoots()
         var results: [[String: any Sendable]] = []
@@ -951,7 +997,11 @@ extension MaestroTools {
         guard let resolved = resolveAbsolute(raw) else {
             return errorJSON("ocr_image requires an absolute path (got '\(raw)')")
         }
-        guard isAllowed(resolved, roots: authorizedRoots()) else { return denied(raw) }
+        if !isAllowed(resolved, roots: authorizedRoots()) {
+            if let accessError = await requestFolderAccess(toolName: "ocr_image", path: raw, call: call) {
+                return accessError
+            }
+        }
         let actualPath = fuzzyResolve(resolved, wantDirectory: false) ?? resolved
         guard FileManager.default.fileExists(atPath: actualPath) else {
             return errorJSON("no file at '\(resolved)'.\(didYouMean(path: resolved, wantDirectory: false))")
@@ -994,9 +1044,16 @@ extension MaestroTools {
         guard let destination = resolveAbsolute(rawDest) else {
             return errorJSON("copy_file requires an absolute destination path (got '\(rawDest)')")
         }
-        let roots = authorizedRoots()
-        guard isAllowed(source, roots: roots) else { return denied(rawSource) }
-        guard isAllowed(destination, roots: roots) else { return denied(rawDest) }
+        if !isAllowed(source, roots: authorizedRoots()) {
+            if let accessError = await requestFolderAccess(toolName: "copy_file", path: rawSource, call: call) {
+                return accessError
+            }
+        }
+        if !isAllowed(destination, roots: authorizedRoots()) {
+            if let accessError = await requestFolderAccess(toolName: "copy_file", path: rawDest, call: call) {
+                return accessError
+            }
+        }
         let actualSource = fuzzyResolve(source, wantDirectory: false) ?? source
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: actualSource, isDirectory: &isDir), !isDir.boolValue else {
@@ -1038,9 +1095,16 @@ extension MaestroTools {
         guard let destination = resolveAbsolute(rawDest) else {
             return errorJSON("move_file requires an absolute destination path (got '\(rawDest)')")
         }
-        let roots = authorizedRoots()
-        guard isAllowed(source, roots: roots) else { return denied(rawSource) }
-        guard isAllowed(destination, roots: roots) else { return denied(rawDest) }
+        if !isAllowed(source, roots: authorizedRoots()) {
+            if let accessError = await requestFolderAccess(toolName: "move_file", path: rawSource, call: call) {
+                return accessError
+            }
+        }
+        if !isAllowed(destination, roots: authorizedRoots()) {
+            if let accessError = await requestFolderAccess(toolName: "move_file", path: rawDest, call: call) {
+                return accessError
+            }
+        }
         let actualSource = fuzzyResolve(source, wantDirectory: false) ?? source
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: actualSource, isDirectory: &isDir), !isDir.boolValue else {
@@ -1088,7 +1152,11 @@ extension MaestroTools {
         guard let resolved = resolveAbsolute(raw) else {
             return errorJSON("delete_file requires an absolute path (got '\(raw)')")
         }
-        guard isAllowed(resolved, roots: authorizedRoots()) else { return denied(raw) }
+        if !isAllowed(resolved, roots: authorizedRoots()) {
+            if let accessError = await requestFolderAccess(toolName: "delete_file", path: raw, call: call) {
+                return accessError
+            }
+        }
         let actualPath = fuzzyResolve(resolved, wantDirectory: false) ?? resolved
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: actualPath, isDirectory: &isDir), !isDir.boolValue else {
@@ -1121,7 +1189,11 @@ extension MaestroTools {
         guard let resolved = resolveAbsolute(raw) else {
             return errorJSON("list_file_snapshots requires an absolute path (got '\(raw)')")
         }
-        guard isAllowed(resolved, roots: authorizedRoots()) else { return denied(raw) }
+        if !isAllowed(resolved, roots: authorizedRoots()) {
+            if let accessError = await requestFolderAccess(toolName: "list_file_snapshots", path: raw, call: call) {
+                return accessError
+            }
+        }
         let changes = ChangeGuard.shared.listChanges(forPath: resolved)
         guard !changes.isEmpty else {
             return jsonString(["path": resolved, "count": "0",
@@ -1169,7 +1241,11 @@ extension MaestroTools {
         guard let resolved = resolveAbsolute(raw) else {
             return errorJSON("create_directory requires an absolute path (got '\(raw)')")
         }
-        guard isAllowed(resolved, roots: authorizedRoots()) else { return denied(raw) }
+        if !isAllowed(resolved, roots: authorizedRoots()) {
+            if let accessError = await requestFolderAccess(toolName: "create_directory", path: raw, call: call) {
+                return accessError
+            }
+        }
         do {
             try FileManager.default.createDirectory(
                 atPath: resolved, withIntermediateDirectories: true, attributes: nil)

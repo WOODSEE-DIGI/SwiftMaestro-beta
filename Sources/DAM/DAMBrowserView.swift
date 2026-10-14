@@ -77,17 +77,19 @@ struct DAMBrowserView: View {
     @State private var predicateHasXattrKeywords = false
 
     /// Home workspace viewing options.
-    @AppStorage("dam.homeViewMode") private var homeViewMode: HomeViewMode = .browser
+    @AppStorage("dam.homeViewMode") private var homeViewMode: HomeViewMode = .grid
 
     private enum HomeViewMode: String, CaseIterable {
-        case browser = "browser"
+        case grid = "browser"
+        case filmstrip = "list"
         case statistics = "statistics"
         case storageMap = "storageMap"
         case duplicates = "duplicates"
 
         var label: String {
             switch self {
-            case .browser: return "Browser"
+            case .grid: return "Grid"
+            case .filmstrip: return "Filmstrip"
             case .statistics: return "Statistics"
             case .storageMap: return "Storage Map"
             case .duplicates: return "Duplicates"
@@ -96,7 +98,8 @@ struct DAMBrowserView: View {
 
         var icon: String {
             switch self {
-            case .browser: return "square.grid.2x2"
+            case .grid: return "square.grid.2x2"
+            case .filmstrip: return "film"
             case .statistics: return "chart.bar"
             case .storageMap: return "externaldrive.badge.icloud"
             case .duplicates: return "doc.on.doc"
@@ -184,7 +187,7 @@ struct DAMBrowserView: View {
                       let asset = viewModel.assets.first(where: { $0.id == viewModel.selection.first }),
                       FileManager.default.fileExists(atPath: asset.path)
                 else { return event }
-                DAMQuickLookPanelController.shared.toggle(for: URL(fileURLWithPath: asset.path))
+                DAMQuickLookPanelController.shared.toggle(for: asset)
                 return nil
             }
         }
@@ -289,14 +292,6 @@ struct DAMBrowserView: View {
                 Image(systemName: "sidebar.left")
             }
             .help("Show/hide the Folders tree")
-
-            Picker("View", selection: $homeViewMode) {
-                ForEach(HomeViewMode.allCases, id: \.self) { mode in
-                    Label(mode.label, systemImage: mode.icon).tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 320)
 
             Menu {
                 Button { viewModel.importFolderWithPanel() } label: {
@@ -485,6 +480,40 @@ struct DAMBrowserView: View {
                           : "Privacy mode — hide faces and sensitive content for screen sharing")
                     .buttonStyle(BorderlessButtonStyle())
                     .foregroundStyle(viewModel.privacyModeActive ? .red : .primary)
+                    .contextMenu {
+                        Toggle("Detect Faces", isOn: Binding(
+                            get: { viewModel.privacyDetectFaces },
+                            set: { viewModel.privacyDetectFaces = $0 }
+                        ))
+                        Toggle("Detect Text (OCR)", isOn: Binding(
+                            get: { viewModel.privacyDetectText },
+                            set: { viewModel.privacyDetectText = $0 }
+                        ))
+                        Toggle("Detect Barcodes", isOn: Binding(
+                            get: { viewModel.privacyDetectBarcodes },
+                            set: { viewModel.privacyDetectBarcodes = $0 }
+                        ))
+                        Toggle("Use PII Patterns", isOn: Binding(
+                            get: { viewModel.privacyUsePIIPatterns },
+                            set: { viewModel.privacyUsePIIPatterns = $0 }
+                        ))
+                        Picker("Confidence", selection: Binding(
+                            get: { viewModel.privacyConfidence },
+                            set: { viewModel.privacyConfidence = $0 }
+                        )) {
+                            Text("Low").tag(0.2)
+                            Text("Normal").tag(0.3)
+                            Text("High").tag(0.5)
+                        }
+                        Divider()
+                        Button("Reset to Defaults") {
+                            viewModel.privacyDetectFaces = true
+                            viewModel.privacyDetectText = true
+                            viewModel.privacyDetectBarcodes = true
+                            viewModel.privacyUsePIIPatterns = true
+                            viewModel.privacyConfidence = 0.3
+                        }
+                    }
 
                     Divider().frame(height: 16)
 
@@ -535,6 +564,7 @@ struct DAMBrowserView: View {
                         Image(systemName: "sidebar.right")
                     }
                     .help("Show/hide the Preview panel")
+                    .disabled(homeViewMode != .grid)
                 }
                 .padding(.horizontal, 2)
             }
@@ -1225,6 +1255,45 @@ struct DAMBrowserView: View {
         }
     }
 
+    /// Breadcrumb + home view-mode picker, shown above the grid or filmstrip.
+    /// The picker is overlaid at the trailing edge so the breadcrumb can never
+    /// push it outside the visible area.
+    private var homeCatalogHeader: some View {
+        breadcrumbBar
+            .overlay(alignment: .topTrailing) {
+                homeViewPicker
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
+            }
+    }
+
+    private var homeViewPicker: some View {
+        Picker("View", selection: $homeViewMode) {
+            ForEach(HomeViewMode.allCases, id: \.self) { mode in
+                Label(mode.label, systemImage: mode.icon).tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+        .frame(width: 360)
+    }
+
+    @ViewBuilder
+    private var filmstripContent: some View {
+        VStack(spacing: 0) {
+            MetadataPreviewPane(
+                asset: viewModel.primaryAsset,
+                zoom: Binding(
+                    get: { viewModel.previewZoom },
+                    set: { viewModel.previewZoom = $0 }
+                )
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Divider()
+            FilmstripBar(viewModel: viewModel, assets: viewModel.assets)
+                .frame(height: 128)
+        }
+    }
+
     @ViewBuilder
     private var gridContent: some View {
         if let error = viewModel.errorMessage {
@@ -1249,12 +1318,15 @@ struct DAMBrowserView: View {
                             asset: asset,
                             isSelected: viewModel.selection.contains(asset.id ?? -1)
                         )
-                        .onTapGesture { handleGridTap(asset) }
+                        .contentShape(Rectangle())
+                        .onTapGesture { gridCellTapped(asset) }
                         .contextMenu { gridContextMenu(for: asset) }
                         .onDrag {
                             NSItemProvider(object: draggedAssetIDs(for: asset) as NSString)
                         }
                         .task { await viewModel.loadMoreIfNeeded(currentItem: asset) }
+                        .onAppear { viewModel.assetBecameVisible(id: asset.id ?? -1) }
+                        .onDisappear { viewModel.assetBecameInvisible(id: asset.id ?? -1) }
                     }
                 }
                 .padding(12)
@@ -1262,12 +1334,30 @@ struct DAMBrowserView: View {
         }
     }
 
-    private func handleGridTap(_ asset: DAMAsset) {
-        if NSEvent.modifierFlags.contains(.command) {
+    private func gridCellTapped(_ asset: DAMAsset) {
+        let modifiers = NSApp.currentEvent?.modifierFlags ?? []
+        if modifiers.contains(.command) {
             viewModel.toggleSelection(asset.id)
+        } else if modifiers.contains(.shift) {
+            selectRange(to: asset)
         } else {
             viewModel.selectSingle(asset.id)
         }
+    }
+
+    /// Shift-click: extend the selection from the current primary to the
+    /// clicked asset, inclusive.
+    private func selectRange(to target: DAMAsset) {
+        guard let primary = viewModel.primarySelectedID,
+              let targetID = target.id,
+              let startIndex = viewModel.assets.firstIndex(where: { $0.id == primary }),
+              let endIndex = viewModel.assets.firstIndex(where: { $0.id == targetID }) else {
+            viewModel.selectSingle(target.id)
+            return
+        }
+        let range = min(startIndex, endIndex)...max(startIndex, endIndex)
+        let rangeIDs = Set(viewModel.assets[range].compactMap(\.id))
+        viewModel.setSelection(viewModel.selection.union(rangeIDs))
     }
 
     @ViewBuilder
@@ -1833,23 +1923,38 @@ struct DAMBrowserView: View {
             }
             VStack(spacing: 0) {
                 switch homeViewMode {
-                case .browser:
+                case .grid:
                     storageHealthBanner
-                    breadcrumbBar
+                    homeCatalogHeader
                     Divider()
                     gridContent
                     Divider()
                     statusBar
+                case .filmstrip:
+                    storageHealthBanner
+                    homeCatalogHeader
+                    Divider()
+                    filmstripContent
+                    Divider()
+                    statusBar
                 case .statistics:
+                    storageHealthBanner
+                    homeCatalogHeader
+                    Divider()
                     DAMStatisticsView(viewModel: viewModel)
                 case .storageMap:
                     storageHealthBanner
+                    homeCatalogHeader
+                    Divider()
                     DAMStorageMapView(viewModel: viewModel)
                 case .duplicates:
+                    storageHealthBanner
+                    homeCatalogHeader
+                    Divider()
                     DAMDuplicateFinderView(viewModel: viewModel)
                 }
             }
-            if homeViewMode == .browser, showPreviewPanel {
+            if homeViewMode == .grid, showPreviewPanel {
                 PanelResizeHandle(width: $previewWidth, minWidth: 240, maxWidth: 640, invert: true)
                 previewPanel
                     .frame(width: previewWidth)
@@ -1875,8 +1980,14 @@ struct DAMBrowserView: View {
                     metadataHeader
                     Divider()
                     if metadataViewMode == .preview {
-                        MetadataPreviewPane(asset: viewModel.primaryAsset)
-                            .frame(minHeight: 240, idealHeight: 420, maxHeight: 560)
+                        MetadataPreviewPane(
+                            asset: viewModel.primaryAsset,
+                            zoom: Binding(
+                                get: { viewModel.previewZoom },
+                                set: { viewModel.previewZoom = $0 }
+                            )
+                        )
+                        .frame(minHeight: 240, idealHeight: 420, maxHeight: 560)
                         Divider()
                     }
                     ListWorkspaceView(viewModel: viewModel)
@@ -2094,7 +2205,10 @@ private struct DAMPreviewImage: View {
         ZStack {
             RoundedRectangle(cornerRadius: 8)
                 .fill(Color(nsColor: .controlBackgroundColor))
-            if let image {
+            if DAMFileKind.isPDF(URL(fileURLWithPath: asset.path)) {
+                DAMPDFPreviewView(asset: asset)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            } else if let image {
                 Image(nsImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
@@ -2150,38 +2264,46 @@ private struct DAMPreviewImage: View {
 /// aware, decoded at 1600px for visible detail.
 private struct MetadataPreviewPane: View {
     let asset: DAMAsset?
+    let zoom: Binding<Double>
 
     @State private var image: NSImage?
     @State private var loadFailed = false
 
     var body: some View {
-        ZStack {
-            Color(nsColor: .controlBackgroundColor)
-            if let asset {
-                if let image {
-                    Image(nsImage: image)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .padding(8)
-                } else if loadFailed {
-                    ContentUnavailableView(
-                        "No Preview",
-                        systemImage: "doc",
-                        description: Text(asset.filename)
-                    )
+        GeometryReader { geo in
+            ZStack {
+                Color(nsColor: .controlBackgroundColor)
+                if let asset {
+                    if DAMFileKind.isPDF(URL(fileURLWithPath: asset.path)) {
+                        DAMPDFPreviewView(asset: asset, zoom: zoom.wrappedValue, containerSize: geo.size)
+                            .padding(8)
+                    } else if let image {
+                        Image(nsImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .scaleEffect(zoom.wrappedValue)
+                            .padding(8)
+                    } else if loadFailed {
+                        ContentUnavailableView(
+                            "No Preview",
+                            systemImage: "doc",
+                            description: Text(asset.filename)
+                        )
+                    } else {
+                        ProgressView()
+                            .controlSize(.large)
+                    }
                 } else {
-                    ProgressView()
-                        .controlSize(.large)
+                    ContentUnavailableView(
+                        "No Selection",
+                        systemImage: "photo",
+                        description: Text("Select an asset to preview it.")
+                    )
                 }
-            } else {
-                ContentUnavailableView(
-                    "No Selection",
-                    systemImage: "photo",
-                    description: Text("Select an asset to preview it.")
-                )
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .topTrailing) { zoomControls }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task(id: asset?.id ?? -1) {
             await loadImage()
         }
@@ -2190,6 +2312,37 @@ private struct MetadataPreviewPane: View {
                   changedAssetId == asset?.id else { return }
             Task { await loadImage() }
         }
+    }
+
+    private var zoomControls: some View {
+        HStack(spacing: 6) {
+            Button {
+                zoom.wrappedValue = max(0.25, zoom.wrappedValue - 0.25)
+            } label: {
+                Image(systemName: "minus.magnifyingglass")
+            }
+
+            Text("\(Int(round(zoom.wrappedValue * 100)))%")
+                .monospacedDigit()
+                .frame(minWidth: 44)
+
+            Button {
+                zoom.wrappedValue = min(4.0, zoom.wrappedValue + 0.25)
+            } label: {
+                Image(systemName: "plus.magnifyingglass")
+            }
+
+            Button {
+                zoom.wrappedValue = 1.0
+            } label: {
+                Image(systemName: "arrow.uturn.left")
+            }
+            .help("Reset zoom")
+        }
+        .padding(6)
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .padding(10)
     }
 
     private func loadImage() async {

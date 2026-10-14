@@ -110732,6 +110732,9 @@
         }
       }
     },
+    "High" : {
+
+    },
     "Hints" : {
       "localizations" : {
         "ar" : {
@@ -131506,6 +131509,9 @@
           }
         }
       }
+    },
+    "Low" : {
+
     },
     "macOS notification on match (asks permission once)" : {
       "extractionState" : "stale",
@@ -168758,6 +168764,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "頁面"
+          }
+        }
+      }
+    },
+    "Page %@ of %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Page %1$@ of %2$@"
           }
         }
       }

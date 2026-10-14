@@ -224,6 +224,32 @@ struct ChatView: View {
         return out
     }
 
+    /// Agents this plan can be shared with (everyone except the current agent).
+    private var shareableAgents: [AgentRecord] {
+        workspace.agents
+            .filter { $0.id != vm.agent.id }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// User-driven plan share: copies the plan into the target agent's personal
+    /// scope (so it shows in their Plans panel + prompt context) and leaves an
+    /// inbox message with the full content. This bypasses model-to-model
+    /// messaging entirely — no send_agent_message / delegation call needed.
+    private func sharePlan(_ entry: (scope: PlanScope, plan: Plan), with target: AgentRecord) {
+        let copyTitle = "\(entry.plan.title) (shared from \(vm.agent.name))"
+        planStore.create(title: copyTitle, content: entry.plan.content, in: .agent(target.id))
+        messageStore.send(
+            to: target.id,
+            fromName: vm.agent.name,
+            fromAgentId: vm.agent.id.uuidString,
+            subject: "Shared plan: \(entry.plan.title)",
+            body: "\(vm.agent.name) shared the plan \"\(entry.plan.title)\" with you. "
+                + "A copy is in your Plans panel as \"\(copyTitle)\". Full content:\n\n"
+                + "# \(entry.plan.title)\n\n\(entry.plan.content)"
+        )
+        NSLog("[PLAN] shared '%@' from '%@' to '%@'", entry.plan.title, vm.agent.name, target.name)
+    }
+
     /// Always-visible base-directory control at the top-left of the chat. Opens a
     /// folder picker; the choice is injected into the agent's prompt + shell cwd.
     private var workingDirBar: some View {
@@ -727,6 +753,14 @@ struct ChatView: View {
                             }
                             Divider()
                             Button("Open in Window") { openPlanWindow(entry) }
+                            Menu("Share with Agent") {
+                                ForEach(shareableAgents, id: \.id) { target in
+                                    Button("\(target.name)\(workspace.projectName(for: target).map { " (\($0))" } ?? "")") {
+                                        sharePlan(entry, with: target)
+                                    }
+                                }
+                            }
+                            .disabled(shareableAgents.isEmpty)
                             Button("Rename") {
                                 renamingPlanEntry = entry
                                 planRenameText = entry.plan.title

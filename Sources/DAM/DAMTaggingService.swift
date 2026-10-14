@@ -2,6 +2,7 @@ import Foundation
 import Vision
 import ImageIO
 import AppKit
+import PDFKit
 
 // MARK: - AI Tagging Service (learn-as-you-tag)
 //
@@ -203,12 +204,16 @@ actor DAMTaggingService {
     /// avoid Apple's decoder error spam (`-50` per file). Standard images
     /// (JPEG/HEIC/PNG/TIFF/WebP) use ImageIO directly — fast, in-process,
     /// no XPC overhead. Falls back to ThumbnailService for anything else.
+    ///
+    /// For PDFs, callers that need all pages (OCR/indexing) should use
+    /// `loadPDFPageImages(path:maxPixel:)`; this single-image path keeps page 1
+    /// behavior for feature prints, classification, and legacy callers.
     static func loadCGImage(path: String, maxPixel: Int) async -> CGImage? {
         let url = URL(fileURLWithPath: path)
 
         // Camera RAW + LibRaw-only formats: skip ImageIO entirely.
         // Apple's decoder spams CGImageSourceCreateThumbnailAtIndex [-50]
-        // errors on many RAW variants (NEF/RA30/RA02/RA04/IIQ/PEF).
+        // errors on many RAW variants (NEF/RA30/RA02/IIQ/PEF).
         // ThumbnailService routes these through LibRaw which handles them
         // uniformly and quietly.
         if DAMFileKind.isCameraRAW(url) || DAMFileKind.isLibRAWOnly(url) {
@@ -218,6 +223,11 @@ actor DAMTaggingService {
                 return nsImage.cgImage(forProposedRect: &rect, context: nil, hints: nil)
             }
             return nil
+        }
+
+        // PDFs: page 1 for single-image callers.
+        if DAMFileKind.isPDF(url) {
+            return try? DocumentThumbService.pdfCGImage(url: url, maxPixelSize: maxPixel, pageIndex: 0)
         }
 
         // Standard images (JPEG/HEIC/PNG/TIFF/WebP/GIF): ImageIO direct.
@@ -238,5 +248,24 @@ actor DAMTaggingService {
             return nsImage.cgImage(forProposedRect: &rect, context: nil, hints: nil)
         }
         return nil
+    }
+
+    /// Decode every page of a PDF as a CGImage. Returns empty array for
+    /// non-PDFs or unopenable documents. Page 0 is first page.
+    static func loadPDFPageImages(path: String, maxPixel: Int) -> [CGImage] {
+        let url = URL(fileURLWithPath: path)
+        guard DAMFileKind.isPDF(url),
+              let doc = PDFDocument(url: url), doc.pageCount > 0 else { return [] }
+        var images: [CGImage] = []
+        for pageIndex in 0..<doc.pageCount {
+            do {
+                images.append(try DocumentThumbService.pdfCGImage(
+                    url: url, maxPixelSize: maxPixel, pageIndex: pageIndex))
+            } catch {
+                NSLog("[DAMTagging] Failed to render PDF page %d for %@: %@",
+                      pageIndex, url.lastPathComponent, String(describing: error))
+            }
+        }
+        return images
     }
 }

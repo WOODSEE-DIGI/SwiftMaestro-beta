@@ -133,7 +133,8 @@ struct FilmstripBar: View {
                             isSelected: viewModel.selection.contains(asset.id ?? -1)
                         )
                         .id(asset.id ?? -1)
-                        .onTapGesture { handleTap(asset) }
+                        .contentShape(Rectangle())
+                        .onTapGesture { filmstripCellTapped(asset) }
                         .contextMenu { contextMenu(for: asset) }
                     }
                 }
@@ -153,12 +154,30 @@ struct FilmstripBar: View {
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
-    private func handleTap(_ asset: DAMAsset) {
-        if NSEvent.modifierFlags.contains(.command) {
+    private func filmstripCellTapped(_ asset: DAMAsset) {
+        let modifiers = NSApp.currentEvent?.modifierFlags ?? []
+        if modifiers.contains(.command) {
             viewModel.toggleSelection(asset.id)
+        } else if modifiers.contains(.shift) {
+            selectRange(to: asset)
         } else {
             viewModel.selectSingle(asset.id)
         }
+    }
+
+    /// Shift-click: extend the selection from the current primary to the
+    /// clicked asset, inclusive.
+    private func selectRange(to target: DAMAsset) {
+        guard let primary = viewModel.primarySelectedID,
+              let targetID = target.id,
+              let startIndex = assets.firstIndex(where: { $0.id == primary }),
+              let endIndex = assets.firstIndex(where: { $0.id == targetID }) else {
+            viewModel.selectSingle(target.id)
+            return
+        }
+        let range = min(startIndex, endIndex)...max(startIndex, endIndex)
+        let rangeIDs = Set(assets[range].compactMap(\.id))
+        viewModel.setSelection(viewModel.selection.union(rangeIDs))
     }
 
     @ViewBuilder
@@ -265,6 +284,15 @@ struct ListWorkspaceView: View {
         )
     }
 
+    /// Wraps a list cell so the view model knows which assets are currently
+    /// visible. This keeps privacy-mode redaction scoped to the viewport.
+    @ViewBuilder
+    private func trackedRow(for asset: DAMAsset, @ViewBuilder content: () -> some View) -> some View {
+        content()
+            .onAppear { viewModel.assetBecameVisible(id: asset.id ?? -1) }
+            .onDisappear { viewModel.assetBecameInvisible(id: asset.id ?? -1) }
+    }
+
     @ViewBuilder
     var body: some View {
         if #available(macOS 14.4, *) {
@@ -281,71 +309,89 @@ struct ListWorkspaceView: View {
         ZStack(alignment: .topTrailing) {
             Table(sortedAssets, selection: selectionBinding, sortOrder: $sortOrder) {
                 TableColumn("Name", value: \.filename) { asset in
-                    Text(asset.filename)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                    trackedRow(for: asset) {
+                        Text(asset.filename)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                 }
                 .width(min: 140, ideal: 240)
 
                 TableColumn("Date", value: \.sortDate) { asset in
-                    Text((asset.captureDate ?? asset.fileModDate)?
-                        .formatted(date: .abbreviated, time: .shortened) ?? "—")
+                    trackedRow(for: asset) {
+                        Text((asset.captureDate ?? asset.fileModDate)?
+                            .formatted(date: .abbreviated, time: .shortened) ?? "—")
+                    }
                 }
                 .width(150)
 
                 TableColumn("Size", value: \.sortSize) { asset in
-                    Text(asset.formattedSize.isEmpty ? "—" : asset.formattedSize)
+                    trackedRow(for: asset) {
+                        Text(asset.formattedSize.isEmpty ? "—" : asset.formattedSize)
+                    }
                 }
                 .width(80)
 
                 if showExtensionColumn {
                     TableColumn("Ext", value: \.sortExtension) { asset in
-                        Text(asset.formattedExtension)
-                            .lineLimit(1)
+                        trackedRow(for: asset) {
+                            Text(asset.formattedExtension)
+                                .lineLimit(1)
+                        }
                     }
                     .width(60)
                 }
 
                 if showTypeColumn {
                     TableColumn("Type", value: \.sortType) { asset in
-                        Text(UTType(asset.uti ?? "")?.localizedDescription
-                             ?? (asset.path as NSString).pathExtension.uppercased())
-                            .lineLimit(1)
+                        trackedRow(for: asset) {
+                            Text(UTType(asset.uti ?? "")?.localizedDescription
+                                 ?? (asset.path as NSString).pathExtension.uppercased())
+                                .lineLimit(1)
+                        }
                     }
                     .width(110)
                 }
 
                 if showDurationColumn {
                     TableColumn("Duration", value: \.sortDuration) { asset in
-                        Text(asset.formattedDuration)
-                            .monospacedDigit()
+                        trackedRow(for: asset) {
+                            Text(asset.formattedDuration)
+                                .monospacedDigit()
+                        }
                     }
                     .width(80)
                 }
 
                 if showRatingColumn {
                     TableColumn("Rating", value: \.rating) { asset in
-                        Text(asset.rating == 0 ? "—" : String(repeating: "★", count: asset.rating))
-                            .foregroundStyle(.yellow)
+                        trackedRow(for: asset) {
+                            Text(asset.rating == 0 ? "—" : String(repeating: "★", count: asset.rating))
+                                .foregroundStyle(.yellow)
+                        }
                     }
                     .width(70)
                 }
 
                 if showKeywordsColumn {
                     TableColumn("Keywords") { asset in
-                        Text(asset.userKeywords ?? asset.xattrKeywords ?? "")
-                            .lineLimit(1)
-                            .truncationMode(.tail)
+                        trackedRow(for: asset) {
+                            Text(asset.userKeywords ?? asset.xattrKeywords ?? "")
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                        }
                     }
                 }
 
                 if showFolderColumn {
                     TableColumn("Folder") { asset in
-                        Text(asset.folder ?? "")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.head)
+                        trackedRow(for: asset) {
+                            Text(asset.folder ?? "")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.head)
+                        }
                     }
                 }
             }
@@ -367,60 +413,78 @@ struct ListWorkspaceView: View {
     private var standardTable: some View {
         Table(sortedAssets, selection: selectionBinding, sortOrder: $sortOrder) {
             TableColumn("Name", value: \.filename) { asset in
-                Text(asset.filename)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                trackedRow(for: asset) {
+                    Text(asset.filename)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
             .width(min: 140, ideal: 240)
 
             TableColumn("Date", value: \.sortDate) { asset in
-                Text((asset.captureDate ?? asset.fileModDate)?
-                    .formatted(date: .abbreviated, time: .shortened) ?? "—")
+                trackedRow(for: asset) {
+                    Text((asset.captureDate ?? asset.fileModDate)?
+                        .formatted(date: .abbreviated, time: .shortened) ?? "—")
+                }
             }
             .width(150)
 
             TableColumn("Size", value: \.sortSize) { asset in
-                Text(asset.formattedSize.isEmpty ? "—" : asset.formattedSize)
+                trackedRow(for: asset) {
+                    Text(asset.formattedSize.isEmpty ? "—" : asset.formattedSize)
+                }
             }
             .width(80)
 
             TableColumn("Ext", value: \.sortExtension) { asset in
-                Text(asset.formattedExtension)
-                    .lineLimit(1)
+                trackedRow(for: asset) {
+                    Text(asset.formattedExtension)
+                        .lineLimit(1)
+                }
             }
             .width(60)
 
             TableColumn("Type", value: \.sortType) { asset in
-                Text(UTType(asset.uti ?? "")?.localizedDescription
-                     ?? (asset.path as NSString).pathExtension.uppercased())
-                    .lineLimit(1)
+                trackedRow(for: asset) {
+                    Text(UTType(asset.uti ?? "")?.localizedDescription
+                         ?? (asset.path as NSString).pathExtension.uppercased())
+                        .lineLimit(1)
+                }
             }
             .width(110)
 
             TableColumn("Duration", value: \.sortDuration) { asset in
-                Text(asset.formattedDuration)
-                    .monospacedDigit()
+                trackedRow(for: asset) {
+                    Text(asset.formattedDuration)
+                        .monospacedDigit()
+                }
             }
             .width(80)
 
             TableColumn("Rating", value: \.rating) { asset in
-                Text(asset.rating == 0 ? "—" : String(repeating: "★", count: asset.rating))
-                    .foregroundStyle(.yellow)
+                trackedRow(for: asset) {
+                    Text(asset.rating == 0 ? "—" : String(repeating: "★", count: asset.rating))
+                        .foregroundStyle(.yellow)
+                }
             }
             .width(70)
 
             TableColumn("Keywords") { asset in
-                Text(asset.userKeywords ?? asset.xattrKeywords ?? "")
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                trackedRow(for: asset) {
+                    Text(asset.userKeywords ?? asset.xattrKeywords ?? "")
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
             }
 
             TableColumn("Folder") { asset in
-                Text(asset.folder ?? "")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.head)
+                trackedRow(for: asset) {
+                    Text(asset.folder ?? "")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                }
             }
         }
         .contextMenu(forSelectionType: DAMAsset.ID.self) { ids in

@@ -250,7 +250,11 @@ public final class PermissionService: ToolPermissionChecker, @unchecked Sendable
         switch decision {
         case .deny:
             let target = path ?? toolName
-            return Self.errorJSON(toolName, "Access to `\(target)` was denied by user.")
+            return Self.errorJSON(toolName,
+                "Access to `\(target)` was denied by user. STOP — do not retry this tool call "
+                + "or any equivalent call for the same folder. Tell the user exactly this in one short "
+                + "message, then wait for them: \"I can't access '\(target)'. Please add it in "
+                + "Settings → Context, then ask me to try again.\"")
         case .allowOnce:
             if let root = requestedRoot {
                 MaestroTools.addSessionAuthorizedRoot(root)
@@ -267,6 +271,30 @@ public final class PermissionService: ToolPermissionChecker, @unchecked Sendable
             }
             return nil
         }
+    }
+
+    // MARK: - Handler-level folder-access flow
+
+    /// Folder-access ask flow callable from tool handlers that detect an
+    /// out-of-roots path AFTER parsing their own arguments (e.g. file tools
+    /// whose arg shapes the pre-dispatch extractor can't see). Shows the
+    /// permission dock (Deny / Allow once / Allow always) so the USER sees the
+    /// request. Returns nil when access was granted (caller proceeds with the
+    /// operation); otherwise returns a JSON error that instructs the model to
+    /// stop retrying and tell the user once, in chat, exactly what to do.
+    public func requestAccess(toolName: String, path: String, call: ToolCall) async -> String? {
+        let grant = await askForAccess(
+            toolName: toolName,
+            path: Self.normalizePath(path),
+            call: call
+        )
+        guard grant != nil else { return nil }
+        return Self.errorJSON(toolName,
+            "Access to `\(path)` is not authorized. STOP — do not retry this tool call "
+            + "or any equivalent call for the same folder. A permission popup (Deny / Allow Once / "
+            + "Allow Always) was shown to the user. Tell the user exactly this in one short message, "
+            + "then wait for them: \"I can't access '\(path)'. Tap Allow in the permission popup, or "
+            + "add it in Settings → Context, then ask me to try again.\"")
     }
 
     // MARK: - Helpers
@@ -379,7 +407,9 @@ public final class PermissionService: ToolPermissionChecker, @unchecked Sendable
     private static func extractPath(from call: ToolCall) -> String? {
         // Best-effort path extraction for common file tools.
         let args = call.function.arguments
-        let candidates = ["path", "file_path", "filepath", "directory", "dir", "cwd", "target_path", "source_path", "to"]
+        let candidates = ["path", "file_path", "filepath", "directory", "dir", "cwd", "target_path", "source_path", "to",
+                          "source", "destination", "dest", "src", "file", "folder", "root", "filename",
+                          "workingDirectory", "working_directory"]
         for key in candidates {
             if case .string(let path) = args[key], !path.isEmpty {
                 return path

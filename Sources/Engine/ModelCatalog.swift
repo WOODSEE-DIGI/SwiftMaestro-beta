@@ -500,13 +500,21 @@ final class ModelCatalog {
             ?? localIfPresent(["swiftmaestro-models/Mechanic-Qwen3-4B-Instruct-2507-4bit", "mlx-community/Qwen3-4B-Instruct-2507-4bit"])
     }
 
-    /// The Coder agent's bundled model id (DeepSeek Coder V2 Lite, bundled in
-    /// the DMG so coding help works out of the box).
-    nonisolated static let coderModelID = "local-deepseek-coder-v2-lite"
+    /// The Coder agent's model id. Prefers Qwen 3 Coder Next (30B MoE coding
+    /// specialist, XML function calls, 128K context); falls back to the bundled
+    /// DeepSeek Coder V2 Lite when Qwen isn't on disk.
+    nonisolated static var coderModelID: String {
+        if localIfPresent(["swiftmaestro-models/Qwen3-Coder-Next-4bit", "mlx-community/Qwen3-Coder-Next-4bit"]) != nil {
+            return "local-qwen3-coder-next"
+        }
+        return "local-deepseek-coder-v2-lite"
+    }
 
-    /// True when the Coder model is on disk under modelsRoot.
+    /// True when a Coder model is on disk under modelsRoot (Qwen 3 Coder Next
+    /// preferred, DeepSeek Coder V2 Lite as fallback).
     nonisolated static var coderModelAvailable: Bool {
-        localIfPresent(["swiftmaestro-models/DeepSeek-Coder-V2-Lite-Instruct-4bit-mlx", "mlx-community/DeepSeek-Coder-V2-Lite-Instruct-4bit-mlx"]) != nil
+        localIfPresent(["swiftmaestro-models/Qwen3-Coder-Next-4bit", "mlx-community/Qwen3-Coder-Next-4bit"]) != nil
+        || localIfPresent(["swiftmaestro-models/DeepSeek-Coder-V2-Lite-Instruct-4bit-mlx", "mlx-community/DeepSeek-Coder-V2-Lite-Instruct-4bit-mlx"]) != nil
     }
 
     /// Resolve a model's local directory under any model root (primary first,

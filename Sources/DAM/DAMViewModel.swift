@@ -88,6 +88,16 @@ final class DAMViewModel {
     var privacyModeActive: Bool = false
     /// Number of assets still being scanned by privacy redaction.
     private(set) var privacyScanningCount: Int = 0
+    /// In-flight privacy redaction task. Cancelled and replaced whenever the
+    /// visible set, selection, or scope changes so we don't keep processing
+    /// assets the user scrolled away from.
+    private var privacyTask: Task<Void, Never>?
+    /// Debounces rapid onAppear/onDisappear churn during scrolling.
+    private var privacyVisibilityDebounce: Task<Void, Never>?
+    /// Asset IDs currently believed to be on screen (grid/list cells).
+    /// Cleared on reload; stale IDs are harmless because they just widen the
+    /// prefetch window slightly until the cells disappear or reload happens.
+    private var visibleAssetIDs: Set<Int64> = []
     /// Folder-tree scope (nil = whole catalog). Mirrors Bridge's Folders tab.
     var selectedFolder: String? {
         didSet {
@@ -219,6 +229,41 @@ final class DAMViewModel {
         primarySelectedID = nil
     }
 
+    /// Select every asset in the active scope. When a folder or album is
+    /// open this queries the catalog directly so it works even if the grid
+    /// hasn't loaded every page yet; otherwise it selects the visible page.
+    @MainActor
+    func selectAllInScope() {
+        let allAssets: [DAMAsset]
+        if let collectionID = selectedCollectionID,
+           let collectionAssets = try? database.assets(inCollectionId: collectionID) {
+            allAssets = collectionAssets
+        } else if let folder = selectedFolder,
+                  let folderAssets = try? database.assets(inFolder: folder, recursive: false) {
+            allAssets = folderAssets
+        } else {
+            allAssets = assets
+        }
+        let ids = Set(allAssets.compactMap(\.id))
+        guard selection != ids else { return }
+        selection = ids
+        primarySelectedID = ids.first ?? nil
+    }
+
+    /// Remove every redaction layer/box for the current selection.
+    @MainActor
+    func resetRedactionsForSelection() {
+        let ids = selection.compactMap { $0 }
+        guard !ids.isEmpty else { return }
+        for id in ids {
+            var recipe = DAMDatabase.shared.loadEdits(assetId: id) ?? DAMEditState()
+            guard !recipe.redactions.isEmpty || !recipe.redactionLayers.isEmpty else { continue }
+            recipe.redactions.removeAll()
+            recipe.redactionLayers.removeAll()
+            try? DAMDatabase.shared.saveEdits(assetId: id, recipe)
+        }
+    }
+
     // MARK: - Geometry edits (toolbar)
 
     /// Rotate every selected asset 90° in the requested direction.
@@ -238,19 +283,117 @@ final class DAMViewModel {
 
     // MARK: - Privacy / screen-recording redaction
 
+    /// Detection options used by privacy-mode auto-redaction. Persisted in
+    /// UserDefaults so the user’s choices survive relaunches.
+    var privacyDetectFaces: Bool = UserDefaults.standard.object(forKey: "dam.privacy.detectFaces") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(privacyDetectFaces, forKey: "dam.privacy.detectFaces") }
+    }
+    var privacyDetectText: Bool = UserDefaults.standard.object(forKey: "dam.privacy.detectText") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(privacyDetectText, forKey: "dam.privacy.detectText") }
+    }
+    var privacyDetectBarcodes: Bool = UserDefaults.standard.object(forKey: "dam.privacy.detectBarcodes") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(privacyDetectBarcodes, forKey: "dam.privacy.detectBarcodes") }
+    }
+    var privacyUsePIIPatterns: Bool = UserDefaults.standard.object(forKey: "dam.privacy.usePIIPatterns") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(privacyUsePIIPatterns, forKey: "dam.privacy.usePIIPatterns") }
+    }
+    var privacyConfidence: Double = UserDefaults.standard.object(forKey: "dam.privacy.confidence") as? Double ?? 0.3 {
+        didSet { UserDefaults.standard.set(privacyConfidence, forKey: "dam.privacy.confidence") }
+    }
+
+    /// Zoom level for the large preview pane (filmstrip and metadata preview).
+    /// Persisted so the chosen magnification survives relaunches.
+    var previewZoom: Double = UserDefaults.standard.object(forKey: "dam.previewZoom") as? Double ?? 1.0 {
+        didSet { UserDefaults.standard.set(previewZoom, forKey: "dam.previewZoom") }
+    }
+
+    /// Assembled detector options from the persisted privacy settings.
+    @MainActor
+    var privacyOptions: DAMRedactionDetectorService.Options {
+        DAMRedactionDetectorService.Options(
+            detectFaces: privacyDetectFaces,
+            detectText: privacyDetectText,
+            detectBarcodes: privacyDetectBarcodes,
+            textPatterns: privacyUsePIIPatterns ? DAMRedactionDetectorService.Options.piiPatterns : [],
+            minimumConfidence: privacyConfidence,
+            kind: .blur
+        )
+    }
+
     /// Toggle global privacy mode. When enabled, existing redaction layers are
-    /// shown and any visible/likely-visible asset without redactions gets a
-    /// quick AI face-redaction pass.
+    /// shown and only the currently visible/upcoming assets in the current
+    /// scope get auto-redacted. Scrolling or changing scope cancels stale work
+    /// and starts scanning the new visible set.
+    @MainActor
     func togglePrivacyMode() {
         privacyModeActive.toggle()
+        cancelPrivacyTasks()
         if privacyModeActive {
             showRedactions = true
-            Task.detached { [weak self] in
-                await self?.applyPrivacyRedactionsToVisibleAssets()
-            }
+            schedulePrivacyScan(immediate: true)
         } else {
             showRedactions = false
         }
+    }
+
+    /// Reported by grid/list cells as they enter the visible area.
+    @MainActor
+    func assetBecameVisible(id: Int64) {
+        guard id > 0 else { return }
+        visibleAssetIDs.insert(id)
+        schedulePrivacyVisibilityUpdate()
+    }
+
+    /// Reported by grid/list cells as they leave the visible area.
+    @MainActor
+    func assetBecameInvisible(id: Int64) {
+        guard id > 0 else { return }
+        visibleAssetIDs.remove(id)
+        schedulePrivacyVisibilityUpdate()
+    }
+
+    @MainActor
+    private func cancelPrivacyTasks() {
+        privacyTask?.cancel()
+        privacyTask = nil
+        privacyVisibilityDebounce?.cancel()
+        privacyVisibilityDebounce = nil
+    }
+
+    /// Restart the privacy scan after a short debounce so rapid scroll churn
+    /// doesn't thrash the detector.
+    @MainActor
+    private func schedulePrivacyVisibilityUpdate() {
+        guard privacyModeActive else { return }
+        privacyVisibilityDebounce?.cancel()
+        privacyVisibilityDebounce = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(200))
+            guard let self, self.privacyModeActive else { return }
+            self.schedulePrivacyScan()
+        }
+    }
+
+    /// Schedule a new privacy scan, cancelling the previous one. Use
+    /// `immediate: true` when the user explicitly toggles privacy on or
+    /// changes scope; `immediate: false` (with a debounce) for scroll updates.
+    @MainActor
+    private func schedulePrivacyScan(immediate: Bool = false) {
+        privacyTask?.cancel()
+        privacyTask = Task.detached { [weak self] in
+            if !immediate {
+                try? await Task.sleep(for: .milliseconds(150))
+            }
+            guard let self,
+                  await MainActor.run(body: { self.privacyModeActive })
+            else { return }
+            await self.applyPrivacyRedactionsToVisibleAssets()
+        }
+    }
+
+    @MainActor
+    private func schedulePrivacyScanIfActive() {
+        guard privacyModeActive else { return }
+        schedulePrivacyScan()
     }
 
     /// Ensure visible + next-scroll assets are redacted.
@@ -269,16 +412,15 @@ final class DAMViewModel {
             }
         }
 
-        let options = DAMRedactionDetectorService.Options(
-            detectFaces: true,
-            detectText: true,
-            detectBarcodes: true,
-            textPatterns: DAMRedactionDetectorService.Options.piiPatterns,
-            minimumConfidence: 0.3,
-            kind: .blur
-        )
+        let options = await MainActor.run { [weak self] in
+            self?.privacyOptions ?? DAMRedactionDetectorService.Options(
+                detectFaces: true, detectText: true, detectBarcodes: true,
+                textPatterns: DAMRedactionDetectorService.Options.piiPatterns,
+                minimumConfidence: 0.3, kind: .blur)
+        }
 
         for (index, asset) in targets.enumerated() {
+            guard !Task.isCancelled else { return }
             guard let assetId = asset.id else { continue }
             var recipe = DAMDatabase.shared.loadEdits(assetId: assetId) ?? DAMEditState()
             _ = recipe.defaultRedactionLayerID()
@@ -301,7 +443,7 @@ final class DAMViewModel {
                 continue
             }
 
-            // No redactions yet — run a fast face-only detection pass.
+            // No redactions yet — run a fast face/text/barcode detection pass.
             guard FileManager.default.fileExists(atPath: asset.path) else {
                 await MainActor.run { [weak self] in
                     self?.privacyScanningCount = targets.count - index - 1
@@ -319,6 +461,7 @@ final class DAMViewModel {
                         var copy = box
                         copy.id = UUID()
                         copy.layerID = privacyLayer.id
+                        // PDF boxes already carry pageIndex; images leave it nil.
                         return copy
                     })
                     try? DAMDatabase.shared.saveEdits(assetId: assetId, recipe)
@@ -333,21 +476,54 @@ final class DAMViewModel {
         }
     }
 
-    /// Assets that should be redacted for privacy mode: current selection
-    /// first, then the first portion of the loaded page as a prefetch buffer.
+    /// Assets that should be redacted for privacy mode:
+    ///   - selection first
+    ///   - if a folder or collection is open: the entire scoped set
+    ///   - otherwise: visible items + a prefetch window ahead of the lowest
+    ///     visible index, so scrolling keeps redactions a little ahead.
     @MainActor
     private func privacyTargetAssets() -> [DAMAsset] {
         var result: [DAMAsset] = []
         let selected = assets.filter { selection.contains($0.id) }
         result.append(contentsOf: selected)
         let selectedIDs = Set(selected.compactMap(\.id))
-        let remaining = assets.filter { !selectedIDs.contains($0.id ?? 0) }
-            .prefix(privacyPrefetchCount)
-        result.append(contentsOf: remaining)
+
+        // Scoped to a folder or album — redact the whole scope as soon as it
+        // is opened (bounded so a giant folder doesn't block forever).
+        if selectedFolder != nil || selectedCollectionID != nil {
+            let scoped = assets
+                .filter { !selectedIDs.contains($0.id ?? 0) }
+                .prefix(privacyFolderBatchLimit)
+            result.append(contentsOf: scoped)
+            return result
+        }
+
+        // Home / whole-catalog: visible items plus a forward prefetch buffer.
+        guard !visibleAssetIDs.isEmpty else {
+            let fallback = assets
+                .filter { !selectedIDs.contains($0.id ?? 0) }
+                .prefix(privacyPrefetchWindow)
+            result.append(contentsOf: fallback)
+            return result
+        }
+
+        let visibleIndices = assets.enumerated().compactMap { index, asset -> Int? in
+            guard let id = asset.id, visibleAssetIDs.contains(id) else { return nil }
+            return index
+        }
+        guard let minVisible = visibleIndices.min() else {
+            return result
+        }
+        let maxVisible = visibleIndices.max() ?? minVisible
+        let endIndex = min(assets.count - 1, maxVisible + privacyPrefetchWindow)
+        let window = assets[minVisible...endIndex]
+            .filter { !selectedIDs.contains($0.id ?? 0) }
+        result.append(contentsOf: window)
         return result
     }
 
-    private let privacyPrefetchCount = 100
+    private let privacyPrefetchWindow = 100
+    private let privacyFolderBatchLimit = 500
 
     /// Reveal an asset given its filesystem path: select it, switch to the
     /// metadata workspace, and scope the folder tree. If the path isn't in the
@@ -461,6 +637,14 @@ final class DAMViewModel {
                     self?.enrichProgress = "Enriched \(enriched)/\(total)"
                 }
             }
+            // After basic enrichment, run Vision feature/OCR indexing on the
+            // backlog (now includes PDFs as of v15). This runs on the tagging
+            // actor at utility priority so large catalogs don't block the UI.
+            try? await DAMTaggingService.shared.indexFeatures { progress in
+                Task { @MainActor [weak self] in
+                    self?.enrichProgress = "Indexing \(progress.scanned)/\(progress.total)"
+                }
+            }
             await MainActor.run { [weak self] in
                 self?.isEnriching = false
                 self?.enrichProgress = ""
@@ -524,6 +708,7 @@ final class DAMViewModel {
 
     /// Initial load / full refresh honoring current filters.
     func reload() async {
+        await MainActor.run { visibleAssetIDs.removeAll() }
         do {
             if let collectionID = selectedCollectionID {
                 let filtered = try await fetchCollectionAssets(collectionID: collectionID)
@@ -562,6 +747,7 @@ final class DAMViewModel {
         } catch {
             errorMessage = "Failed to load catalog: \(error.localizedDescription)"
         }
+        await schedulePrivacyScanIfActive()
     }
 
     /// Rebuilds the folder-tree sidebar from the catalog's distinct folders.

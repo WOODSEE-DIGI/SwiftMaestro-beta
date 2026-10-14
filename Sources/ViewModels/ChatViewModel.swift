@@ -158,14 +158,27 @@ class ChatViewModel: ObservableObject {
     }
 
     /// Set (or clear) the agent's working directory and persist it.
+    /// Selecting a directory also grants it as a session-scoped authorized
+    /// root, so file tools can read/write under it with no Settings → Context
+    /// entry; clearing the directory revokes that grant.
     func setWorkingDirectory(_ path: String?) {
         let trimmed = path?.trimmingCharacters(in: .whitespaces)
+        let old = workingDirectory
         workingDirectory = (trimmed?.isEmpty ?? true) ? nil : trimmed
         let key = Self.workingDirKey(agent.id)
         if let wd = workingDirectory { UserDefaults.standard.set(wd, forKey: key) }
         else { UserDefaults.standard.removeObject(forKey: key) }
         // Also sync to the agent record so sub-agents and the workspace see it.
         MaestroTools.workspace?.setWorkingDirectory(workingDirectory, for: agent.id)
+        // Explicit session grant: the picker's folder choice authorizes file
+        // access under it (the per-run implicit root alone depends on dispatch
+        // ordering). Revoke the previous grant when the directory changes.
+        if let old, old != workingDirectory {
+            MaestroTools.removeSessionAuthorizedRoot(old)
+        }
+        if let wd = workingDirectory {
+            MaestroTools.addSessionAuthorizedRoot(wd)
+        }
     }
 
     /// Run a one-click macro: set the input to the macro's prompt and submit.

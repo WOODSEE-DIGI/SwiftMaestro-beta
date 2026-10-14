@@ -25,6 +25,22 @@ final class DAMQuickLookPanelController {
         show(for: url)
     }
 
+    /// Show the preview panel for an asset. PDFs with visible redactions get a
+    /// temporary redacted copy so sensitive regions stay hidden in Quick Look.
+    func toggle(for asset: DAMAsset) {
+        if let panel, panel.isVisible {
+            close()
+            return
+        }
+        do {
+            let url = try DAMPDFPreviewService.redactedPreviewURL(for: asset)
+            show(for: url)
+        } catch {
+            // Fallback to the original file if anything goes wrong.
+            show(for: URL(fileURLWithPath: asset.path))
+        }
+    }
+
     /// Always show the preview panel for `url`, replacing any existing preview.
     /// Use this for toolbar/menu actions where the intent is explicitly to open.
     func show(for url: URL) {

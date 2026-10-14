@@ -70,48 +70,60 @@ extension DAMTaggingService {
             return false
         }
 
+        let url = URL(fileURLWithPath: asset.path)
+        let isPDF = DAMFileKind.isPDF(url)
+
         // OCR at 2048px keeps document text legible; feature prints use the
         // same decode (Vision rescales internally) to avoid two decodes.
-        guard let image = await Self.loadCGImage(path: asset.path, maxPixel: 2048) else {
-            // Undecodable right now (offline volume, corrupt file): DON'T
-            // write a feature row — leave the asset in the backlog so it is
-            // retried on a later pass (e.g. when the volume is back online).
-            // Decode failures are cheap (ImageIO fails fast), so retrying
-            // is safe.
-            return false
+        // PDFs render all pages for OCR; other assets use the single-image path.
+        let images: [CGImage]
+        if isPDF {
+            images = Self.loadPDFPageImages(path: asset.path, maxPixel: 2048)
+        } else {
+            guard let image = await Self.loadCGImage(path: asset.path, maxPixel: 2048) else {
+                return false
+            }
+            images = [image]
         }
+        guard !images.isEmpty else { return false }
 
         // 1. OCR — accurate, language-corrected (same recipe VisionProxy uses).
-        var ocrText = ""
-        let textRequest = VNRecognizeTextRequest()
-        textRequest.recognitionLevel = .accurate
-        textRequest.usesLanguageCorrection = true
-        textRequest.automaticallyDetectsLanguage = true
-        let handler = VNImageRequestHandler(cgImage: image, options: [:])
+        // Run one Vision request per page/image and concatenate results.
+        var allOCRLines: [String] = []
+        let textRequestPrototype = VNRecognizeTextRequest()
+        textRequestPrototype.recognitionLevel = .accurate
+        textRequestPrototype.usesLanguageCorrection = true
+        textRequestPrototype.automaticallyDetectsLanguage = true
 
-        // 2. Feature print — visual similarity fingerprint.
-        let printRequest = VNGenerateImageFeaturePrintRequest()
-
-        // 3. Content classification (v7) — scene/object labels.
-        let classifyRequest = VNClassifyImageRequest()
-
-        // Run all three Vision requests in a single perform() call. This is
-        // dramatically faster than three sequential calls because Vision
-        // shares the image decode across requests and avoids redundant work.
-        // Note: handler.perform() is synchronous and blocking — acceptable
-        // here because the actor serializes indexing and 2048px images
-        // decode in well under a second on Apple Silicon.
-        do {
-            try handler.perform([textRequest, printRequest, classifyRequest])
-        } catch {
-            NSLog("[DAMTagging] Vision batch failed for %@: %@", asset.path, "\(error)")
-            return false
+        for image in images {
+            let textRequest = VNRecognizeTextRequest()
+            textRequest.recognitionLevel = textRequestPrototype.recognitionLevel
+            textRequest.usesLanguageCorrection = textRequestPrototype.usesLanguageCorrection
+            textRequest.automaticallyDetectsLanguage = textRequestPrototype.automaticallyDetectsLanguage
+            let handler = VNImageRequestHandler(cgImage: image, options: [:])
+            do {
+                try handler.perform([textRequest])
+                let lines = (textRequest.results ?? [])
+                    .compactMap { $0.topCandidates(1).first?.string }
+                allOCRLines.append(contentsOf: lines)
+            } catch {
+                NSLog("[DAMTagging] OCR failed for a page of %@: %@", asset.path, "\(error)")
+            }
         }
+        let ocrText = allOCRLines.joined(separator: "\n")
 
-        // Extract OCR results.
-        let lines = (textRequest.results ?? [])
-            .compactMap { $0.topCandidates(1).first?.string }
-        ocrText = lines.joined(separator: "\n")
+        // 2. Feature print + classification run on page 1 only (or the single
+        //    image). These Vision tasks are not page-aware, and stacking every
+        //    page would be expensive with rapidly diminishing value.
+        let firstImage = images[0]
+        let printRequest = VNGenerateImageFeaturePrintRequest()
+        let classifyRequest = VNClassifyImageRequest()
+        do {
+            try VNImageRequestHandler(cgImage: firstImage, options: [:])
+                .perform([printRequest, classifyRequest])
+        } catch {
+            NSLog("[DAMTagging] Feature/classify failed for %@: %@", asset.path, "\(error)")
+        }
 
         // Extract feature print.
         var printData: Data?
@@ -129,7 +141,7 @@ extension DAMTaggingService {
 
         let tokens = Self.ocrTokens(from: ocrText)
 
-        // 4. Persist: feature row + (changed) ocrText on the asset, audited.
+        // 3. Persist: feature row + (changed) ocrText on the asset, audited.
         try database.saveFeature(
             assetId: assetId, featurePrint: printData, ocrTokens: Array(tokens),
             classificationTags: classificationLabels)
@@ -146,7 +158,7 @@ extension DAMTaggingService {
                     newValue: "(\(finalOCRText.count) chars)", source: "ocr")
             }
         }
-        // 5. Auto-apply classification labels as tags (source: ai). These
+        // 4. Auto-apply classification labels as tags (source: ai). These
         //    become new exemplars, so visually similar untagged images will
         //    also get these labels suggested via the existing propagation.
         if !classificationLabels.isEmpty {

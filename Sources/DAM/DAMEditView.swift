@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import PDFKit
 
 // MARK: - Non-destructive Edit Workspace
 //
@@ -40,6 +41,17 @@ struct DAMEditView: View {
     @State private var activeLayerID: UUID?
     /// Feedback line for layout copy/paste actions.
     @State private var redactionStatus: String?
+    /// For multi-page PDFs, which page is being edited/previewed.
+    @State private var currentPageIndex: Int = 0
+
+    private var isPDF: Bool {
+        DAMFileKind.isPDF(URL(fileURLWithPath: asset.path))
+    }
+
+    private var pdfPageCount: Int {
+        guard isPDF, let doc = PDFDocument(url: URL(fileURLWithPath: asset.path)) else { return 1 }
+        return doc.pageCount
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -48,6 +60,7 @@ struct DAMEditView: View {
             controls
         }
         .task(id: asset.id) { loadAndRender() }
+        .onChange(of: currentPageIndex) { _, _ in scheduleRender() }
     }
 
     // MARK: - Preview
@@ -79,7 +92,7 @@ struct DAMEditView: View {
                 // armed. Boxes bake into the render on drag end.
                 if isRedactToolActive {
                     DAMRedactOverlay(
-                        boxes: $edit.redactions,
+                        boxes: filteredRedactionsBinding,
                         layers: edit.redactionLayers,
                         activeLayerID: activeLayerID ?? edit.defaultRedactionLayerID(),
                         imageSize: rendered.size,
@@ -173,17 +186,33 @@ struct DAMEditView: View {
                 }
 
                 group("Geometry", icon: "crop.rotate") {
-                    HStack(spacing: 8) {
-                        cropToolButton
-                        iconButton("rotate.left", "Rotate left") { edit.rotateQuarterTurns = (edit.rotateQuarterTurns + 1) % 4; persistAndRender() }
-                        iconButton("rotate.right", "Rotate right") { edit.rotateQuarterTurns = (edit.rotateQuarterTurns + 3) % 4; persistAndRender() }
-                        iconButton("arrow.left.and.right.righttriangle.left.righttriangle.right", "Flip horizontal") { edit.flipHorizontal.toggle(); persistAndRender() }
+                    if isPDF {
+                        HStack(spacing: 8) {
+                            Button { currentPageIndex = max(0, currentPageIndex - 1) } label: {
+                                Image(systemName: "chevron.left")
+                            }
+                            .disabled(currentPageIndex <= 0)
+                            Text("Page \(currentPageIndex + 1) of \(pdfPageCount)")
+                                .font(.caption)
+                            Button { currentPageIndex = min(pdfPageCount - 1, currentPageIndex + 1) } label: {
+                                Image(systemName: "chevron.right")
+                            }
+                            .disabled(currentPageIndex >= pdfPageCount - 1)
+                            Spacer()
+                        }
+                    } else {
+                        HStack(spacing: 8) {
+                            cropToolButton
+                            iconButton("rotate.left", "Rotate left") { edit.rotateQuarterTurns = (edit.rotateQuarterTurns + 1) % 4; persistAndRender() }
+                            iconButton("rotate.right", "Rotate right") { edit.rotateQuarterTurns = (edit.rotateQuarterTurns + 3) % 4; persistAndRender() }
+                            iconButton("arrow.left.and.right.righttriangle.left.righttriangle.right", "Flip horizontal") { edit.flipHorizontal.toggle(); persistAndRender() }
+                        }
+                        sliderRow("Straighten", value: $edit.straightenDegrees, range: -45...45, format: "%.1f°", field: \.straightenDegrees)
+                        sliderRow("Crop left", value: cropBinding(\.x, fallback: 0), range: 0...0.4, format: "%.2f", resetTo: 0)
+                        sliderRow("Crop top", value: cropBinding(\.y, fallback: 0), range: 0...0.4, format: "%.2f", resetTo: 0)
+                        sliderRow("Crop width", value: cropBinding(\.width, fallback: 1), range: 0.2...1.0, format: "%.2f", resetTo: 1)
+                        sliderRow("Crop height", value: cropBinding(\.height, fallback: 1), range: 0.2...1.0, format: "%.2f", resetTo: 1)
                     }
-                    sliderRow("Straighten", value: $edit.straightenDegrees, range: -45...45, format: "%.1f°", field: \.straightenDegrees)
-                    sliderRow("Crop left", value: cropBinding(\.x, fallback: 0), range: 0...0.4, format: "%.2f", resetTo: 0)
-                    sliderRow("Crop top", value: cropBinding(\.y, fallback: 0), range: 0...0.4, format: "%.2f", resetTo: 0)
-                    sliderRow("Crop width", value: cropBinding(\.width, fallback: 1), range: 0.2...1.0, format: "%.2f", resetTo: 1)
-                    sliderRow("Crop height", value: cropBinding(\.height, fallback: 1), range: 0.2...1.0, format: "%.2f", resetTo: 1)
                 }
 
                 group("Redact", icon: "eye.slash") {
@@ -590,10 +619,12 @@ struct DAMEditView: View {
         // Pasted boxes land on the active layer so the user can toggle them
         // as a set without disturbing other layers.
         let targetLayerID = activeLayerID ?? edit.defaultRedactionLayerID()
+        let pageIndex = isPDF ? currentPageIndex : nil
         edit.redactions = boxes.map { box in
             var copy = box
             copy.id = UUID()
             copy.layerID = targetLayerID
+            copy.pageIndex = pageIndex
             return copy
         }
         selectedRedactionID = nil
@@ -658,6 +689,28 @@ struct DAMEditView: View {
         Binding(
             get: { viewModel.showRedactions },
             set: { viewModel.showRedactions = $0 }
+        )
+    }
+
+    /// Redactions filtered to the current PDF page. For images this is the
+    /// full list (pageIndex is nil/0 for image boxes).
+    private var filteredRedactionsBinding: Binding<[DAMEditState.RedactionBox]> {
+        Binding(
+            get: {
+                edit.redactions.filter { DAMEditState.pageIndex(for: $0) == currentPageIndex }
+            },
+            set: { newValue in
+                var pageBoxes = newValue
+                if isPDF {
+                    // New boxes drawn on this page should stay on this page.
+                    for index in pageBoxes.indices where pageBoxes[index].pageIndex == nil {
+                        pageBoxes[index].pageIndex = currentPageIndex
+                    }
+                }
+                var kept = edit.redactions.filter { DAMEditState.pageIndex(for: $0) != currentPageIndex }
+                kept.append(contentsOf: pageBoxes)
+                edit.redactions = kept
+            }
         )
     }
 
@@ -758,7 +811,13 @@ struct DAMEditView: View {
                 return
             }
             var boxes = newBoxes
-            for index in boxes.indices { boxes[index].layerID = layerID }
+            for index in boxes.indices {
+                boxes[index].layerID = layerID
+                // For PDFs, lock AI-detected boxes to the page they came from.
+                if isPDF, boxes[index].pageIndex == nil {
+                    boxes[index].pageIndex = currentPageIndex
+                }
+            }
             edit.redactions.append(contentsOf: boxes)
             persistAndRender()
             redactionStatus = "AI added \(boxes.count) redaction box(es)."
@@ -826,8 +885,9 @@ struct DAMEditView: View {
             // user sees; disarmed, the render applies the crop as usual.
             let recipe = isCropToolActive ? edit.forCropEditing : edit
             let showRedactions = viewModel.showRedactions
+            let pageIndex = self.currentPageIndex
             let image = await Task.detached(priority: .userInitiated) {
-                try? DAMEditRenderer.render(asset: asset, edit: recipe, maxPixelSize: 1600, showRedactions: showRedactions)
+                try? DAMEditRenderer.render(asset: asset, edit: recipe, maxPixelSize: 1600, showRedactions: showRedactions, pageIndex: pageIndex)
             }.value
             guard !Task.isCancelled else { return }
             await MainActor.run {

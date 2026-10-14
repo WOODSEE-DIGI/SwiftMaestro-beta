@@ -177,8 +177,10 @@ extension MaestroTools {
         }()
         let searchRoots: [String]
         if let explicitPath = explicitPath {
-            guard isAllowed(explicitPath, roots: roots) else {
-                return denied(explicitPath)
+            if !isAllowed(explicitPath, roots: roots) {
+                if let accessError = await requestFolderAccess(toolName: "glob_files", path: explicitPath, call: call) {
+                    return accessError
+                }
             }
             searchRoots = [explicitPath]
         } else {
@@ -230,8 +232,10 @@ extension MaestroTools {
         }()
         let searchRoots: [String]
         if let explicitPath = explicitPath {
-            guard isAllowed(explicitPath, roots: roots) else {
-                return denied(explicitPath)
+            if !isAllowed(explicitPath, roots: roots) {
+                if let accessError = await requestFolderAccess(toolName: "grep_code", path: explicitPath, call: call) {
+                    return accessError
+                }
             }
             searchRoots = [explicitPath]
         } else {
@@ -305,9 +309,10 @@ extension MaestroTools {
         guard let resolved = resolveAbsolute(rawPath) else {
             return errorJSON("edit_file requires an absolute path")
         }
-        let roots = authorizedRoots()
-        guard isAllowed(resolved, roots: roots) else {
-            return denied(resolved)
+        if !isAllowed(resolved, roots: authorizedRoots()) {
+            if let accessError = await requestFolderAccess(toolName: "edit_file", path: rawPath, call: call) {
+                return accessError
+            }
         }
         guard let data = FileManager.default.contents(atPath: resolved),
               let original = String(data: data, encoding: .utf8) else {

@@ -91,6 +91,10 @@ struct DAMEditState: Codable, Sendable, Equatable {
         /// Which layer this box belongs to. nil maps to the default layer on
         /// load for backward compatibility.
         var layerID: UUID? = nil
+        /// For multi-page documents (PDFs), which page this box belongs to.
+        /// nil or 0 means the first page; preserves compatibility with
+        /// single-page/image recipes.
+        var pageIndex: Int? = nil
 
         enum Kind: String, Codable, Sendable, CaseIterable {
             /// Solid black fill — unrecoverable, for text/numbers.
@@ -142,6 +146,12 @@ struct DAMEditState: Codable, Sendable, Equatable {
         case saturation, vibrance, temperature, tint
         case sharpen, noiseReduction, blackAndWhite
         case redactions, redactionLayers
+    }
+
+    /// Effective page index for a redaction box. Treats nil as page 0 so old
+    /// recipes (and all image redactions) stay on the first/only page.
+    static func pageIndex(for box: RedactionBox) -> Int {
+        box.pageIndex ?? 0
     }
 
     /// All-default recipe (identity). Explicit because the custom Codable
@@ -208,13 +218,18 @@ struct DAMEditState: Codable, Sendable, Equatable {
         return intersection / union
     }
 
-    /// Returns the boxes whose layer is currently visible. Used by the
-    /// renderer and overlays so hidden layers don't draw.
-    func visibleRedactions() -> [RedactionBox] {
+    /// Returns the boxes whose layer is currently visible. Optionally filters
+    /// to a single page (for multi-page PDF rendering). Used by the renderer
+    /// and overlays so hidden layers don't draw.
+    func visibleRedactions(pageIndex: Int? = nil) -> [RedactionBox] {
         let visibleLayerIDs = Set(redactionLayers.filter(\.isVisible).map(\.id))
         return redactions.filter { box in
             guard let layerID = box.layerID else { return true }
-            return visibleLayerIDs.contains(layerID)
+            guard visibleLayerIDs.contains(layerID) else { return false }
+            if let pageIndex {
+                return Self.pageIndex(for: box) == pageIndex
+            }
+            return true
         }
     }
 
@@ -242,6 +257,16 @@ struct DAMEditState: Codable, Sendable, Equatable {
         copy.redactions = redactions.filter { box in
             guard let layerID = box.layerID else { return true }
             return visibleLayerIDs.contains(layerID)
+        }
+        return copy
+    }
+
+    /// Returns a copy of the recipe with all redactions moved to page 0.
+    /// Used as a compatibility shim when a caller only renders page 1.
+    func flattenedToPageZero() -> DAMEditState {
+        var copy = self
+        for index in copy.redactions.indices {
+            copy.redactions[index].pageIndex = 0
         }
         return copy
     }

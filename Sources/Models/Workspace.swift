@@ -183,14 +183,25 @@ final class WorkspaceStore {
         return mech
     }
 
-    /// The always-present local coding agent (created if missing). Defaults to the
-    /// bundled DeepSeek Coder V2 Lite model when it's on disk — an 8 GB coding
-    /// specialist bundled in the DMG so coding help works out of the box with
-    /// no downloads. Its toolset is pinned (Auto tool mode off) so panel state
-    /// can never strip the file/shell tools the role depends on.
+    /// The always-present local coding agent (created if missing). Defaults to
+    /// Qwen 3 Coder Next when it's on disk — a 30B MoE coding specialist (XML
+    /// function calls, 128K context) that handles real build work. Falls back
+    /// to DeepSeek Coder V2 Lite only when Qwen isn't available. Its toolset
+    /// is pinned (Auto tool mode off) so panel state can never strip the
+    /// file/shell tools the role depends on.
     var coder: AgentRecord {
         if var c = agents.first(where: { $0.kind == .coder }) {
             var coderChanged = false
+            // One-time: migrate Local Coder off DeepSeek Coder V2 Lite onto
+            // Qwen 3 Coder Next when it's on disk. DeepSeek V2 Lite (2.4B active
+            // params) collapses into repetition on real build work instead of
+            // emitting valid tool calls.
+            if c.modelID == "local-deepseek-coder-v2-lite",
+               ModelCatalog.coderModelID == "local-qwen3-coder-next" {
+                c.modelID = ModelCatalog.coderModelID
+                coderChanged = true
+                NSLog("[WORKSPACE] migrated Local Coder to Qwen 3 Coder Next")
+            }
             if c.autoToolCategories ?? true {
                 c.autoToolCategories = false
                 coderChanged = true

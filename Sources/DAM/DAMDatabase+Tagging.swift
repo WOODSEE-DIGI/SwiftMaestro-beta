@@ -38,7 +38,8 @@ extension DAMDatabase {
     /// Image-like UTIs the AI indexer works on. Mirrors the import filter's
     /// idea of "visually taggable": raster images, RAW, HEIC, TIFF, WebP.
     static let aiIndexableUTIFilter = """
-        (a.uti LIKE 'public.image%' OR a.uti LIKE 'public.jpeg%'
+        (a.kind = 'pdf'
+         OR a.uti LIKE 'public.image%' OR a.uti LIKE 'public.jpeg%'
          OR a.uti LIKE 'public.png%' OR a.uti LIKE 'public.heic%'
          OR a.uti LIKE 'public.tiff%' OR a.uti LIKE 'public.raw-image%'
          OR a.uti LIKE 'public.camera-raw-image%' OR a.uti LIKE 'com.apple.%'
@@ -46,7 +47,8 @@ extension DAMDatabase {
          OR a.uti LIKE 'com.adobe.raw-image%' OR a.uti LIKE 'com.canon.%'
          OR a.uti LIKE 'com.nikon.%' OR a.uti LIKE 'com.sony.%'
          OR a.uti LIKE 'com.fujifilm.%' OR a.uti LIKE 'com.olympus.%'
-         OR a.uti LIKE 'com.pentax.%' OR a.uti LIKE 'com.panasonic.%')
+         OR a.uti LIKE 'com.pentax.%' OR a.uti LIKE 'com.panasonic.%'
+         OR a.uti LIKE 'com.adobe.pdf%' OR a.uti LIKE 'public.pdf%')
         """
 
     /// Page of assets missing AI features (feature print, OCR tokens, or
