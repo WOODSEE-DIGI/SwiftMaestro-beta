@@ -131,8 +131,34 @@ struct DAMBrowserView: View {
                 }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background {
+            Button {
+                guard viewModel.workspace == .home || viewModel.workspace == .metadata else { return }
+                viewModel.selectAllInScope()
+            } label: {
+                EmptyView()
+            }
+            .keyboardShortcut("a", modifiers: .command)
+            .opacity(0)
+            .frame(width: 0, height: 0)
+            .allowsHitTesting(false)
+        }
         .sheet(item: $quickCropAsset) { asset in
             DAMQuickCropSheet(asset: asset) { quickCropAsset = nil }
+        }
+        .sheet(isPresented: Binding(
+            get: { viewModel.showRelinkAmbiguitySheet },
+            set: { _ in viewModel.dismissRelinkAmbiguities() }
+        )) {
+            DAMRelinkAmbiguitySheet(
+                ambiguities: viewModel.relinkAmbiguities,
+                onResolve: { choices in
+                    Task { await viewModel.resolveRelinkAmbiguities(choices: choices) }
+                },
+                onCancel: {
+                    viewModel.dismissRelinkAmbiguities()
+                }
+            )
         }
         .task {
             appLoadStartDate = Date()
@@ -1094,7 +1120,7 @@ struct DAMBrowserView: View {
                 NSItemProvider(object: draggablePayload as NSString)
             }
             .onDrop(of: [UTType.plainText.identifier], isTargeted: $isDropTargeted) { providers, _ in
-                guard collection.kind == .manual, let provider = providers.first else { return false }
+                guard collection.kind != .smart, let provider = providers.first else { return false }
                 Task { @MainActor in
                     do {
                         let string = try await DAMBrowserView.loadString(from: provider)
@@ -1141,6 +1167,14 @@ struct DAMBrowserView: View {
                 Label("Rename", systemImage: "pencil")
             }
 
+            if collection.kind != .smart {
+                Button {
+                    relinkCollection()
+                } label: {
+                    Label("Relink Album...", systemImage: "link")
+                }
+            }
+
             let eligible = eligibleParents()
             if !eligible.isEmpty {
                 Menu {
@@ -1165,6 +1199,20 @@ struct DAMBrowserView: View {
                 Task { await viewModel.deleteCollection(id: collection.id ?? -1) }
             } label: {
                 Label("Delete", systemImage: "trash")
+            }
+        }
+
+        private func relinkCollection() {
+            let panel = NSOpenPanel()
+            panel.canChooseFiles = false
+            panel.canChooseDirectories = true
+            panel.allowsMultipleSelection = false
+            panel.message = "Select the folder that now contains the files for \"\(collection.name)\""
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            Task {
+                await viewModel.relinkCollectionAssets(
+                    collectionId: collection.id ?? -1,
+                    to: url)
             }
         }
 
@@ -1256,15 +1304,14 @@ struct DAMBrowserView: View {
     }
 
     /// Breadcrumb + home view-mode picker, shown above the grid or filmstrip.
-    /// The picker is overlaid at the trailing edge so the breadcrumb can never
-    /// push it outside the visible area.
     private var homeCatalogHeader: some View {
-        breadcrumbBar
-            .overlay(alignment: .topTrailing) {
-                homeViewPicker
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 4)
-            }
+        HStack(spacing: 0) {
+            breadcrumbBar
+                .frame(maxWidth: .infinity, alignment: .leading)
+            homeViewPicker
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+        }
     }
 
     private var homeViewPicker: some View {
@@ -1296,19 +1343,21 @@ struct DAMBrowserView: View {
 
     @ViewBuilder
     private var gridContent: some View {
-        if let error = viewModel.errorMessage {
-            ContentUnavailableView {
-                Label("Catalog Error", systemImage: "exclamationmark.triangle")
-            } description: {
-                Text(error)
-            }
-        } else if viewModel.assets.isEmpty {
-            ContentUnavailableView {
-                Label("No Assets Yet", systemImage: "photo.on.rectangle.angled")
-            } description: {
-                Text("Import a folder to start building your catalog.\nRatings, tags, and AI keywording stay on this Mac.")
-            } actions: {
-                Button("Import Folder…") { viewModel.importFolderWithPanel() }
+        if viewModel.assets.isEmpty {
+            if let error = viewModel.errorMessage {
+                ContentUnavailableView {
+                    Label("Catalog Error", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(error)
+                }
+            } else {
+                ContentUnavailableView {
+                    Label("No Assets Yet", systemImage: "photo.on.rectangle.angled")
+                } description: {
+                    Text("Import a folder to start building your catalog.\nRatings, tags, and AI keywording stay on this Mac.")
+                } actions: {
+                    Button("Import Folder…") { viewModel.importFolderWithPanel() }
+                }
             }
         } else {
             ScrollView {
@@ -1335,7 +1384,7 @@ struct DAMBrowserView: View {
     }
 
     private func gridCellTapped(_ asset: DAMAsset) {
-        let modifiers = NSApp.currentEvent?.modifierFlags ?? []
+        let modifiers = NSEvent.modifierFlags
         if modifiers.contains(.command) {
             viewModel.toggleSelection(asset.id)
         } else if modifiers.contains(.shift) {
@@ -1375,10 +1424,10 @@ struct DAMBrowserView: View {
         let effective: Set<DAMAsset.ID> = viewModel.selection.contains(id)
             ? viewModel.selection : [id]
 
-        let manualCollections = viewModel.collections.filter { $0.kind == .manual && $0.id != nil }
-        if !manualCollections.isEmpty {
+        let addableCollections = viewModel.collections.filter { $0.kind != .smart && $0.id != nil }
+        if !addableCollections.isEmpty {
             Menu {
-                ForEach(manualCollections) { collection in
+                ForEach(addableCollections) { collection in
                     if let collectionId = collection.id {
                         Button {
                             Task { await viewModel.addSelectionToCollection(collectionId) }
@@ -1394,7 +1443,7 @@ struct DAMBrowserView: View {
 
         if let selectedID = viewModel.selectedCollectionID,
            let collection = viewModel.collections.first(where: { $0.id == selectedID }),
-           collection.kind == .manual {
+           collection.kind != .smart {
             Button {
                 Task { await viewModel.removeSelectionFromActiveCollection() }
             } label: {
@@ -1427,8 +1476,20 @@ struct DAMBrowserView: View {
             Task { await viewModel.createAlbumAndAddFolderContents(name: name, folderPath: path) }
         })
 
+        menu.addItem(host.item(title: "Relink Folder...",
+                               imageName: "link",
+                               color: .systemOrange) {
+            let panel = NSOpenPanel()
+            panel.canChooseFiles = false
+            panel.canChooseDirectories = true
+            panel.allowsMultipleSelection = false
+            panel.message = "Select the new location for folder \"\(name)\""
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            Task { await viewModel.relinkFolderAssets(folderPath: path, to: url) }
+        })
+
         let albums = viewModel.collections
-            .filter { $0.kind == .manual && $0.id != nil }
+            .filter { $0.kind != .smart && $0.id != nil }
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
 
         if !albums.isEmpty {
@@ -1882,6 +1943,43 @@ struct DAMBrowserView: View {
         .padding(.vertical, 6)
     }
 
+    // MARK: - Status banner (errors / progress)
+
+    private var messageBanner: some View {
+        Group {
+            if viewModel.isRelinking {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Relinking missing files…")
+                        .font(.caption)
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color.accentColor.opacity(0.15))
+            } else if let message = viewModel.errorMessage, !message.isEmpty {
+                HStack(spacing: 8) {
+                    Image(systemName: message.hasPrefix("Relinked") ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        .foregroundStyle(message.hasPrefix("Relinked") ? .green : .orange)
+                    Text(message)
+                        .font(.caption)
+                        .lineLimit(2)
+                    Spacer()
+                    Button {
+                        viewModel.setErrorMessage(nil)
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(message.hasPrefix("Relinked") ? Color.green.opacity(0.15) : Color.orange.opacity(0.15))
+            }
+        }
+    }
+
     // MARK: - Storage health banner
 
     private var storageHealthBanner: some View {
@@ -1922,6 +2020,7 @@ struct DAMBrowserView: View {
                 PanelResizeHandle(width: $treeWidth, minWidth: 170, maxWidth: 400)
             }
             VStack(spacing: 0) {
+                messageBanner
                 switch homeViewMode {
                 case .grid:
                     storageHealthBanner
@@ -1977,6 +2076,7 @@ struct DAMBrowserView: View {
                     PanelResizeHandle(width: $treeWidth, minWidth: 170, maxWidth: 400)
                 }
                 VStack(spacing: 0) {
+                    messageBanner
                     metadataHeader
                     Divider()
                     if metadataViewMode == .preview {
@@ -2222,6 +2322,7 @@ private struct DAMPreviewImage: View {
             }
         }
         .frame(height: displayHeight)
+        .clipped()
         .task(id: asset.id) {
             await loadImage()
         }
@@ -2302,6 +2403,7 @@ private struct MetadataPreviewPane: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
             .overlay(alignment: .topTrailing) { zoomControls }
         }
         .task(id: asset?.id ?? -1) {
@@ -2489,7 +2591,7 @@ private struct DAMThumbnailCell: View {
             }
             .frame(maxWidth: .infinity)
         }
-        .task(id: asset.id) {
+        .task(id: ImageLoadID(assetId: asset.id, path: asset.path)) {
             await loadImage()
         }
         .onReceive(NotificationCenter.default.publisher(for: .damEditsDidChange)) { notification in
@@ -2497,6 +2599,11 @@ private struct DAMThumbnailCell: View {
                   changedAssetId == asset.id else { return }
             Task { await loadImage() }
         }
+    }
+
+    private struct ImageLoadID: Hashable {
+        let assetId: Int64?
+        let path: String
     }
 
     private func loadImage() async {

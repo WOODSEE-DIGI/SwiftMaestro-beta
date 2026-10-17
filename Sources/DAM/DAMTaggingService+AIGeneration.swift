@@ -598,11 +598,29 @@ extension DAMTaggingService {
         }
     }
 
-    /// Extracts the audio track from a video into a temporary M4A file using
-    /// AVAssetExportSession. The caller is responsible for deleting the temp
-    /// file when done.
+    /// Extracts the audio track from a video into a temporary audio file.
+    /// Uses AVAssetExportSession for natively-supported formats and falls back
+    /// to the bundled FFmpeg for codecs/macros that AVFoundation cannot convert
+    /// (e.g., AVI with Microsoft ADPCM audio). The caller deletes the temp file.
     private func extractAudioTrack(from videoURL: URL) async throws -> URL {
         let asset = AVAsset(url: videoURL)
+        let audioTracks = try await asset.loadTracks(withMediaType: .audio)
+        guard !audioTracks.isEmpty else {
+            throw DAMTaggingError.generationFailed("No audio track")
+        }
+
+        do {
+            return try await extractAudioTrackWithAVExport(from: asset, outputURL: nil)
+        } catch {
+            taggingLogger.info("AVAssetExportSession audio extraction failed for \(videoURL.lastPathComponent, privacy: .public), trying FFmpeg fallback: \(error.localizedDescription)")
+            return try await extractAudioTrackWithFFmpeg(from: videoURL)
+        }
+    }
+
+    private func extractAudioTrackWithAVExport(
+        from asset: AVAsset,
+        outputURL: URL? = nil
+    ) async throws -> URL {
         guard try await asset.load(.isExportable) else {
             throw DAMTaggingError.generationFailed("Video is not exportable")
         }
@@ -610,20 +628,46 @@ extension DAMTaggingService {
         guard let session else {
             throw DAMTaggingError.generationFailed("Could not create audio export session")
         }
-        let outputURL = FileManager.default.temporaryDirectory
+        let destination = outputURL ?? FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension("m4a")
-        session.outputURL = outputURL
+        session.outputURL = destination
         session.outputFileType = .m4a
-        session.timeRange = CMTimeRange(start: .zero, duration: asset.duration)
+        let duration = try await asset.load(.duration)
+        session.timeRange = CMTimeRange(start: .zero, duration: duration)
 
         await session.export()
         switch session.status {
         case .completed:
-            return outputURL
+            return destination
         default:
             throw session.error ?? DAMTaggingError.generationFailed("Audio export failed with status \(session.status.rawValue)")
         }
+    }
+
+    private func extractAudioTrackWithFFmpeg(from videoURL: URL) async throws -> URL {
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("wav")
+        let arguments = [
+            "-y",
+            "-i", videoURL.path,
+            "-vn",
+            "-ar", "16000",
+            "-ac", "1",
+            "-c:a", "pcm_s16le",
+            "-t", "600",
+            outputURL.path
+        ]
+        let (_, stderr) = try await FFmpegService().runFFmpeg(arguments: arguments)
+        let attributes = try? FileManager.default.attributesOfItem(atPath: outputURL.path)
+        let size = attributes?[.size] as? Int64 ?? 0
+        guard FileManager.default.fileExists(atPath: outputURL.path), size > 1024 else {
+            let message = String(data: stderr, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                ?? "FFmpeg produced no output"
+            throw DAMTaggingError.generationFailed("FFmpeg audio extraction failed: \(message)")
+        }
+        return outputURL
     }
 
     /// Decode an image for the vision proxy at a size that balances detail

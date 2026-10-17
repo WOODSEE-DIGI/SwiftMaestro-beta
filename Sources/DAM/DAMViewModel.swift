@@ -133,9 +133,16 @@ final class DAMViewModel {
     }
     private(set) var totalAssetCount = 0
     private(set) var isImporting = false
+    private(set) var isRelinking = false
     private(set) var importScanned = 0
     private(set) var importWritten = 0
     private(set) var errorMessage: String?
+
+    /// Relink ambiguity sheet state. Populated when a relink finds the same
+    /// filename in more than one place under the new root.
+    private(set) var relinkAmbiguities: [DAMRelinkAmbiguity] = []
+    private(set) var showRelinkAmbiguitySheet = false
+    private var pendingRelinkVolume: DAMVolume?
 
     /// Expose a setter so views can report errors without making the
     /// property publicly mutable everywhere.
@@ -1361,6 +1368,148 @@ final class DAMViewModel {
     /// scan loop will throw and unwind the enumerator.
     func cancelImport() {
         importTask?.cancel()
+    }
+
+    // MARK: - Relink stale paths
+
+    /// Relink a set of assets to a new root folder.
+    func relinkAssets(ids: Set<Int64>, to targetFolderURL: URL) async {
+        isRelinking = true
+        defer { isRelinking = false }
+        do {
+            let result = try await DAMRelinkService.shared.relink(
+                assetIds: ids,
+                to: targetFolderURL)
+            handleRelinkResult(result)
+        } catch {
+            errorMessage = "Relink failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Relink every asset in a collection/album.
+    func relinkCollectionAssets(collectionId: Int64, to targetFolderURL: URL) async {
+        isRelinking = true
+        defer { isRelinking = false }
+        do {
+            let ids = try database.assets(inCollectionId: collectionId).compactMap(\.id)
+            guard !ids.isEmpty else {
+                errorMessage = "No assets in this album to relink."
+                return
+            }
+            let result = try await DAMRelinkService.shared.relink(
+                assetIds: Set(ids),
+                to: targetFolderURL)
+            handleRelinkResult(result)
+        } catch {
+            errorMessage = "Relink failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Relink every asset under a catalog folder (recursive).
+    func relinkFolderAssets(folderPath: String, to targetFolderURL: URL) async {
+        isRelinking = true
+        defer { isRelinking = false }
+        do {
+            let ids = try database.assets(inFolder: folderPath, recursive: true).compactMap(\.id)
+            guard !ids.isEmpty else {
+                errorMessage = "No assets under this folder to relink."
+                return
+            }
+            let result = try await DAMRelinkService.shared.relink(
+                assetIds: Set(ids),
+                to: targetFolderURL,
+                oldPrefix: folderPath)
+            handleRelinkResult(result)
+        } catch {
+            errorMessage = "Relink failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Apply unambiguous updates and, if any filename matched multiple files,
+    /// surface the ambiguity sheet so the user can choose.
+    private func handleRelinkResult(_ result: DAMRelinkResult) {
+        applyRelinkUpdates(result.updates, allowEmpty: result.ambiguous.isEmpty)
+
+        if !result.ambiguous.isEmpty {
+            pendingRelinkVolume = result.volume
+            relinkAmbiguities = result.ambiguous
+            showRelinkAmbiguitySheet = true
+        }
+    }
+
+    /// Resolve duplicate matches from the ambiguity sheet.
+    func resolveRelinkAmbiguities(choices: [Int64: URL]) async {
+        let updates = await DAMRelinkService.shared.resolveAmbiguities(
+            relinkAmbiguities,
+            choices: choices,
+            volume: pendingRelinkVolume)
+        applyRelinkUpdates(updates, allowEmpty: false)
+        relinkAmbiguities.removeAll()
+        pendingRelinkVolume = nil
+        showRelinkAmbiguitySheet = false
+    }
+
+    /// Dismiss the ambiguity sheet without resolving (e.g., Cancel).
+    func dismissRelinkAmbiguities() {
+        relinkAmbiguities.removeAll()
+        pendingRelinkVolume = nil
+        showRelinkAmbiguitySheet = false
+    }
+
+    private func applyRelinkUpdates(_ updates: [Int64: DAMRelinkUpdate], allowEmpty: Bool) {
+        guard !updates.isEmpty else {
+            if allowEmpty {
+                errorMessage = "No missing files matched the selected folder."
+            }
+            return
+        }
+
+        var refreshedIds: [Int64] = []
+        for i in assets.indices {
+            guard let id = assets[i].id,
+                  let update = updates[id] else { continue }
+            assets[i].path = update.path
+            assets[i].filename = update.filename
+            assets[i].folder = update.folder
+            assets[i].volumeId = update.volumeId
+            assets[i].relativePath = update.relativePath
+            assets[i].isAvailable = true
+            refreshedIds.append(id)
+        }
+
+        // Persist the new paths so the fix survives relaunch.
+        if !refreshedIds.isEmpty {
+            try? database.dbQueue.write { db in
+                for id in refreshedIds {
+                    guard let update = updates[id] else { continue }
+                    try db.execute(
+                        sql: """
+                            UPDATE asset
+                            SET path = ?, folder = ?, filename = ?, volumeId = ?, relativePath = ?, isAvailable = 1
+                            WHERE id = ?
+                            """,
+                        arguments: [
+                            update.path,
+                            update.folder,
+                            update.filename,
+                            update.volumeId,
+                            update.relativePath,
+                            id
+                        ]
+                    )
+                }
+            }
+        }
+
+        for id in refreshedIds {
+            NotificationCenter.default.post(
+                name: .damEditsDidChange,
+                object: nil,
+                userInfo: ["assetId": id])
+        }
+
+        errorMessage = "Relinked \(refreshedIds.count) file(s)."
+        Task { await refreshFolderTree() }
     }
 
     // MARK: - Offload & ingest

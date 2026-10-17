@@ -44,17 +44,17 @@ Currently SwiftMaestro is A native macOS AI assistant that runs large language m
 
 ---
 
-## What's New in 0.7.0
+## What's New in 0.7.1
 
 ### MaestroDAM
 
-- **Native right-click folder menu**: SwiftUI's `.contextMenu` on folder rows caused an instant beachball, so folder rows now use a native AppKit `NSMenu`. The menu acts on the right-clicked folder path and shows colored SF Symbols icons.
-- **Folder-to-album workflow fixed**: creating a new album from a folder now uses an atomic DB transaction; inserted rows receive IDs after fixing `MutablePersistableRecord` conformance.
-- **RAW preview hardening**: LibRaw is now guarded by a known-RAW extension allowlist, JPEG SOI validation, and bitmap size/depth checks to prevent crashes on non-RAW or malformed files.
-
-### Models
-
-- **Built-in catalog cleanup**: removed stale/unwired entries and added Gemma 4 tiers for 16 GB and 128 GB Macs.
+- **Visibility-aware privacy redaction**: privacy mode now only redacts visible assets plus a small prefetch window in the home grid, and the entire folder/album when opened.
+- **Right-click privacy OCR tuning**: the privacy/auto-redaction toolbar button now exposes a context menu to toggle faces/text/barcodes/PII patterns and confidence.
+- **Home filmstrip view**: the Browser/List/Statistics picker moved next to the Catalog breadcrumb; List became a new Filmstrip view with a large preview and thumbnail strip.
+- **Preview zoom controls**: the large preview pane (grid and metadata preview) now has zoom in/out/reset controls; PDFs scale relative to fit.
+- **Batch redaction reset**: Edit → Redaction Layout can select all assets in the current scope and reset/clear all redactions for them.
+- **Multi-select reliability fixed**: grid and filmstrip cells now use the current event's modifier flags with full-cell content shapes; Cmd-click toggles and Shift-click selects ranges.
+- **PII regex precision**: registration/ID label patterns now require word boundaries so words like "regarding" are no longer redacted.
 
 See [CHANGELOG.md](CHANGELOG.md) for earlier releases.
 

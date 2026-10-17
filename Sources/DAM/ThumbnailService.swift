@@ -254,7 +254,9 @@ actor ThumbnailService {
         for asset: DAMAsset,
         pixelSize: CGFloat = gridPixelSize
     ) async throws -> NSImage {
-        let fileURL = URL(fileURLWithPath: asset.path).standardizedFileURL
+        let resolvedURL = await DAMVolumeStore.shared.resolveURL(for: asset)
+            ?? URL(fileURLWithPath: asset.path)
+        let fileURL = resolvedURL.standardizedFileURL
         let effectiveSize: CGFloat = DAMFileKind.isVideo(fileURL)
             ? min(pixelSize, 1024)
             : pixelSize

@@ -155,7 +155,7 @@ struct FilmstripBar: View {
     }
 
     private func filmstripCellTapped(_ asset: DAMAsset) {
-        let modifiers = NSApp.currentEvent?.modifierFlags ?? []
+        let modifiers = NSEvent.modifierFlags
         if modifiers.contains(.command) {
             viewModel.toggleSelection(asset.id)
         } else if modifiers.contains(.shift) {
@@ -1043,6 +1043,22 @@ enum DAMContextMenu {
                 Label(assets.count > 1 ? "Copy \(assets.count) Paths" : "Copy Path",
                       systemImage: "doc.on.doc")
             }
+
+            let missingAssets = assets.filter { !FileManager.default.fileExists(atPath: $0.path) }
+            if !missingAssets.isEmpty {
+                Divider()
+                Button {
+                    relinkAssets(viewModel: viewModel, assets: missingAssets)
+                } label: {
+                    Label(
+                        missingAssets.count > 1
+                            ? "Relink \(missingAssets.count) Missing Files..."
+                            : "Relink Missing File...",
+                        systemImage: "link"
+                    )
+                }
+            }
+
             // ArtCraft Crafting Apps — route by file type; each matching app
             // gets the subset of assets it handles. On quit, the launcher
             // delta-imports the touched folders so the catalog picks up edits.
@@ -1102,6 +1118,17 @@ enum DAMContextMenu {
                 }
             }
         }
+    }
+
+    private static func relinkAssets(viewModel: DAMViewModel, assets: [DAMAsset]) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Select the folder that now contains the missing files"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let ids = Set(assets.compactMap(\.id))
+        Task { await viewModel.relinkAssets(ids: ids, to: url) }
     }
 
     static func reveal(_ assets: [DAMAsset]) {
