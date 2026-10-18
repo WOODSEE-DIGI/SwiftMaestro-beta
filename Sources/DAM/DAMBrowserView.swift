@@ -562,6 +562,26 @@ struct DAMBrowserView: View {
                             }
                         }
 
+                        Menu("Add to album") {
+                            if viewModel.collections.isEmpty {
+                                Text("No albums").foregroundStyle(.secondary)
+                            }
+                            ForEach(viewModel.collections) { collection in
+                                Button(collection.name) {
+                                    guard let id = collection.id else { return }
+                                    Task { await viewModel.addSelectionToCollection(id) }
+                                }
+                            }
+                        }
+                        .disabled(viewModel.collections.isEmpty)
+
+                        if let collectionID = viewModel.selectedCollectionID,
+                           let collection = viewModel.collections.first(where: { $0.id == collectionID }) {
+                            Button("Remove from \(collection.name)") {
+                                Task { await viewModel.removeSelectionFromCurrentCollection() }
+                            }
+                        }
+
                         Button("Move to folder…") { runBatchMove() }
                         Button("Relink…") { runBatchRelink() }
 
@@ -572,6 +592,23 @@ struct DAMBrowserView: View {
                     } label: {
                         Label("Batch", systemImage: "square.stack")
                     }
+                    .disabled(viewModel.selection.isEmpty)
+
+                    // Selection controls
+                    Button {
+                        viewModel.setSelection(Set(viewModel.assets.compactMap(\.id)))
+                    } label: {
+                        Label("Select All", systemImage: "checkmark.circle")
+                    }
+                    .keyboardShortcut("a", modifiers: .command)
+                    .disabled(viewModel.assets.isEmpty)
+
+                    Button {
+                        viewModel.setSelection([])
+                    } label: {
+                        Label("Select None", systemImage: "xmark.circle")
+                    }
+                    .keyboardShortcut(.escape, modifiers: [])
                     .disabled(viewModel.selection.isEmpty)
 
                     // Flag filter

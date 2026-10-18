@@ -1005,6 +1005,24 @@ final class DAMViewModel {
         await addAssetIds(ids, to: collectionId)
     }
 
+    /// Remove the current selection from the currently viewed collection/album.
+    func removeSelectionFromCurrentCollection() async {
+        guard let collectionId = selectedCollectionID else { return }
+        let ids = Array(selection).compactMap { $0 }
+        guard !ids.isEmpty else { return }
+        do {
+            try database.removeAssetsFromCollection(assetIds: ids, collectionId: collectionId)
+            if let count = try? database.collectionAssetCount(collectionId: collectionId) {
+                collectionAssetCounts[collectionId] = count
+            }
+            selection.subtract(ids)
+            await reload()
+            await refreshCollections()
+        } catch {
+            errorMessage = "Failed to remove from album: \(error.localizedDescription)"
+        }
+    }
+
     /// Add a specific list of asset IDs to a collection.
     func addAssetIds(_ ids: [Int64], to collectionId: Int64) async {
         guard !ids.isEmpty else { return }
