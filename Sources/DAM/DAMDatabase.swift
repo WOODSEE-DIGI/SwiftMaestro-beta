@@ -892,13 +892,20 @@ final class DAMDatabase: Sendable {
     /// sorted alphabetically. Used to populate the extension filter menu.
     func distinctExtensions() throws -> [String] {
         try dbQueue.read { db in
+            // Derive the true extension (after the last dot) in Swift; SQLite
+            // has no LAST_INDEX/REVERSE helpers, and SUBSTR(..., INSTR(...))
+            // would split on the first dot in names like "10.10.jpg".
             let rows = try Row.fetchAll(db, sql: """
-                SELECT DISTINCT LOWER(SUBSTR(filename, INSTR(filename, '.') + 1)) AS ext
+                SELECT DISTINCT filename
                 FROM asset
                 WHERE filename LIKE '%.%'
-                ORDER BY ext
                 """)
-            return rows.map { $0["ext"] }
+            let exts = Set(rows.compactMap { row -> String? in
+                let filename: String = row["filename"]
+                let ext = (filename as NSString).pathExtension.lowercased()
+                return ext.isEmpty ? nil : ext
+            })
+            return Array(exts).sorted()
         }
     }
 
