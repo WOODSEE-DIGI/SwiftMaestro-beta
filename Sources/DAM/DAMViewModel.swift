@@ -62,6 +62,26 @@ final class DAMViewModel {
     var filterFlag: DAMFlag? = nil {
         didSet { Task { await reload() } }
     }
+    /// Filter by specific filename extensions, e.g. {"cr3", "iiq"}. Empty = all.
+    var filterExtensions: Set<String> = [] {
+        didSet { Task { await reload() } }
+    }
+    /// Filter by presence/absence of metadata fields (nil = all).
+    var filterHasAICaption: Bool? = nil {
+        didSet { Task { await reload() } }
+    }
+    var filterHasAIKeywords: Bool? = nil {
+        didSet { Task { await reload() } }
+    }
+    var filterHasOCR: Bool? = nil {
+        didSet { Task { await reload() } }
+    }
+    var filterHasUserKeywords: Bool? = nil {
+        didSet { Task { await reload() } }
+    }
+    var filterHasXattr: Bool? = nil {
+        didSet { Task { await reload() } }
+    }
     /// Path of a folder the view should reveal/expand after import. Consumed by
     /// the browser view to expand the folder tree to the imported location.
     var folderToReveal: String? = nil
@@ -681,6 +701,12 @@ final class DAMViewModel {
             filterFileType = nil
             filterTagged = nil
             filterFlag = nil
+            filterExtensions.removeAll()
+            filterHasAICaption = nil
+            filterHasAIKeywords = nil
+            filterHasOCR = nil
+            filterHasUserKeywords = nil
+            filterHasXattr = nil
             selectedFolder = nil
             return  // reload() fires from the last didSet
         }
@@ -732,6 +758,12 @@ final class DAMViewModel {
             let fileType = filterFileType
             let tagged = filterTagged
             let flag = filterFlag
+            let extensions = filterExtensions
+            let hasAICaption = filterHasAICaption
+            let hasAIKeywords = filterHasAIKeywords
+            let hasOCR = filterHasOCR
+            let hasUserKeywords = filterHasUserKeywords
+            let hasXattr = filterHasXattr
             let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
             async let page = fetchPage(offset: 0)
             async let count = Task.detached(priority: .userInitiated) { [database] in
@@ -740,12 +772,20 @@ final class DAMViewModel {
                 if query.isEmpty {
                     return try database.assetCount(folder: folder, minRating: rating,
                                                    tagColor: tagColor, fileType: fileType,
-                                                   tagged: tagged, flag: flag)
+                                                   tagged: tagged, flag: flag,
+                                                   extensions: extensions,
+                                                   hasAICaption: hasAICaption, hasAIKeywords: hasAIKeywords,
+                                                   hasOCR: hasOCR, hasUserKeywords: hasUserKeywords,
+                                                   hasXattr: hasXattr)
                 }
                 return try database.searchAssetCount(matching: query, folder: folder,
                                                      minRating: rating,
                                                      tagColor: tagColor, fileType: fileType,
-                                                     tagged: tagged, flag: flag)
+                                                     tagged: tagged, flag: flag,
+                                                     extensions: extensions,
+                                                     hasAICaption: hasAICaption, hasAIKeywords: hasAIKeywords,
+                                                     hasOCR: hasOCR, hasUserKeywords: hasUserKeywords,
+                                                     hasXattr: hasXattr)
             }.value
             assets = try await page
             totalAssetCount = (try? await count) ?? assets.count
@@ -1185,13 +1225,23 @@ final class DAMViewModel {
         let fileType = filterFileType
         let tagged = filterTagged
         let flag = filterFlag
+        let extensions = filterExtensions
+        let hasAICaption = filterHasAICaption
+        let hasAIKeywords = filterHasAIKeywords
+        let hasOCR = filterHasOCR
+        let hasUserKeywords = filterHasUserKeywords
+        let hasXattr = filterHasXattr
         return try await Task.detached(priority: .userInitiated) { [database] in
             if query.isEmpty {
                 return try database.assets(
                     folder: folder, minRating: rating, sort: sort,
                     limit: limit, offset: offset,
                     tagColor: tagColor, fileType: fileType,
-                    tagged: tagged, flag: flag)
+                    tagged: tagged, flag: flag,
+                    extensions: extensions,
+                    hasAICaption: hasAICaption, hasAIKeywords: hasAIKeywords,
+                    hasOCR: hasOCR, hasUserKeywords: hasUserKeywords,
+                    hasXattr: hasXattr)
             }
             // Search WITH the toolbar filters applied and real pagination —
             // the old path ignored both, so the count disagreed and "load
@@ -1200,6 +1250,10 @@ final class DAMViewModel {
                 matching: query, folder: folder, minRating: rating,
                 tagColor: tagColor, fileType: fileType,
                 tagged: tagged, flag: flag,
+                extensions: extensions,
+                hasAICaption: hasAICaption, hasAIKeywords: hasAIKeywords,
+                hasOCR: hasOCR, hasUserKeywords: hasUserKeywords,
+                hasXattr: hasXattr,
                 limit: limit, offset: offset)
         }.value
     }
@@ -1214,6 +1268,12 @@ final class DAMViewModel {
         let fileType = filterFileType
         let tagged = filterTagged
         let flag = filterFlag
+        let extensions = filterExtensions
+        let hasAICaption = filterHasAICaption
+        let hasAIKeywords = filterHasAIKeywords
+        let hasOCR = filterHasOCR
+        let hasUserKeywords = filterHasUserKeywords
+        let hasXattr = filterHasXattr
         let sort = sortOrder
 
         return try await Task.detached(priority: .userInitiated) { [database] in
@@ -1242,6 +1302,13 @@ final class DAMViewModel {
                 }
             }
 
+            if !extensions.isEmpty {
+                assets = assets.filter { asset in
+                    let ext = (asset.filename as NSString).pathExtension.lowercased()
+                    return extensions.contains(ext)
+                }
+            }
+
             if let tagged {
                 assets = assets.filter {
                     let hasTags = !($0.xattrKeywords?.isEmpty ?? true)
@@ -1251,6 +1318,22 @@ final class DAMViewModel {
 
             if let flag {
                 assets = assets.filter { $0.flag == flag }
+            }
+
+            if let hasAICaption {
+                assets = assets.filter { ($0.aiCaption?.isEmpty == false) == hasAICaption }
+            }
+            if let hasAIKeywords {
+                assets = assets.filter { ($0.aiKeywords?.isEmpty == false) == hasAIKeywords }
+            }
+            if let hasOCR {
+                assets = assets.filter { ($0.ocrText?.isEmpty == false) == hasOCR }
+            }
+            if let hasUserKeywords {
+                assets = assets.filter { ($0.userKeywords?.isEmpty == false) == hasUserKeywords }
+            }
+            if let hasXattr {
+                assets = assets.filter { ($0.xattrKeywords?.isEmpty == false) == hasXattr }
             }
 
             assets.sort { lhs, rhs in

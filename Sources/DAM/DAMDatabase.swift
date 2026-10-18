@@ -610,7 +610,11 @@ final class DAMDatabase: Sendable {
     func assets(folder: String?, minRating: Int, sort: DAMSortOrder,
                  limit: Int, offset: Int,
                  tagColor: Int? = nil, fileType: String? = nil,
-                 tagged: Bool? = nil, flag: DAMFlag? = nil) throws -> [DAMAsset] {
+                 tagged: Bool? = nil, flag: DAMFlag? = nil,
+                 extensions: Set<String> = [],
+                 hasAICaption: Bool? = nil, hasAIKeywords: Bool? = nil,
+                 hasOCR: Bool? = nil, hasUserKeywords: Bool? = nil,
+                 hasXattr: Bool? = nil) throws -> [DAMAsset] {
         try dbQueue.read { db in
             var request = DAMAsset.filter(DAMAsset.Columns.rating >= minRating)
             if let tagColor {
@@ -628,6 +632,11 @@ final class DAMDatabase: Sendable {
                     || (Column("kind") == nil && Column("uti").like(pattern))
                 )
             }
+            if !extensions.isEmpty {
+                let placeholders = extensions.map { _ in "?" }.joined(separator: " OR LOWER(filename) LIKE ")
+                let patternArgs = extensions.map { "%.\($0.lowercased())" }
+                request = request.filter(sql: "LOWER(filename) LIKE \(placeholders)", arguments: StatementArguments(patternArgs))
+            }
             if let tagged {
                 if tagged {
                     request = request.filter(Column("xattrKeywords") != nil && Column("xattrKeywords") != "")
@@ -637,6 +646,31 @@ final class DAMDatabase: Sendable {
             }
             if let flag {
                 request = request.filter(Column("flag") == flag.rawValue)
+            }
+            if let hasAICaption {
+                request = request.filter(hasAICaption
+                    ? Column("aiCaption") != nil && Column("aiCaption") != ""
+                    : Column("aiCaption") == nil || Column("aiCaption") == "")
+            }
+            if let hasAIKeywords {
+                request = request.filter(hasAIKeywords
+                    ? Column("aiKeywords") != nil && Column("aiKeywords") != ""
+                    : Column("aiKeywords") == nil || Column("aiKeywords") == "")
+            }
+            if let hasOCR {
+                request = request.filter(hasOCR
+                    ? Column("ocrText") != nil && Column("ocrText") != ""
+                    : Column("ocrText") == nil || Column("ocrText") == "")
+            }
+            if let hasUserKeywords {
+                request = request.filter(hasUserKeywords
+                    ? Column("userKeywords") != nil && Column("userKeywords") != ""
+                    : Column("userKeywords") == nil || Column("userKeywords") == "")
+            }
+            if let hasXattr {
+                request = request.filter(hasXattr
+                    ? Column("xattrKeywords") != nil && Column("xattrKeywords") != ""
+                    : Column("xattrKeywords") == nil || Column("xattrKeywords") == "")
             }
             if let folder {
                 // Recursive folder scope without LIKE/GLOB escaping hazards:
@@ -665,7 +699,11 @@ final class DAMDatabase: Sendable {
     /// the Bridge-style status bar.
     func assetCount(folder: String?, minRating: Int,
                      tagColor: Int? = nil, fileType: String? = nil,
-                     tagged: Bool? = nil, flag: DAMFlag? = nil) throws -> Int {
+                     tagged: Bool? = nil, flag: DAMFlag? = nil,
+                     extensions: Set<String> = [],
+                     hasAICaption: Bool? = nil, hasAIKeywords: Bool? = nil,
+                     hasOCR: Bool? = nil, hasUserKeywords: Bool? = nil,
+                     hasXattr: Bool? = nil) throws -> Int {
         try dbQueue.read { db in
             var request = DAMAsset.filter(DAMAsset.Columns.rating >= minRating)
             if let tagColor {
@@ -685,6 +723,11 @@ final class DAMDatabase: Sendable {
                     || (Column("kind") == nil && Column("uti").like(pattern))
                 )
             }
+            if !extensions.isEmpty {
+                let placeholders = extensions.map { _ in "?" }.joined(separator: " OR LOWER(filename) LIKE ")
+                let patternArgs = extensions.map { "%.\($0.lowercased())" }
+                request = request.filter(sql: "LOWER(filename) LIKE \(placeholders)", arguments: StatementArguments(patternArgs))
+            }
             if let tagged {
                 if tagged {
                     request = request.filter(Column("xattrKeywords") != nil && Column("xattrKeywords") != "")
@@ -694,6 +737,31 @@ final class DAMDatabase: Sendable {
             }
             if let flag {
                 request = request.filter(Column("flag") == flag.rawValue)
+            }
+            if let hasAICaption {
+                request = request.filter(hasAICaption
+                    ? Column("aiCaption") != nil && Column("aiCaption") != ""
+                    : Column("aiCaption") == nil || Column("aiCaption") == "")
+            }
+            if let hasAIKeywords {
+                request = request.filter(hasAIKeywords
+                    ? Column("aiKeywords") != nil && Column("aiKeywords") != ""
+                    : Column("aiKeywords") == nil || Column("aiKeywords") == "")
+            }
+            if let hasOCR {
+                request = request.filter(hasOCR
+                    ? Column("ocrText") != nil && Column("ocrText") != ""
+                    : Column("ocrText") == nil || Column("ocrText") == "")
+            }
+            if let hasUserKeywords {
+                request = request.filter(hasUserKeywords
+                    ? Column("userKeywords") != nil && Column("userKeywords") != ""
+                    : Column("userKeywords") == nil || Column("userKeywords") == "")
+            }
+            if let hasXattr {
+                request = request.filter(hasXattr
+                    ? Column("xattrKeywords") != nil && Column("xattrKeywords") != ""
+                    : Column("xattrKeywords") == nil || Column("xattrKeywords") == "")
             }
             if let folder {
                 request = request.filter(
@@ -1186,7 +1254,11 @@ final class DAMDatabase: Sendable {
     /// list and the "N items" count can never disagree.
     private static func assetFilterSQL(
         minRating: Int, tagColor: Int?, fileType: String?,
-        tagged: Bool?, flag: DAMFlag?, folder: String?
+        tagged: Bool?, flag: DAMFlag?, folder: String?,
+        extensions: Set<String> = [],
+        hasAICaption: Bool? = nil, hasAIKeywords: Bool? = nil,
+        hasOCR: Bool? = nil, hasUserKeywords: Bool? = nil,
+        hasXattr: Bool? = nil
     ) -> (sql: String, args: [any DatabaseValueConvertible]) {
         var clauses = ["a.rating >= ?"]
         var args: [any DatabaseValueConvertible] = [minRating]
@@ -1203,6 +1275,13 @@ final class DAMDatabase: Sendable {
             args.append(fileType)
             args.append("%\(fileType)%")
         }
+        if !extensions.isEmpty {
+            let extClauses = extensions.map { _ in "LOWER(a.filename) LIKE ?" }
+            clauses.append("(\(extClauses.joined(separator: " OR ")))")
+            for ext in extensions {
+                args.append("%.\(ext.lowercased())")
+            }
+        }
         if let tagged {
             clauses.append(tagged
                 ? "(a.xattrKeywords IS NOT NULL AND a.xattrKeywords != '')"
@@ -1211,6 +1290,31 @@ final class DAMDatabase: Sendable {
         if let flag {
             clauses.append("a.flag = ?")
             args.append(flag.rawValue)
+        }
+        if let hasAICaption {
+            clauses.append(hasAICaption
+                ? "(a.aiCaption IS NOT NULL AND a.aiCaption != '')"
+                : "(a.aiCaption IS NULL OR a.aiCaption = '')")
+        }
+        if let hasAIKeywords {
+            clauses.append(hasAIKeywords
+                ? "(a.aiKeywords IS NOT NULL AND a.aiKeywords != '')"
+                : "(a.aiKeywords IS NULL OR a.aiKeywords = '')")
+        }
+        if let hasOCR {
+            clauses.append(hasOCR
+                ? "(a.ocrText IS NOT NULL AND a.ocrText != '')"
+                : "(a.ocrText IS NULL OR a.ocrText = '')")
+        }
+        if let hasUserKeywords {
+            clauses.append(hasUserKeywords
+                ? "(a.userKeywords IS NOT NULL AND a.userKeywords != '')"
+                : "(a.userKeywords IS NULL OR a.userKeywords = '')")
+        }
+        if let hasXattr {
+            clauses.append(hasXattr
+                ? "(a.xattrKeywords IS NOT NULL AND a.xattrKeywords != '')"
+                : "(a.xattrKeywords IS NULL OR a.xattrKeywords = '')")
         }
         if let folder {
             // Range scan [folder+"/", folder+"0") covers the subtree, indexed.
@@ -1235,12 +1339,20 @@ final class DAMDatabase: Sendable {
         matching query: String, folder: String?, minRating: Int,
         tagColor: Int? = nil, fileType: String? = nil,
         tagged: Bool? = nil, flag: DAMFlag? = nil,
+        extensions: Set<String> = [],
+        hasAICaption: Bool? = nil, hasAIKeywords: Bool? = nil,
+        hasOCR: Bool? = nil, hasUserKeywords: Bool? = nil,
+        hasXattr: Bool? = nil,
         limit: Int, offset: Int
     ) throws -> [DAMAsset] {
         let phrase = Self.ftsPhrase(for: query)
         let (filterSQL, filterArgs) = Self.assetFilterSQL(
             minRating: minRating, tagColor: tagColor, fileType: fileType,
-            tagged: tagged, flag: flag, folder: folder)
+            tagged: tagged, flag: flag, folder: folder,
+            extensions: extensions,
+            hasAICaption: hasAICaption, hasAIKeywords: hasAIKeywords,
+            hasOCR: hasOCR, hasUserKeywords: hasUserKeywords,
+            hasXattr: hasXattr)
         return try dbQueue.read { db in
             var args: [any DatabaseValueConvertible] = [phrase]
             args.append(contentsOf: filterArgs)
@@ -1261,12 +1373,20 @@ final class DAMDatabase: Sendable {
     func searchAssetCount(
         matching query: String, folder: String?, minRating: Int,
         tagColor: Int? = nil, fileType: String? = nil,
-        tagged: Bool? = nil, flag: DAMFlag? = nil
+        tagged: Bool? = nil, flag: DAMFlag? = nil,
+        extensions: Set<String> = [],
+        hasAICaption: Bool? = nil, hasAIKeywords: Bool? = nil,
+        hasOCR: Bool? = nil, hasUserKeywords: Bool? = nil,
+        hasXattr: Bool? = nil
     ) throws -> Int {
         let phrase = Self.ftsPhrase(for: query)
         let (filterSQL, filterArgs) = Self.assetFilterSQL(
             minRating: minRating, tagColor: tagColor, fileType: fileType,
-            tagged: tagged, flag: flag, folder: folder)
+            tagged: tagged, flag: flag, folder: folder,
+            extensions: extensions,
+            hasAICaption: hasAICaption, hasAIKeywords: hasAIKeywords,
+            hasOCR: hasOCR, hasUserKeywords: hasUserKeywords,
+            hasXattr: hasXattr)
         return try dbQueue.read { db in
             var args: [any DatabaseValueConvertible] = [phrase]
             args.append(contentsOf: filterArgs)

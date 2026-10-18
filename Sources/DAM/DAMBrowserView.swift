@@ -65,6 +65,7 @@ struct DAMBrowserView: View {
     @State private var isPreparingShare = false
     @State private var shareProgressDone = 0
     @State private var shareProgressTotal = 0
+    @State private var extensionFilterText = ""
 
     // Smart predicate sheet state
     @State private var predicateQuery = ""
@@ -475,6 +476,50 @@ struct DAMBrowserView: View {
                         Text("PDF").tag("pdf" as String?)
                     }
                     .frame(width: 100)
+
+                    // Specific extension filter, e.g. "cr3, iiq"
+                    TextField("Extensions", text: $extensionFilterText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 110)
+                        .onChange(of: extensionFilterText) { _, newValue in
+                            let cleaned = newValue
+                                .split(separator: ",")
+                                .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+                                .filter { !$0.isEmpty }
+                            viewModel.filterExtensions = Set(cleaned)
+                        }
+
+                    // Metadata presence filters
+                    Menu {
+                        metadataPresenceMenu(
+                            title: "AI caption",
+                            value: viewModel.filterHasAICaption,
+                            set: { viewModel.filterHasAICaption = $0 }
+                        )
+                        metadataPresenceMenu(
+                            title: "AI keywords",
+                            value: viewModel.filterHasAIKeywords,
+                            set: { viewModel.filterHasAIKeywords = $0 }
+                        )
+                        metadataPresenceMenu(
+                            title: "OCR text",
+                            value: viewModel.filterHasOCR,
+                            set: { viewModel.filterHasOCR = $0 }
+                        )
+                        metadataPresenceMenu(
+                            title: "User keywords",
+                            value: viewModel.filterHasUserKeywords,
+                            set: { viewModel.filterHasUserKeywords = $0 }
+                        )
+                        metadataPresenceMenu(
+                            title: "Finder tags",
+                            value: viewModel.filterHasXattr,
+                            set: { viewModel.filterHasXattr = $0 }
+                        )
+                    } label: {
+                        Label("Metadata", systemImage: "doc.text.magnifyingglass")
+                    }
+                    .frame(width: 90)
 
                     // Flag filter
                     Picker("Flag", selection: Binding(
@@ -2253,6 +2298,31 @@ struct DAMBrowserView: View {
                 Text(caption)
                     .font(.caption)
                     .textSelection(.enabled)
+            }
+        }
+    }
+
+    private func metadataPresenceMenu(
+        title: String,
+        value: Bool?,
+        set: @escaping (Bool?) -> Void
+    ) -> some View {
+        Menu {
+            Button { set(nil) } label: {
+                Label("Any", systemImage: value == nil ? "checkmark" : "")
+            }
+            Button { set(true) } label: {
+                Label("Yes", systemImage: value == true ? "checkmark" : "")
+            }
+            Button { set(false) } label: {
+                Label("No", systemImage: value == false ? "checkmark" : "")
+            }
+        } label: {
+            HStack {
+                Text(title)
+                Spacer()
+                Text(value == true ? "Yes" : value == false ? "No" : "Any")
+                    .foregroundStyle(.secondary)
             }
         }
     }
