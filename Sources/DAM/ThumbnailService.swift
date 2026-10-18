@@ -106,8 +106,9 @@ actor ThumbnailService {
 
     static let shared = ThumbnailService()
 
-    /// Max simultaneous LibRaw decodes (QL has its own system-side queuing).
-    private static let decodeSlots = DecodeSlotLimiter(maxConcurrent: 2)
+    /// Max simultaneous LibRaw decodes. LibRaw has global state that is not
+    /// safely re-entrant across instances, so keep this strictly serial.
+    private static let decodeSlots = DecodeSlotLimiter(maxConcurrent: 1)
 
     /// Max simultaneous QuickLook requests — QL starves silently when
     /// flooded (requests take minutes or never call back), so pace them.
