@@ -108,7 +108,8 @@ actor DAMRelinkService {
         relinkLogger.info("Found \(filenameMap.values.reduce(0) { $0 + $1.count }) candidate file(s) for \(filenameMap.count) filename(s)")
 
         var updates: [Int64: DAMRelinkUpdate] = [:]
-        var ambiguous: [DAMRelinkAmbiguity] = []
+        var ambiguousCandidates: [(asset: DAMAsset, candidates: [URL])] = []
+        let assetById = Dictionary(uniqueKeysWithValues: assets.compactMap { ($0.id ?? -1, $0) })
 
         for asset in assets {
             guard let assetId = asset.id else { continue }
@@ -131,20 +132,40 @@ actor DAMRelinkService {
                 case 1:
                     updates[assetId] = Self.update(for: candidates[0], assetId: assetId, volume: volume)
                 default:
-                    // Score candidates by metadata (file size, mod date, Finder tags)
-                    // so non-unique filenames like "Untitled - 11 of 205.jpeg"
-                    // can still be matched unambiguously when one candidate is a
-                    // much better fit.
-                    let scored = candidates
-                        .map { (url: $0, score: Self.score(candidate: $0, for: asset)) }
-                        .sorted { $0.score > $1.score }
-                    if scored[0].score >= 30,
-                       scored.count == 1 || scored[0].score - scored[1].score >= 15 {
-                        updates[assetId] = Self.update(for: scored[0].url, assetId: assetId, volume: volume)
-                    } else {
-                        ambiguous.append(DAMRelinkAmbiguity(asset: asset, candidates: scored.map(\.url)))
-                    }
+                    // Defer scoring until we've learned folder mappings from the
+                    // unambiguous matches. Those mappings are often the strongest
+                    // signal for the remaining ambiguous files.
+                    ambiguousCandidates.append((asset: asset, candidates: candidates))
                 }
+            }
+        }
+
+        // Learn folder-to-folder mappings from unambiguous matches. If most files
+        // from `/old/2023/` ended up in `/new/2023/`, we can use that to resolve
+        // ambiguous candidates in the same original folder.
+        let folderMapping = Self.inferFolderMapping(
+            updates: updates,
+            assetsById: assetById,
+            oldPrefix: prefix,
+            newPrefix: targetPath
+        )
+        if !folderMapping.isEmpty {
+            relinkLogger.info("Inferred \(folderMapping.count) folder mapping(s) from unambiguous matches")
+        }
+
+        var ambiguous: [DAMRelinkAmbiguity] = []
+        for (asset, candidates) in ambiguousCandidates {
+            guard let assetId = asset.id else { continue }
+            let mappedFolder = Self.relativeFolder(for: asset.path, under: prefix)
+                .flatMap { folderMapping[$0] }
+            let scored = candidates
+                .map { (url: $0, score: Self.score(candidate: $0, for: asset, mappedFolder: mappedFolder, newPrefix: targetPath)) }
+                .sorted { $0.score > $1.score }
+            if scored[0].score >= 30,
+               scored.count == 1 || scored[0].score - scored[1].score >= 15 {
+                updates[assetId] = Self.update(for: scored[0].url, assetId: assetId, volume: volume)
+            } else {
+                ambiguous.append(DAMRelinkAmbiguity(asset: asset, candidates: scored.map(\.url)))
             }
         }
 
@@ -314,10 +335,16 @@ actor DAMRelinkService {
     }
 
     /// Score a candidate file against the cataloged asset using file size,
-    /// modification date, Finder tag/xattr keyword overlap, and folder-path
-    /// similarity. This is the only way to disambiguate generic filenames
-    /// (e.g., "Untitled - X of Y.jpeg") that exist in multiple folders.
-    private static func score(candidate: URL, for asset: DAMAsset) -> Double {
+    /// modification date, Finder tag/xattr keyword overlap, folder-path
+    /// similarity, and an optional inferred folder mapping. This is the only
+    /// way to disambiguate generic filenames (e.g., "Untitled - X of Y.jpeg")
+    /// that exist in multiple folders.
+    private static func score(
+        candidate: URL,
+        for asset: DAMAsset,
+        mappedFolder: String? = nil,
+        newPrefix: String? = nil
+    ) -> Double {
         var score: Double = 0
 
         // File size is the strongest signal.
@@ -365,6 +392,15 @@ actor DAMRelinkService {
         if maxFolderLen > 0 {
             let similarity = 1.0 - Double(folderDistance) / Double(maxFolderLen)
             score += similarity * 20
+        }
+
+        // Inferred folder mapping from successful unambiguous matches is a very
+        // strong signal (e.g., every other file from /old/2023/ landed in
+        // /new/2023/, so an ambiguous file from /old/2023/ should too).
+        if let mappedFolder, let newPrefix,
+           let candidateRelFolder = Self.relativeFolder(for: candidate.path, under: newPrefix),
+           candidateRelFolder == mappedFolder {
+            score += 60
         }
 
         return score
@@ -417,5 +453,44 @@ actor DAMRelinkService {
         let start = filePath.index(filePath.startIndex, offsetBy: rootPath.count)
         let remainder = String(filePath[start...])
         return remainder.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+
+    /// Returns the folder path of `path` relative to `root`, or `nil` if `path`
+    /// does not start with `root`. The filename itself is stripped.
+    private static func relativeFolder(for path: String, under root: String) -> String? {
+        let trimmedRoot = root.hasSuffix("/") ? String(root.dropLast()) : root
+        guard path.hasPrefix(trimmedRoot + "/") || path == trimmedRoot else { return nil }
+        let suffix = String(path.dropFirst(trimmedRoot.count))
+        let cleanSuffix = suffix.hasPrefix("/") ? String(suffix.dropFirst()) : suffix
+        let folder = (cleanSuffix as NSString).deletingLastPathComponent
+        return folder
+    }
+
+    /// Learns folder relocation patterns from unambiguous matches. For each
+    /// original folder (relative to the old root), returns the most common new
+    /// folder (relative to the new root) observed among successful updates.
+    private static func inferFolderMapping(
+        updates: [Int64: DAMRelinkUpdate],
+        assetsById: [Int64: DAMAsset],
+        oldPrefix: String,
+        newPrefix: String
+    ) -> [String: String] {
+        var counts: [String: [String: Int]] = [:]
+        for (assetId, update) in updates {
+            guard let asset = assetsById[assetId] else { continue }
+            guard let oldFolder = Self.relativeFolder(for: asset.path, under: oldPrefix),
+                  let newFolder = Self.relativeFolder(for: update.path, under: newPrefix) else { continue }
+            counts[oldFolder, default: [:]][newFolder, default: 0] += 1
+        }
+
+        var mapping: [String: String] = [:]
+        for (oldFolder, newFolders) in counts {
+            guard let best = newFolders.max(by: { $0.value < $1.value }) else { continue }
+            // Require at least two agreeing matches or a single unambiguous one.
+            if best.value >= 2 || newFolders.count == 1 {
+                mapping[oldFolder] = best.key
+            }
+        }
+        return mapping
     }
 }
