@@ -888,6 +888,20 @@ final class DAMDatabase: Sendable {
         try assetCount(folder: folder, minRating: 0)
     }
 
+    /// All distinct filename extensions present in the catalog, lowercased and
+    /// sorted alphabetically. Used to populate the extension filter menu.
+    func distinctExtensions() throws -> [String] {
+        try dbQueue.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT DISTINCT LOWER(SUBSTR(filename, INSTR(filename, '.') + 1)) AS ext
+                FROM asset
+                WHERE filename LIKE '%.%'
+                ORDER BY ext
+                """)
+            return rows.map { $0["ext"] }
+        }
+    }
+
     /// Lightweight IDs of every asset inside a folder.
     /// When `recursive` is true (the default) the subtree is returned.
     func assetIds(inFolder path: String, recursive: Bool = true) throws -> [Int64] {

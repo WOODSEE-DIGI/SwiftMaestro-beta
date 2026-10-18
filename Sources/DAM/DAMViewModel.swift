@@ -174,6 +174,8 @@ final class DAMViewModel {
     private(set) var collections: [DAMCollection] = []
     /// Cached asset counts per collection ID.
     private(set) var collectionAssetCounts: [Int64: Int] = [:]
+    /// Distinct filename extensions present in the catalog, lowercased.
+    private(set) var catalogExtensions: [String] = []
     /// Selected collection ID (nil = not browsing a collection).
     var selectedCollectionID: Int64? {
         didSet {
@@ -845,9 +847,13 @@ final class DAMViewModel {
                                                      isAvailable: isAvailable, hasGPS: hasGPS,
                                                      rated: rated)
             }.value
+            async let extensionsTask = Task.detached(priority: .utility) { [database] in
+                try? database.distinctExtensions()
+            }.value
             assets = try await page
             totalAssetCount = (try? await count) ?? assets.count
             canLoadMore = assets.count == pageSize
+            catalogExtensions = (try? await extensionsTask) ?? []
             errorMessage = nil
         } catch {
             errorMessage = "Failed to load catalog: \(error.localizedDescription)"

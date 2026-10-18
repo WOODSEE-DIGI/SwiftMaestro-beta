@@ -65,7 +65,6 @@ struct DAMBrowserView: View {
     @State private var isPreparingShare = false
     @State private var shareProgressDone = 0
     @State private var shareProgressTotal = 0
-    @State private var extensionFilterText = ""
     @State private var showAdvancedFilters = false
 
     // Smart predicate sheet state
@@ -478,17 +477,43 @@ struct DAMBrowserView: View {
                     }
                     .frame(width: 100)
 
-                    // Specific extension filter, e.g. "cr3, iiq"
-                    TextField("Extensions", text: $extensionFilterText)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 110)
-                        .onChange(of: extensionFilterText) { _, newValue in
-                            let cleaned = newValue
-                                .split(separator: ",")
-                                .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
-                                .filter { !$0.isEmpty }
-                            viewModel.filterExtensions = Set(cleaned)
+                    // Extension filter: multi-select checklist populated from
+                    // the actual extensions present in the catalog.
+                    Menu {
+                        if viewModel.catalogExtensions.isEmpty {
+                            Text("No extensions").foregroundStyle(.secondary)
                         }
+                        ForEach(viewModel.catalogExtensions, id: \.self) { ext in
+                            Button {
+                                if viewModel.filterExtensions.contains(ext) {
+                                    viewModel.filterExtensions.remove(ext)
+                                } else {
+                                    viewModel.filterExtensions.insert(ext)
+                                }
+                            } label: {
+                                HStack {
+                                    Text(ext.uppercased())
+                                    Spacer()
+                                    if viewModel.filterExtensions.contains(ext) {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                        if !viewModel.filterExtensions.isEmpty {
+                            Divider()
+                            Button("Clear") {
+                                viewModel.filterExtensions.removeAll()
+                            }
+                        }
+                    } label: {
+                        let count = viewModel.filterExtensions.count
+                        Label(
+                            count == 0 ? "Extensions" : "\(count) selected",
+                            systemImage: "doc.badge.gearshape"
+                        )
+                    }
+                    .frame(width: 110)
 
                     // Metadata presence filters
                     Menu {
