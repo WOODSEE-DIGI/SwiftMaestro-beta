@@ -359,11 +359,12 @@ actor ThumbnailService {
             return try await rawDecodeAndCache(url, pixelSize: pixelSize, key: key, isPackagedEIP: true)
         }
 
-        // ALL camera RAW variants: LibRaw-first. Apple's decoder fails on
-        // several (RA30/RA02/RA04 per-file error spam), while LibRaw's
-        // embedded-preview path is uniformly fast and quiet.
+        // ALL camera RAW variants: use the out-of-process sips-based decoder.
+        // The vendored LibRaw decoder crashes (EXC_BAD_ACCESS) on some files,
+        // and because it runs in-process one bad file kills the app. sips is
+        // slower but isolates failures to an external process.
         if DAMFileKind.isCameraRAW(url) {
-            return try await rawDecodeAndCache(url, pixelSize: pixelSize, key: key, isPackagedEIP: false)
+            return try await safeRawDecodeAndCache(url, pixelSize: pixelSize, key: key)
         }
 
         // Standard images (HEIC/JPEG/PNG/TIFF/WebP) — routing depends on size:
@@ -540,9 +541,32 @@ actor ThumbnailService {
 
     // MARK: - LibRaw engine
 
+    /// Decodes via `DAMSafeRAWThumbnailService` (out-of-process `sips`) so a
+    /// single malformed RAW cannot crash the app. Caches the JPEG data directly.
+    private nonisolated static func safeRawDecodeAndCache(
+        _ url: URL, pixelSize: CGFloat, key: String
+    ) async throws -> NSImage {
+        guard let jpeg = await DAMSafeRAWThumbnailService.shared.jpegData(
+            for: url.path,
+            maxPixelSize: pixelSize * 2
+        ) else {
+            throw ThumbnailError.generationFailed
+        }
+        guard let image = NSImage(data: jpeg) else {
+            throw ThumbnailError.noRepresentation
+        }
+        if let cacheURL = try? cacheDirectory().appendingPathComponent("\(key).jpg") {
+            try? jpeg.write(to: cacheURL, options: .atomic)
+        }
+        return image
+    }
+
     /// Decodes via `RAWPreviewDecoder` (LibRaw), caches the JPEG data
     /// directly (no re-encode), and returns the image. Concurrency-capped:
     /// each 50 MP decode spikes ~1-2 GB transiently.
+    ///
+    /// Reserved for Capture One `.eip` packages; camera RAWs now use the safe
+    /// sips-based path to avoid in-process crashes.
     private nonisolated static func rawDecodeAndCache(
         _ url: URL, pixelSize: CGFloat, key: String, isPackagedEIP: Bool
     ) async throws -> NSImage {
