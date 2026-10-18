@@ -532,6 +532,48 @@ struct DAMBrowserView: View {
                         AdvancedFiltersPopover(viewModel: viewModel)
                     }
 
+                    // Batch actions on the current selection
+                    Menu {
+                        Text("\(viewModel.selection.count) selected")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Divider()
+
+                        Menu("Set rating") {
+                            Button("Clear") {
+                                Task { await viewModel.setRating(0, for: viewModel.selection) }
+                            }
+                            ForEach(1...5, id: \.self) { stars in
+                                Button("\(stars) ★") {
+                                    Task { await viewModel.setRating(stars, for: viewModel.selection) }
+                                }
+                            }
+                        }
+
+                        Menu("Set flag") {
+                            Button("Pick") {
+                                Task { await viewModel.setFlag(.pick, for: viewModel.selection) }
+                            }
+                            Button("Reject") {
+                                Task { await viewModel.setFlag(.reject, for: viewModel.selection) }
+                            }
+                            Button("Clear") {
+                                Task { await viewModel.setFlag(.none, for: viewModel.selection) }
+                            }
+                        }
+
+                        Button("Move to folder…") { runBatchMove() }
+                        Button("Relink…") { runBatchRelink() }
+
+                        Divider()
+                        Button("Delete", role: .destructive) {
+                            Task { await viewModel.deleteAssets(ids: viewModel.selection) }
+                        }
+                    } label: {
+                        Label("Batch", systemImage: "square.stack")
+                    }
+                    .disabled(viewModel.selection.isEmpty)
+
                     // Flag filter
                     Picker("Flag", selection: Binding(
                         get: { viewModel.filterFlag },
@@ -2336,6 +2378,29 @@ struct DAMBrowserView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private func runBatchMove() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Move Here"
+        panel.message = "Choose the destination folder for the selected assets"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { await viewModel.moveAssets(ids: viewModel.selection, to: url) }
+    }
+
+    private func runBatchRelink() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Relink Here"
+        panel.message = "Choose the folder to search for missing files"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let ids = Set(viewModel.selection.compactMap { $0 })
+        Task { await viewModel.relinkAssets(ids: ids, to: url) }
     }
 }
 

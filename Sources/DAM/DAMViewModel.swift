@@ -1900,6 +1900,130 @@ final class DAMViewModel {
         }
     }
 
+    // MARK: - Flag edits
+
+    /// Set pick/reject/none flag for every selected asset and persist.
+    func setFlag(_ flag: DAMFlag, for ids: Set<DAMAsset.ID>) async {
+        let int64IDs = ids.compactMap { $0 }
+        guard !int64IDs.isEmpty else { return }
+        do {
+            try await database.dbQueue.write { db in
+                for var asset in try DAMAsset.fetchAll(db, keys: int64IDs) {
+                    guard let assetId = asset.id else { continue }
+                    let oldFlag = asset.flag
+                    guard oldFlag != flag else { continue }
+                    asset.flag = flag
+                    try asset.update(db)
+                    try database.recordAudit(
+                        db, assetId: assetId, field: "flag",
+                        oldValue: oldFlag.rawValue, newValue: flag.rawValue,
+                        source: "user")
+                }
+            }
+            for index in assets.indices where int64IDs.contains(assets[index].id ?? -1) {
+                assets[index].flag = flag
+            }
+        } catch {
+            errorMessage = "Failed to update flag: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - Batch deletion
+
+    /// Move the selected assets' files to the Trash and remove their catalog
+    /// rows. Files that are already missing are simply removed from the DB.
+    func deleteAssets(ids: Set<DAMAsset.ID>) async {
+        let int64IDs = ids.compactMap { $0 }
+        guard !int64IDs.isEmpty else { return }
+        do {
+            let toDelete = try await database.dbQueue.read { db in
+                try DAMAsset.fetchAll(db, keys: int64IDs)
+            }
+            var urlsToTrash: [URL] = []
+            for asset in toDelete {
+                let url = URL(fileURLWithPath: asset.path)
+                if FileManager.default.fileExists(atPath: url.path) {
+                    urlsToTrash.append(url)
+                }
+            }
+
+            for url in urlsToTrash {
+                _ = try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
+            }
+
+            try await database.dbQueue.write { db in
+                for id in int64IDs {
+                    if let asset = try DAMAsset.fetchOne(db, key: id) {
+                        try database.recordAudit(
+                            db, assetId: id, field: "deleted",
+                            oldValue: asset.path, newValue: "",
+                            source: "user")
+                    }
+                }
+                try db.execute(
+                    sql: "DELETE FROM asset WHERE id IN \(int64IDs.map { _ in "?" }.joined(separator: ","))",
+                    arguments: StatementArguments(int64IDs))
+            }
+            selection.subtract(int64IDs)
+            await reload()
+        } catch {
+            errorMessage = "Failed to delete assets: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - Batch move
+
+    /// Move the selected assets' files into `folderURL` and update their
+    /// catalog paths. Name collisions are resolved by appending a counter.
+    func moveAssets(ids: Set<DAMAsset.ID>, to folderURL: URL) async {
+        let int64IDs = ids.compactMap { $0 }
+        guard !int64IDs.isEmpty else { return }
+        do {
+            let toMove = try await database.dbQueue.read { db in
+                try DAMAsset.fetchAll(db, keys: int64IDs)
+            }
+            let fm = FileManager.default
+            var moves: [(assetId: Int64, source: URL, dest: URL)] = []
+            for asset in toMove {
+                guard let assetId = asset.id else { continue }
+                let source = URL(fileURLWithPath: asset.path)
+                let filename = source.lastPathComponent
+                var dest = folderURL.appendingPathComponent(filename, isDirectory: false)
+                var attempts = 1
+                while fm.fileExists(atPath: dest.path) && attempts < 1000 {
+                    let stem = (filename as NSString).deletingPathExtension
+                    let ext = (filename as NSString).pathExtension
+                    let suffix = ext.isEmpty ? "\(stem) \(attempts)" : "\(stem) \(attempts).\(ext)"
+                    dest = folderURL.appendingPathComponent(suffix, isDirectory: false)
+                    attempts += 1
+                }
+                guard !fm.fileExists(atPath: dest.path) else { continue }
+                moves.append((assetId: assetId, source: source, dest: dest))
+            }
+            for (_, source, dest) in moves {
+                try fm.moveItem(at: source, to: dest)
+            }
+            let movesForDB = moves
+            try await database.dbQueue.write { db in
+                for (assetId, _, dest) in movesForDB {
+                    guard var asset = try DAMAsset.fetchOne(db, key: assetId) else { continue }
+                    let oldPath = asset.path
+                    asset.path = dest.path
+                    asset.folder = dest.deletingLastPathComponent().path
+                    asset.filename = dest.lastPathComponent
+                    try asset.update(db)
+                    try database.recordAudit(
+                        db, assetId: assetId, field: "path",
+                        oldValue: oldPath, newValue: dest.path,
+                        source: "user")
+                }
+            }
+            await reload()
+        } catch {
+            errorMessage = "Failed to move assets: \(error.localizedDescription)"
+        }
+    }
+
     // MARK: - Generative AI tagging
 
     /// True for catalog rows that support AI tagging: images (vision proxy)
