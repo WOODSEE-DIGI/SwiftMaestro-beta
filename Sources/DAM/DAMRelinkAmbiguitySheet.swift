@@ -209,6 +209,18 @@ private struct CandidateButton: View {
     }
 
     private func loadThumbnail() async {
+        // Use the out-of-process sips-based decoder for camera RAW files. The
+        // vendored LibRaw decoder is fast but can crash (EXC_BAD_ACCESS) on
+        // malformed RAWs; because the ambiguity sheet may load hundreds of
+        // arbitrary files, we must not bring the app down on one bad file.
+        if DAMFileKind.isCameraRAW(candidate) || DAMFileKind.isLibRAWOnly(candidate) {
+            thumbnail = await DAMSafeRAWThumbnailService.shared.thumbnail(
+                for: candidate.path,
+                maxPixelSize: 128
+            )
+            return
+        }
+
         do {
             let image = try await ThumbnailService.shared.thumbnail(for: candidate, pixelSize: 128)
             thumbnail = image
