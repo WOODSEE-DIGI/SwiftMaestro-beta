@@ -66,6 +66,7 @@ struct DAMBrowserView: View {
     @State private var shareProgressDone = 0
     @State private var shareProgressTotal = 0
     @State private var extensionFilterText = ""
+    @State private var showAdvancedFilters = false
 
     // Smart predicate sheet state
     @State private var predicateQuery = ""
@@ -520,6 +521,16 @@ struct DAMBrowserView: View {
                         Label("Metadata", systemImage: "doc.text.magnifyingglass")
                     }
                     .frame(width: 90)
+
+                    // Advanced metadata filters (camera, date, size, status)
+                    Button {
+                        showAdvancedFilters = true
+                    } label: {
+                        Label("Advanced", systemImage: "line.3.horizontal.decrease.circle")
+                    }
+                    .popover(isPresented: $showAdvancedFilters, arrowEdge: .bottom) {
+                        AdvancedFiltersPopover(viewModel: viewModel)
+                    }
 
                     // Flag filter
                     Picker("Flag", selection: Binding(
@@ -2325,6 +2336,80 @@ struct DAMBrowserView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+}
+
+// MARK: - Advanced Filters Popover
+
+private struct AdvancedFiltersPopover: View {
+    @Bindable var viewModel: DAMViewModel
+
+    var body: some View {
+        Form {
+            Section("Camera") {
+                TextField("Make", text: Binding(
+                    get: { viewModel.filterCameraMake ?? "" },
+                    set: { viewModel.filterCameraMake = $0.isEmpty ? nil : $0 }
+                ))
+                TextField("Model", text: Binding(
+                    get: { viewModel.filterCameraModel ?? "" },
+                    set: { viewModel.filterCameraModel = $0.isEmpty ? nil : $0 }
+                ))
+            }
+
+            Section("Capture date") {
+                optionalDatePicker("From", date: $viewModel.filterCaptureFrom)
+                optionalDatePicker("To", date: $viewModel.filterCaptureTo)
+            }
+
+            Section("File size") {
+                HStack {
+                    sizeField("Min MB", value: $viewModel.filterFileSizeMin)
+                    sizeField("Max MB", value: $viewModel.filterFileSizeMax)
+                }
+            }
+
+            Section("Status") {
+                triStatePicker("File available", value: $viewModel.filterIsAvailable)
+                triStatePicker("Has GPS", value: $viewModel.filterHasGPS)
+                triStatePicker("Rated", value: $viewModel.filterRated)
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 320)
+        .padding()
+    }
+
+    private func optionalDatePicker(_ label: String, date: Binding<Date?>) -> some View {
+        HStack {
+            DatePicker(label,
+                       selection: Binding(
+                           get: { date.wrappedValue ?? Date() },
+                           set: { date.wrappedValue = $0 }
+                       ),
+                       displayedComponents: .date)
+            Button("Clear") { date.wrappedValue = nil }
+                .disabled(date.wrappedValue == nil)
+        }
+    }
+
+    private func sizeField(_ label: String, value: Binding<Int64?>) -> some View {
+        TextField(label,
+                  value: Binding(
+                    get: { value.wrappedValue.map { Double($0) / 1_048_576.0 } },
+                    set: { value.wrappedValue = $0.map { Int64($0 * 1_048_576.0) } }
+                  ),
+                  format: .number)
+        .textFieldStyle(.roundedBorder)
+    }
+
+    private func triStatePicker(_ label: String, value: Binding<Bool?>) -> some View {
+        Picker(label, selection: value) {
+            Text("Any").tag(nil as Bool?)
+            Text("Yes").tag(true as Bool?)
+            Text("No").tag(false as Bool?)
+        }
+        .pickerStyle(.segmented)
     }
 }
 

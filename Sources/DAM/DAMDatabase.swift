@@ -614,7 +614,12 @@ final class DAMDatabase: Sendable {
                  extensions: Set<String> = [],
                  hasAICaption: Bool? = nil, hasAIKeywords: Bool? = nil,
                  hasOCR: Bool? = nil, hasUserKeywords: Bool? = nil,
-                 hasXattr: Bool? = nil) throws -> [DAMAsset] {
+                 hasXattr: Bool? = nil,
+                 cameraMake: String? = nil, cameraModel: String? = nil,
+                 captureFrom: Date? = nil, captureTo: Date? = nil,
+                 fileSizeMin: Int64? = nil, fileSizeMax: Int64? = nil,
+                 isAvailable: Bool? = nil, hasGPS: Bool? = nil,
+                 rated: Bool? = nil) throws -> [DAMAsset] {
         try dbQueue.read { db in
             var request = DAMAsset.filter(DAMAsset.Columns.rating >= minRating)
             if let tagColor {
@@ -672,6 +677,37 @@ final class DAMDatabase: Sendable {
                     ? Column("xattrKeywords") != nil && Column("xattrKeywords") != ""
                     : Column("xattrKeywords") == nil || Column("xattrKeywords") == "")
             }
+            if let cameraMake, !cameraMake.isEmpty {
+                let pattern = "%\(cameraMake.lowercased())%"
+                request = request.filter(Column("cameraMake").like(pattern))
+            }
+            if let cameraModel, !cameraModel.isEmpty {
+                let pattern = "%\(cameraModel.lowercased())%"
+                request = request.filter(Column("cameraModel").like(pattern))
+            }
+            if let captureFrom {
+                request = request.filter(Column("captureDate") >= captureFrom)
+            }
+            if let captureTo {
+                request = request.filter(Column("captureDate") <= captureTo)
+            }
+            if let fileSizeMin {
+                request = request.filter(Column("fileSize") >= fileSizeMin)
+            }
+            if let fileSizeMax {
+                request = request.filter(Column("fileSize") <= fileSizeMax)
+            }
+            if let isAvailable {
+                request = request.filter(Column("isAvailable") == isAvailable)
+            }
+            if let hasGPS {
+                request = request.filter(hasGPS
+                    ? Column("gpsLat") != nil && Column("gpsLon") != nil
+                    : Column("gpsLat") == nil || Column("gpsLon") == nil)
+            }
+            if let rated {
+                request = request.filter(rated ? DAMAsset.Columns.rating > 0 : DAMAsset.Columns.rating == 0)
+            }
             if let folder {
                 // Recursive folder scope without LIKE/GLOB escaping hazards:
                 // exact match, or range scan [folder+"/", folder+"0") which
@@ -703,7 +739,12 @@ final class DAMDatabase: Sendable {
                      extensions: Set<String> = [],
                      hasAICaption: Bool? = nil, hasAIKeywords: Bool? = nil,
                      hasOCR: Bool? = nil, hasUserKeywords: Bool? = nil,
-                     hasXattr: Bool? = nil) throws -> Int {
+                     hasXattr: Bool? = nil,
+                     cameraMake: String? = nil, cameraModel: String? = nil,
+                     captureFrom: Date? = nil, captureTo: Date? = nil,
+                     fileSizeMin: Int64? = nil, fileSizeMax: Int64? = nil,
+                     isAvailable: Bool? = nil, hasGPS: Bool? = nil,
+                     rated: Bool? = nil) throws -> Int {
         try dbQueue.read { db in
             var request = DAMAsset.filter(DAMAsset.Columns.rating >= minRating)
             if let tagColor {
@@ -762,6 +803,37 @@ final class DAMDatabase: Sendable {
                 request = request.filter(hasXattr
                     ? Column("xattrKeywords") != nil && Column("xattrKeywords") != ""
                     : Column("xattrKeywords") == nil || Column("xattrKeywords") == "")
+            }
+            if let cameraMake, !cameraMake.isEmpty {
+                let pattern = "%\(cameraMake.lowercased())%"
+                request = request.filter(Column("cameraMake").like(pattern))
+            }
+            if let cameraModel, !cameraModel.isEmpty {
+                let pattern = "%\(cameraModel.lowercased())%"
+                request = request.filter(Column("cameraModel").like(pattern))
+            }
+            if let captureFrom {
+                request = request.filter(Column("captureDate") >= captureFrom)
+            }
+            if let captureTo {
+                request = request.filter(Column("captureDate") <= captureTo)
+            }
+            if let fileSizeMin {
+                request = request.filter(Column("fileSize") >= fileSizeMin)
+            }
+            if let fileSizeMax {
+                request = request.filter(Column("fileSize") <= fileSizeMax)
+            }
+            if let isAvailable {
+                request = request.filter(Column("isAvailable") == isAvailable)
+            }
+            if let hasGPS {
+                request = request.filter(hasGPS
+                    ? Column("gpsLat") != nil && Column("gpsLon") != nil
+                    : Column("gpsLat") == nil || Column("gpsLon") == nil)
+            }
+            if let rated {
+                request = request.filter(rated ? DAMAsset.Columns.rating > 0 : DAMAsset.Columns.rating == 0)
             }
             if let folder {
                 request = request.filter(
@@ -1258,7 +1330,12 @@ final class DAMDatabase: Sendable {
         extensions: Set<String> = [],
         hasAICaption: Bool? = nil, hasAIKeywords: Bool? = nil,
         hasOCR: Bool? = nil, hasUserKeywords: Bool? = nil,
-        hasXattr: Bool? = nil
+        hasXattr: Bool? = nil,
+        cameraMake: String? = nil, cameraModel: String? = nil,
+        captureFrom: Date? = nil, captureTo: Date? = nil,
+        fileSizeMin: Int64? = nil, fileSizeMax: Int64? = nil,
+        isAvailable: Bool? = nil, hasGPS: Bool? = nil,
+        rated: Bool? = nil
     ) -> (sql: String, args: [any DatabaseValueConvertible]) {
         var clauses = ["a.rating >= ?"]
         var args: [any DatabaseValueConvertible] = [minRating]
@@ -1316,6 +1393,42 @@ final class DAMDatabase: Sendable {
                 ? "(a.xattrKeywords IS NOT NULL AND a.xattrKeywords != '')"
                 : "(a.xattrKeywords IS NULL OR a.xattrKeywords = '')")
         }
+        if let cameraMake, !cameraMake.isEmpty {
+            clauses.append("LOWER(a.cameraMake) LIKE ?")
+            args.append("%\(cameraMake.lowercased())%")
+        }
+        if let cameraModel, !cameraModel.isEmpty {
+            clauses.append("LOWER(a.cameraModel) LIKE ?")
+            args.append("%\(cameraModel.lowercased())%")
+        }
+        if let captureFrom {
+            clauses.append("a.captureDate >= ?")
+            args.append(captureFrom)
+        }
+        if let captureTo {
+            clauses.append("a.captureDate <= ?")
+            args.append(captureTo)
+        }
+        if let fileSizeMin {
+            clauses.append("a.fileSize >= ?")
+            args.append(fileSizeMin)
+        }
+        if let fileSizeMax {
+            clauses.append("a.fileSize <= ?")
+            args.append(fileSizeMax)
+        }
+        if let isAvailable {
+            clauses.append("a.isAvailable = ?")
+            args.append(isAvailable)
+        }
+        if let hasGPS {
+            clauses.append(hasGPS
+                ? "(a.gpsLat IS NOT NULL AND a.gpsLon IS NOT NULL)"
+                : "(a.gpsLat IS NULL OR a.gpsLon IS NULL)")
+        }
+        if let rated {
+            clauses.append(rated ? "a.rating > 0" : "a.rating = 0")
+        }
         if let folder {
             // Range scan [folder+"/", folder+"0") covers the subtree, indexed.
             clauses.append("(a.folder = ? OR (a.folder >= ? AND a.folder < ?))")
@@ -1343,6 +1456,11 @@ final class DAMDatabase: Sendable {
         hasAICaption: Bool? = nil, hasAIKeywords: Bool? = nil,
         hasOCR: Bool? = nil, hasUserKeywords: Bool? = nil,
         hasXattr: Bool? = nil,
+        cameraMake: String? = nil, cameraModel: String? = nil,
+        captureFrom: Date? = nil, captureTo: Date? = nil,
+        fileSizeMin: Int64? = nil, fileSizeMax: Int64? = nil,
+        isAvailable: Bool? = nil, hasGPS: Bool? = nil,
+        rated: Bool? = nil,
         limit: Int, offset: Int
     ) throws -> [DAMAsset] {
         let phrase = Self.ftsPhrase(for: query)
@@ -1352,7 +1470,12 @@ final class DAMDatabase: Sendable {
             extensions: extensions,
             hasAICaption: hasAICaption, hasAIKeywords: hasAIKeywords,
             hasOCR: hasOCR, hasUserKeywords: hasUserKeywords,
-            hasXattr: hasXattr)
+            hasXattr: hasXattr,
+            cameraMake: cameraMake, cameraModel: cameraModel,
+            captureFrom: captureFrom, captureTo: captureTo,
+            fileSizeMin: fileSizeMin, fileSizeMax: fileSizeMax,
+            isAvailable: isAvailable, hasGPS: hasGPS,
+            rated: rated)
         return try dbQueue.read { db in
             var args: [any DatabaseValueConvertible] = [phrase]
             args.append(contentsOf: filterArgs)
@@ -1377,7 +1500,12 @@ final class DAMDatabase: Sendable {
         extensions: Set<String> = [],
         hasAICaption: Bool? = nil, hasAIKeywords: Bool? = nil,
         hasOCR: Bool? = nil, hasUserKeywords: Bool? = nil,
-        hasXattr: Bool? = nil
+        hasXattr: Bool? = nil,
+        cameraMake: String? = nil, cameraModel: String? = nil,
+        captureFrom: Date? = nil, captureTo: Date? = nil,
+        fileSizeMin: Int64? = nil, fileSizeMax: Int64? = nil,
+        isAvailable: Bool? = nil, hasGPS: Bool? = nil,
+        rated: Bool? = nil
     ) throws -> Int {
         let phrase = Self.ftsPhrase(for: query)
         let (filterSQL, filterArgs) = Self.assetFilterSQL(
@@ -1386,7 +1514,12 @@ final class DAMDatabase: Sendable {
             extensions: extensions,
             hasAICaption: hasAICaption, hasAIKeywords: hasAIKeywords,
             hasOCR: hasOCR, hasUserKeywords: hasUserKeywords,
-            hasXattr: hasXattr)
+            hasXattr: hasXattr,
+            cameraMake: cameraMake, cameraModel: cameraModel,
+            captureFrom: captureFrom, captureTo: captureTo,
+            fileSizeMin: fileSizeMin, fileSizeMax: fileSizeMax,
+            isAvailable: isAvailable, hasGPS: hasGPS,
+            rated: rated)
         return try dbQueue.read { db in
             var args: [any DatabaseValueConvertible] = [phrase]
             args.append(contentsOf: filterArgs)

@@ -82,6 +82,36 @@ final class DAMViewModel {
     var filterHasXattr: Bool? = nil {
         didSet { Task { await reload() } }
     }
+
+    // MARK: - Advanced metadata filters
+    var filterCameraMake: String? = nil {
+        didSet { Task { await reload() } }
+    }
+    var filterCameraModel: String? = nil {
+        didSet { Task { await reload() } }
+    }
+    var filterCaptureFrom: Date? = nil {
+        didSet { Task { await reload() } }
+    }
+    var filterCaptureTo: Date? = nil {
+        didSet { Task { await reload() } }
+    }
+    var filterFileSizeMin: Int64? = nil {
+        didSet { Task { await reload() } }
+    }
+    var filterFileSizeMax: Int64? = nil {
+        didSet { Task { await reload() } }
+    }
+    var filterIsAvailable: Bool? = nil {
+        didSet { Task { await reload() } }
+    }
+    var filterHasGPS: Bool? = nil {
+        didSet { Task { await reload() } }
+    }
+    var filterRated: Bool? = nil {
+        didSet { Task { await reload() } }
+    }
+
     /// Path of a folder the view should reveal/expand after import. Consumed by
     /// the browser view to expand the folder tree to the imported location.
     var folderToReveal: String? = nil
@@ -707,6 +737,15 @@ final class DAMViewModel {
             filterHasOCR = nil
             filterHasUserKeywords = nil
             filterHasXattr = nil
+            filterCameraMake = nil
+            filterCameraModel = nil
+            filterCaptureFrom = nil
+            filterCaptureTo = nil
+            filterFileSizeMin = nil
+            filterFileSizeMax = nil
+            filterIsAvailable = nil
+            filterHasGPS = nil
+            filterRated = nil
             selectedFolder = nil
             return  // reload() fires from the last didSet
         }
@@ -764,6 +803,15 @@ final class DAMViewModel {
             let hasOCR = filterHasOCR
             let hasUserKeywords = filterHasUserKeywords
             let hasXattr = filterHasXattr
+            let cameraMake = filterCameraMake
+            let cameraModel = filterCameraModel
+            let captureFrom = filterCaptureFrom
+            let captureTo = filterCaptureTo
+            let sizeMin = filterFileSizeMin
+            let sizeMax = filterFileSizeMax
+            let isAvailable = filterIsAvailable
+            let hasGPS = filterHasGPS
+            let rated = filterRated
             let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
             async let page = fetchPage(offset: 0)
             async let count = Task.detached(priority: .userInitiated) { [database] in
@@ -776,7 +824,12 @@ final class DAMViewModel {
                                                    extensions: extensions,
                                                    hasAICaption: hasAICaption, hasAIKeywords: hasAIKeywords,
                                                    hasOCR: hasOCR, hasUserKeywords: hasUserKeywords,
-                                                   hasXattr: hasXattr)
+                                                   hasXattr: hasXattr,
+                                                   cameraMake: cameraMake, cameraModel: cameraModel,
+                                                   captureFrom: captureFrom, captureTo: captureTo,
+                                                   fileSizeMin: sizeMin, fileSizeMax: sizeMax,
+                                                   isAvailable: isAvailable, hasGPS: hasGPS,
+                                                   rated: rated)
                 }
                 return try database.searchAssetCount(matching: query, folder: folder,
                                                      minRating: rating,
@@ -785,7 +838,12 @@ final class DAMViewModel {
                                                      extensions: extensions,
                                                      hasAICaption: hasAICaption, hasAIKeywords: hasAIKeywords,
                                                      hasOCR: hasOCR, hasUserKeywords: hasUserKeywords,
-                                                     hasXattr: hasXattr)
+                                                     hasXattr: hasXattr,
+                                                     cameraMake: cameraMake, cameraModel: cameraModel,
+                                                     captureFrom: captureFrom, captureTo: captureTo,
+                                                     fileSizeMin: sizeMin, fileSizeMax: sizeMax,
+                                                     isAvailable: isAvailable, hasGPS: hasGPS,
+                                                     rated: rated)
             }.value
             assets = try await page
             totalAssetCount = (try? await count) ?? assets.count
@@ -1231,6 +1289,15 @@ final class DAMViewModel {
         let hasOCR = filterHasOCR
         let hasUserKeywords = filterHasUserKeywords
         let hasXattr = filterHasXattr
+        let cameraMake = filterCameraMake
+        let cameraModel = filterCameraModel
+        let captureFrom = filterCaptureFrom
+        let captureTo = filterCaptureTo
+        let sizeMin = filterFileSizeMin
+        let sizeMax = filterFileSizeMax
+        let isAvailable = filterIsAvailable
+        let hasGPS = filterHasGPS
+        let rated = filterRated
         return try await Task.detached(priority: .userInitiated) { [database] in
             if query.isEmpty {
                 return try database.assets(
@@ -1241,7 +1308,12 @@ final class DAMViewModel {
                     extensions: extensions,
                     hasAICaption: hasAICaption, hasAIKeywords: hasAIKeywords,
                     hasOCR: hasOCR, hasUserKeywords: hasUserKeywords,
-                    hasXattr: hasXattr)
+                    hasXattr: hasXattr,
+                    cameraMake: cameraMake, cameraModel: cameraModel,
+                    captureFrom: captureFrom, captureTo: captureTo,
+                    fileSizeMin: sizeMin, fileSizeMax: sizeMax,
+                    isAvailable: isAvailable, hasGPS: hasGPS,
+                    rated: rated)
             }
             // Search WITH the toolbar filters applied and real pagination —
             // the old path ignored both, so the count disagreed and "load
@@ -1254,6 +1326,11 @@ final class DAMViewModel {
                 hasAICaption: hasAICaption, hasAIKeywords: hasAIKeywords,
                 hasOCR: hasOCR, hasUserKeywords: hasUserKeywords,
                 hasXattr: hasXattr,
+                cameraMake: cameraMake, cameraModel: cameraModel,
+                captureFrom: captureFrom, captureTo: captureTo,
+                fileSizeMin: sizeMin, fileSizeMax: sizeMax,
+                isAvailable: isAvailable, hasGPS: hasGPS,
+                rated: rated,
                 limit: limit, offset: offset)
         }.value
     }
@@ -1274,6 +1351,15 @@ final class DAMViewModel {
         let hasOCR = filterHasOCR
         let hasUserKeywords = filterHasUserKeywords
         let hasXattr = filterHasXattr
+        let cameraMake = filterCameraMake?.lowercased()
+        let cameraModel = filterCameraModel?.lowercased()
+        let captureFrom = filterCaptureFrom
+        let captureTo = filterCaptureTo
+        let sizeMin = filterFileSizeMin
+        let sizeMax = filterFileSizeMax
+        let isAvailable = filterIsAvailable
+        let hasGPS = filterHasGPS
+        let rated = filterRated
         let sort = sortOrder
 
         return try await Task.detached(priority: .userInitiated) { [database] in
@@ -1334,6 +1420,35 @@ final class DAMViewModel {
             }
             if let hasXattr {
                 assets = assets.filter { ($0.xattrKeywords?.isEmpty == false) == hasXattr }
+            }
+
+            if let cameraMake {
+                assets = assets.filter { $0.cameraMake?.lowercased().contains(cameraMake) ?? false }
+            }
+            if let cameraModel {
+                assets = assets.filter { $0.cameraModel?.lowercased().contains(cameraModel) ?? false }
+            }
+            if let captureFrom {
+                assets = assets.filter { ($0.captureDate ?? .distantPast) >= captureFrom }
+            }
+            if let captureTo {
+                assets = assets.filter { ($0.captureDate ?? .distantFuture) <= captureTo }
+            }
+            if let sizeMin {
+                assets = assets.filter { ($0.fileSize ?? 0) >= sizeMin }
+            }
+            if let sizeMax {
+                assets = assets.filter { ($0.fileSize ?? .max) <= sizeMax }
+            }
+            if let isAvailable {
+                assets = assets.filter { $0.isAvailable == isAvailable }
+            }
+            if let hasGPS {
+                let has = hasGPS
+                assets = assets.filter { ($0.gpsLat != nil && $0.gpsLon != nil) == has }
+            }
+            if let rated {
+                assets = assets.filter { ($0.rating > 0) == rated }
             }
 
             assets.sort { lhs, rhs in
