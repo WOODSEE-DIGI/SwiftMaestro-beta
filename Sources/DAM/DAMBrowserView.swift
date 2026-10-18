@@ -66,6 +66,7 @@ struct DAMBrowserView: View {
     @State private var shareProgressDone = 0
     @State private var shareProgressTotal = 0
     @State private var showAdvancedFilters = false
+    @State private var showExtensionFilter = false
 
     // Smart predicate sheet state
     @State private var predicateQuery = ""
@@ -479,33 +480,8 @@ struct DAMBrowserView: View {
 
                     // Extension filter: multi-select checklist populated from
                     // the actual extensions present in the catalog.
-                    Menu {
-                        if viewModel.catalogExtensions.isEmpty {
-                            Text("No extensions").foregroundStyle(.secondary)
-                        }
-                        ForEach(viewModel.catalogExtensions, id: \.self) { ext in
-                            Button {
-                                if viewModel.filterExtensions.contains(ext) {
-                                    viewModel.filterExtensions.remove(ext)
-                                } else {
-                                    viewModel.filterExtensions.insert(ext)
-                                }
-                            } label: {
-                                HStack {
-                                    Text(ext.uppercased())
-                                    Spacer()
-                                    if viewModel.filterExtensions.contains(ext) {
-                                        Image(systemName: "checkmark")
-                                    }
-                                }
-                            }
-                        }
-                        if !viewModel.filterExtensions.isEmpty {
-                            Divider()
-                            Button("Clear") {
-                                viewModel.filterExtensions.removeAll()
-                            }
-                        }
+                    Button {
+                        showExtensionFilter = true
                     } label: {
                         let count = viewModel.filterExtensions.count
                         Label(
@@ -514,6 +490,9 @@ struct DAMBrowserView: View {
                         )
                     }
                     .frame(width: 110)
+                    .popover(isPresented: $showExtensionFilter, arrowEdge: .bottom) {
+                        ExtensionFilterPopover(viewModel: viewModel)
+                    }
 
                     // Metadata presence filters
                     Menu {
@@ -601,7 +580,8 @@ struct DAMBrowserView: View {
                         .disabled(viewModel.collections.isEmpty)
 
                         if let collectionID = viewModel.selectedCollectionID,
-                           let collection = viewModel.collections.first(where: { $0.id == collectionID }) {
+                           let collection = viewModel.collections.first(where: { $0.id == collectionID }),
+                           collection.kind != .smart {
                             Button("Remove from \(collection.name)") {
                                 Task { await viewModel.removeSelectionFromCurrentCollection() }
                             }
@@ -2537,6 +2517,71 @@ private struct AdvancedFiltersPopover: View {
             Text("No").tag(false as Bool?)
         }
         .pickerStyle(.segmented)
+    }
+}
+
+// MARK: - Extension Filter Popover
+
+private struct ExtensionFilterPopover: View {
+    @Bindable var viewModel: DAMViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Extensions")
+                    .font(.headline)
+                Spacer()
+                if !viewModel.filterExtensions.isEmpty {
+                    Button("Clear") {
+                        viewModel.filterExtensions.removeAll()
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+            .padding([.horizontal, .top])
+
+            if viewModel.catalogExtensions.isEmpty {
+                Text("No extensions found")
+                    .foregroundStyle(.secondary)
+                    .padding()
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(viewModel.catalogExtensions, id: \.self) { ext in
+                            Toggle(isOn: Binding(
+                                get: { viewModel.filterExtensions.contains(ext) },
+                                set: { selected in
+                                    if selected {
+                                        viewModel.filterExtensions.insert(ext)
+                                    } else {
+                                        viewModel.filterExtensions.remove(ext)
+                                    }
+                                }
+                            )) {
+                                Text(ext.uppercased())
+                            }
+                            .toggleStyle(.checkbox)
+                            .padding(.horizontal)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                .frame(minHeight: 80, maxHeight: 320)
+            }
+
+            HStack {
+                Button("Select All") {
+                    viewModel.filterExtensions = Set(viewModel.catalogExtensions)
+                }
+                .disabled(viewModel.catalogExtensions.isEmpty)
+                Spacer()
+                Text("\(viewModel.filterExtensions.count) selected")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding()
+        }
+        .frame(width: 220)
     }
 }
 

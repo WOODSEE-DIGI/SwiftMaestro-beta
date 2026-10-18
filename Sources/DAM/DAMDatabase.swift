@@ -653,9 +653,10 @@ final class DAMDatabase: Sendable {
                 )
             }
             if !extensions.isEmpty {
-                let placeholders = extensions.map { _ in "?" }.joined(separator: " OR LOWER(filename) LIKE ")
+                let extField = "LOWER(COALESCE(NULLIF(filename,''), path))"
+                let placeholders = extensions.map { _ in "?" }.joined(separator: " OR \(extField) LIKE ")
                 let patternArgs = extensions.map { "%.\($0.lowercased())" }
-                request = request.filter(sql: "LOWER(filename) LIKE \(placeholders)", arguments: StatementArguments(patternArgs))
+                request = request.filter(sql: "\(extField) LIKE \(placeholders)", arguments: StatementArguments(patternArgs))
             }
             if let tagged {
                 if tagged {
@@ -802,9 +803,10 @@ final class DAMDatabase: Sendable {
                 )
             }
             if !extensions.isEmpty {
-                let placeholders = extensions.map { _ in "?" }.joined(separator: " OR LOWER(filename) LIKE ")
+                let extField = "LOWER(COALESCE(NULLIF(filename,''), path))"
+                let placeholders = extensions.map { _ in "?" }.joined(separator: " OR \(extField) LIKE ")
                 let patternArgs = extensions.map { "%.\($0.lowercased())" }
-                request = request.filter(sql: "LOWER(filename) LIKE \(placeholders)", arguments: StatementArguments(patternArgs))
+                request = request.filter(sql: "\(extField) LIKE \(placeholders)", arguments: StatementArguments(patternArgs))
             }
             if let tagged {
                 if tagged {
@@ -896,13 +898,13 @@ final class DAMDatabase: Sendable {
             // has no LAST_INDEX/REVERSE helpers, and SUBSTR(..., INSTR(...))
             // would split on the first dot in names like "10.10.jpg".
             let rows = try Row.fetchAll(db, sql: """
-                SELECT DISTINCT filename
+                SELECT DISTINCT COALESCE(NULLIF(filename,''), path) AS source
                 FROM asset
-                WHERE filename LIKE '%.%'
+                WHERE COALESCE(NULLIF(filename,''), path) LIKE '%.%'
                 """)
             let exts = Set(rows.compactMap { row -> String? in
-                let filename: String = row["filename"]
-                let ext = (filename as NSString).pathExtension.lowercased()
+                let source: String = row["source"]
+                let ext = (source as NSString).pathExtension.lowercased()
                 return ext.isEmpty ? nil : ext
             })
             return Array(exts).sorted()
@@ -1411,7 +1413,8 @@ final class DAMDatabase: Sendable {
             args.append("%\(fileType)%")
         }
         if !extensions.isEmpty {
-            let extClauses = extensions.map { _ in "LOWER(a.filename) LIKE ?" }
+            let extField = "LOWER(COALESCE(NULLIF(a.filename,''), a.path))"
+            let extClauses = extensions.map { _ in "\(extField) LIKE ?" }
             clauses.append("(\(extClauses.joined(separator: " OR ")))")
             for ext in extensions {
                 args.append("%.\(ext.lowercased())")
