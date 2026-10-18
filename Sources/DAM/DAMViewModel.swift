@@ -1457,12 +1457,30 @@ final class DAMViewModel {
                     return (lhs.captureDate ?? .distantPast) > (rhs.captureDate ?? .distantPast)
                 case .captureDateAsc:
                     return (lhs.captureDate ?? .distantFuture) < (rhs.captureDate ?? .distantFuture)
+                case .fileModDateDesc:
+                    return (lhs.fileModDate ?? .distantPast) > (rhs.fileModDate ?? .distantPast)
+                case .fileModDateAsc:
+                    return (lhs.fileModDate ?? .distantFuture) < (rhs.fileModDate ?? .distantFuture)
                 case .filenameAsc:
                     return lhs.filename.localizedStandardCompare(rhs.filename) == .orderedAscending
+                case .filenameDesc:
+                    return lhs.filename.localizedStandardCompare(rhs.filename) == .orderedDescending
                 case .sizeDesc:
                     return (lhs.fileSize ?? 0) > (rhs.fileSize ?? 0)
+                case .sizeAsc:
+                    return (lhs.fileSize ?? .max) < (rhs.fileSize ?? .max)
                 case .ratingDesc:
                     return lhs.rating > rhs.rating
+                case .ratingAsc:
+                    return lhs.rating < rhs.rating
+                case .cameraMakeAsc:
+                    return (lhs.cameraMake ?? "").localizedStandardCompare(rhs.cameraMake ?? "") == .orderedAscending
+                case .cameraModelAsc:
+                    return (lhs.cameraModel ?? "").localizedStandardCompare(rhs.cameraModel ?? "") == .orderedAscending
+                case .indexedAtDesc:
+                    return (lhs.indexedAt ?? .distantPast) > (rhs.indexedAt ?? .distantPast)
+                case .indexedAtAsc:
+                    return (lhs.indexedAt ?? .distantFuture) < (rhs.indexedAt ?? .distantFuture)
                 }
             }
 

@@ -590,15 +590,30 @@ final class DAMDatabase: Sendable {
 
     /// Sort orders for the browser grid (Bridge's Sort menu parity).
     enum DAMSortOrder: String, Sendable, CaseIterable {
-        case captureDateDesc, captureDateAsc, filenameAsc, sizeDesc, ratingDesc
+        case captureDateDesc, captureDateAsc
+        case fileModDateDesc, fileModDateAsc
+        case filenameAsc, filenameDesc
+        case sizeDesc, sizeAsc
+        case ratingDesc, ratingAsc
+        case cameraMakeAsc, cameraModelAsc
+        case indexedAtDesc, indexedAtAsc
 
         var displayName: String {
             switch self {
-            case .captureDateDesc: return "Date (newest)"
-            case .captureDateAsc: return "Date (oldest)"
-            case .filenameAsc: return "Filename"
+            case .captureDateDesc: return "Date taken (newest)"
+            case .captureDateAsc: return "Date taken (oldest)"
+            case .fileModDateDesc: return "Modified (newest)"
+            case .fileModDateAsc: return "Modified (oldest)"
+            case .filenameAsc: return "Filename (A–Z)"
+            case .filenameDesc: return "Filename (Z–A)"
             case .sizeDesc: return "Size (largest)"
-            case .ratingDesc: return "Rating"
+            case .sizeAsc: return "Size (smallest)"
+            case .ratingDesc: return "Rating (high)"
+            case .ratingAsc: return "Rating (low)"
+            case .cameraMakeAsc: return "Camera make"
+            case .cameraModelAsc: return "Camera model"
+            case .indexedAtDesc: return "Imported (newest)"
+            case .indexedAtAsc: return "Imported (oldest)"
             }
         }
     }
@@ -720,12 +735,34 @@ final class DAMDatabase: Sendable {
                 )
             }
             switch sort {
-            case .captureDateDesc: request = request.order(DAMAsset.Columns.captureDate.desc)
-            case .captureDateAsc: request = request.order(DAMAsset.Columns.captureDate.asc)
-            case .filenameAsc: request = request.order(DAMAsset.Columns.filename.asc)
-            case .sizeDesc: request = request.order(Column("fileSize").desc)
+            case .captureDateDesc:
+                request = request.order(DAMAsset.Columns.captureDate.desc, DAMAsset.Columns.filename.asc)
+            case .captureDateAsc:
+                request = request.order(DAMAsset.Columns.captureDate.asc, DAMAsset.Columns.filename.asc)
+            case .fileModDateDesc:
+                request = request.order(Column("fileModDate").desc, DAMAsset.Columns.filename.asc)
+            case .fileModDateAsc:
+                request = request.order(Column("fileModDate").asc, DAMAsset.Columns.filename.asc)
+            case .filenameAsc:
+                request = request.order(DAMAsset.Columns.filename.asc)
+            case .filenameDesc:
+                request = request.order(DAMAsset.Columns.filename.desc)
+            case .sizeDesc:
+                request = request.order(Column("fileSize").desc, DAMAsset.Columns.filename.asc)
+            case .sizeAsc:
+                request = request.order(Column("fileSize").asc, DAMAsset.Columns.filename.asc)
             case .ratingDesc:
                 request = request.order(DAMAsset.Columns.rating.desc, DAMAsset.Columns.captureDate.desc)
+            case .ratingAsc:
+                request = request.order(DAMAsset.Columns.rating.asc, DAMAsset.Columns.captureDate.asc)
+            case .cameraMakeAsc:
+                request = request.order(Column("cameraMake").asc, Column("cameraModel").asc, DAMAsset.Columns.filename.asc)
+            case .cameraModelAsc:
+                request = request.order(Column("cameraModel").asc, Column("cameraMake").asc, DAMAsset.Columns.filename.asc)
+            case .indexedAtDesc:
+                request = request.order(Column("indexedAt").desc, DAMAsset.Columns.filename.asc)
+            case .indexedAtAsc:
+                request = request.order(Column("indexedAt").asc, DAMAsset.Columns.filename.asc)
             }
             return try request.limit(limit, offset: offset).fetchAll(db)
         }

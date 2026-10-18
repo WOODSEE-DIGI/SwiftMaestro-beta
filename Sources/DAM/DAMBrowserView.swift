@@ -432,7 +432,7 @@ struct DAMBrowserView: View {
                             Text(order.displayName).tag(order)
                         }
                     }
-                    .frame(width: 140)
+                    .frame(width: 170)
 
                     Picker("Rating", selection: Binding(
                         get: { viewModel.minimumRating },
