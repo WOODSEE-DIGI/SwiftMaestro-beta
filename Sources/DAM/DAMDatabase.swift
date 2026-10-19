@@ -51,6 +51,19 @@ final class DAMDatabase: Sendable {
         config.prepareDatabase { db in
             try db.execute(sql: "PRAGMA journal_mode = WAL")
             try db.execute(sql: "PRAGMA foreign_keys = ON")
+
+            // Custom SQL helper used by migrations and queries that need the
+            // true filename extension (after the last dot), lowercased.
+            let pathExtensionFunc = DatabaseFunction(
+                "pathExtension",
+                argumentCount: 1,
+                pure: true
+            ) { dbValues in
+                guard let string = String.fromDatabaseValue(dbValues[0]) else { return nil }
+                let ext = (string as NSString).pathExtension.lowercased()
+                return ext.isEmpty ? nil : ext
+            }
+            db.add(function: pathExtensionFunc)
         }
         dbQueue = try DatabaseQueue(path: url.path, configuration: config)
         try Self.migrator.migrate(dbQueue)
@@ -523,20 +536,15 @@ final class DAMDatabase: Sendable {
             }
             try db.create(index: "idx_asset_extension", on: "asset", columns: ["fileExtension"])
 
-            // Backfill from the existing filename (or path as fallback).
-            let rows = try Row.fetchAll(db, sql: """
-                SELECT id, COALESCE(NULLIF(filename,''), path) AS source
-                FROM asset
+            // Backfill from the existing filename (or path as fallback) using
+            // the registered pathExtension() SQL function. A single UPDATE is
+            // orders of magnitude faster than the Swift row-by-row loop for
+            // catalogs with millions of assets.
+            try db.execute(sql: """
+                UPDATE asset
+                SET fileExtension = pathExtension(COALESCE(NULLIF(filename,''), path))
+                WHERE fileExtension IS NULL
                 """)
-            for row in rows {
-                let id: Int64 = row["id"]
-                let source: String = row["source"]
-                let ext = (source as NSString).pathExtension.lowercased()
-                guard !ext.isEmpty else { continue }
-                try db.execute(
-                    sql: "UPDATE asset SET fileExtension = ? WHERE id = ?",
-                    arguments: [ext, id])
-            }
         }
 
         return migrator
