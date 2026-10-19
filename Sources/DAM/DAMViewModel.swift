@@ -112,6 +112,60 @@ final class DAMViewModel {
         didSet { Task { await reload() } }
     }
 
+    /// True when any filter or search query is active.
+    var hasActiveFilters: Bool {
+        let hasRating = minimumRating != 0
+        let hasTags = filterTagColor != nil || filterTagged != nil
+        let hasType = filterFileType != nil || !filterExtensions.isEmpty
+        let hasFlag = filterFlag != nil
+        let hasMetadata = filterHasAICaption != nil
+            || filterHasAIKeywords != nil
+            || filterHasOCR != nil
+            || filterHasUserKeywords != nil
+            || filterHasXattr != nil
+        let hasCamera = filterCameraMake != nil || filterCameraModel != nil
+        let hasDate = filterCaptureFrom != nil || filterCaptureTo != nil
+        let hasSize = filterFileSizeMin != nil || filterFileSizeMax != nil
+        let hasStatus = filterIsAvailable != nil
+            || filterHasGPS != nil
+            || filterRated != nil
+        return hasRating
+            || hasTags
+            || hasType
+            || hasFlag
+            || hasMetadata
+            || hasCamera
+            || hasDate
+            || hasSize
+            || hasStatus
+            || !searchText.isEmpty
+    }
+
+    /// Reset every browser filter and the search query back to defaults.
+    func resetFilters() {
+        searchText = ""
+        minimumRating = 0
+        filterTagColor = nil
+        filterFileType = nil
+        filterTagged = nil
+        filterFlag = nil
+        filterExtensions = []
+        filterHasAICaption = nil
+        filterHasAIKeywords = nil
+        filterHasOCR = nil
+        filterHasUserKeywords = nil
+        filterHasXattr = nil
+        filterCameraMake = nil
+        filterCameraModel = nil
+        filterCaptureFrom = nil
+        filterCaptureTo = nil
+        filterFileSizeMin = nil
+        filterFileSizeMax = nil
+        filterIsAvailable = nil
+        filterHasGPS = nil
+        filterRated = nil
+    }
+
     /// Path of a folder the view should reveal/expand after import. Consumed by
     /// the browser view to expand the folder tree to the imported location.
     var folderToReveal: String? = nil

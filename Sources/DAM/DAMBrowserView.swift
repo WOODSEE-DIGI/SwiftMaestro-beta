@@ -725,6 +725,17 @@ struct DAMBrowserView: View {
                     .frame(width: 180)
 
                     Button {
+                        viewModel.resetFilters()
+                    } label: {
+                        Label("Reset", systemImage: "xmark.circle")
+                            .labelStyle(.iconOnly)
+                    }
+                    .buttonStyle(BorderlessButtonStyle())
+                    .foregroundStyle(viewModel.hasActiveFilters ? Color.accentColor : .secondary)
+                    .disabled(!viewModel.hasActiveFilters)
+                    .help("Clear all filters and search")
+
+                    Button {
                         withAnimation { showPreviewPanel.toggle() }
                     } label: {
                         Image(systemName: "sidebar.right")
