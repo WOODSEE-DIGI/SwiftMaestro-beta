@@ -1414,7 +1414,13 @@ final class DAMViewModel {
 
             if !extensions.isEmpty {
                 assets = assets.filter { asset in
-                    guard let ext = asset.fileExtension?.lowercased() else { return false }
+                    let ext: String
+                    if let fileExt = asset.fileExtension?.lowercased(), !fileExt.isEmpty {
+                        ext = fileExt
+                    } else {
+                        let source = asset.filename.isEmpty ? asset.path : asset.filename
+                        ext = (source as NSString).pathExtension.lowercased()
+                    }
                     return extensions.contains(ext)
                 }
             }

@@ -686,9 +686,11 @@ final class DAMDatabase: Sendable {
                 )
             }
             if !extensions.isEmpty {
-                let placeholders = extensions.map { _ in "?" }.joined(separator: " OR LOWER(fileExtension) = ")
-                let args = extensions.map { $0.lowercased() }
-                request = request.filter(sql: "LOWER(fileExtension) = \(placeholders)", arguments: StatementArguments(args))
+                let clauses = extensions.map { _ in
+                    "(LOWER(fileExtension) = ? OR (fileExtension IS NULL AND LOWER(COALESCE(NULLIF(filename,''), path)) LIKE ?))"
+                }.joined(separator: " OR ")
+                let args = extensions.flatMap { [$0.lowercased(), "%.\($0.lowercased())"] }
+                request = request.filter(sql: clauses, arguments: StatementArguments(args))
             }
             if let tagged {
                 if tagged {
@@ -835,9 +837,11 @@ final class DAMDatabase: Sendable {
                 )
             }
             if !extensions.isEmpty {
-                let placeholders = extensions.map { _ in "?" }.joined(separator: " OR LOWER(fileExtension) = ")
-                let args = extensions.map { $0.lowercased() }
-                request = request.filter(sql: "LOWER(fileExtension) = \(placeholders)", arguments: StatementArguments(args))
+                let clauses = extensions.map { _ in
+                    "(LOWER(fileExtension) = ? OR (fileExtension IS NULL AND LOWER(COALESCE(NULLIF(filename,''), path)) LIKE ?))"
+                }.joined(separator: " OR ")
+                let args = extensions.flatMap { [$0.lowercased(), "%.\($0.lowercased())"] }
+                request = request.filter(sql: clauses, arguments: StatementArguments(args))
             }
             if let tagged {
                 if tagged {
@@ -1437,10 +1441,15 @@ final class DAMDatabase: Sendable {
             args.append("%\(fileType)%")
         }
         if !extensions.isEmpty {
-            let extClauses = extensions.map { _ in "LOWER(a.fileExtension) = ?" }
+            // Prefer the indexed fileExtension column, but fall back to parsing
+            // filename/path for rows that haven't been backfilled yet.
+            let extClauses = extensions.map { _ in
+                "(LOWER(a.fileExtension) = ? OR (a.fileExtension IS NULL AND LOWER(COALESCE(NULLIF(a.filename,''), a.path)) LIKE ?))"
+            }
             clauses.append("(\(extClauses.joined(separator: " OR ")))")
             for ext in extensions {
                 args.append(ext.lowercased())
+                args.append("%.\(ext.lowercased())")
             }
         }
         if let tagged {
