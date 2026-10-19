@@ -221,13 +221,15 @@ actor DAMImportService {
         // pass fills in size, tags, EXIF after the fast scan completes.
         let volume = await DAMVolumeStore.shared.volumeInfo(for: url)
         let relativePath = await DAMVolumeStore.shared.relativePath(for: url)
+        let filename = url.lastPathComponent
         return DAMAsset(
             id: nil,
             path: url.path,
-            filename: url.lastPathComponent,
+            filename: filename,
             folder: url.deletingLastPathComponent().path,
             uti: uti.identifier,
             kind: DAMFileKind.kind(for: url),
+            fileExtension: (filename as NSString).pathExtension.lowercased(),
             fileSize: nil, fileModDate: nil,
             volumeId: volume?.id,
             relativePath: relativePath,
@@ -1168,6 +1170,8 @@ actor DAMImportService {
                     existing.fileSize = asset.fileSize
                     existing.fileModDate = asset.fileModDate
                     existing.folder = asset.folder ?? existing.folder
+                    existing.filename = asset.filename
+                    existing.fileExtension = asset.fileExtension ?? existing.fileExtension
                     // A rescan from a currently-mounted volume refreshes volume
                     // identity and relative path; if the file moved volumes this
                     // keeps the catalog accurate.

@@ -1414,8 +1414,7 @@ final class DAMViewModel {
 
             if !extensions.isEmpty {
                 assets = assets.filter { asset in
-                    let source = asset.filename.isEmpty ? asset.path : asset.filename
-                    let ext = (source as NSString).pathExtension.lowercased()
+                    guard let ext = asset.fileExtension?.lowercased() else { return false }
                     return extensions.contains(ext)
                 }
             }
@@ -1711,6 +1710,7 @@ final class DAMViewModel {
                   let update = updates[id] else { continue }
             assets[i].path = update.path
             assets[i].filename = update.filename
+            assets[i].fileExtension = update.fileExtension
             assets[i].folder = update.folder
             assets[i].volumeId = update.volumeId
             assets[i].relativePath = update.relativePath
@@ -1726,13 +1726,14 @@ final class DAMViewModel {
                     try db.execute(
                         sql: """
                             UPDATE asset
-                            SET path = ?, folder = ?, filename = ?, volumeId = ?, relativePath = ?, isAvailable = 1
+                            SET path = ?, folder = ?, filename = ?, fileExtension = ?, volumeId = ?, relativePath = ?, isAvailable = 1
                             WHERE id = ?
                             """,
                         arguments: [
                             update.path,
                             update.folder,
                             update.filename,
+                            update.fileExtension,
                             update.volumeId,
                             update.relativePath,
                             id
@@ -2036,6 +2037,7 @@ final class DAMViewModel {
                     asset.path = dest.path
                     asset.folder = dest.deletingLastPathComponent().path
                     asset.filename = dest.lastPathComponent
+                    asset.fileExtension = (dest.lastPathComponent as NSString).pathExtension.lowercased()
                     try asset.update(db)
                     try database.recordAudit(
                         db, assetId: assetId, field: "path",

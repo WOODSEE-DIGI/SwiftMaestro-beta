@@ -44,6 +44,9 @@ struct DAMAsset: Codable, FetchableRecord, MutablePersistableRecord, TableRecord
     var folder: String?
     var uti: String?
     var kind: String?
+    /// Normalized filename extension, lowercased (e.g. "iiq", "jpg").
+    /// Added by migration v16; kept in sync by import and move operations.
+    var fileExtension: String?
     var fileSize: Int64?
     var fileModDate: Date?
 
@@ -109,10 +112,11 @@ struct DAMAsset: Codable, FetchableRecord, MutablePersistableRecord, TableRecord
         static let relativePath = Column("relativePath")
         static let isAvailable = Column("isAvailable")
         static let lastVerifiedAt = Column("lastVerifiedAt")
+        static let fileExtension = Column("fileExtension")
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, path, filename, folder, uti, kind, fileSize, fileModDate,
+        case id, path, filename, folder, uti, kind, fileExtension, fileSize, fileModDate,
              volumeId, relativePath, isAvailable, lastVerifiedAt,
              width, height, duration, rating, colorLabel, flag, captureDate,
              cameraMake, cameraModel, lensModel, iso, aperture, shutterSpeed,

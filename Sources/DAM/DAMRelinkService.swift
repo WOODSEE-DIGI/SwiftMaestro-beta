@@ -27,6 +27,7 @@ struct DAMRelinkUpdate: Sendable {
     let path: String
     let folder: String
     let filename: String
+    let fileExtension: String?
     let volumeId: Int64?
     let relativePath: String?
 }
@@ -202,11 +203,13 @@ actor DAMRelinkService {
 
     private static func update(for url: URL, assetId: Int64, volume: DAMVolume?) -> DAMRelinkUpdate {
         let path = url.path
+        let filename = url.lastPathComponent
         return DAMRelinkUpdate(
             id: assetId,
             path: path,
             folder: (path as NSString).deletingLastPathComponent,
-            filename: url.lastPathComponent,
+            filename: filename,
+            fileExtension: (filename as NSString).pathExtension.lowercased(),
             volumeId: volume?.id,
             relativePath: Self.relativePath(for: url)
         )

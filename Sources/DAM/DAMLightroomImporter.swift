@@ -137,6 +137,7 @@ actor DAMLightroomImporter {
                     folder: (absolutePath as NSString).deletingLastPathComponent,
                     uti: utiFor(filename: filename,
                                 format: value("fileformat", in: row, columns: columns)),
+                    fileExtension: (filename as NSString).pathExtension.lowercased(),
                     fileSize: nil, fileModDate: nil,
                     volumeId: nil, relativePath: nil, isAvailable: true, lastVerifiedAt: Date(),
                     width: intValue("width", in: row, columns: columns),

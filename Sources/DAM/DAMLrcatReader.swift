@@ -527,6 +527,7 @@ actor DAMLrcatReader {
                     id: nil, path: absolutePath, filename: image.filename,
                     folder: (absolutePath as NSString).deletingLastPathComponent,
                     uti: utiFor(filename: image.filename, format: image.fileFormat),
+                    fileExtension: (image.filename as NSString).pathExtension.lowercased(),
                     fileSize: nil, fileModDate: nil,
                     volumeId: nil, relativePath: nil, isAvailable: true, lastVerifiedAt: Date(),
                     width: image.width, height: image.height,

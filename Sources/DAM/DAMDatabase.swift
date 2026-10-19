@@ -514,6 +514,31 @@ final class DAMDatabase: Sendable {
                 """)
         }
 
+        // v16 — dedicated extension column for reliable extension filtering.
+        // Filename/path string filtering was fragile (first-dot splits, case,
+        // empty filenames), so we store the normalized extension explicitly.
+        migrator.registerMigration("v16-asset-extension") { db in
+            try db.alter(table: "asset") { t in
+                t.add(column: "fileExtension", .text)
+            }
+            try db.create(index: "idx_asset_extension", on: "asset", columns: ["fileExtension"])
+
+            // Backfill from the existing filename (or path as fallback).
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT id, COALESCE(NULLIF(filename,''), path) AS source
+                FROM asset
+                """)
+            for row in rows {
+                let id: Int64 = row["id"]
+                let source: String = row["source"]
+                let ext = (source as NSString).pathExtension.lowercased()
+                guard !ext.isEmpty else { continue }
+                try db.execute(
+                    sql: "UPDATE asset SET fileExtension = ? WHERE id = ?",
+                    arguments: [ext, id])
+            }
+        }
+
         return migrator
     }()
 
@@ -653,10 +678,9 @@ final class DAMDatabase: Sendable {
                 )
             }
             if !extensions.isEmpty {
-                let extField = "LOWER(COALESCE(NULLIF(filename,''), path))"
-                let placeholders = extensions.map { _ in "?" }.joined(separator: " OR \(extField) LIKE ")
-                let patternArgs = extensions.map { "%.\($0.lowercased())" }
-                request = request.filter(sql: "\(extField) LIKE \(placeholders)", arguments: StatementArguments(patternArgs))
+                let placeholders = extensions.map { _ in "?" }.joined(separator: " OR LOWER(fileExtension) = ")
+                let args = extensions.map { $0.lowercased() }
+                request = request.filter(sql: "LOWER(fileExtension) = \(placeholders)", arguments: StatementArguments(args))
             }
             if let tagged {
                 if tagged {
@@ -803,10 +827,9 @@ final class DAMDatabase: Sendable {
                 )
             }
             if !extensions.isEmpty {
-                let extField = "LOWER(COALESCE(NULLIF(filename,''), path))"
-                let placeholders = extensions.map { _ in "?" }.joined(separator: " OR \(extField) LIKE ")
-                let patternArgs = extensions.map { "%.\($0.lowercased())" }
-                request = request.filter(sql: "\(extField) LIKE \(placeholders)", arguments: StatementArguments(patternArgs))
+                let placeholders = extensions.map { _ in "?" }.joined(separator: " OR LOWER(fileExtension) = ")
+                let args = extensions.map { $0.lowercased() }
+                request = request.filter(sql: "LOWER(fileExtension) = \(placeholders)", arguments: StatementArguments(args))
             }
             if let tagged {
                 if tagged {
@@ -894,20 +917,13 @@ final class DAMDatabase: Sendable {
     /// sorted alphabetically. Used to populate the extension filter menu.
     func distinctExtensions() throws -> [String] {
         try dbQueue.read { db in
-            // Derive the true extension (after the last dot) in Swift; SQLite
-            // has no LAST_INDEX/REVERSE helpers, and SUBSTR(..., INSTR(...))
-            // would split on the first dot in names like "10.10.jpg".
             let rows = try Row.fetchAll(db, sql: """
-                SELECT DISTINCT COALESCE(NULLIF(filename,''), path) AS source
+                SELECT DISTINCT LOWER(fileExtension) AS ext
                 FROM asset
-                WHERE COALESCE(NULLIF(filename,''), path) LIKE '%.%'
+                WHERE fileExtension IS NOT NULL AND fileExtension != ''
+                ORDER BY ext
                 """)
-            let exts = Set(rows.compactMap { row -> String? in
-                let source: String = row["source"]
-                let ext = (source as NSString).pathExtension.lowercased()
-                return ext.isEmpty ? nil : ext
-            })
-            return Array(exts).sorted()
+            return rows.map { $0["ext"] }
         }
     }
 
@@ -1413,11 +1429,10 @@ final class DAMDatabase: Sendable {
             args.append("%\(fileType)%")
         }
         if !extensions.isEmpty {
-            let extField = "LOWER(COALESCE(NULLIF(a.filename,''), a.path))"
-            let extClauses = extensions.map { _ in "\(extField) LIKE ?" }
+            let extClauses = extensions.map { _ in "LOWER(a.fileExtension) = ?" }
             clauses.append("(\(extClauses.joined(separator: " OR ")))")
             for ext in extensions {
-                args.append("%.\(ext.lowercased())")
+                args.append(ext.lowercased())
             }
         }
         if let tagged {
