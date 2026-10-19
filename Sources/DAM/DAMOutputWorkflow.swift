@@ -1304,7 +1304,7 @@ struct EditWorkspaceView: View {
 
             HStack(spacing: 12) {
                 Button {
-                    viewModel.selectAllInScope()
+                    Task { await viewModel.selectAllInScope() }
                 } label: {
                     Label("Select All in Scope", systemImage: "checklist")
                 }

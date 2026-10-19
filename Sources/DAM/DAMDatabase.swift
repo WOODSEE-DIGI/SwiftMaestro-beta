@@ -1329,16 +1329,21 @@ final class DAMDatabase: Sendable {
         }
     }
 
-    /// Remove multiple assets from a collection.
-    func removeAssetsFromCollection(assetIds: [Int64], collectionId: Int64) throws {
-        guard !assetIds.isEmpty else { return }
-        try dbQueue.write { db in
+    /// Remove multiple assets from a collection. Returns the number of
+    /// membership rows actually deleted.
+    @discardableResult
+    func removeAssetsFromCollection(assetIds: [Int64], collectionId: Int64) throws -> Int {
+        guard !assetIds.isEmpty else { return 0 }
+        return try dbQueue.write { db in
+            var total = 0
             for assetId in assetIds {
                 try db.execute(
                     sql: "DELETE FROM collectionAsset WHERE collectionId = ? AND assetId = ?",
                     arguments: [collectionId, assetId]
                 )
+                total += db.changesCount
             }
+            return total
         }
     }
 

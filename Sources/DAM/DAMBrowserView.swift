@@ -136,7 +136,7 @@ struct DAMBrowserView: View {
         .background {
             Button {
                 guard viewModel.workspace == .home || viewModel.workspace == .metadata else { return }
-                viewModel.selectAllInScope()
+                Task { await viewModel.selectAllInScope() }
             } label: {
                 EmptyView()
             }

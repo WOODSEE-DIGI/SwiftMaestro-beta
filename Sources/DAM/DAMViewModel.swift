@@ -288,20 +288,58 @@ final class DAMViewModel {
         primarySelectedID = nil
     }
 
-    /// Select every asset in the active scope. When a folder or album is
-    /// open this queries the catalog directly so it works even if the grid
-    /// hasn't loaded every page yet; otherwise it selects the visible page.
+    /// Select every asset in the active scope **respecting the current
+    /// filters**. When a folder or album is open this queries the catalog
+    /// directly so it works even if the grid hasn't loaded every page yet;
+    /// otherwise it selects the visible page.
     @MainActor
-    func selectAllInScope() {
+    func selectAllInScope() async {
         let allAssets: [DAMAsset]
-        if let collectionID = selectedCollectionID,
-           let collectionAssets = try? database.assets(inCollectionId: collectionID) {
-            allAssets = collectionAssets
-        } else if let folder = selectedFolder,
-                  let folderAssets = try? database.assets(inFolder: folder, recursive: false) {
-            allAssets = folderAssets
-        } else {
-            allAssets = assets
+        do {
+            if let collectionID = selectedCollectionID {
+                allAssets = try await fetchCollectionAssets(collectionID: collectionID)
+            } else if let folder = selectedFolder {
+                let rating = minimumRating
+                let extensions = filterExtensions
+                let tagColor = filterTagColor
+                let fileType = filterFileType
+                let tagged = filterTagged
+                let flag = filterFlag
+                let hasAICaption = filterHasAICaption
+                let hasAIKeywords = filterHasAIKeywords
+                let hasOCR = filterHasOCR
+                let hasUserKeywords = filterHasUserKeywords
+                let hasXattr = filterHasXattr
+                let cameraMake = filterCameraMake
+                let cameraModel = filterCameraModel
+                let captureFrom = filterCaptureFrom
+                let captureTo = filterCaptureTo
+                let sizeMin = filterFileSizeMin
+                let sizeMax = filterFileSizeMax
+                let isAvailable = filterIsAvailable
+                let hasGPS = filterHasGPS
+                let rated = filterRated
+                let sort = sortOrder
+                allAssets = try await Task.detached(priority: .userInitiated) { [database] in
+                    try database.assets(folder: folder, minRating: rating, sort: sort,
+                                        limit: Int.max, offset: 0,
+                                        tagColor: tagColor, fileType: fileType,
+                                        tagged: tagged, flag: flag,
+                                        extensions: extensions,
+                                        hasAICaption: hasAICaption, hasAIKeywords: hasAIKeywords,
+                                        hasOCR: hasOCR, hasUserKeywords: hasUserKeywords,
+                                        hasXattr: hasXattr,
+                                        cameraMake: cameraMake, cameraModel: cameraModel,
+                                        captureFrom: captureFrom, captureTo: captureTo,
+                                        fileSizeMin: sizeMin, fileSizeMax: sizeMax,
+                                        isAvailable: isAvailable, hasGPS: hasGPS,
+                                        rated: rated)
+                }.value
+            } else {
+                allAssets = assets
+            }
+        } catch {
+            return
         }
         let ids = Set(allAssets.compactMap(\.id))
         guard selection != ids else { return }
@@ -780,41 +818,65 @@ final class DAMViewModel {
         }
     }
 
+    /// Monotonically incremented on every reload. Results from stale
+    /// generations are discarded so a slow earlier fetch cannot overwrite the
+    /// user's current scope/filter.
+    private var reloadGeneration: UInt = 0
+
     /// Initial load / full refresh honoring current filters.
     func reload() async {
-        await MainActor.run { visibleAssetIDs.removeAll() }
+        reloadGeneration += 1
+        let generation = reloadGeneration
+
+        // Snapshot scope and filters so this reload stays consistent even if
+        // the user changes something while we're suspended.
+        let collectionID = selectedCollectionID
+        let folder = selectedFolder
+        let rating = minimumRating
+        let tagColor = filterTagColor
+        let fileType = filterFileType
+        let tagged = filterTagged
+        let flag = filterFlag
+        let extensions = filterExtensions
+        let hasAICaption = filterHasAICaption
+        let hasAIKeywords = filterHasAIKeywords
+        let hasOCR = filterHasOCR
+        let hasUserKeywords = filterHasUserKeywords
+        let hasXattr = filterHasXattr
+        let cameraMake = filterCameraMake
+        let cameraModel = filterCameraModel
+        let captureFrom = filterCaptureFrom
+        let captureTo = filterCaptureTo
+        let sizeMin = filterFileSizeMin
+        let sizeMax = filterFileSizeMax
+        let isAvailable = filterIsAvailable
+        let hasGPS = filterHasGPS
+        let rated = filterRated
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sort = sortOrder
+        let pageSize = self.pageSize
+
+        clearSelection()
+        visibleAssetIDs.removeAll()
+        errorMessage = nil
+
         do {
-            if let collectionID = selectedCollectionID {
+            if let collectionID {
                 let filtered = try await fetchCollectionAssets(collectionID: collectionID)
-                assets = Array(filtered.prefix(pageSize))
+                guard generation == reloadGeneration else { return }
+                // Collections can exceed the normal page size; load the full
+                // filtered set at once so load-more never accidentally fetches
+                // from the wrong scope.
+                assets = filtered
                 totalAssetCount = filtered.count
-                canLoadMore = filtered.count > pageSize
-                errorMessage = nil
+                canLoadMore = false
+                let extSummary = Dictionary(grouping: assets) {
+                    ($0.fileExtension ?? (NSString(string: $0.filename).pathExtension as String)).lowercased()
+                }.mapValues { $0.count }
+                NSLog("[DAM] reload collection %lld gen %u: %d assets, exts %@", collectionID, generation, filtered.count, extSummary as NSDictionary)
                 return
             }
 
-            let folder = selectedFolder
-            let rating = minimumRating
-            let tagColor = filterTagColor
-            let fileType = filterFileType
-            let tagged = filterTagged
-            let flag = filterFlag
-            let extensions = filterExtensions
-            let hasAICaption = filterHasAICaption
-            let hasAIKeywords = filterHasAIKeywords
-            let hasOCR = filterHasOCR
-            let hasUserKeywords = filterHasUserKeywords
-            let hasXattr = filterHasXattr
-            let cameraMake = filterCameraMake
-            let cameraModel = filterCameraModel
-            let captureFrom = filterCaptureFrom
-            let captureTo = filterCaptureTo
-            let sizeMin = filterFileSizeMin
-            let sizeMax = filterFileSizeMax
-            let isAvailable = filterIsAvailable
-            let hasGPS = filterHasGPS
-            let rated = filterRated
-            let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
             async let page = fetchPage(offset: 0)
             async let count = Task.detached(priority: .userInitiated) { [database] in
                 // Count must match the results path: plain browse counts with
@@ -850,12 +912,14 @@ final class DAMViewModel {
             async let extensionsTask = Task.detached(priority: .utility) { [database] in
                 try? database.distinctExtensions()
             }.value
-            assets = try await page
+            let pageResult = try await page
+            guard generation == reloadGeneration else { return }
+            assets = pageResult
             totalAssetCount = (try? await count) ?? assets.count
             canLoadMore = assets.count == pageSize
             catalogExtensions = (try? await extensionsTask) ?? []
-            errorMessage = nil
         } catch {
+            guard generation == reloadGeneration else { return }
             errorMessage = "Failed to load catalog: \(error.localizedDescription)"
         }
         await schedulePrivacyScanIfActive()
@@ -1017,7 +1081,8 @@ final class DAMViewModel {
         let ids = Array(selection).compactMap { $0 }
         guard !ids.isEmpty else { return }
         do {
-            try database.removeAssetsFromCollection(assetIds: ids, collectionId: collectionId)
+            let removed = try database.removeAssetsFromCollection(assetIds: ids, collectionId: collectionId)
+            NSLog("[DAM] removeSelectionFromCurrentCollection collection %lld: requested %ld, removed %ld", collectionId, ids.count, removed)
             if let count = try? database.collectionAssetCount(collectionId: collectionId) {
                 collectionAssetCounts[collectionId] = count
             }
@@ -1150,10 +1215,15 @@ final class DAMViewModel {
         let ids = Array(selection).compactMap { $0 }
         guard !ids.isEmpty else { return }
         do {
-            try database.removeAssetsFromCollection(assetIds: ids, collectionId: collectionId)
+            let removed = try database.removeAssetsFromCollection(assetIds: ids, collectionId: collectionId)
+            NSLog("[DAM] removeSelectionFromActiveCollection collection %lld: requested %ld, removed %ld", collectionId, ids.count, removed)
+            if removed == 0 {
+                errorMessage = "None of the selected items are members of this album."
+            }
             if let count = try? database.collectionAssetCount(collectionId: collectionId) {
                 collectionAssetCounts[collectionId] = count
             }
+            selection.subtract(ids)
             await reload()
             await refreshCollections()
         } catch {
@@ -1284,6 +1354,7 @@ final class DAMViewModel {
     func loadMoreIfNeeded(currentItem: DAMAsset) async {
         guard canLoadMore,
               !isLoadingMore,
+              selectedCollectionID == nil,
               let last = assets.last,
               currentItem.id == last.id else { return }
         isLoadingMore = true
