@@ -67,6 +67,7 @@ struct DAMBrowserView: View {
     @State private var shareProgressTotal = 0
     @State private var showAdvancedFilters = false
     @State private var showExtensionFilter = false
+    @State private var showRemoveFromCatalogConfirmation = false
 
     // Smart predicate sheet state
     @State private var predicateQuery = ""
@@ -233,6 +234,14 @@ struct DAMBrowserView: View {
         }
         .sheet(item: $viewModel.importDestination) { destination in
             ImportDestinationSheet(destination: destination, viewModel: viewModel)
+        }
+        .alert("Remove from Catalog?", isPresented: $showRemoveFromCatalogConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Remove", role: .destructive) {
+                Task { await viewModel.removeAssetsFromCatalog(ids: viewModel.selection) }
+            }
+        } message: {
+            Text("Remove \(viewModel.selection.count) selected assets from the catalog. The original files will stay on disk.")
         }
     }
 
@@ -591,7 +600,10 @@ struct DAMBrowserView: View {
                         Button("Relink…") { runBatchRelink() }
 
                         Divider()
-                        Button("Delete", role: .destructive) {
+                        Button("Remove from Catalog…") {
+                            showRemoveFromCatalogConfirmation = true
+                        }
+                        Button("Move to Trash", role: .destructive) {
                             Task { await viewModel.deleteAssets(ids: viewModel.selection) }
                         }
                     } label: {

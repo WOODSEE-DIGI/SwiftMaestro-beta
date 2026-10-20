@@ -2108,11 +2108,23 @@ final class DAMViewModel {
                 _ = try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
             }
 
+            try await removeAssetsFromCatalog(ids: ids)
+        } catch {
+            errorMessage = "Failed to delete assets: \(error.localizedDescription)"
+        }
+    }
+
+    /// Remove assets from the catalog without touching the underlying files.
+    /// Useful for files that should stay on disk but no longer be tracked.
+    func removeAssetsFromCatalog(ids: Set<DAMAsset.ID>) async {
+        let int64IDs = ids.compactMap { $0 }
+        guard !int64IDs.isEmpty else { return }
+        do {
             try await database.dbQueue.write { db in
                 for id in int64IDs {
                     if let asset = try DAMAsset.fetchOne(db, key: id) {
                         try database.recordAudit(
-                            db, assetId: id, field: "deleted",
+                            db, assetId: id, field: "removed",
                             oldValue: asset.path, newValue: "",
                             source: "user")
                     }
@@ -2124,7 +2136,7 @@ final class DAMViewModel {
             selection.subtract(int64IDs)
             await reload()
         } catch {
-            errorMessage = "Failed to delete assets: \(error.localizedDescription)"
+            errorMessage = "Failed to remove assets from catalog: \(error.localizedDescription)"
         }
     }
 
