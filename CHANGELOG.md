@@ -1,3 +1,17 @@
+# SwiftMaestro 0.7.2
+
+## Fixes
+
+- **Launch crash fixed**: `ThemeStore` no longer dereferences the `NSApp` global before `NSApplication` exists, preventing the "Unexpectedly found nil while implicitly unwrapping an Optional value" trap at startup.
+- **Xcode build fixed**: the `Bundle WhisperKit Models` script phase now resolves the app bundle from `BUILT_PRODUCTS_DIR`, skips Debug builds by default, and never fails the build over optional assets.
+- **Web search reliability**: `web_search` now falls back to the Brave Search API when Firecrawl is unavailable, filters irrelevant Bing results, and instructs the model to use `fetch_url` or `browser_open` instead of giving up.
+
+## Experimental
+
+- StoryGame engine and editor.
+- XAttr service.
+- DAMAgent chat panel.
+
 # SwiftMaestro 0.7.1
 
 ## MaestroDAM
