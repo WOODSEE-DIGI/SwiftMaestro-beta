@@ -1364,10 +1364,19 @@ final class DAMDatabase: Sendable {
     }
 
     /// Fetch specific assets by id (export / batch operations where the
-    /// selection may span beyond the loaded grid page).
+    /// selection may span beyond the currently loaded grid page).
+    /// Chunked to stay below SQLite's host-parameter limit (default 999).
     func fetchAssets(ids: [Int64]) throws -> [DAMAsset] {
-        try dbQueue.read { db in
-            try DAMAsset.fetchAll(db, keys: ids)
+        let batchSize = 500
+        return try dbQueue.read { db in
+            var result: [DAMAsset] = []
+            result.reserveCapacity(ids.count)
+            for start in stride(from: 0, to: ids.count, by: batchSize) {
+                let end = min(start + batchSize, ids.count)
+                let chunk = Array(ids[start..<end])
+                result.append(contentsOf: try DAMAsset.fetchAll(db, keys: chunk))
+            }
+            return result
         }
     }
 

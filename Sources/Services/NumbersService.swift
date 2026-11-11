@@ -134,6 +134,32 @@ final class NumbersService {
         try throwIfErrorPayload(json)
     }
 
+    /// Writes a rectangular block of rows starting at `startCell` (e.g. "A2").
+    /// `rows` is an array of rows, each row an array of string values. Values
+    /// that parse as plain numbers are written as Numbers numeric cells.
+    func writeRows(
+        documentID: String, sheetName: String, tableName: String,
+        startCell: String, rows: [[String]]
+    ) async throws -> NumbersWriteResult {
+        let encoder = JSONEncoder()
+        let rowsData = try encoder.encode(rows)
+        let rowsJSON = String(data: rowsData, encoding: .utf8) ?? "[]"
+        let json = try await AppleScriptRunner.run(
+            Self.writeRowsScript,
+            arguments: [documentID, sheetName, tableName, startCell, rowsJSON])
+        try throwIfErrorPayload(json)
+        return try decoder.decode(NumbersWriteResult.self, from: Data(json.utf8))
+    }
+
+    /// Clears every body cell in a table while preserving header rows. This is
+    /// useful before writing new data so stale rows do not remain below the new
+    /// content.
+    func clearTable(documentID: String, sheetName: String, tableName: String) async throws {
+        let json = try await AppleScriptRunner.run(
+            Self.clearTableScript, arguments: [documentID, sheetName, tableName])
+        try throwIfErrorPayload(json)
+    }
+
     // MARK: - Export
 
     func exportDocument(documentID: String, toPath path: String, format: NumbersExportFormat) async throws {
@@ -329,6 +355,98 @@ final class NumbersService {
     }
     """
 
+    private static let writeRowsScript = """
+    \(findDocByIDHelper)
+    \(findTableHelper)
+    function colFromA1(letters) {
+        var n = 0;
+        for (var i = 0; i < letters.length; i++) {
+            n = n * 26 + (letters.charCodeAt(i) - 64);
+        }
+        return n;
+    }
+    function rowFromA1(ref) {
+        var m = ref.match(/^([A-Z]+)(\\d+)$/);
+        return m ? parseInt(m[2], 10) : 1;
+    }
+    function a1ToColRow(ref) {
+        var m = ref.match(/^([A-Z]+)(\\d+)$/);
+        if (!m) return { col: 1, row: 1 };
+        return { col: colFromA1(m[1]), row: parseInt(m[2], 10) };
+    }
+    function colToA1(n) {
+        var s = '';
+        while (n > 0) {
+            n--;
+            s = String.fromCharCode(65 + (n % 26)) + s;
+            n = Math.floor(n / 26);
+        }
+        return s;
+    }
+    function run(argv) {
+        var Numbers = Application('Numbers');
+        var doc = findDocByID(Numbers, argv[0]);
+        if (!doc) return JSON.stringify({ error: 'document not found' });
+        var table = findTable(doc, argv[1], argv[2]);
+        if (!table) return JSON.stringify({ error: 'table not found' });
+        var start = a1ToColRow(argv[3] || 'A1');
+        var rows = [];
+        try { rows = JSON.parse(argv[4]); } catch (e) {
+            return JSON.stringify({ error: 'invalid rows JSON: ' + e });
+        }
+        if (!Array.isArray(rows)) return JSON.stringify({ error: 'rows must be an array' });
+        var writtenRows = 0;
+        var writtenCols = 0;
+        for (var r = 0; r < rows.length; r++) {
+            var row = rows[r];
+            if (!Array.isArray(row)) continue;
+            if (row.length > writtenCols) writtenCols = row.length;
+            for (var c = 0; c < row.length; c++) {
+                var rawValue = row[c] == null ? '' : String(row[c]);
+                var isNumeric = /^-?\\d+(\\.\\d+)?$/.test(rawValue);
+                var value = isNumeric ? Number(rawValue) : rawValue;
+                var ref = colToA1(start.col + c) + (start.row + r);
+                table.cells[ref].value = value;
+            }
+            writtenRows = r + 1;
+        }
+        return JSON.stringify({ status: 'written', writtenRows: writtenRows, writtenColumns: writtenCols, startCell: argv[3] || 'A1' });
+    }
+    """
+
+    private static let clearTableScript = """
+    \(findDocByIDHelper)
+    \(findTableHelper)
+    function colToA1(n) {
+        var s = '';
+        while (n > 0) {
+            n--;
+            s = String.fromCharCode(65 + (n % 26)) + s;
+            n = Math.floor(n / 26);
+        }
+        return s;
+    }
+    function run(argv) {
+        var Numbers = Application('Numbers');
+        var doc = findDocByID(Numbers, argv[0]);
+        if (!doc) return JSON.stringify({ error: 'document not found' });
+        var table = findTable(doc, argv[1], argv[2]);
+        if (!table) return JSON.stringify({ error: 'table not found' });
+        var headerRows = table.headerRowCount();
+        var rowCount = table.rowCount();
+        var columnCount = table.columnCount();
+        var cleared = 0;
+        for (var r = headerRows + 1; r <= rowCount; r++) {
+            for (var c = 1; c <= columnCount; c++) {
+                var ref = colToA1(c) + r;
+                table.cells[ref].value = '';
+                cleared++;
+            }
+        }
+        return JSON.stringify({ status: 'cleared', clearedCells: cleared });
+    }
+    """
+
     private static let exportScript = """
     \(findDocByIDHelper)
     function run(argv) {
@@ -368,6 +486,13 @@ struct NumbersTableData: Codable, Hashable, Sendable {
     let rowCount: Int
     let columnCount: Int
     let rows: [[String]]
+}
+
+struct NumbersWriteResult: Codable, Hashable, Sendable {
+    let status: String
+    let writtenRows: Int
+    let writtenColumns: Int
+    let startCell: String
 }
 
 /// Export formats Numbers' JXA `export({as:})` accepts, confirmed by live

@@ -41,7 +41,10 @@ static NSError* RAWError(int librawCode, NSString* stage, NSString* path) {
 /// NSImage that owns its pixel data (the LibRaw buffer is freed right after).
 /// Defensive: reject malformed LibRaw output before copying memory.
 static NSImage* _Nullable ImageFromProcessed(libraw_processed_image_t* img) {
-    if (!img || img->data_size == 0 || !img->data) { return nil; }
+    // `img->data` is declared as `unsigned char data[1]` (a flexible array
+    // member), so it decays to a non-null pointer and can never be NULL —
+    // `data_size == 0` is the only meaningful emptiness check.
+    if (!img || img->data_size == 0) { return nil; }
 
     // Sanity cap to avoid allocating absurd bitmaps from corrupt metadata.
     const NSUInteger kMaxPixels = 25000000; // ~25 MP

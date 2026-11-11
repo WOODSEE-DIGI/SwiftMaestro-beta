@@ -298,6 +298,8 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
     case rssReader
     /// Publish — track draft content across SwiftMaestro apps and publish to feeds.
     case publish
+    /// Game Studio — DOS-style text adventure authoring and player.
+    case storyGame
 
     var icon: String {
         switch self {
@@ -343,6 +345,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .mediaPlayer: return "play.circle"
         case .rssReader: return "dot.radiowaves.up.forward"
         case .publish: return "newspaper"
+        case .storyGame: return "gamecontroller"
         }
     }
 
@@ -395,6 +398,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .mediaPlayer: return "mediaPlayer"
         case .rssReader: return "rssReader"
         case .publish: return "publish"
+        case .storyGame: return "storyGame"
         }
     }
 
@@ -445,6 +449,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .mediaPlayer: return String(localized: "Media Player")
         case .rssReader: return String(localized: "Reader")
         case .publish: return String(localized: "Publish")
+        case .storyGame: return String(localized: "Game Studio")
         }
     }
 
@@ -514,6 +519,7 @@ enum WorkspacePanelKind: Hashable, Codable, Sendable {
         case .mediaPlayer: return "mediaPlayer"
         case .rssReader: return "rssReader"
         case .publish: return "publish"
+        case .storyGame: return "storyGame"
         }
     }
 }

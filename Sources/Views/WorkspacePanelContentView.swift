@@ -122,6 +122,8 @@ struct WorkspacePanelContentView: View {
             RSSReaderView()
         case .publish:
             PublishView()
+        case .storyGame:
+            StoryGamePanelView()
         }
         }
     }

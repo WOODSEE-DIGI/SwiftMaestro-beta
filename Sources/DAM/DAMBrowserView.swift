@@ -815,6 +815,8 @@ struct DAMBrowserView: View {
 
     // MARK: - Left: Folders tree
 
+    @State private var chatPanelHeight: CGFloat = 200
+
     private var folderTreePanel: some View {
         GeometryReader { geometry in
             VStack(spacing: 0) {
@@ -824,11 +826,13 @@ struct DAMBrowserView: View {
                     let headerHeight: CGFloat = 28
                     let dividerHeight: CGFloat = 1
                     let minCatalogHeight: CGFloat = 60
-                    let maxVolumes = max(60, geometry.size.height - dividerHeight - headerHeight * 2 - minCatalogHeight)
+                    let maxVolumes = max(60, geometry.size.height - dividerHeight - headerHeight * 2 - minCatalogHeight - chatPanelHeight)
                     volumesSectionHeight = min(max(60, volumesSectionHeight + delta), maxVolumes)
                 }
 
                 catalogSidebarSection
+
+                DAMAgentChatPanel(viewModel: viewModel, panelHeight: $chatPanelHeight)
             }
             .frame(maxHeight: .infinity, alignment: .top)
         }
@@ -2474,38 +2478,67 @@ struct DAMBrowserView: View {
 private struct AdvancedFiltersPopover: View {
     @Bindable var viewModel: DAMViewModel
 
+    private var hasAdvancedFilters: Bool {
+        viewModel.filterCameraMake != nil || viewModel.filterCameraModel != nil
+        || viewModel.filterCaptureFrom != nil || viewModel.filterCaptureTo != nil
+        || viewModel.filterFileSizeMin != nil || viewModel.filterFileSizeMax != nil
+        || viewModel.filterIsAvailable != nil || viewModel.filterHasGPS != nil
+        || viewModel.filterRated != nil
+    }
+
     var body: some View {
-        Form {
-            Section("Camera") {
-                TextField("Make", text: Binding(
-                    get: { viewModel.filterCameraMake ?? "" },
-                    set: { viewModel.filterCameraMake = $0.isEmpty ? nil : $0 }
-                ))
-                TextField("Model", text: Binding(
-                    get: { viewModel.filterCameraModel ?? "" },
-                    set: { viewModel.filterCameraModel = $0.isEmpty ? nil : $0 }
-                ))
+        VStack(spacing: 0) {
+            HStack {
+                Text("Advanced Filters")
+                    .font(.headline)
+                Spacer()
+                Button("Clear All") {
+                    viewModel.filterCameraMake = nil
+                    viewModel.filterCameraModel = nil
+                    viewModel.filterCaptureFrom = nil
+                    viewModel.filterCaptureTo = nil
+                    viewModel.filterFileSizeMin = nil
+                    viewModel.filterFileSizeMax = nil
+                    viewModel.filterIsAvailable = nil
+                    viewModel.filterHasGPS = nil
+                    viewModel.filterRated = nil
+                }
+                .disabled(!hasAdvancedFilters)
             }
+            .padding([.top, .horizontal])
 
-            Section("Capture date") {
-                optionalDatePicker("From", date: $viewModel.filterCaptureFrom)
-                optionalDatePicker("To", date: $viewModel.filterCaptureTo)
-            }
+            Form {
+                Section("Camera") {
+                    clearableTextField("Make", text: Binding(
+                        get: { viewModel.filterCameraMake ?? "" },
+                        set: { viewModel.filterCameraMake = $0.isEmpty ? nil : $0 }
+                    ))
+                    clearableTextField("Model", text: Binding(
+                        get: { viewModel.filterCameraModel ?? "" },
+                        set: { viewModel.filterCameraModel = $0.isEmpty ? nil : $0 }
+                    ))
+                }
 
-            Section("File size") {
-                HStack {
-                    sizeField("Min MB", value: $viewModel.filterFileSizeMin)
-                    sizeField("Max MB", value: $viewModel.filterFileSizeMax)
+                Section("Capture date") {
+                    optionalDatePicker("From", date: $viewModel.filterCaptureFrom)
+                    optionalDatePicker("To", date: $viewModel.filterCaptureTo)
+                }
+
+                Section("File size") {
+                    HStack {
+                        clearableSizeField("Min MB", value: $viewModel.filterFileSizeMin)
+                        clearableSizeField("Max MB", value: $viewModel.filterFileSizeMax)
+                    }
+                }
+
+                Section("Status") {
+                    triStatePicker("File available", value: $viewModel.filterIsAvailable)
+                    triStatePicker("Has GPS", value: $viewModel.filterHasGPS)
+                    triStatePicker("Rated", value: $viewModel.filterRated)
                 }
             }
-
-            Section("Status") {
-                triStatePicker("File available", value: $viewModel.filterIsAvailable)
-                triStatePicker("Has GPS", value: $viewModel.filterHasGPS)
-                triStatePicker("Rated", value: $viewModel.filterRated)
-            }
+            .formStyle(.grouped)
         }
-        .formStyle(.grouped)
         .frame(width: 320)
         .padding()
     }
@@ -2531,6 +2564,22 @@ private struct AdvancedFiltersPopover: View {
                   ),
                   format: .number)
         .textFieldStyle(.roundedBorder)
+    }
+
+    private func clearableTextField(_ label: String, text: Binding<String>) -> some View {
+        HStack {
+            TextField(label, text: text)
+            Button("Clear") { text.wrappedValue = "" }
+                .disabled(text.wrappedValue.isEmpty)
+        }
+    }
+
+    private func clearableSizeField(_ label: String, value: Binding<Int64?>) -> some View {
+        HStack {
+            sizeField(label, value: value)
+            Button("Clear") { value.wrappedValue = nil }
+                .disabled(value.wrappedValue == nil)
+        }
     }
 
     private func triStatePicker(_ label: String, value: Binding<Bool?>) -> some View {

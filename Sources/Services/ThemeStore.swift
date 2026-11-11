@@ -77,11 +77,50 @@ final class ThemeStore {
     /// force it, `.system` releases it back to the OS — so `.system`
     /// resolution below is correct the instant the user clicks, not whenever
     /// the window scheme eventually settles.
+    ///
+    /// `NSApp` is an implicitly-unwrapped AppKit global
+    /// (`APPKIT_EXTERN __kindof NSApplication * _Null_unspecified NSApp`), and
+    /// it is still nil while SwiftUI constructs the `App` struct:
+    /// `SwiftMaestroApp.init()` builds `ThemeStore` (and its `init` applies the
+    /// saved appearance) before `NSApplication` exists. Dereferencing it there
+    /// traps with "Unexpectedly found nil while implicitly unwrapping an
+    /// Optional value" before any window appears. So apply immediately when the
+    /// app object exists, otherwise replay the choice once it does.
     static func applyAppAppearance(_ appearance: Appearance) {
+        guard let app = NSApp else {
+            deferAppearanceUntilLaunched(appearance)
+            return
+        }
         switch appearance {
-        case .light: NSApp.appearance = NSAppearance(named: .aqua)
-        case .dark: NSApp.appearance = NSAppearance(named: .darkAqua)
-        case .system: NSApp.appearance = nil
+        case .light: app.appearance = NSAppearance(named: .aqua)
+        case .dark: app.appearance = NSAppearance(named: .darkAqua)
+        case .system: app.appearance = nil
+        }
+    }
+
+    /// The choice to replay once `NSApplication` exists. Every
+    /// `ThemeStore()` starts from the same UserDefaults, so last-write-wins is
+    /// correct here and one observer serves all instances.
+    private static var deferredAppearance: Appearance?
+    private static var launchObserver: NSObjectProtocol?
+
+    private static func deferAppearanceUntilLaunched(_ appearance: Appearance) {
+        deferredAppearance = appearance
+        guard launchObserver == nil else { return }
+        launchObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didFinishLaunchingNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                if let observer = launchObserver {
+                    NotificationCenter.default.removeObserver(observer)
+                    launchObserver = nil
+                }
+                guard let pending = deferredAppearance else { return }
+                deferredAppearance = nil
+                applyAppAppearance(pending)
+            }
         }
     }
 

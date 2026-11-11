@@ -66,6 +66,8 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     /// Overlay Builder / HTML Builder panel — overlay types, fields, and the
     /// live HTML/CSS editor (website templates included).
     case overlayBuilder
+    /// Game Studio — DOS-style text adventure authoring and player.
+    case storyGame
 
     var id: String { rawValue }
 
@@ -113,7 +115,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
              .mail, .whatsapp, .discord, .web, .browser, .scraping,
              .bluesky, .mastodon, .patreon, .facebook, .instagram, .threads, .twitter, .linkedin, .tumblr,
              .youtube, .vimeo, .dailymotion, .peertube, .tiktok, .vk,
-             .vault, .database, .dam, .blockchain, .overlayBuilder, .calendar, .reminders, .contacts, .mediaPlayer:
+             .vault, .database, .dam, .blockchain, .overlayBuilder, .storyGame, .calendar, .reminders, .contacts, .mediaPlayer:
             return true
         }
     }
@@ -169,6 +171,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .dam: return "DAM"
         case .blockchain: return "Blocky"
         case .overlayBuilder: return "SwiftWeaver"
+        case .storyGame: return "Game Studio"
         case .mediaPlayer: return "Media Player"
         case .calendar: return "Calendar"
         case .reminders: return "Reminders"
@@ -227,6 +230,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .dam: return "photo.on.rectangle.angled"
         case .blockchain: return "link.circle"
         case .overlayBuilder: return "chevron.left.forwardslash.chevron.right"
+        case .storyGame: return "gamecontroller"
         case .mediaPlayer: return "play.rectangle.on.rectangle"
         case .calendar: return "calendar"
         case .reminders: return "checklist"
@@ -239,7 +243,12 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     var toolNames: [String] {
         switch self {
         case .file:
-            return ["read_file", "write_file", "list_dir", "ocr_image", "glob_files", "grep_code", "edit_file", "multi_file_edit"]
+            return [
+                "read_file", "write_file", "list_dir", "ocr_image", "glob_files",
+                "grep_code", "edit_file", "multi_file_edit",
+                "list_xattr", "read_xattr", "write_xattr", "remove_xattr",
+                "read_finder_comment", "write_finder_comment",
+            ]
         case .documents:
             return ["document_read", "document_create", "document_info"]
         case .books:
@@ -427,6 +436,10 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
                 "weaver_html_get", "weaver_html_set", "weaver_html_template",
                 "weaver_list_templates",
             ]
+        case .storyGame:
+            return [
+                "game_studio_open", "game_studio_import", "game_studio_export_web",
+            ]
         case .calendar:
             return ["create_calendar_event", "list_calendar_events"]
         case .reminders:
@@ -464,6 +477,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .blockchain: return [.blocky]
         case .mediaPlayer: return [.mediaPlayer]
         case .overlayBuilder: return [.htmlBuilder]
+        case .storyGame: return [.storyGame]
         case .documents: return [.maestroDocs]
         case .shell: return [.terminalApp]
         case .calendar: return [.calendar]
@@ -492,7 +506,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
                 .notes, .kanban, .excalidraw, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky, .mastodon, .patreon, .facebook, .instagram, .threads, .twitter, .linkedin, .tumblr,
                 .youtube, .vimeo, .dailymotion, .peertube, .tiktok, .vk,
                 .database, .dam, .blockchain,
-                .overlayBuilder, .calendar, .reminders, .contacts,
+                .overlayBuilder, .storyGame, .calendar, .reminders, .contacts,
                 .file, .shell,
             ]
         case .project:
@@ -501,7 +515,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
                 .notes, .kanban, .excalidraw, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky, .mastodon, .patreon, .facebook, .instagram, .threads, .twitter, .linkedin, .tumblr,
                 .youtube, .vimeo, .dailymotion, .peertube, .tiktok, .vk,
                 .database, .dam, .blockchain,
-                .overlayBuilder, .calendar, .reminders, .contacts,
+                .overlayBuilder, .storyGame, .calendar, .reminders, .contacts,
             ]
         case .swiftHelper:
             // The support engineer's surface: diagnostics + repair. No

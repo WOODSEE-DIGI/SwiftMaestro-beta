@@ -1,5 +1,5 @@
 import Foundation
-import GRDB
+@preconcurrency import GRDB
 
 // MARK: - WhatsApp monitoring service
 //
@@ -288,20 +288,20 @@ final class WhatsAppService {
             var config = GRDB.Configuration()
             config.readonly = true
             let db = try DatabaseQueue(path: dbPath, configuration: config)
-            let rows = try db.read { db in
-                try Row.fetchAll(db, sql: """
+            let rawChats = try await db.read { db -> [WhatsAppChat] in
+                let rows = try Row.fetchAll(db, sql: """
                     SELECT jid, name, last_message_time FROM chats
                     ORDER BY last_message_time DESC LIMIT 300
                     """)
-            }
-            let rawChats = rows.map {
-                WhatsAppChat(
-                    jid: $0["jid"], name: $0["name"],
-                    lastMessageTime: $0["last_message_time"])
+                return rows.map {
+                    WhatsAppChat(
+                        jid: $0["jid"], name: $0["name"],
+                        lastMessageTime: $0["last_message_time"])
+                }
             }
 
             // The bridge's own GetChatName only ever checked contact.FullName
-            // (which comes from the LOCAL phone's address book sync) before
+            // (which comes from the LOCAL phone's address-book sync) before
             // falling back to the raw phone/LID number - it never checked
             // PushName (the name the OTHER person set for their own WhatsApp
             // profile, which is present for essentially every contact who's
@@ -360,31 +360,31 @@ final class WhatsAppService {
             }
             let allJIDs = Array(jids)
 
-            let placeholders = allJIDs.map { _ in "?" }.joined(separator: ", ")
-            var arguments: [DatabaseValueConvertible?] = allJIDs
-            arguments.append(limit)
-            let rows = try db.read { db in
-                try Row.fetchAll(db, sql: """
+            let loaded = try await db.read { db -> [WhatsAppMessage] in
+                let placeholders = allJIDs.map { _ in "?" }.joined(separator: ", ")
+                var arguments: [DatabaseValueConvertible?] = allJIDs
+                arguments.append(limit)
+                let rows = try Row.fetchAll(db, sql: """
                     SELECT id, chat_jid, sender, content, timestamp, is_from_me, media_type
                     FROM messages WHERE chat_jid IN (\(placeholders))
                     ORDER BY timestamp DESC LIMIT ?
                     """, arguments: StatementArguments(arguments))
+                // Normalize every row to the caller's chatJID regardless of
+                // which underlying raw chat_jid it actually came from, so the
+                // merge logic below (and the UI) treats this as one conversation.
+                // Also normalize media_type: the bridge stores "" (not NULL) for
+                // plain-text messages, while locally appended sent placeholders
+                // use nil — leaving "" as-is breaks the pending-placeholder dedup
+                // below and shows every sent text message TWICE.
+                return rows.map {
+                    let rawMediaType: String? = $0["media_type"]
+                    return WhatsAppMessage(
+                        id: $0["id"], chatJID: chatJID, sender: $0["sender"],
+                        content: $0["content"], timestamp: $0["timestamp"],
+                        isFromMe: $0["is_from_me"],
+                        mediaType: (rawMediaType?.isEmpty == false) ? rawMediaType : nil)
+                }.sorted { ($0.timestamp ?? .distantPast) < ($1.timestamp ?? .distantPast) }
             }
-            // Normalize every row to the caller's chatJID regardless of
-            // which underlying raw chat_jid it actually came from, so the
-            // merge logic below (and the UI) treats this as one conversation.
-            // Also normalize media_type: the bridge stores "" (not NULL) for
-            // plain-text messages, while locally appended sent placeholders
-            // use nil — leaving "" as-is breaks the pending-placeholder dedup
-            // below and shows every sent text message TWICE.
-            let loaded = rows.map {
-                let rawMediaType: String? = $0["media_type"]
-                return WhatsAppMessage(
-                    id: $0["id"], chatJID: chatJID, sender: $0["sender"],
-                    content: $0["content"], timestamp: $0["timestamp"],
-                    isFromMe: $0["is_from_me"],
-                    mediaType: (rawMediaType?.isEmpty == false) ? rawMediaType : nil)
-            }.sorted { ($0.timestamp ?? .distantPast) < ($1.timestamp ?? .distantPast) }
 
             // The bridge's `/api/send` handler persists the message it just
             // sent into this same database (see sendWhatsAppMessage in the
@@ -425,18 +425,18 @@ final class WhatsAppService {
             var config = GRDB.Configuration()
             config.readonly = true
             let db = try DatabaseQueue(path: dbPath, configuration: config)
-            let rows = try db.read { db in
-                try Row.fetchAll(db, sql: "SELECT lid, pn FROM whatsmeow_lid_map")
+            return try await db.read { db -> [String: String] in
+                let rows = try Row.fetchAll(db, sql: "SELECT lid, pn FROM whatsmeow_lid_map")
+                var map: [String: String] = [:]
+                for row in rows {
+                    guard let lid: String = row["lid"], let pn: String = row["pn"] else { continue }
+                    map[lid] = pn
+                    map[pn] = lid
+                    map["\(lid)@lid"] = "\(pn)@s.whatsapp.net"
+                    map["\(pn)@s.whatsapp.net"] = "\(lid)@lid"
+                }
+                return map
             }
-            var map: [String: String] = [:]
-            for row in rows {
-                guard let lid: String = row["lid"], let pn: String = row["pn"] else { continue }
-                map[lid] = pn
-                map[pn] = lid
-                map["\(lid)@lid"] = "\(pn)@s.whatsapp.net"
-                map["\(pn)@s.whatsapp.net"] = "\(lid)@lid"
-            }
-            return map
         } catch {
             return [:]
         }
@@ -508,25 +508,25 @@ final class WhatsAppService {
             var config = GRDB.Configuration()
             config.readonly = true
             let db = try DatabaseQueue(path: dbPath, configuration: config)
-            let rows = try db.read { db in
-                try Row.fetchAll(db, sql: """
+            return try await db.read { db -> [String: String] in
+                let rows = try Row.fetchAll(db, sql: """
                     SELECT their_jid, first_name, full_name, push_name, business_name
                     FROM whatsmeow_contacts
                     """)
-            }
-            var names: [String: String] = [:]
-            for row in rows {
-                guard let jid: String = row["their_jid"] else { continue }
-                let candidates: [String?] = [
-                    row["full_name"], row["first_name"], row["push_name"], row["business_name"],
-                ]
-                guard let resolved = candidates.compactMap({ $0 }).first(where: { !$0.isEmpty }) else { continue }
-                names[jid] = resolved
-                if let atIndex = jid.firstIndex(of: "@") {
-                    names[String(jid[jid.startIndex..<atIndex])] = resolved
+                var names: [String: String] = [:]
+                for row in rows {
+                    guard let jid: String = row["their_jid"] else { continue }
+                    let candidates: [String?] = [
+                        row["full_name"], row["first_name"], row["push_name"], row["business_name"],
+                    ]
+                    guard let resolved = candidates.compactMap({ $0 }).first(where: { !$0.isEmpty }) else { continue }
+                    names[jid] = resolved
+                    if let atIndex = jid.firstIndex(of: "@") {
+                        names[String(jid[jid.startIndex..<atIndex])] = resolved
+                    }
                 }
+                return names
             }
-            return names
         } catch {
             return [:]
         }

@@ -352,7 +352,9 @@ final class DAMViewModel {
         do {
             if let collectionID = selectedCollectionID {
                 allAssets = try await fetchCollectionAssets(collectionID: collectionID)
-            } else if let folder = selectedFolder {
+            } else {
+                let folder = selectedFolder
+                let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
                 let rating = minimumRating
                 let extensions = filterExtensions
                 let tagColor = filterTagColor
@@ -375,22 +377,36 @@ final class DAMViewModel {
                 let rated = filterRated
                 let sort = sortOrder
                 allAssets = try await Task.detached(priority: .userInitiated) { [database] in
-                    try database.assets(folder: folder, minRating: rating, sort: sort,
-                                        limit: Int.max, offset: 0,
-                                        tagColor: tagColor, fileType: fileType,
-                                        tagged: tagged, flag: flag,
-                                        extensions: extensions,
-                                        hasAICaption: hasAICaption, hasAIKeywords: hasAIKeywords,
-                                        hasOCR: hasOCR, hasUserKeywords: hasUserKeywords,
-                                        hasXattr: hasXattr,
-                                        cameraMake: cameraMake, cameraModel: cameraModel,
-                                        captureFrom: captureFrom, captureTo: captureTo,
-                                        fileSizeMin: sizeMin, fileSizeMax: sizeMax,
-                                        isAvailable: isAvailable, hasGPS: hasGPS,
-                                        rated: rated)
+                    if query.isEmpty {
+                        return try database.assets(folder: folder, minRating: rating, sort: sort,
+                                                   limit: Int.max, offset: 0,
+                                                   tagColor: tagColor, fileType: fileType,
+                                                   tagged: tagged, flag: flag,
+                                                   extensions: extensions,
+                                                   hasAICaption: hasAICaption, hasAIKeywords: hasAIKeywords,
+                                                   hasOCR: hasOCR, hasUserKeywords: hasUserKeywords,
+                                                   hasXattr: hasXattr,
+                                                   cameraMake: cameraMake, cameraModel: cameraModel,
+                                                   captureFrom: captureFrom, captureTo: captureTo,
+                                                   fileSizeMin: sizeMin, fileSizeMax: sizeMax,
+                                                   isAvailable: isAvailable, hasGPS: hasGPS,
+                                                   rated: rated)
+                    } else {
+                        return try database.searchAssets(matching: query, folder: folder, minRating: rating,
+                                                         tagColor: tagColor, fileType: fileType,
+                                                         tagged: tagged, flag: flag,
+                                                         extensions: extensions,
+                                                         hasAICaption: hasAICaption, hasAIKeywords: hasAIKeywords,
+                                                         hasOCR: hasOCR, hasUserKeywords: hasUserKeywords,
+                                                         hasXattr: hasXattr,
+                                                         cameraMake: cameraMake, cameraModel: cameraModel,
+                                                         captureFrom: captureFrom, captureTo: captureTo,
+                                                         fileSizeMin: sizeMin, fileSizeMax: sizeMax,
+                                                         isAvailable: isAvailable, hasGPS: hasGPS,
+                                                         rated: rated,
+                                                         limit: Int.max, offset: 0)
+                    }
                 }.value
-            } else {
-                allAssets = assets
             }
         } catch {
             return
@@ -703,6 +719,9 @@ final class DAMViewModel {
     }
 
     private let pageSize = 500
+    /// Maximum number of SQLite host parameters in a single IN-clause query.
+    /// Kept well below SQLite's default 999-variable limit.
+    private let sqlBatchSize = 500
     private var canLoadMore = true
     private var searchTask: Task<Void, Never>?
     private var importTask: Task<Int, any Error>?
@@ -2034,9 +2053,11 @@ final class DAMViewModel {
     func setRating(_ rating: Int, for ids: Set<DAMAsset.ID>) async {
         let int64IDs = ids.compactMap { $0 }
         guard !int64IDs.isEmpty else { return }
+        let toUpdate = await assets(for: ids)
+        guard !toUpdate.isEmpty else { return }
         do {
             try await database.dbQueue.write { db in
-                for var asset in try DAMAsset.fetchAll(db, keys: int64IDs) {
+                for var asset in toUpdate {
                     guard let assetId = asset.id else { continue }
                     let oldRating = asset.rating
                     guard oldRating != rating else { continue }
@@ -2063,9 +2084,11 @@ final class DAMViewModel {
     func setFlag(_ flag: DAMFlag, for ids: Set<DAMAsset.ID>) async {
         let int64IDs = ids.compactMap { $0 }
         guard !int64IDs.isEmpty else { return }
+        let toUpdate = await assets(for: ids)
+        guard !toUpdate.isEmpty else { return }
         do {
             try await database.dbQueue.write { db in
-                for var asset in try DAMAsset.fetchAll(db, keys: int64IDs) {
+                for var asset in toUpdate {
                     guard let assetId = asset.id else { continue }
                     let oldFlag = asset.flag
                     guard oldFlag != flag else { continue }
@@ -2092,10 +2115,9 @@ final class DAMViewModel {
     func deleteAssets(ids: Set<DAMAsset.ID>) async {
         let int64IDs = ids.compactMap { $0 }
         guard !int64IDs.isEmpty else { return }
+        let toDelete = await assets(for: ids)
+        guard !toDelete.isEmpty else { return }
         do {
-            let toDelete = try await database.dbQueue.read { db in
-                try DAMAsset.fetchAll(db, keys: int64IDs)
-            }
             var urlsToTrash: [URL] = []
             for asset in toDelete {
                 let url = URL(fileURLWithPath: asset.path)
@@ -2121,17 +2143,22 @@ final class DAMViewModel {
         guard !int64IDs.isEmpty else { return }
         do {
             try await database.dbQueue.write { db in
-                for id in int64IDs {
-                    if let asset = try DAMAsset.fetchOne(db, key: id) {
+                for start in stride(from: 0, to: int64IDs.count, by: sqlBatchSize) {
+                    let end = min(start + sqlBatchSize, int64IDs.count)
+                    let chunk = Array(int64IDs[start..<end])
+                    let chunkAssets = try DAMAsset.fetchAll(db, keys: chunk)
+                    for asset in chunkAssets {
+                        guard let assetId = asset.id else { continue }
                         try database.recordAudit(
-                            db, assetId: id, field: "removed",
+                            db, assetId: assetId, field: "removed",
                             oldValue: asset.path, newValue: "",
                             source: "user")
                     }
+                    let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+                    try db.execute(
+                        sql: "DELETE FROM asset WHERE id IN (\(placeholders))",
+                        arguments: StatementArguments(chunk))
                 }
-                try db.execute(
-                    sql: "DELETE FROM asset WHERE id IN \(int64IDs.map { _ in "?" }.joined(separator: ","))",
-                    arguments: StatementArguments(int64IDs))
             }
             selection.subtract(int64IDs)
             await reload()
@@ -2147,10 +2174,9 @@ final class DAMViewModel {
     func moveAssets(ids: Set<DAMAsset.ID>, to folderURL: URL) async {
         let int64IDs = ids.compactMap { $0 }
         guard !int64IDs.isEmpty else { return }
+        let toMove = await assets(for: ids)
+        guard !toMove.isEmpty else { return }
         do {
-            let toMove = try await database.dbQueue.read { db in
-                try DAMAsset.fetchAll(db, keys: int64IDs)
-            }
             let fm = FileManager.default
             var moves: [(assetId: Int64, source: URL, dest: URL)] = []
             for asset in toMove {
@@ -2275,9 +2301,11 @@ final class DAMViewModel {
             errorMessage = "Enter at least one keyword (comma-separated)."
             return
         }
+        let toUpdate = await assets(for: ids)
+        guard !toUpdate.isEmpty else { return }
         do {
             try await database.dbQueue.write { db in
-                for var asset in try DAMAsset.fetchAll(db, keys: int64IDs) {
+                for var asset in toUpdate {
                     guard let assetId = asset.id else { continue }
                     let oldValue = asset.userKeywords ?? ""
                     let existing = oldValue.split(separator: ",")

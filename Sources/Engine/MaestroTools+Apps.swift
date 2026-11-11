@@ -70,21 +70,25 @@ extension MaestroTools {
                 handler: { call in await readNumbersTable(call) }),
             ToolDefinition(name: "write_numbers_cell", spec: appsToolSpecs[24], category: ToolCategory.numbers.rawValue,
                 handler: { call in await writeNumbersCell(call) }),
-            ToolDefinition(name: "export_numbers_document", spec: appsToolSpecs[25], category: ToolCategory.numbers.rawValue,
+            ToolDefinition(name: "write_numbers_rows", spec: appsToolSpecs[25], category: ToolCategory.numbers.rawValue,
+                handler: { call in await writeNumbersRows(call) }),
+            ToolDefinition(name: "clear_numbers_table", spec: appsToolSpecs[26], category: ToolCategory.numbers.rawValue,
+                handler: { call in await clearNumbersTable(call) }),
+            ToolDefinition(name: "export_numbers_document", spec: appsToolSpecs[27], category: ToolCategory.numbers.rawValue,
                 handler: { call in await exportNumbersDocument(call) }),
-            ToolDefinition(name: "excalidraw_list_elements", spec: appsToolSpecs[26], category: ToolCategory.excalidraw.rawValue,
+            ToolDefinition(name: "excalidraw_list_elements", spec: appsToolSpecs[28], category: ToolCategory.excalidraw.rawValue,
                 handler: { call in await whiteboardListElements(call) }),
-            ToolDefinition(name: "excalidraw_add_shape", spec: appsToolSpecs[27], category: ToolCategory.excalidraw.rawValue,
+            ToolDefinition(name: "excalidraw_add_shape", spec: appsToolSpecs[29], category: ToolCategory.excalidraw.rawValue,
                 handler: { call in await whiteboardAddShape(call) }),
-            ToolDefinition(name: "excalidraw_add_text", spec: appsToolSpecs[28], category: ToolCategory.excalidraw.rawValue,
+            ToolDefinition(name: "excalidraw_add_text", spec: appsToolSpecs[30], category: ToolCategory.excalidraw.rawValue,
                 handler: { call in await whiteboardAddText(call) }),
-            ToolDefinition(name: "excalidraw_connect", spec: appsToolSpecs[29], category: ToolCategory.excalidraw.rawValue,
+            ToolDefinition(name: "excalidraw_connect", spec: appsToolSpecs[31], category: ToolCategory.excalidraw.rawValue,
                 handler: { call in await whiteboardConnect(call) }),
-            ToolDefinition(name: "excalidraw_clear", spec: appsToolSpecs[30], category: ToolCategory.excalidraw.rawValue,
+            ToolDefinition(name: "excalidraw_clear", spec: appsToolSpecs[32], category: ToolCategory.excalidraw.rawValue,
                 handler: { call in await whiteboardClear(call) }),
-            ToolDefinition(name: "excalidraw_text_to_diagram", spec: appsToolSpecs[31], category: ToolCategory.excalidraw.rawValue,
+            ToolDefinition(name: "excalidraw_text_to_diagram", spec: appsToolSpecs[33], category: ToolCategory.excalidraw.rawValue,
                 handler: { call in await excalidrawTextToDiagram(call) }),
-            ToolDefinition(name: "excalidraw_wireframe_to_code", spec: appsToolSpecs[32], category: ToolCategory.excalidraw.rawValue,
+            ToolDefinition(name: "excalidraw_wireframe_to_code", spec: appsToolSpecs[34], category: ToolCategory.excalidraw.rawValue,
                 handler: { call in await excalidrawWireframeToCode(call) }),
         ])
     }
@@ -248,7 +252,8 @@ extension MaestroTools {
                 ], required: ["document", "sheet", "table"]),
             rawSpec("write_numbers_cell",
                 "Write a single cell's value in a table. Values that look like a plain number "
-                + "are written as numbers; everything else is written as text.",
+                + "are written as numbers; everything else is written as text. Prefer write_numbers_rows "
+                + "when writing more than one cell.",
                 properties: [
                     "document": ["type": "string", "description": "Document id or name."],
                     "sheet": ["type": "string", "description": "Sheet name."],
@@ -256,6 +261,35 @@ extension MaestroTools {
                     "cell": ["type": "string", "description": "A1-style cell reference, e.g. 'B2'."],
                     "value": ["type": "string", "description": "Value to write."],
                 ], required: ["document", "sheet", "table", "cell", "value"]),
+            rawSpec("write_numbers_rows",
+                "Write many rows to a Numbers table in a single call. Pass the data as a 2-D "
+                + "array of strings (rows, then columns). Values that look like plain numbers are "
+                + "written as numbers; everything else is written as text. The start_cell is the "
+                + "top-left cell of the block to write (e.g. 'A2' to leave row 1 headers intact). "
+                + "Use this after reading files and summarizing their contents to populate the "
+                + "user's spreadsheet in one shot instead of hundreds of single-cell writes.",
+                properties: [
+                    "document": ["type": "string", "description": "Document id or name."],
+                    "sheet": ["type": "string", "description": "Sheet name."],
+                    "table": ["type": "string", "description": "Table name."],
+                    "start_cell": ["type": "string", "description": "A1-style top-left cell, e.g. 'A2'. Defaults to A1."],
+                    "rows": [
+                        "type": "array",
+                        "description": "Array of rows, each row an array of string values.",
+                        "items": [
+                            "type": "array",
+                            "items": ["type": "string"] as [String: any Sendable],
+                        ] as [String: any Sendable],
+                    ] as [String: any Sendable],
+                ], required: ["document", "sheet", "table", "rows"]),
+            rawSpec("clear_numbers_table",
+                "Clear all body cells in a Numbers table, preserving header rows. Useful before "
+                + "writing new data with write_numbers_rows so old rows do not remain below the new data.",
+                properties: [
+                    "document": ["type": "string", "description": "Document id or name."],
+                    "sheet": ["type": "string", "description": "Sheet name."],
+                    "table": ["type": "string", "description": "Table name."],
+                ], required: ["document", "sheet", "table"]),
             rawSpec("export_numbers_document",
                 "Export a Numbers document to CSV, PDF, or Excel (.xlsx) at a specific path.",
                 properties: [
@@ -1579,6 +1613,11 @@ extension MaestroTools {
         let document: String?; let sheet: String?; let table: String?
         let cell: String?; let value: String?
     }
+    private struct NumbersWriteRowsArgs: Codable {
+        let document: String?; let sheet: String?; let table: String?
+        let start_cell: String?
+        let rows: [[String]]?
+    }
     private struct NumbersExportArgs: Codable { let document: String?; let path: String?; let format: String? }
 
     /// Fuzzy document lookup: exact id, then case-insensitive exact name,
@@ -1711,6 +1750,56 @@ extension MaestroTools {
             try await sharedNumbersService.writeCell(
                 documentID: doc.id, sheetName: sheetName, tableName: tableName, cell: cell, value: value)
             return jsonString(["status": "written", "document": doc.name, "cell": cell, "value": value])
+        } catch {
+            return errorJSON(error.localizedDescription)
+        }
+    }
+
+    static func writeNumbersRows(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: NumbersWriteRowsArgs.self),
+              let docKey = args.document?.trimmingCharacters(in: .whitespacesAndNewlines), !docKey.isEmpty,
+              let sheetName = args.sheet?.trimmingCharacters(in: .whitespacesAndNewlines), !sheetName.isEmpty,
+              let tableName = args.table?.trimmingCharacters(in: .whitespacesAndNewlines), !tableName.isEmpty,
+              let rows = args.rows, !rows.isEmpty
+        else { return errorJSON("write_numbers_rows requires 'document', 'sheet', 'table', and 'rows'") }
+        let startCell = args.start_cell?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() ?? "A1"
+        guard startCell.range(of: #"^[A-Z]+[0-9]+$"#, options: .regularExpression) != nil else {
+            return errorJSON("start_cell must be an A1-style reference like 'A2'")
+        }
+        guard let doc = await resolveNumbersDocument(docKey) else {
+            return errorJSON("no Numbers document matching \"\(docKey)\".")
+        }
+        do {
+            let result = try await sharedNumbersService.writeRows(
+                documentID: doc.id, sheetName: sheetName, tableName: tableName,
+                startCell: startCell, rows: rows)
+            return jsonString([
+                "status": result.status,
+                "document": doc.name,
+                "sheet": sheetName,
+                "table": tableName,
+                "startCell": result.startCell,
+                "writtenRows": result.writtenRows,
+                "writtenColumns": result.writtenColumns,
+            ])
+        } catch {
+            return errorJSON(error.localizedDescription)
+        }
+    }
+
+    static func clearNumbersTable(_ call: ToolCall) async -> String {
+        guard let args = decodeArgs(call, as: NumbersTableArgs.self),
+              let docKey = args.document?.trimmingCharacters(in: .whitespacesAndNewlines), !docKey.isEmpty,
+              let sheetName = args.sheet?.trimmingCharacters(in: .whitespacesAndNewlines), !sheetName.isEmpty,
+              let tableName = args.table?.trimmingCharacters(in: .whitespacesAndNewlines), !tableName.isEmpty
+        else { return errorJSON("clear_numbers_table requires 'document', 'sheet', and 'table'") }
+        guard let doc = await resolveNumbersDocument(docKey) else {
+            return errorJSON("no Numbers document matching \"\(docKey)\".")
+        }
+        do {
+            try await sharedNumbersService.clearTable(
+                documentID: doc.id, sheetName: sheetName, tableName: tableName)
+            return jsonString(["status": "cleared", "document": doc.name, "sheet": sheetName, "table": tableName])
         } catch {
             return errorJSON(error.localizedDescription)
         }

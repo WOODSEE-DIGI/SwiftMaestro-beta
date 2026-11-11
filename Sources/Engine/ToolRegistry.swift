@@ -22,6 +22,7 @@ extension MaestroTools {
         await registerReleaseTools()
         await registerMemoryTools()
         await registerFileTools()
+        await registerXAttrTools()
         await registerDocumentTools()
         await registerBooksTools()
         await registerCodingTools()
@@ -57,6 +58,7 @@ extension MaestroTools {
         await registerBlockyTools()
         await registerResearchTools()
         await registerSwiftWeaverTools()
+        await registerStoryGameTools()
 
         // Tool providers — plugins that register their own tools.
         await registerToolProvider(ObsidianToolProvider())

@@ -663,7 +663,7 @@ enum MaestroTools {
                     + "IMPORTANT: 'MaestroDAM' is the photo/asset manager (alias 'dam'); "
                     + "'MaestroDB' is the database (alias 'database') — do not confuse them.",
                 properties: [
-                    "panel": ["type": "string", "description": "Panel name, alias, or display name (e.g. 'database', 'dam', 'MaestroDAM', 'SwiftBrowser') or an agent name."],
+                    "panel": ["type": "string", "description": "Panel name, alias, or display name (e.g. 'database', 'dam', 'MaestroDAM', 'SwiftBrowser', 'gameStudio', 'Game Studio') or an agent name."],
                     "zone": ["type": "string", "description": "Where to dock: 'right' (default, side-by-side), 'bottom' (below existing panels), or 'float'. Omit for default."],
                 ],
                 required: ["panel"]
@@ -1665,6 +1665,7 @@ enum MaestroTools {
         case "backup", "backups": return .backup
         case "pomodoro", "timer", "focus timer": return .pomodoro
         case "reader", "rss", "rss reader", "feeds", "feed reader", "inoreader": return .rssReader
+        case "game studio", "gamestudio", "story game", "storygame", "games": return .storyGame
         default:
             // Display-name pass: match the app names users actually SEE (and
             // therefore the names they say to the agent — "MaestroDAM",
@@ -1716,6 +1717,7 @@ enum MaestroTools {
         (.pomodoro, "pomodoro"),
         (.rssReader, "reader"),
         (.publish, "publish"),
+        (.storyGame, "gamestudio"),
         (.busMonitor, "busmonitor"),
         (.audioControl, "audiocontrol"),
         (.streamIngest, "streamingest"),
@@ -1733,7 +1735,7 @@ enum MaestroTools {
         + "browser (SwiftBrowser), voiceNotes (Voice Notes), htmlBuilder, backup, "
         + "kanban, numbers, maps, photos, stocks, mail, whatsapp, discord, notesMD, "
         + "appleNotes, terminal, calendar, reminders, contacts, bus, audio, "
-        + "agents, apps, cameras, scenes, mixer, broadcast, ndi, publish — or an agent name."
+        + "agents, apps, cameras, scenes, mixer, broadcast, ndi, publish, gameStudio — or an agent name."
 
     private static func openPanelTool(_ call: ToolCall) async -> String {
         guard let args = decodeArgs(call, as: OpenPanelArgs.self),

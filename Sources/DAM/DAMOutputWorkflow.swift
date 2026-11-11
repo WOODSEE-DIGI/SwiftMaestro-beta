@@ -365,6 +365,8 @@ struct OutputWorkspaceView: View {
                     }
                 }
                 .padding(8)
+                Divider()
+                DAMAgentChatPanel(viewModel: viewModel)
             }
             .frame(minWidth: 190, idealWidth: 220, maxWidth: 260)
 
@@ -1085,6 +1087,9 @@ struct EditWorkspaceView: View {
             }
             .listStyle(.plain)
             .environment(\.defaultMinListRowHeight, 28)
+
+            Divider()
+            DAMAgentChatPanel(viewModel: viewModel)
         }
         .frame(minWidth: 170, idealWidth: 200, maxWidth: 240)
     }

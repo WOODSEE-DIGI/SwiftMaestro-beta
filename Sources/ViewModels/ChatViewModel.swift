@@ -195,16 +195,24 @@ class ChatViewModel: ObservableObject {
         send(engine: engine, catalog: catalog, model: model)
     }
 
-    func send(engine: MLXInferenceEngine, catalog: ModelCatalog, model: MaestroModel?) {
+    func send(
+        engine: MLXInferenceEngine,
+        catalog: ModelCatalog,
+        model: MaestroModel?,
+        promptOverride: String? = nil
+    ) {
         guard !isStreaming else { return }
         // Retain engine reference for memory pressure compaction.
         lastEngine = engine
-        // Merge typed images with any local image paths found in the text
-        // (e.g. a pasted screenshot path), stripping the path from the prompt.
-        let (cleanedText, pathImages, extractedPaths) = Self.extractImages(from: inputText)
-        var images = pendingImages
+        // Use an externally-provided prompt (e.g. from MaestroDAM) when present,
+        // otherwise read from the composer's inputText. When overriding, do not
+        // consume staged images/paths from the chat input — they belong to the
+        // user's draft, not the external caller.
+        let sourceText = promptOverride ?? inputText
+        let (cleanedText, pathImages, extractedPaths) = Self.extractImages(from: sourceText)
+        var images = promptOverride == nil ? pendingImages : []
         images.append(contentsOf: pathImages)
-        var allPaths = pendingImagePaths
+        var allPaths = promptOverride == nil ? pendingImagePaths : []
         allPaths.append(contentsOf: extractedPaths)
         let prompt = cleanedText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty || !images.isEmpty else { return }
@@ -214,9 +222,11 @@ class ChatViewModel: ObservableObject {
         }
         currentModelDisplayName = model.displayName
 
-        inputText = ""
-        pendingImages = []
-        pendingImagePaths = []
+        if promptOverride == nil {
+            inputText = ""
+            pendingImages = []
+            pendingImagePaths = []
+        }
         errorMessage = nil
         let userText = prompt.isEmpty ? " " : prompt
         let isCompactionRequest = Self.isCompactionCommand(userText)
@@ -1097,6 +1107,15 @@ class ChatViewModel: ObservableObject {
 
         NOTES: list_notes/read_note/write_note/search_notes for Notes.md vault. \
         obsidian_* tools for Obsidian vault. create_note/list_apple_notes for Apple Notes.
+
+        NUMBERS SPREADSHEETS:
+        - When the user asks you to populate a Numbers spreadsheet, use the Numbers tools \
+        (list_numbers_documents, open_numbers_document, read_numbers_table, write_numbers_rows, \
+        clear_numbers_table). Do NOT store spreadsheet data in memory, Notes.md, Kanban, or Apple Notes.
+        - Prepare the extracted/summarized data as a rows array and write it with write_numbers_rows \
+        in one call. Use start_cell='A2' to preserve a header row the user already set up.
+        - Clear stale data first with clear_numbers_table if the user wants the table refreshed.
+        - For a single cell, use write_numbers_cell.
         """
     }
 
@@ -1696,6 +1715,17 @@ class ChatViewModel: ObservableObject {
                     you an exact file path — read that file directly with read_file.
                     - list_workspace: See all projects and agents if unsure.
 
+                    GAME STUDIO TOOLS — DOS-STYLE TEXT ADVENTURE AUTHORING:
+                    Game Studio is a SwiftMaestro workspace panel for authoring and playing \
+                    story games. The user can import legacy scenes.json files, edit scenes, \
+                    characters and locations, play the game with a retro CRT UI, and export a \
+                    self-contained web build.
+                    - open_panel(panel: 'gameStudio') or game_studio_open: Open Game Studio.
+                    - game_studio_import(path): Import a legacy scenes.json. 'path' can be the \
+                    file itself or any parent/repo folder (searches up to 5 levels deep).
+                    - game_studio_export_web(outputDirectory): Export the loaded project to \
+                    index.html + game.json.
+
                     SWIFTBROWSER PLUGIN TOOLS — USE THESE FOR CUSTOM BROWSER FEATURES:
                     The user can ask you to add behavior to SwiftBrowser (toolbar buttons, \
                     content scripts, page actions, download helpers, sidebar panels, etc.). \
@@ -1730,6 +1760,11 @@ class ChatViewModel: ObservableObject {
                     user says "ai context" or "context".
 
                     DIRECT SWIFTHELPER COMMAND:
+                    - Use ask_swiftHelper ONLY when the user explicitly asks you to diagnose \
+                    or fix SwiftMaestro itself, run a shell command, or change a system/app \
+                    setting. Do NOT call ask_swiftHelper for general chat, explanations, \
+                    questions about features/panels/files, or when the user just says \
+                    something. Answer those directly yourself.
                     - If the user explicitly says "run ...", "update ...", "install ...", \
                     "fix ...", "diagnose ...", "check why ..." AND the task is about \
                     SwiftMaestro itself or needs shell access / system changes, call \

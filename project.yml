@@ -3,7 +3,7 @@ targetBundleIdentifierPrefix: com.woodseedigi.swiftmaestro
 options:
   bundleIdPrefix: com.woodseedigi
   deploymentTarget: macOS 14.0
-  xcodeVersion: "16"
+  xcodeVersion: "27.2"
   # English is the development language; Japanese is the first localization.
   # Localizable.xcstrings lives at Sources/Resources/ and SwiftUI string
   # literals are extracted into it at build time (SWIFT_EMIT_LOC_STRINGS).

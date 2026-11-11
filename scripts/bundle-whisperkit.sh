@@ -17,8 +17,18 @@
 set -euo pipefail
 
 APP_NAME="SwiftMaestro"
-CONFIG="${CONFIG:-Release}"
-BUNDLE="${SRCROOT:-$(pwd)}/build/$CONFIG/$APP_NAME.app"
+CONFIG="${CONFIGURATION:-${CONFIG:-Release}}"
+
+# Resolve the app bundle the same way the sibling bundle-*.sh phases do.
+# Under Xcode the product lives in BUILT_PRODUCTS_DIR — DerivedData/Build/
+# Products/<Config> for an IDE or plain `xcodebuild` build, and ./build/<Config>
+# when driven by build.sh (which sets SYMROOT). Only fall back to
+# <repo>/build/<Config> when this script is run by hand.
+if [ -n "${BUILT_PRODUCTS_DIR:-}" ]; then
+    BUNDLE="${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME:-$APP_NAME}.app"
+else
+    BUNDLE="${SRCROOT:-$(pwd)}/build/$CONFIG/$APP_NAME.app"
+fi
 RESOURCES="$BUNDLE/Contents/Resources"
 DST_BASE="$RESOURCES/models/whisperkit"
 
@@ -35,9 +45,21 @@ MODELS_TO_BUNDLE=(
 
 echo "=== Bundle WhisperKit models ==="
 
+# Debug builds don't need the ~2.9 GB model tree inside the app bundle: the
+# runtime falls back to the user's
+# ~/Library/Application Support/SwiftMaestro/WhisperKit/models copy (see
+# BundledModelService), and every packaging script stages the model itself.
+# Force it with BUNDLE_WHISPERKIT=1 if you are testing the first-run import.
+if [ "$CONFIG" = "Debug" ] && [ "${BUNDLE_WHISPERKIT:-0}" != "1" ]; then
+    echo "  ⏭  Debug build — skipping (set BUNDLE_WHISPERKIT=1 to force)"
+    exit 0
+fi
+
+# Never fail the build over optional assets: without the model, dictation
+# simply downloads it on first use.
 if [ ! -d "$BUNDLE" ]; then
-    echo "App bundle not found at $BUNDLE — run build.sh first."
-    exit 1
+    echo "  ⚠ App bundle not found at $BUNDLE — skipping"
+    exit 0
 fi
 
 # Find the WhisperKit source directory.

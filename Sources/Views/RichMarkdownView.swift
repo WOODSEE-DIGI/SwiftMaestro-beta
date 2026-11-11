@@ -379,7 +379,11 @@ enum MarkdownBlockParser {
             quote.removeAll()
         }
 
-        let lines = text.components(separatedBy: .newlines)
+        // Some models mash list items onto a single line with no whitespace
+        // between the markers (e.g. "2. Annabelle3. Ben4. Blaise..."). Split
+        // those apart so each item becomes its own line and renders correctly.
+        let normalized = splitConcatenatedListItems(text)
+        let lines = normalized.components(separatedBy: .newlines)
         var i = 0
         while i < lines.count {
             let rawLine = lines[i]
@@ -449,6 +453,37 @@ enum MarkdownBlockParser {
         }
         flushParagraph(); flushQuote()
         return blocks
+    }
+
+    /// Splits list items that have been concatenated onto a single line with
+    /// no whitespace between markers (e.g. "2. Annabelle3. Ben4. Blaise...").
+    /// Inserts newlines before each item-boundary so the main parser sees them
+    /// as separate lines. Only splits when a marker is preceded by non-
+    /// whitespace text, so already-clean lists are untouched.
+    private static func splitConcatenatedListItems(_ text: String) -> String {
+        // Numbered markers: digit(s) followed by '.' or ')' and a space.
+        // The preceding character must not be a digit, otherwise "10." gets
+        // split into "1" and "0.".
+        let numberedPattern = #"(?<=[^\s\d])(?=\s*\d+[.)]\s)"#
+        // Bullet markers: -, *, + preceded by non-whitespace and followed by a space.
+        let bulletPattern = #"(?<=[^\s])(?=\s*[-*+]\s)"#
+
+        guard let numberedRegex = try? NSRegularExpression(pattern: numberedPattern),
+              let bulletRegex = try? NSRegularExpression(pattern: bulletPattern) else {
+            return text
+        }
+
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        var result = text
+        for match in numberedRegex.matches(in: text, options: [], range: range).reversed() {
+            guard let matchRange = Range(match.range, in: result) else { continue }
+            result.replaceSubrange(matchRange, with: "\n")
+        }
+        for match in bulletRegex.matches(in: result, options: [], range: NSRange(result.startIndex..<result.endIndex, in: result)).reversed() {
+            guard let matchRange = Range(match.range, in: result) else { continue }
+            result.replaceSubrange(matchRange, with: "\n")
+        }
+        return result
     }
 
     private static func parseHeading(_ line: String) -> (Int, String)? {

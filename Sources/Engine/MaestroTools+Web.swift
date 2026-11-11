@@ -57,7 +57,12 @@ extension MaestroTools {
                 + "'company', 'top rated' — they degrade quality. "
                 + "- Include location if relevant: 'plumber Melbourne CBD'. "
                 + "- MAX 2 searches total. After 2, STOP and use what you got. "
-                + "If results are poor, say so honestly instead of making things up.",
+                + "FAILURE HANDLING: If web_search returns no results, unrelated results, or a "
+                + "message saying the search backend is unavailable, do NOT give up and do NOT "
+                + "tell the user to check a website themselves. Immediately use fetch_url on a "
+                + "known-good URL (e.g. bom.gov.au for Australian weather, nhc.noaa.gov for "
+                + "hurricanes, official sources) or use browser_open + browser_read to navigate "
+                + "to the relevant site and read it directly.",
                 properties: [
                     "query": ["type": "string", "description": "Search query string"],
                     "max_results": ["type": "integer", "description": "Max results to return (default 5, max 10)"],
@@ -136,13 +141,27 @@ extension MaestroTools {
         // --- Stage 1: Firecrawl search API (primary — clean structured results) ---
         var results: [SearchResult] = []
         let firecrawl = FirecrawlService.shared
-        if await firecrawl.reachableCached() {
+        let firecrawlReachable = await firecrawl.reachableCached()
+        var firecrawlFailed = false
+        if firecrawlReachable {
             if let fcResults = try? await firecrawl.search(query: query, limit: maxResults) {
                 results = fcResults.map { SearchResult(title: $0.title, url: $0.url, snippet: $0.snippet) }
             }
+            if results.isEmpty { firecrawlFailed = true }
+        } else {
+            firecrawlFailed = true
         }
 
-        // --- Stage 2: Bing HTML fallback (when Firecrawl is down or returns nothing) ---
+        // --- Stage 2: Brave Search API fallback (reliable, key-backed) ---
+        if results.isEmpty {
+            let braveResults = await braveSearch(query: query, limit: maxResults)
+            if !braveResults.isEmpty {
+                results = braveResults
+            }
+        }
+
+        // --- Stage 3: Bing HTML fallback (last resort, no key, often garbage) ---
+        var bingFallbackWorked = false
         if results.isEmpty {
             var bingBlocked = false
             if let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
@@ -163,17 +182,32 @@ extension MaestroTools {
                         || lower.contains("unusual traffic") || lower.contains("verify you are human") {
                         bingBlocked = true
                     } else {
-                        results = parseBingResults(html, maxResults: maxResults)
+                        let parsed = parseBingResults(html, maxResults: maxResults)
+                        // Bing's HTML can contain ads/redirects unrelated to the query.
+                        // Keep only results whose title or snippet mentions at least one
+                        // query term, so a random QUT education page doesn't satisfy a
+                        // weather query.
+                        let queryTerms = query.lowercased()
+                            .components(separatedBy: .whitespacesAndNewlines)
+                            .filter { !$0.isEmpty }
+                        results = parsed.filter { r in
+                            let haystack = (r.title + " " + r.snippet).lowercased()
+                            return queryTerms.contains { haystack.contains($0) }
+                        }
+                        bingFallbackWorked = !results.isEmpty
                     }
                 }
             }
 
             if results.isEmpty && bingBlocked {
-                return #"{"query": "\#(query)", "results": [], "message": "Search was blocked by CAPTCHA. Try rephrasing the query or using browser_open on a specific site."}"#
+                return #"{"query": "\#(query)", "results": [], "message": "Search was blocked by CAPTCHA. Use fetch_url on a known source URL, or use browser_open + browser_read."}"#
             }
         }
 
         if results.isEmpty {
+            if firecrawlFailed {
+                return #"{"query": "\#(query)", "results": [], "message": "Search backend (Firecrawl) is unavailable, Brave Search returned no results, and Bing fallback returned no relevant results. Use fetch_url on a known source URL, or use browser_open + browser_read."}"#
+            }
             return #"{"query": "\#(query)", "results": [], "message": "No results found."}"#
         }
 
@@ -206,6 +240,46 @@ extension MaestroTools {
         output += enrichedResults.joined(separator: ",")
         output += "]}"
         return output
+    }
+
+    // MARK: - Brave Search fallback
+
+    private static let braveSecretReference = "secret://BSABHBvKujhsdWMuaQhJb8P8hJpkbUM"
+
+    private static func braveSearch(query: String, limit: Int) async -> [SearchResult] {
+        guard let apiKey = SecretsStore.resolve(reference: braveSecretReference, currentProject: nil),
+              !apiKey.isEmpty else {
+            return []
+        }
+        guard let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: "https://api.search.brave.com/res/v1/web/search?q=\(encoded)&count=\(min(max(limit, 1), 20))") else {
+            return []
+        }
+        var request = URLRequest(url: url)
+        request.setValue(apiKey, forHTTPHeaderField: "X-Subscription-Token")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 15
+
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let httpResponse = response as? HTTPURLResponse,
+              (200..<300).contains(httpResponse.statusCode) else {
+            return []
+        }
+
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let web = json["web"] as? [String: Any],
+              let items = web["results"] as? [[String: Any]] else {
+            return []
+        }
+
+        return items.compactMap { item in
+            guard let title = item["title"] as? String,
+                  let url = item["url"] as? String else { return nil }
+            let snippet = (item["description"] as? String)
+                ?? (item["snippet"] as? String)
+                ?? ""
+            return SearchResult(title: title, url: url, snippet: snippet)
+        }
     }
 
     /// Fetch a URL and extract readable text content (lightweight — no JS, just HTML text extraction).
