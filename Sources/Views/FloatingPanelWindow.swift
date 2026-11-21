@@ -79,6 +79,14 @@ struct FloatingPanelWindowView: View {
                 floatingPlansContent
             case .macros:
                 floatingMacrosContent
+            case .osintProfile:
+                if let agentID = target.agentID {
+                    OSINTProfileView(agentId: agentID)
+                } else {
+                    Text("Agent not found")
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             default:
                 Text("Unknown panel")
                     .foregroundStyle(.secondary)

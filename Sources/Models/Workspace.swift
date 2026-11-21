@@ -307,6 +307,43 @@ final class WorkspaceStore {
         return s
     }
 
+    /// The always-present OSINT agent (created if missing). Lives in its own
+    /// "OSINT" project and is pre-configured for public-source investigations.
+    var osintAgent: AgentRecord {
+        let projectName = "OSINT"
+        let agentName = "OSINT"
+        let p = ensureProject(named: projectName)
+        if var a = findAgent(projectName: projectName, agentName: agentName) {
+            var changed = false
+            if a.autoToolCategories ?? true {
+                a.autoToolCategories = false
+                changed = true
+            }
+            if a.category != .osint {
+                a.category = .osint
+                changed = true
+            }
+            let resetKey = "osint.curatedToolset.v1"
+            if !UserDefaults.standard.bool(forKey: resetKey), a.enabledToolCategories != nil {
+                a.enabledToolCategories = nil
+                changed = true
+            }
+            UserDefaults.standard.set(true, forKey: resetKey)
+            if changed, let idx = agents.firstIndex(where: { $0.id == a.id }) {
+                agents[idx] = a
+                save()
+            }
+            return a
+        }
+        var a = AgentRecord(
+            name: agentName, kind: .project, projectId: p.id,
+            category: .osint)
+        a.autoToolCategories = false
+        agents.append(a)
+        save()
+        return a
+    }
+
     /// Projects that should appear in the main sidebar and in Maestro-facing lists.
     var visibleProjects: [Project] { projects.filter { !$0.isHidden } }
 

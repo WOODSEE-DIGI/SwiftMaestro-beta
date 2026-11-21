@@ -6,6 +6,7 @@ struct ChatView: View {
     @Environment(MLXInferenceEngine.self) private var engine
     @Environment(ModelCatalog.self) private var catalog
     @Environment(TodoStore.self) private var todoStore
+    private let osintProfileStore = OSINTProfileStore.shared
     @Environment(PlanStore.self) private var planStore
     @Environment(WorkspaceStore.self) private var workspace
     @Environment(AgentMessageStore.self) private var messageStore
@@ -60,6 +61,7 @@ struct ChatView: View {
             // of body evaluation so persisted items show after relaunch. Project
             // plan scopes are primed too so the top-bar Plans count is accurate.
             _ = todoStore.todos(for: vm.agent.id)
+            _ = osintProfileStore.profile(for: vm.agent.id)
             _ = planStore.plans(in: .agent(vm.agent.id))
             for project in planScopeProjects { _ = planStore.plans(in: .project(project)) }
             _ = messageStore.inbox(for: vm.agent.id)
@@ -820,6 +822,7 @@ struct ChatView: View {
     /// Plans are excluded when there are no plans to show.
     /// Tasks are no longer rendered as a side panel — they live in the composer dock.
     /// Macros are shown when macros exist for the current agent kind.
+    /// The OSINT Profile panel is shown only for OSINT-category agents.
     private var orderedPanels: [PanelType] {
         layoutState.mainSlots
             .filter { slot in
@@ -828,6 +831,7 @@ struct ChatView: View {
                 if slot.type == .plans && visiblePlans.isEmpty { return false }
                 if slot.type == .tasks { return false }
                 if slot.type == .macros && !shouldShowMacrosPanel { return false }
+                if slot.type == .osintProfile && !isOSINTAgent { return false }
                 return true
             }
             .map(\.type)
@@ -836,6 +840,12 @@ struct ChatView: View {
     /// Macros panel is visible when macros exist for this agent's kind.
     private var shouldShowMacrosPanel: Bool {
         !macroStore.macros(for: vm.agent.kind).isEmpty
+    }
+
+    /// Whether the current agent is an OSINT research agent.
+    private var isOSINTAgent: Bool {
+        let category = vm.agent.category ?? AgentCategory.infer(from: vm.agent.name)
+        return category == .osint
     }
 
     /// The chat body — always rendered, expands to fill available space.
@@ -940,6 +950,13 @@ struct ChatView: View {
         case .macros:
             PanelContainer(panelType: .macros, agentId: vm.agent.id, content: {
                 ChatMacrosPanel(agent: vm.agent, onRun: runMacro)
+            }, onFloat: { type in
+                openWindow(id: "floating-panel-window",
+                           value: FloatingPanelWindowID(panelType: type.rawValue, agentID: vm.agent.id))
+            })
+        case .osintProfile:
+            PanelContainer(panelType: .osintProfile, agentId: vm.agent.id, content: {
+                OSINTProfileView(agentId: vm.agent.id)
             }, onFloat: { type in
                 openWindow(id: "floating-panel-window",
                            value: FloatingPanelWindowID(panelType: type.rawValue, agentID: vm.agent.id))

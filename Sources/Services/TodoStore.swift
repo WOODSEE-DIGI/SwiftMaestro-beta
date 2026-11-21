@@ -14,6 +14,7 @@ struct TodoItem: Codable, Identifiable, Hashable {
 @Observable
 @MainActor
 final class TodoStore {
+
     /// Task lists keyed by agent id.
     private(set) var lists: [UUID: [TodoItem]] = [:]
 
@@ -63,6 +64,23 @@ final class TodoStore {
     func clear(for agentId: UUID) {
         lists[agentId] = []
         Self.save([], agentId)
+    }
+
+    /// Mark every incomplete task for an agent as done. Used as a fallback when
+    /// the agent produces a final answer without explicitly updating todos.
+    @discardableResult
+    func markAllDone(for agentId: UUID) -> [TodoItem] {
+        var items = todos(for: agentId)
+        var changed = false
+        for i in items.indices where !items[i].done {
+            items[i].done = true
+            changed = true
+        }
+        if changed {
+            lists[agentId] = items
+            Self.save(items, agentId)
+        }
+        return items
     }
 
     // MARK: - Persistence (App Support/SwiftMaestro/todos/<agentId>.json)

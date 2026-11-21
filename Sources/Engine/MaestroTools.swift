@@ -96,6 +96,9 @@ enum MaestroTools {
     /// Shared live-todo store (per-agent task checklists). Set at app launch.
     @MainActor static weak var todoStore: TodoStore?
 
+    /// Shared OSINT profile store (per-agent discovered-entity profiles). Set at app launch.
+    @MainActor static weak var osintProfileStore: OSINTProfileStore?
+
     /// Shared plan store (per-agent markdown plan documents). Set at app launch.
     @MainActor static weak var planStore: PlanStore?
 
@@ -1760,23 +1763,17 @@ enum MaestroTools {
                 }
             }()
             let result = layout.open(kind, zone: zone)
+            // Presenting a window needs the UI, not the tool, so post the
+            // notification the coordinator watches for. Panels are floating
+            // windows now — there is no grid to force-dock into.
+            NotificationCenter.default.post(name: .openWorkspacePanel, object: kind)
             switch result {
-            case .dockedDirectly:
+            case .dockedDirectly, .floated:
                 return jsonString([
                     "status": "opened",
                     "panel": args.panel,
-                    "mode": "docked",
-                    "note": "Panel is now visible in the workspace.",
-                ])
-            case .floated:
-                // Force-dock into the workspace grid so the agent can see it
-                // without needing a separate openWindow() call.
-                layout.dock(kind)
-                return jsonString([
-                    "status": "opened",
-                    "panel": args.panel,
-                    "mode": "docked",
-                    "note": "Panel is now visible in the workspace.",
+                    "mode": "floating",
+                    "note": "Panel opened in its own window.",
                 ])
             case .alreadyOpen:
                 // Still honor the "or focus" half of the contract.

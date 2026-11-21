@@ -25,6 +25,13 @@ extension Notification.Name {
 @MainActor
 final class DAMViewModel {
 
+    /// Shared singleton so the MaestroDAM browser panel keeps its loaded
+    /// catalog, filters, and selection alive across workspace switches.
+    /// Creating a new view model on every workspace recall forced a full
+    /// catalog reload (up to a minute for large libraries); reusing one
+    /// instance makes returning to MaestroDAM instant.
+    static let shared = DAMViewModel()
+
     // MARK: State
 
     private(set) var assets: [DAMAsset] = []

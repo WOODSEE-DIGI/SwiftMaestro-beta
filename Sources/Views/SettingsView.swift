@@ -175,6 +175,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case imports
     case secrets
     case businessVerification
+    case osintTools
     case whisper
     case shell
     case healing
@@ -199,6 +200,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .imports: return String(localized: "Imports")
         case .secrets: return String(localized: "Secrets")
         case .businessVerification: return String(localized: "Business Verify")
+        case .osintTools: return String(localized: "OSINT Tools")
         case .whisper: return String(localized: "Whisper")
         case .shell: return String(localized: "Shell")
         case .healing: return String(localized: "Swift Helper")
@@ -223,6 +225,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .imports: return "square.and.arrow.down"
         case .secrets: return "key.fill"
         case .businessVerification: return "building.columns"
+        case .osintTools: return "binoculars"
         case .whisper: return "mic.fill"
         case .shell: return "terminal"
         case .healing: return "wrench.and.screwdriver"
@@ -331,6 +334,7 @@ struct SettingsView: View {
         case .imports: DAMImportSettingsTab()
         case .secrets: SecretsSettingsTab()
         case .businessVerification: BusinessVerificationSettingsTab()
+        case .osintTools: OSINTToolSettingsTab()
         case .whisper: WhisperKitSettingsTab()
         case .shell: ShellSettingsTab()
         case .healing: SwiftHelperSettingsTab()
@@ -1294,6 +1298,62 @@ struct ModelsSettingsTab: View {
                         .font(.caption).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(8)
+                }
+                GroupBox("Local Coding Router") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("A separate local Ollama + LiteLLM router is available on this Mac for coding-agent work. Point any OpenAI-compatible client at http://127.0.0.1:4001/v1 and use these aliases:")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                        Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
+                            GridRow {
+                                Text("Alias").font(.caption.bold())
+                                Text("Backing model").font(.caption.bold())
+                                Text("Use case").font(.caption.bold())
+                            }
+                            Divider().gridCellUnsizedAxes([.horizontal])
+                            GridRow {
+                                Text("coding-router/default").font(.caption.monospaced())
+                                Text("Qwen3.5 122B-A10B").font(.caption)
+                                Text("General planning").font(.caption)
+                            }
+                            GridRow {
+                                Text("coding-router/fast").font(.caption.monospaced())
+                                Text("Qwen3.6 35B-A3B").font(.caption)
+                                Text("Fast coding iterations").font(.caption)
+                            }
+                            GridRow {
+                                Text("coding-router/coder").font(.caption.monospaced())
+                                Text("KAT-Coder V2.5-Dev").font(.caption)
+                                Text("Coding-specialized").font(.caption)
+                            }
+                            GridRow {
+                                Text("coding-router/reason").font(.caption.monospaced())
+                                Text("Qwen3.8 27B").font(.caption)
+                                Text("Dense reasoning").font(.caption)
+                            }
+                            GridRow {
+                                Text("coding-router/plan").font(.caption.monospaced())
+                                Text("Qwen3.8-Flash-Next").font(.caption)
+                                Text("Best all-around").font(.caption)
+                            }
+                            GridRow {
+                                Text("coding-router/deep").font(.caption.monospaced())
+                                Text("DeepSeek V4.1 Flash").font(.caption)
+                                Text("Hardest problems").font(.caption)
+                            }
+                            GridRow {
+                                Text("coding-router/vision").font(.caption.monospaced())
+                                Text("Gemma 4 26B").font(.caption)
+                                Text("Vision + text").font(.caption)
+                            }
+                        }
+
+                        Text("Models live on /Volumes/WDS_Shuttle_4/SwiftMaestroCodingAgents. The largest aliases (plan, deep) require raising the GPU memory limit on a 128 GB Mac.")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(8)
                 }
                 GroupBox("System Memory (live)") {
                     SettingsMemoryBar(

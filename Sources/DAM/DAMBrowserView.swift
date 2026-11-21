@@ -19,7 +19,10 @@ import UniformTypeIdentifiers
 
 struct DAMBrowserView: View {
 
-    @State private var viewModel = DAMViewModel()
+    /// Use the shared view model so workspace switches don't recreate it and
+    /// force a full catalog reload. State (filters, selection, loaded assets)
+    /// survives while the user works in other workspaces.
+    @State private var viewModel = DAMViewModel.shared
     @AppStorage("dam.showFolderTree") private var showFolderTree = true
     @AppStorage("dam.showPreviewPanel") private var showPreviewPanel = true
     @AppStorage("dam.treeWidth") private var treeWidth: Double = 240
@@ -165,23 +168,34 @@ struct DAMBrowserView: View {
         }
         .task {
             appLoadStartDate = Date()
-            isInitialLoading = true
-            loadingStep = "Starting volume monitor…"
-            Task { await DAMVolumeStore.shared.startMonitoring() }
 
-            loadingStep = "Loading folder tree…"
-            async let tree = viewModel.refreshFolderTree()
+            // If the shared view model already has assets, the user is simply
+            // returning to MaestroDAM from another workspace. Skip the expensive
+            // full catalog reload and only refresh the folder tree/light state.
+            let needsFullLoad = viewModel.assets.isEmpty
+            isInitialLoading = needsFullLoad
 
-            loadingStep = "Loading asset grid…"
-            async let reload = viewModel.reload()
+            if needsFullLoad {
+                loadingStep = "Starting volume monitor…"
+                Task { await DAMVolumeStore.shared.startMonitoring() }
 
-            _ = await (reload, tree)
+                loadingStep = "Loading folder tree…"
+                await viewModel.refreshFolderTree()
+
+                loadingStep = "Loading asset grid…"
+                await viewModel.reload()
+
+                loadingStep = "Starting background enrichment…"
+                viewModel.startBackgroundEnrichment()
+            } else {
+                // Lightweight refresh: volume monitoring is cheap (guarded
+                // internally) and the folder tree may have changed while away.
+                Task { await DAMVolumeStore.shared.startMonitoring() }
+                await viewModel.refreshFolderTree()
+            }
 
             // Build the cached folder-search index now that the tree is ready.
             allFolderRows = flattenFolderTree(nodes: viewModel.folderTree)
-
-            loadingStep = "Starting background enrichment…"
-            viewModel.startBackgroundEnrichment()
 
             isInitialLoading = false
 

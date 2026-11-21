@@ -14,19 +14,6 @@ struct AgentsPanelView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Spacer()
-                Button {
-                    NotificationCenter.default.post(name: .newAgentRequested, object: nil)
-                } label: {
-                    Image(systemName: "plus")
-                }
-                .buttonStyle(.plain)
-                .help("New project agent")
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-
             GeometryReader { proxy in
                 List {
                     Section {

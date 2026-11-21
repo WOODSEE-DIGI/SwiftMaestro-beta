@@ -8,13 +8,38 @@ struct WorkspacePanelWindowID: Hashable, Codable {
     let kind: WorkspacePanelKind
 }
 
+extension WorkspacePanelKind {
+    /// Minimum content size for this panel's floating window. Also the floor
+    /// `FloatingWindowFrameStore` clamps a restored frame up to, so a frame
+    /// saved under an older (smaller) minimum can never reopen unusable.
+    var floatingMinSize: CGSize {
+        switch self {
+        case .agentChat: return CGSize(width: 720, height: 520)
+        case .damBrowser: return CGSize(width: 900, height: 620)
+        case .agents: return CGSize(width: 240, height: 420)
+        case .appLauncher: return CGSize(width: 220, height: 160)
+        default: return CGSize(width: 420, height: 360)
+        }
+    }
+
+    /// Default content size used when a window has no saved frame and would
+    /// otherwise be smaller than the panel's minimum.
+    var floatingDefaultSize: CGSize {
+        switch self {
+        case .agentChat: return CGSize(width: 960, height: 720)
+        case .damBrowser: return CGSize(width: 1280, height: 820)
+        case .agents: return CGSize(width: 300, height: 720)
+        case .appLauncher: return CGSize(width: 1100, height: 520)
+        default: return CGSize(width: 720, height: 560)
+        }
+    }
+}
+
 /// Floating window content for any workspace panel (agent chat, Notes.md,
-/// Apple Notes, Calendar, Reminders, Contacts, Canvas, Kanban). New panels
-/// open this way by default — the user drags the window wherever they like
-/// (including to a second monitor) and can dock it back into the main
-/// window's grid via the header's Dock button, or leave it floating
-/// indefinitely. Reuses `WorkspacePanelContentView` so the content is
-/// identical to the docked version.
+/// Apple Notes, Calendar, Reminders, Contacts, Kanban). Every panel opens
+/// this way — the user drags the window wherever they like, including to a
+/// second monitor, and closes it with the header's ✕. Reuses
+/// `WorkspacePanelContentView` so the content is identical everywhere.
 struct WorkspacePanelWindowView: View {
     let target: WorkspacePanelWindowID
 
@@ -27,13 +52,11 @@ struct WorkspacePanelWindowView: View {
     /// Per-window Plans/Tasks layout state shared with the header toolbar and
     /// the embedded agent chat.
     @State private var panelLayout = PanelLayoutState()
-    /// Set right before we dismiss the window ourselves (via "Dock"), so the
-    /// close-detection below doesn't also mark the panel fully closed —
-    /// `dock(_:)` already moved it into the grid; closing on top of that
-    /// would incorrectly remove it again.
-    @State private var didDock = false
     /// Keep this window in front of all others. Opt-in, off by default.
     @State private var isPinnedToFront = false
+    /// Tracks the Apps launcher view mode so the frame configurator can store
+    /// and restore a separate position for List, Grid, and Icons.
+    @AppStorage("appsLauncher.viewMode") private var appsViewMode: AppsLauncherPanel.ViewMode = .grid
 
     var body: some View {
         VStack(spacing: 0) {
@@ -43,19 +66,18 @@ struct WorkspacePanelWindowView: View {
         }
         .environment(panelLayout)
         .background(theme.background)
-        .frame(minWidth: 420, minHeight: 360)
+        .frame(minWidth: target.kind.floatingMinSize.width,
+               minHeight: target.kind.floatingMinSize.height)
         // Overrides the WindowGroup's static "Panel" title with the actual
         // panel name (e.g. "Contacts", "Calendar") — same pattern as
         // `PlanWindowView.navigationTitle(plan.title)`.
         .navigationTitle(title)
         .onChange(of: layout.isFloating(target.kind)) { _, isFloating in
-            // The panel left the floating set without going through this
-            // window's own Dock menu — i.e. it was drag-dropped into the
-            // main window's tiling grid. This window's job is done. Setting
-            // didDock first keeps the close observer from marking the panel
-            // closed — it lives on, docked, in the grid.
+            // The panel left the open set without this window being closed
+            // first (a workspace-layout recall, a `close_panel` tool call).
+            // Nothing left to show — dismiss; the close observer below sees
+            // the panel is already closed and leaves it alone.
             if !isFloating {
-                didDock = true
                 dismiss()
             }
         }
@@ -63,19 +85,15 @@ struct WorkspacePanelWindowView: View {
         .background(
             // Agent-chat panels need the same comfortable default size as the
             // dedicated `AgentChatWindow`; otherwise an empty chat can collapse
-            // the workspace panel window to an unusable size.
+            // the workspace panel window to an unusable size. Sizes come from
+            // the shared `floatingMinSize`/`floatingDefaultSize` so the frame
+            // store clamps to the same floor.
             Group {
                 switch target.kind {
-                case .agentChat:
+                case .agentChat, .damBrowser:
                     WindowSizeConfigurator(
-                        minSize: CGSize(width: 720, height: 520),
-                        defaultSize: CGSize(width: 960, height: 720),
-                        backgroundColor: nil
-                    )
-                case .damBrowser:
-                    WindowSizeConfigurator(
-                        minSize: CGSize(width: 900, height: 620),
-                        defaultSize: CGSize(width: 1280, height: 820),
+                        minSize: target.kind.floatingMinSize,
+                        defaultSize: target.kind.floatingDefaultSize,
                         backgroundColor: nil
                     )
                 default:
@@ -83,15 +101,21 @@ struct WorkspacePanelWindowView: View {
                 }
             }
         )
+        // Restore this panel's saved frame (and start recording moves/resizes)
+        // so window positions survive relaunches and workspace-layout recalls.
+        .background(WindowFrameConfigurator(
+            kind: target.kind,
+            appsViewMode: target.kind == .appLauncher ? appsViewMode : nil
+        ))
         .background(
             WindowCloseObserver {
-                // The user closed this window some other way than the Dock
-                // button (red close button, Cmd+W, ⌘Q, etc.) — the panel is
-                // now genuinely closed, not just moved, so clear it from
-                // `floatingPanels` too. Otherwise it'd stay marked "open"
-                // forever (stale sidebar indicator, and `open(_:)` would
-                // silently no-op on any future attempt to reopen it).
-                if !didDock {
+                // The user closed this window (red close button, Cmd+W,
+                // ⌘Q, etc.) — the panel is now genuinely closed, so clear it
+                // from `floatingPanels` too. Otherwise it'd stay marked
+                // "open" forever (stale sidebar indicator, and `open(_:)`
+                // would silently no-op on any future attempt to reopen it).
+                // A panel already closed from elsewhere is left untouched.
+                if layout.isFloating(target.kind) {
                     layout.close(target.kind)
                 }
             }
@@ -133,38 +157,12 @@ struct WorkspacePanelWindowView: View {
         return target.kind.staticDisplayName ?? "Panel"
     }
 
-    /// Dock this floating panel into the main window in the given direction
-    /// (side-by-side for left/right, stacked for bottom), then close this window.
-    private func dockPanel(_ zone: TilingDropZone) {
-        didDock = true
-        layout.dock(target.kind, zone: zone)
-        dismiss()
-    }
-
     private var header: some View {
         let headerBackground = theme.panelAccent(for: target.kind).opacity(0.2)
 
         return HStack(spacing: 6) {
-            // Drag grip: drag this window into the main window's tiling grid.
-            // While dragging, every tile in the main window shows its neon
-            // drop-zone preview; releasing docks the panel in that position
-            // and this window closes itself (see the isFloating observer).
-            if layout.isLocked {
-                Image(systemName: "lock")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 22, height: 20)
-                    .help("Workspace is locked")
-            } else {
-                PanelDragGrip(
-                    kind: target.kind,
-                    title: title,
-                    accent: theme.panelAccent(for: target.kind),
-                    toolTip: "Drag into the main window to dock this panel"
-                )
-                .frame(width: 22, height: 20)
-            }
-
+            // The window itself is draggable by its title bar; the header
+            // only carries identity and controls.
             Image(systemName: target.kind.icon)
                 .font(.caption)
                 .foregroundStyle(theme.panelAccent(for: target.kind))
@@ -180,11 +178,15 @@ struct WorkspacePanelWindowView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
         .background(headerBackground)
-        // Keep the dock/pin controls on top so they survive tiny windows.
+        // Keep the controls on top so they survive tiny windows.
         .overlay(alignment: .trailing) {
             HStack(spacing: 6) {
                 if case .agentChat(let id) = target.kind {
                     ChatPanelHeaderToolbar(agentID: id)
+                }
+
+                if target.kind == .appLauncher {
+                    AppsLauncherPanel().headerToolbar
                 }
 
                 Button {
@@ -201,31 +203,6 @@ struct WorkspacePanelWindowView: View {
                     ? "Stop keeping this window in front of all others"
                     : "Keep this window in front of all others")
 
-                Menu {
-                    Button {
-                        dockPanel(.right)
-                    } label: {
-                        Label("Dock to Right", systemImage: "rectangle.split.2x1")
-                    }
-                    Button {
-                        dockPanel(.left)
-                    } label: {
-                        Label("Dock to Left", systemImage: "rectangle.split.2x1")
-                    }
-                    Divider()
-                    Button {
-                        dockPanel(.bottom)
-                    } label: {
-                        Label("Dock Below", systemImage: "rectangle.split.1x2")
-                    }
-                } label: {
-                    Label("Dock", systemImage: "rectangle.on.rectangle")
-                        .font(.caption2)
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help("Dock into the main window — choose a side or below")
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)

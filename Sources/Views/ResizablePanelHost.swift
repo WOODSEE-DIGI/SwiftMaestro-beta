@@ -14,7 +14,7 @@ import AppKit
 // state directly via `Binding<CGFloat>`, so there's a single source of truth
 // at all times. Two hosts can be nested (a vertical host of rows, each row
 // itself a horizontal host of columns) to build a 2-D tiling grid — see
-// `WorkspaceLayoutState`/`ContentView` for the top-level workspace grid.
+// `WorkspaceLayoutState` for the top-level floating workspace panels.
 //
 // Contract: every pane except (optionally) the last must have a bound length.
 // At most one trailing pane may be flexible (`length == nil`), and it always

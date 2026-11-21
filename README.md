@@ -44,17 +44,19 @@ Currently SwiftMaestro is A native macOS AI assistant that runs large language m
 
 ---
 
-## What's New in 0.7.1
+## What's New in 0.7.2
 
-### MaestroDAM
+### Fixes
 
-- **Visibility-aware privacy redaction**: privacy mode now only redacts visible assets plus a small prefetch window in the home grid, and the entire folder/album when opened.
-- **Right-click privacy OCR tuning**: the privacy/auto-redaction toolbar button now exposes a context menu to toggle faces/text/barcodes/PII patterns and confidence.
-- **Home filmstrip view**: the Browser/List/Statistics picker moved next to the Catalog breadcrumb; List became a new Filmstrip view with a large preview and thumbnail strip.
-- **Preview zoom controls**: the large preview pane (grid and metadata preview) now has zoom in/out/reset controls; PDFs scale relative to fit.
-- **Batch redaction reset**: Edit → Redaction Layout can select all assets in the current scope and reset/clear all redactions for them.
-- **Multi-select reliability fixed**: grid and filmstrip cells now use the current event's modifier flags with full-cell content shapes; Cmd-click toggles and Shift-click selects ranges.
-- **PII regex precision**: registration/ID label patterns now require word boundaries so words like "regarding" are no longer redacted.
+- **Launch crash fixed**: `ThemeStore` no longer dereferences the `NSApp` global before `NSApplication` exists, preventing the "Unexpectedly found nil while implicitly unwrapping an Optional value" trap at startup.
+- **Xcode build fixed**: the `Bundle WhisperKit Models` script phase now resolves the app bundle from `BUILT_PRODUCTS_DIR`, skips Debug builds by default, and never fails the build over optional assets.
+- **Web search reliability**: `web_search` now falls back to the Brave Search API when Firecrawl is unavailable, filters irrelevant Bing results, and instructs the model to use `fetch_url` or `browser_open` instead of giving up.
+
+### Experimental
+
+- StoryGame engine and editor.
+- XAttr service.
+- DAMAgent chat panel.
 
 See [CHANGELOG.md](CHANGELOG.md) for earlier releases.
 

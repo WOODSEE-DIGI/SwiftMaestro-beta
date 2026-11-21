@@ -40,12 +40,21 @@ final class FloatingWindowCascadeManager {
     func cascade(window: NSWindow) {
         let id = ObjectIdentifier(window)
         guard cascadingWindow != id else { return }
+
+        // This window already had a saved frame restored — leave it exactly
+        // where the user put it last session instead of cascading it.
+        guard !FloatingWindowFrameStore.shared.didRestore(window) else { return }
+
         cascadingWindow = id
 
         // Wait for SwiftUI to finish sizing the window, then apply cascade.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self, weak window] in
             guard let self, let window else { return }
             defer { self.cascadingWindow = nil }
+
+            // Re-check after the delay: the frame restore claims the window
+            // when its view attaches, which can land after the check above.
+            guard !FloatingWindowFrameStore.shared.didRestore(window) else { return }
 
             guard let screen = window.screen ?? NSScreen.main else { return }
             let visibleFrame = screen.visibleFrame

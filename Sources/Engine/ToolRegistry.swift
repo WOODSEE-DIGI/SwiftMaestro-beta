@@ -34,6 +34,8 @@ extension MaestroTools {
         await registerMessagingTools()
         await registerBusTools()
         await registerTodoTools()
+        await registerOSINTProfileTools()
+        await registerExternalOSINTTools()
         await registerPlanTools()
         await registerWorkspaceTools()
         await registerMetaTools()

@@ -552,10 +552,11 @@ extension MaestroTools {
             if !layout.allOpenPanels.contains(.webBrowser) {
                 let openResult = layout.open(.webBrowser, zone: .right)
                 if openResult == .floated {
-                    // Same force-dock contract as open_panel: the agent can't
-                    // call openWindow itself, and a floated-but-unpresented
-                    // window is as invisible as no panel at all.
-                    layout.dock(.webBrowser)
+                    // Same contract as open_panel: the agent can't call
+                    // openWindow itself, and an unpresented window is as
+                    // invisible as no panel at all.
+                    NotificationCenter.default.post(
+                        name: .openWorkspacePanel, object: WorkspacePanelKind.webBrowser)
                 }
             }
         }

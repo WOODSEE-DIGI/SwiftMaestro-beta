@@ -22,7 +22,7 @@ import SwiftUI
 
 struct PomodoroTitleBarTimer: View {
     let store: PomodoroStore
-    /// Open/focus the Pomodoro workspace panel (wired to ContentView.openPanel).
+    /// Open/focus the Pomodoro workspace panel (wired to WorkspaceCoordinator.openPanel).
     let onOpenPanel: () -> Void
 
     @State private var showingDashboard = false

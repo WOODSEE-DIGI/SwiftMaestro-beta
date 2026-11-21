@@ -62,8 +62,10 @@ extension MaestroTools {
             rawSpec("dam_search",
                 "Full-text search across the MaestroDAM asset catalog (filename, "
                 + "AI caption, user keywords, OCR text). Returns matching assets "
-                + "with path, filename, rating, and keywords. Use this to find "
-                + "assets before acting on them.",
+                + "with path, filename, rating, and keywords as text. Use this when "
+                + "the user wants a list/report or when you need metadata before "
+                + "acting. If the user asked to SEE the files in the grid, use "
+                + "dam_filter_view FIRST instead of (or before) this tool.",
                 properties: [
                     "query": ["type": "string", "description": "Search text (FTS5 match)."],
                     "folder": ["type": "string", "description": "Restrict to this folder path."],
@@ -119,10 +121,12 @@ extension MaestroTools {
                 ],
                 required: ["keywords", "paths"]),
             rawSpec("dam_filter_view",
-                "Set search and filter state on the DAM browser panel. Updates "
-                + "the visible grid in real time so the user sees the filtered "
-                + "results immediately. All parameters are optional — only supplied "
-                + "filters are applied. Pass 'clear: true' to reset all filters.",
+                "Set search and filter state on the DAM browser panel. This is "
+                + "the PRIMARY tool for showing the user matching assets: it updates "
+                + "the visible grid in real time so the user sees the actual files. "
+                + "Returns the exact number of assets that match the applied filters. "
+                + "All parameters are optional — only supplied filters are applied. "
+                + "Pass 'clear: true' to reset all filters.",
                 properties: [
                     "search": ["type": "string", "description": "Full-text search query (FTS5 match against filename, caption, keywords, OCR)."],
                     "tag_color": ["type": "integer", "description": "Filter by Finder tag color: 2=green, 3=purple, 4=blue, 5=yellow, 6=red, 7=orange. Omit for all."],
@@ -473,6 +477,32 @@ extension MaestroTools {
 
     // MARK: - dam_filter_view
 
+    /// Snapshot of filter state needed to compute a result count without
+    /// keeping a reference to the MainActor-isolated view model.
+    private struct DAMFilterSnapshot: Sendable {
+        var searchText: String = ""
+        var folder: String? = nil
+        var minimumRating: Int = 0
+        var filterTagColor: Int? = nil
+        var filterFileType: String? = nil
+        var filterFlag: DAMFlag? = nil
+        var filterExtensions: Set<String> = []
+        var filterHasAICaption: Bool? = nil
+        var filterHasAIKeywords: Bool? = nil
+        var filterHasOCR: Bool? = nil
+        var filterHasUserKeywords: Bool? = nil
+        var filterHasXattr: Bool? = nil
+        var filterCameraMake: String? = nil
+        var filterCameraModel: String? = nil
+        var filterCaptureFrom: Date? = nil
+        var filterCaptureTo: Date? = nil
+        var filterFileSizeMin: Int64? = nil
+        var filterFileSizeMax: Int64? = nil
+        var filterIsAvailable: Bool? = nil
+        var filterHasGPS: Bool? = nil
+        var filterRated: Bool? = nil
+    }
+
     private static func damFilterView(_ call: ToolCall) async -> String {
         guard let args = decodeArgs(call, as: FilterViewArgs.self) else {
             return "Error: invalid arguments."
@@ -486,36 +516,31 @@ extension MaestroTools {
             if let search = args.search { info["search"] = search }
             if let tagColor = args.tag_color { info["tag_color"] = tagColor }
             if let fileType = args.file_type { info["file_type"] = fileType }
-        if let flagStr = args.flag {
-            // Map user-friendly names to enum raw values.
-            switch flagStr.lowercased() {
-            case "picked", "pick": info["flag"] = "pick"
-            case "rejected", "reject": info["flag"] = "reject"
-            default: info["flag"] = flagStr  // pass through, DAMViewModel will handle nil if invalid
+            if let flagStr = args.flag {
+                // Map user-friendly names to enum raw values.
+                switch flagStr.lowercased() {
+                case "picked", "pick": info["flag"] = "pick"
+                case "rejected", "reject": info["flag"] = "reject"
+                default: info["flag"] = flagStr  // pass through, DAMViewModel will handle nil if invalid
+                }
             }
-        }
-        if let minRating = args.min_rating { info["min_rating"] = minRating }
-        if let sort = args.sort {
-            // Map user-friendly names to enum raw values.
-            switch sort.lowercased() {
-            case "capture_date", "date": info["sort"] = "captureDateDesc"
-            case "date_asc", "oldest": info["sort"] = "captureDateAsc"
-            case "filename", "name": info["sort"] = "filenameAsc"
-            case "size", "largest": info["sort"] = "sizeDesc"
-            case "rating", "stars": info["sort"] = "ratingDesc"
-            default: info["sort"] = sort
+            if let minRating = args.min_rating { info["min_rating"] = minRating }
+            if let sort = args.sort {
+                // Map user-friendly names to enum raw values.
+                switch sort.lowercased() {
+                case "capture_date", "date": info["sort"] = "captureDateDesc"
+                case "date_asc", "oldest": info["sort"] = "captureDateAsc"
+                case "filename", "name": info["sort"] = "filenameAsc"
+                case "size", "largest": info["sort"] = "sizeDesc"
+                case "rating", "stars": info["sort"] = "ratingDesc"
+                default: info["sort"] = sort
+                }
             }
-        }
             if let folder = args.folder { info["folder"] = folder }
         }
 
         guard !info.isEmpty else {
             return "Error: provide at least one filter parameter, or set clear=true to reset."
-        }
-
-        await MainActor.run {
-            NotificationCenter.default.post(
-                name: .damApplyFilters, object: nil, userInfo: info)
         }
 
         var applied: [String] = []
@@ -527,6 +552,142 @@ extension MaestroTools {
         if let r = args.min_rating { applied.append("min_rating=\(r)") }
         if let s = args.sort { applied.append("sort=\(s)") }
         if let fo = args.folder { applied.append("folder=\(fo)") }
-        return "DAM panel filters updated: \(applied.joined(separator: ", "))"
+
+        // Snapshot current filter state on MainActor, compute the merged count
+        // off-main (so large catalogs don't block the UI), then post the filter
+        // update back on MainActor.
+        let snapshot = await MainActor.run {
+            let viewModel = DAMViewModel.shared
+            var snapshot = DAMFilterSnapshot()
+            snapshot.searchText = viewModel.searchText
+            snapshot.folder = viewModel.selectedFolder
+            snapshot.minimumRating = viewModel.minimumRating
+            snapshot.filterTagColor = viewModel.filterTagColor
+            snapshot.filterFileType = viewModel.filterFileType
+            snapshot.filterFlag = viewModel.filterFlag
+            snapshot.filterExtensions = viewModel.filterExtensions
+            snapshot.filterHasAICaption = viewModel.filterHasAICaption
+            snapshot.filterHasAIKeywords = viewModel.filterHasAIKeywords
+            snapshot.filterHasOCR = viewModel.filterHasOCR
+            snapshot.filterHasUserKeywords = viewModel.filterHasUserKeywords
+            snapshot.filterHasXattr = viewModel.filterHasXattr
+            snapshot.filterCameraMake = viewModel.filterCameraMake
+            snapshot.filterCameraModel = viewModel.filterCameraModel
+            snapshot.filterCaptureFrom = viewModel.filterCaptureFrom
+            snapshot.filterCaptureTo = viewModel.filterCaptureTo
+            snapshot.filterFileSizeMin = viewModel.filterFileSizeMin
+            snapshot.filterFileSizeMax = viewModel.filterFileSizeMax
+            snapshot.filterIsAvailable = viewModel.filterIsAvailable
+            snapshot.filterHasGPS = viewModel.filterHasGPS
+            snapshot.filterRated = viewModel.filterRated
+            return snapshot
+        }
+
+        let merged = mergedFilterSnapshot(base: snapshot, args: args)
+        let count = (try? await Task.detached(priority: .userInitiated) {
+            try countAssets(matching: merged)
+        }.value) ?? 0
+
+        await MainActor.run {
+            NotificationCenter.default.post(
+                name: .damApplyFilters, object: nil, userInfo: info)
+        }
+
+        if count == 0 {
+            return "No assets match the current filters (\(applied.joined(separator: ", "))). The grid is empty — try broadening the search, removing the file-type filter, or checking that the files are imported into MaestroDAM."
+        }
+        return "DAM panel filters updated: \(applied.joined(separator: ", ")). \(count) asset(s) match."
+    }
+
+    /// Apply the agent's requested filters on top of the current snapshot.
+    private static func mergedFilterSnapshot(
+        base: DAMFilterSnapshot, args: FilterViewArgs
+    ) -> DAMFilterSnapshot {
+        var merged = base
+        if args.clear == true {
+            merged.searchText = ""
+            merged.folder = nil
+            merged.minimumRating = 0
+            merged.filterTagColor = nil
+            merged.filterFileType = nil
+            merged.filterFlag = nil
+            merged.filterExtensions = []
+            merged.filterHasAICaption = nil
+            merged.filterHasAIKeywords = nil
+            merged.filterHasOCR = nil
+            merged.filterHasUserKeywords = nil
+            merged.filterHasXattr = nil
+            merged.filterCameraMake = nil
+            merged.filterCameraModel = nil
+            merged.filterCaptureFrom = nil
+            merged.filterCaptureTo = nil
+            merged.filterFileSizeMin = nil
+            merged.filterFileSizeMax = nil
+            merged.filterIsAvailable = nil
+            merged.filterHasGPS = nil
+            merged.filterRated = nil
+            return merged
+        }
+        if let search = args.search { merged.searchText = search }
+        if let folder = args.folder { merged.folder = folder }
+        if let rating = args.min_rating { merged.minimumRating = rating }
+        if let tagColor = args.tag_color { merged.filterTagColor = tagColor }
+        if let fileType = args.file_type { merged.filterFileType = fileType }
+        if let flagStr = args.flag {
+            switch flagStr.lowercased() {
+            case "picked", "pick": merged.filterFlag = .pick
+            case "rejected", "reject": merged.filterFlag = .reject
+            default: merged.filterFlag = DAMFlag(rawValue: flagStr)
+            }
+        }
+        return merged
+    }
+
+    /// Count assets matching the merged filter snapshot using the same logic
+    /// DAMViewModel.reload() uses.
+    private static func countAssets(matching snapshot: DAMFilterSnapshot) throws -> Int {
+        let database = DAMDatabase.shared
+        let query = snapshot.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if query.isEmpty {
+            return try database.assetCount(
+                folder: snapshot.folder, minRating: snapshot.minimumRating,
+                tagColor: snapshot.filterTagColor, fileType: snapshot.filterFileType,
+                tagged: nil, flag: snapshot.filterFlag,
+                extensions: snapshot.filterExtensions,
+                hasAICaption: snapshot.filterHasAICaption,
+                hasAIKeywords: snapshot.filterHasAIKeywords,
+                hasOCR: snapshot.filterHasOCR,
+                hasUserKeywords: snapshot.filterHasUserKeywords,
+                hasXattr: snapshot.filterHasXattr,
+                cameraMake: snapshot.filterCameraMake,
+                cameraModel: snapshot.filterCameraModel,
+                captureFrom: snapshot.filterCaptureFrom,
+                captureTo: snapshot.filterCaptureTo,
+                fileSizeMin: snapshot.filterFileSizeMin,
+                fileSizeMax: snapshot.filterFileSizeMax,
+                isAvailable: snapshot.filterIsAvailable,
+                hasGPS: snapshot.filterHasGPS,
+                rated: snapshot.filterRated)
+        }
+        return try database.searchAssetCount(
+            matching: query, folder: snapshot.folder,
+            minRating: snapshot.minimumRating,
+            tagColor: snapshot.filterTagColor, fileType: snapshot.filterFileType,
+            tagged: nil, flag: snapshot.filterFlag,
+            extensions: snapshot.filterExtensions,
+            hasAICaption: snapshot.filterHasAICaption,
+            hasAIKeywords: snapshot.filterHasAIKeywords,
+            hasOCR: snapshot.filterHasOCR,
+            hasUserKeywords: snapshot.filterHasUserKeywords,
+            hasXattr: snapshot.filterHasXattr,
+            cameraMake: snapshot.filterCameraMake,
+            cameraModel: snapshot.filterCameraModel,
+            captureFrom: snapshot.filterCaptureFrom,
+            captureTo: snapshot.filterCaptureTo,
+            fileSizeMin: snapshot.filterFileSizeMin,
+            fileSizeMax: snapshot.filterFileSizeMax,
+            isAvailable: snapshot.filterIsAvailable,
+            hasGPS: snapshot.filterHasGPS,
+            rated: snapshot.filterRated)
     }
 }

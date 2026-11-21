@@ -636,6 +636,31 @@ final class ModelCatalog {
             downloadURL: "https://huggingface.co/lmstudio-community/gemma-4-26B-A4B-it-MLX-8bit"
         ),
 
+        // OSINT-tuned variant of Gemma 4 26B-A4B, abliterated with OBLITERATUS
+        // to reduce refusals on legitimate public-source investigations.
+        // Same MoE architecture as the default 26B-A4B model, so it fits on
+        // 32 GB+ Macs.
+        // huggingFaceID points to the upstream base model because this OSINT
+        // variant is local-only; the loader uses localPath for weights.
+        MaestroModel(
+            id: "local-gemma4-26b-a4b-osint",
+            displayName: "Gemma 4 26B-A4B OSINT (Abliterated, 8-bit)",
+            huggingFaceID: "lmstudio-community/gemma-4-26B-A4B-it-MLX-8bit",
+            description: "Abliterated Gemma 4 26B-A4B for public-source OSINT work. Use with the dedicated OSINT agent. MoE 26B total / 4B active, 8-bit, ~26 GB weights.",
+            isVision: true,
+            localPath: localIfPresent(["swiftmaestro-models/gemma-4-26B-A4B-it-MLX-8bit-OSINT"]),
+            estimatedMemoryGB: 26,
+            supportsTools: true,
+            toolCallFormat: .gemma4,
+            recTemperature: 0.7, recTopP: 0.9, recRepetitionPenalty: 1.1,
+            recContextLength: 128_000,
+            // Cap KV cache to keep per-layer Metal buffers under the M1 Ultra's
+            // ~80 GB single-buffer limit during long OSINT tool-call turns.
+            maxKVSize: 16_384,
+            activeParamsB: 4,
+            compactionThreshold: 12_288
+        ),
+
         // Vision+Text — Gemma 4 E4B dense vision+text model for 16 GB Macs.
         // ~4B parameters, 4-bit quantization, ~5 GB weights, 128K context.
         // Uses the same gemma4 tool template as the 26B-A4B default.

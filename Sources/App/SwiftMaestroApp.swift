@@ -84,6 +84,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // user's first experience is a named, live activity feed, never a
         // spinning beachball.
         SetupProgressService.shared.plan()
+
+        // Panel/sheet requests can arrive before any window exists (a file
+        // opened via Finder, a tool call), so install the coordinator's
+        // notification observers before the first window appears.
+        MainActor.assumeIsolated {
+            WorkspaceCoordinator.shared.installObserversIfNeeded()
+        }
     }
 
     func application(_ sender: NSApplication, openFile filename: String) -> Bool {
@@ -93,7 +100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch ext {
         case "excalidraw":
             ExcalidrawStore.shared.pendingOpenFileURL = url
-            WorkspaceLayoutState.shared.open(.canvas)
+            NotificationCenter.default.post(name: .openWorkspacePanel, object: WorkspacePanelKind.canvas)
             NotificationCenter.default.post(
                 name: .excalidrawBoardExternallyModified,
                 object: nil,
@@ -102,7 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return true
 
         case "md", "markdown":
-            WorkspaceLayoutState.shared.open(.notesMD)
+            NotificationCenter.default.post(name: .openWorkspacePanel, object: WorkspacePanelKind.notesMD)
             NotificationCenter.default.post(
                 name: .notesOpenFileRequested,
                 object: nil,
@@ -111,7 +118,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return true
 
         case "html", "htm":
-            WorkspaceLayoutState.shared.open(.htmlBuilder)
+            NotificationCenter.default.post(name: .openWorkspacePanel, object: WorkspacePanelKind.htmlBuilder)
             SwiftWeaverStore.shared.pendingOpenFileURL = url
             NotificationCenter.default.post(
                 name: .swiftWeaverOpenFileRequested,
@@ -121,7 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return true
 
         case "docx", "doc":
-            WorkspaceLayoutState.shared.open(.maestroDocs)
+            NotificationCenter.default.post(name: .openWorkspacePanel, object: WorkspacePanelKind.maestroDocs)
             MaestroDocsStore.shared.pendingOpenFileURL = url
             NotificationCenter.default.post(
                 name: .maestroDocsOpenFileRequested,
@@ -141,12 +148,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // These phantom windows produce "Invalid window" constraint errors
         // (CDXPackagesSetWindowConstraints) and may overlap the main window
         // without ever reaching a usable layout.
-        //
-        // Our own code (ContentView.onAppear + SwiftMaestroApp.task) reopens
-        // the correct windows from WorkspaceLayoutState. Close any windows
-        // macOS already restored in this launch that aren't the main window.
         Task { @MainActor in
-            // Wait briefly so the main window has time to establish itself
+            // Wait briefly so the Agents window has time to establish itself
             // as NSApp.mainWindow.
             try? await Task.sleep(for: .milliseconds(300))
             guard let main = NSApp.mainWindow else { return }
@@ -155,7 +158,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard window.level == .normal else { continue }
                 let isSettings = window.title == "Settings"
                 let isAbout = window.title == "About"
-                if !isSettings && !isAbout {
+                // Our floating panel windows are recreated from
+                // WorkspaceLayoutState rather than from macOS restoration, so
+                // they are never phantoms — keep them.
+                let isPanelWindow = window.identifier?.rawValue.hasPrefix(
+                    FloatingWindowFrameStore.identifierPrefix) == true
+                if !isSettings && !isAbout && !isPanelWindow {
                     window.close()
                 }
             }
@@ -189,6 +197,7 @@ struct SwiftMaestroApp: App {
     @State private var catalog = ModelCatalog()
     @State private var workspace = WorkspaceStore()
     @State private var todoStore = TodoStore()
+    @State private var osintProfileStore = OSINTProfileStore.shared
     @State private var planStore = PlanStore()
     @State private var messageStore = AgentMessageStore()
     @State private var theme: ThemeStore
@@ -251,13 +260,17 @@ struct SwiftMaestroApp: App {
 
 
     var body: some Scene {
-        WindowGroup {
-            ContentView()
+        // The launch window: the Agents list plus the toolbar chrome that
+        // used to live in the main canvas window. Every other panel opens as
+        // a floating window the user can place on any monitor.
+        WindowGroup("SwiftMaestro", id: "agents-window") {
+            AgentsWindowView(mcpService: mcpService)
                 .environment(engine)
                 .environment(catalog)
                 .environment(visionProxyService)
                 .environment(workspace)
                 .environment(todoStore)
+                .environment(osintProfileStore)
                 .environment(planStore)
                 .environment(messageStore)
                 .environment(theme)
@@ -277,210 +290,9 @@ struct SwiftMaestroApp: App {
                 .environment(pluginService)
                 .environment(macroStore)
                 .environment(webBrowserStore)
-                .task {
-                    appDelegate.mcpService = mcpService
-                    appDelegate.whatsAppService = whatsAppService
-                    CRMContactCardService.shared.whatsAppService = whatsAppService
-                    pluginService.loadPlugins()
-                    BrowserExtensionService.shared.loadExtensions()
-                    // Must complete before any agent could possibly dispatch a
-                    // tool call — see ToolRegistry.swift's migration notes.
-                    await MaestroTools.registerAllMigratedTools()
-                    // Install the OpenCode-style permission checker so project
-                    // .opencode/permissions.json and .ai-context/permissions.json
-                    // policies can allow/ask/deny tools and paths.
-                    await ToolRegistry.shared.setPermissionChecker(PermissionService.shared)
-                    // Restore user settings from the external JSON backup if the
-                    // UserDefaults plist has been reset or deleted. This must run
-                    // before the observable stores read their initial values.
-                    let didRestore = SettingsBackupService.shared.restoreIfNeeded()
-                    if didRestore {
-                        catalog.selectedModelID = UserDefaults.standard.string(forKey: ModelCatalog.selectedModelKey)
-                            ?? catalog.selectedModelID
-                        theme.reloadFromDefaults()
-                    }
-                    SwiftMaestroDefaultsMigration.applyIfNeeded()
-                    // Migrate any pre-centralized app data into the single
-                    // SwiftMaestro app root (data/, models/, logs/, backups/).
-                    SwiftMaestroPaths.migrateFromFlatLayout()
-                    // Prove the data dir is writable — the persistence layer
-                    // used to fail silently via `try?`; one [PERSIST] line per
-                    // launch makes its health visible in Console.
-                    SwiftMaestroPaths.performPersistenceCanary()
-                    // Create the shared ~/.ai-context scaffold up front so a fresh,
-                    // self-contained install has its data directory before first use.
-                    SimpleMemoryStore.ensureScaffold()
-                    // Warm the SQLite FTS memory index in the background so the
-                    // first memory_search doesn't pay the (multi-minute) full-store
-                    // build on the caller's critical path. Fire-and-forget: the
-                    // service runs the walk on a detached utility task.
-                    await MemorySearchService.shared.warm()
-                    // First-run dependency installation. The services are all
-                    // nonisolated, so their heavy synchronous work (extraction,
-                    // npm installs, per-binary codesigning, multi-GB model
-                    // hardlink/copy) runs OFF the main thread — no beachball —
-                    // while the setup progress sheet names each item live.
-                    let setupProgress = SetupProgressService.shared
-                    let setupReporter = SetupReporter()
-                    if setupProgress.hasPendingWork {
-                        setupProgress.beginPlannedWork()
-                    }
-                    // Extract and install any MCP servers bundled inside the app bundle
-                    // into ~/Library/Application Support/SwiftMaestro/mcp-servers/. This is
-                    // the foundation for a one-click install .dmg with no external deps.
-                    do {
-                        _ = try await MCPServerBundleService.shared.installIfNeeded(progress: setupReporter)
-                    } catch {
-                        NSLog("[SwiftMaestroApp] MCP server bundle installation failed: %@", error.localizedDescription)
-                        await setupReporter.finish(SetupStepID.mcpServers, .failed(error.localizedDescription))
-                    }
-                    // If bundled servers were installed, update the saved MCP server list
-                    // so their resolved paths are used instead of the hardcoded defaults.
-                    await MCPServerBundleService.shared.applyBundledServersIfNeeded()
-                    // Install the ArtCraft Crafting Apps payload (fetched CLI
-                    // binaries + desktop apps, two-stage scanned by
-                    // scripts/fetch-craft-apps.sh) and register their MCP
-                    // servers — must happen before startEnabledServers() below
-                    // so the agent's first turn can use them.
-                    do {
-                        try CraftAppInstallService.shared.installIfNeeded()
-                    } catch {
-                        NSLog("[SwiftMaestroApp] Craft app installation failed: %@", error.localizedDescription)
-                    }
-                    await CraftAppInstallService.shared.registerMCPEntriesIfNeeded()
-                    // Install the default bundled model from the app bundle into the
-                    // canonical <model-directory>/models/ root. Hardlinks are used when the app
-                    // bundle and model root share a filesystem; otherwise an awaited
-                    // copy runs. This makes the "full" .dmg work immediately after the
-                    // user drags the app to /Applications.
-                    _ = await BundledModelService.shared.installIfNeeded(progress: setupReporter)
-                    // Auto-configure web MCP servers (webclaw, firecrawl, read-website-fast)
-                    // on first launch so agents can search the web immediately.
-                    await WebSetupService.configureIfNeeded(progress: setupReporter)
-                    if setupProgress.isRunning {
-                        setupProgress.complete()
-                    }
-                    // Expose the workspace to native delegation/workspace tools.
-                    MaestroTools.workspace = workspace
-                    // One-time migration so existing installs get newly-added tool
-                    // categories enabled by default without mutating state during UI
-                    // rendering.
-                    workspace.migrateEnabledToolCategories()
-                    // Recover plans from previous builds and migrate them to the shared
-                    // memory store so they survive workspace resets and reinstalls.
-                    planStore.migrateFromLegacyStorage(navigatorID: workspace.navigator.id)
-                    // Hide project scopes whose plans haven't been touched in 60 days.
-                    // They remain on disk and can be restored from Manage Scopes.
-                    planStore.archiveInactiveProjectScopes()
-                    // Wire the vision proxy service to the live inference engine.
-                    visionProxyService.setEngine(engine)
-                    // Expose the live-todo store to the native todo tools.
-                    MaestroTools.todoStore = todoStore
-                    // Expose the plan store to the native plan tools.
-                    MaestroTools.planStore = planStore
-                    // Expose the inter-agent message store to the messaging tools.
-                    MaestroTools.messageStore = messageStore
-                    // Expose the workspace layout so tools can open/focus panels.
-                    MaestroTools.workspaceLayout = WorkspaceLayoutState.shared
-                    // Wire client-side MCP tools into the inference engine and
-                    // spawn the user-enabled MCP servers (permissioned by MCP flags).
-                    engine.mcpService = mcpService
-                    await mcpService.startEnabledServers()
-                    // Expose the inference engine and model catalog so tools can run
-                    // headless agent workflows without coupling to the UI.
-                    MaestroTools.engine = engine
-                    MaestroTools.catalog = catalog
-                    // Create the persistent bus worker service and keep it alive.
-                    let worker = BusWorker(engine: engine, mcpService: mcpService)
-                    busWorker = worker
-                    MaestroTools.busWorker = worker
-                    // System health watchdog: crash/hang notifications → "Diagnose
-                    // with Maestro" seeds the Navigator chat with the crash context.
-                    SystemHealthWatchService.shared.onDiagnose = { summary in
-                        let navigator = workspace.navigator
-                        let model = catalog.effectiveModel(for: navigator)
-                        let vm = ChatViewModelCache.shared.viewModel(
-                            for: navigator,
-                            projectName: workspace.projectName(for: navigator))
-                        vm.inputText = SystemHealthWatchService.diagnosticPrompt(for: summary)
-                        // Privacy gate: auto-send only to local models; a remote
-                        // provider gets a pre-filled draft the user reviews first
-                        // (crash reports can contain paths and usernames).
-                        if let model, !model.isRemote {
-                            vm.send(engine: engine, catalog: catalog, model: model)
-                        }
-                        openOrFocusPanel(.agentChat(navigator.id))
-                    }
-                    SystemHealthWatchService.shared.start()
-                    // Ensure the SwiftHelper support agent exists, and once the bundled
-                    // Qwen3-4B is on disk (DMG install or Models-tab download), default
-                    // the SwiftHelper to it so help works with no other model configured.
-                    let swiftHelper = workspace.swiftHelper
-                    if swiftHelper.modelID == nil, ModelCatalog.swiftHelperModelAvailable {
-                        workspace.setModel(ModelCatalog.swiftHelperModelID, for: swiftHelper.id)
-                    }
-                    // Ensure the bundled local coding agent exists, and once the
-                    // coding model is on disk (Qwen 3 Coder Next preferred,
-                    // DeepSeek Coder V2 Lite fallback; DMG install or Models-tab
-                    // download), default the Local Coder to it so coding help works out
-                    // of the box.
-                    let coder = workspace.coder
-                    if coder.modelID == nil, ModelCatalog.coderModelAvailable {
-                        workspace.setModel(ModelCatalog.coderModelID, for: coder.id)
-                    }
-                    // Ensure the online coding agent exists. It intentionally has no
-                    // default model — the user selects a remote model (e.g. Kimi K2.7 Code).
-                    let onlineCoder = workspace.onlineCoder
-                    // Ensure the built-in Searcher agent exists for fast search.
-                    let searcher = workspace.searcher
-                    // Developer machines: give the SwiftHelper the SwiftMaestro repo as
-                    // its working directory so git history + docs/ are authorized
-                    // tool scope (it can consult known-good committed state when
-                    // diagnosing). End users have no repo — they keep the default
-                    // app-support root, which is always authorized.
-                    if swiftHelper.workingDirectory == nil {
-                        let repo = NSHomeDirectory() + "/GitHub/FUSV/SwiftMaestro"
-                        if FileManager.default.fileExists(atPath: repo + "/.git") {
-                            workspace.setWorkingDirectory(repo, for: swiftHelper.id)
-                        }
-                    }
-                    // Developer machines: give the Online Coder the SwiftMaestro repo
-                    // as its working directory so it can build and edit the project
-                    // out of the box. End users keep the default app-support root.
-                    if onlineCoder.workingDirectory == nil {
-                        let repo = NSHomeDirectory() + "/GitHub/FUSV/SwiftMaestro"
-                        if FileManager.default.fileExists(atPath: repo + "/.git") {
-                            workspace.setWorkingDirectory(repo, for: onlineCoder.id)
-                        }
-                    }
-                    // Validate capabilities for every locally-present model so
-                    // tool-call format / thinking support are known before any
-                    // generation runs. This is fast (JSON reads only).
-                    await catalog.refreshCapabilities()
-                    // NOTE: We no longer eagerly auto-load the selected default
-                    // model at launch. MLX model-load failures can call
-                    // fatalError() from C++ (via ErrorHandler.dispatch) rather
-                    // than throwing Swift errors, which crashes the app before
-                    // the UI is usable. The first user message will load the
-                    // model on demand; until then the UI stays responsive and
-                    // the launch path stays safe.
-                    //
-                    // Eagerly load WhisperKit so the mic button is ready.
-                    whisperService.notesVaultURL = notesViewModel.vaultURL
-                    whisperService.ensureModelLoaded()
-                    // Voice Notes: wire the transcription + Notes.md export
-                    // services (also kicks off any recovered/queued notes).
-                    VoiceNotesStore.shared.attach(whisper: whisperService, notesVault: notesViewModel.vaultURL)
-                    // Reopen secondary canvas windows from the last session.
-                    for window in WorkspaceLayoutState.shared.canvasWindows {
-                        openWindow(id: "canvas-window", value: window.id)
-                    }
-                    // Snapshot all user settings to ~/.config/SwiftMaestro/ so they
-                    // survive plist deletion and can be synced via Chezmoi.
-                    SettingsBackupService.shared.backup()
-                }
+
         }
-        .defaultSize(width: 1100, height: 760)
+        .defaultSize(width: 300, height: 720)
         .windowResizability(.contentMinSize)
         .commands {
             // Window > panel recovery menu. All dynamic lists are computed
@@ -502,8 +314,7 @@ struct SwiftMaestroApp: App {
                     AppEnablementStore.shared.showsPlugin($0.id)
                 },
                 openPanels: Set(workspaceLayout.allOpenPanels),
-                canvasWindows: workspaceLayout.canvasWindows,
-                openCanvasWindowIDs: workspaceLayout.openCanvasWindowIDs,
+
                 panelLayout: PanelLayoutState.shared
             )
         }
@@ -529,6 +340,7 @@ struct SwiftMaestroApp: App {
                 .environment(visionProxyService)
                 .environment(workspace)
                 .environment(todoStore)
+                .environment(osintProfileStore)
                 .environment(planStore)
                 .environment(messageStore)
                 .environment(theme)
@@ -546,6 +358,7 @@ struct SwiftMaestroApp: App {
                     .environment(engine)
                     .environment(catalog)
                     .environment(todoStore)
+                    .environment(osintProfileStore)
                     .environment(planStore)
                     .environment(theme)
                     .environment(macroStore)
@@ -568,6 +381,7 @@ struct SwiftMaestroApp: App {
                     .environment(visionProxyService)
                     .environment(workspace)
                     .environment(todoStore)
+                    .environment(osintProfileStore)
                     .environment(planStore)
                     .environment(messageStore)
                     .environment(theme)
@@ -592,40 +406,6 @@ struct SwiftMaestroApp: App {
         .windowResizability(.contentMinSize)
 
 
-        // Secondary canvas windows: each hosts a full free-tile canvas (the
-        // same view as the main workspace), so a group of panels can live as
-        // ONE window on a second display rather than N floating windows.
-        // Tiles travel between canvases via the panel's ⋯ → "Move to" menu.
-        WindowGroup("Canvas", id: "canvas-window", for: UUID.self) { $canvasID in
-            if let canvasID {
-                CanvasWorkspaceView(canvasID: canvasID)
-                    .environment(engine)
-                    .environment(catalog)
-                    .environment(visionProxyService)
-                    .environment(workspace)
-                    .environment(todoStore)
-                    .environment(planStore)
-                    .environment(messageStore)
-                    .environment(theme)
-                    .environment(whisperService)
-                    .environment(macroStore)
-                    .environment(notesViewModel)
-                    .environment(eventKitStore)
-                    .environment(appleNotesService)
-                    .environment(contactsService)
-                    .environment(kanbanStore)
-                    .environment(numbersService)
-                    .environment(mapsService)
-                    .environment(photosService)
-                    .environment(mailService)
-                    .environment(whatsAppService)
-                    .environment(discordService)
-                    .environment(pluginService)
-                    .environment(webBrowserStore)
-            }
-        }
-        .defaultSize(width: 1_100, height: 800)
-        .windowResizability(.contentMinSize)
 
         #if os(macOS)
         Settings {
@@ -635,6 +415,7 @@ struct SwiftMaestroApp: App {
                 .environment(visionProxyService)
                 .environment(workspace)
                 .environment(todoStore)
+                .environment(osintProfileStore)
                 .environment(planStore)
                 .environment(messageStore)
                 .environment(theme)
@@ -652,12 +433,15 @@ struct SwiftMaestroApp: App {
         // content's size (so it can't be resized). `.contentMinSize` enforces only
         // the content's MINIMUM, letting the user resize the window larger to use
         // available screen space (e.g. see the Appearance preview without scrolling).
-        // Pomodoro menu-bar extra — the pomarchy pattern on macOS: icon +
-        // live counter always visible; left-click opens the state-aware menu.
+        // Menu-bar companion: the recovery path when every panel window is
+        // closed, plus the pomodoro controls.
         MenuBarExtra {
             PomodoroMenuBarMenu(store: PomodoroStore.shared) {
                 openOrFocusPanel(.pomodoro)
             }
+            Divider()
+            Button("Show Agents") { openOrFocusPanel(.agents) }
+            Button("Show Apps") { openOrFocusPanel(.appLauncher) }
         } label: {
             PomodoroMenuBarLabel(store: PomodoroStore.shared)
         }
@@ -665,22 +449,10 @@ struct SwiftMaestroApp: App {
         #endif
     }
 
-    /// Menu-bar companion to `PanelCommands.openOrFocus`: dock the panel into
-    /// the grid, or front it (floating window / canvas tile) when already open.
+    /// Menu-bar companion to `PanelCommands.openOrFocus`: open the panel's
+    /// floating window, or front it when it is already open.
     private func openOrFocusPanel(_ kind: WorkspacePanelKind) {
-        switch workspaceLayout.open(kind) {
-        case .floated:
-            openWindow(id: "workspace-panel-window", value: WorkspacePanelWindowID(kind: kind))
-        case .alreadyOpen:
-            if workspaceLayout.isFloating(kind) {
-                openWindow(id: "workspace-panel-window", value: WorkspacePanelWindowID(kind: kind))
-            } else if let tile = workspaceLayout.canvasTile(containing: kind) {
-                workspaceLayout.bringTileToFront(tile.id)
-            }
-            NotificationCenter.default.post(name: .bringWorkspacePanelToFront, object: kind)
-        case .dockedDirectly:
-            break
-        }
+        WorkspaceCoordinator.shared.openPanel(kind)
     }
 }
 
@@ -702,15 +474,24 @@ private struct PanelCommands: Commands {
     let plugins: [PluginManifest]
     /// Open panel kinds at body-evaluation time — drives the checkmarks.
     let openPanels: Set<WorkspacePanelKind>
-    /// Secondary canvas windows (persisted) and which of them are actually on
-    /// screen right now — drives the Canvas Windows reopen section.
-    let canvasWindows: [CanvasWindowInfo]
-    let openCanvasWindowIDs: Set<UUID>
+
     let panelLayout: PanelLayoutState
 
     @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
+        // The Window menu is installed for the process's whole lifetime, so
+        // it is the most reliable place to hand the coordinator an
+        // `openWindow` handle: panel-open requests keep working even when
+        // every panel window is closed.
+        let _ = WorkspaceCoordinator.shared.bindOpenWindow { kind in
+            if kind == .agents {
+                openWindow(id: "agents-window")
+            } else {
+                openWindow(id: "workspace-panel-window", value: WorkspacePanelWindowID(kind: kind))
+            }
+        }
+
         CommandGroup(before: .windowArrangement) {
             // Recovery-critical chrome first: if these get closed there is no
             // other in-app path back to the navigator or the launcher.
@@ -724,51 +505,11 @@ private struct PanelCommands: Commands {
             panelsMenu
             agentSubPanelsMenu
 
-            // Canvas windows: closing one used to strand its tiles invisibly
-            // until the next app restart. Reopen (or focus) from here — and
-            // Close Canvas Window removes it entirely (tiles migrate back to
-            // the main canvas).
-            if !canvasWindows.isEmpty {
-                Divider()
-                Section("Canvas Windows") {
-                    ForEach(canvasWindows) { window in
-                        Menu {
-                            Button {
-                                openWindow(id: "canvas-window", value: window.id)
-                            } label: {
-                                Label(
-                                    openCanvasWindowIDs.contains(window.id) ? "Focus Window" : "Reopen Window",
-                                    systemImage: "rectangle.on.rectangle"
-                                )
-                            }
-                            Divider()
-                            Button(role: .destructive) {
-                                layout.removeCanvasWindow(id: window.id)
-                            } label: {
-                                Label("Close Canvas Window", systemImage: "xmark.rectangle")
-                            }
-                        } label: {
-                            Label(
-                                window.name,
-                                systemImage: openCanvasWindowIDs.contains(window.id)
-                                    ? "checkmark" : "rectangle.on.rectangle"
-                            )
-                        }
-                    }
-                }
-            }
-
             Divider()
 
-            Button("New Canvas Window") {
-                let info = layout.createCanvasWindow()
-                openWindow(id: "canvas-window", value: info.id)
-            }
-
-            Divider()
-
-            Button("Reset Layout to Default") {
+            Button("Reset Window Positions") {
                 layout.resetToDefaultLayout()
+                FloatingWindowFrameStore.shared.resetAll()
             }
 
             Divider()
@@ -854,6 +595,15 @@ private struct PanelCommands: Commands {
                         ? "button.programmable" : "button.programmable.fill"
                 )
             }
+            Button {
+                withAnimation { panelLayout.toggleVisibility(.osintProfile) }
+            } label: {
+                Label(
+                    panelLayout.hiddenPanels.contains(.osintProfile) ? "Show OSINT Profile" : "Hide OSINT Profile",
+                    systemImage: panelLayout.hiddenPanels.contains(.osintProfile)
+                        ? "person.crop.rectangle.stack" : "person.crop.rectangle.stack.fill"
+                )
+            }
         }
     }
 
@@ -879,25 +629,10 @@ private struct PanelCommands: Commands {
 
     // MARK: Open / focus
 
-    /// Mirrors `ContentView.openPanel`: open when closed; when already open,
-    /// front the floating window or raise the docked tile, and ping the
-    /// bring-to-front notifications so detached agent windows respond too.
+    /// Open the panel, or front it when it is already open. Delegates to the
+    /// coordinator so the Window menu and the notification path share one
+    /// code path (and one `openWindow` binding).
     private func openOrFocus(_ kind: WorkspacePanelKind) {
-        switch layout.open(kind) {
-        case .floated:
-            openWindow(id: "workspace-panel-window", value: WorkspacePanelWindowID(kind: kind))
-        case .alreadyOpen:
-            if layout.isFloating(kind) {
-                openWindow(id: "workspace-panel-window", value: WorkspacePanelWindowID(kind: kind))
-            } else if let tile = layout.canvasTile(containing: kind) {
-                layout.bringTileToFront(tile.id)
-            }
-            NotificationCenter.default.post(name: .bringWorkspacePanelToFront, object: kind)
-            if case .agentChat(let id) = kind {
-                NotificationCenter.default.post(name: .bringAgentChatToFront, object: id)
-            }
-        case .dockedDirectly:
-            break
-        }
+        WorkspaceCoordinator.shared.openPanel(kind)
     }
 }

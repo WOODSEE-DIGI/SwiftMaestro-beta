@@ -41,6 +41,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
     case web
     case browser
     case scraping
+    case osint
     case bluesky
     case mastodon
     case patreon
@@ -112,7 +113,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         // Everything else can be deferred to search_tools/call_tool in compact mode.
         case .documents, .books, .server, .index, .system, .sqlite,
              .notes, .kanban, .excalidraw, .numbers, .maps, .photos, .stocks, .news,
-             .mail, .whatsapp, .discord, .web, .browser, .scraping,
+             .mail, .whatsapp, .discord, .web, .browser, .scraping, .osint,
              .bluesky, .mastodon, .patreon, .facebook, .instagram, .threads, .twitter, .linkedin, .tumblr,
              .youtube, .vimeo, .dailymotion, .peertube, .tiktok, .vk,
              .vault, .database, .dam, .blockchain, .overlayBuilder, .storyGame, .calendar, .reminders, .contacts, .mediaPlayer:
@@ -151,6 +152,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .web: return "Web"
         case .browser: return "Browser"
         case .scraping: return "Scraping"
+        case .osint: return "OSINT"
         case .bluesky: return "Bluesky"
         case .mastodon: return "Mastodon"
         case .patreon: return "Patreon"
@@ -210,6 +212,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .web: return "globe"
         case .browser: return "safari"
         case .scraping: return "tray.and.arrow.down"
+        case .osint: return "binoculars"
         case .bluesky: return "at"
         case .mastodon: return "bubble.left.and.text.bubble.right"
         case .patreon: return "heart.circle"
@@ -360,6 +363,15 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             // ~39 scraping tool schemas without losing the lightweight native
             // web tools above (web_search/fetch_url for documentation lookups).
             return []
+        case .osint:
+            return [
+                "blackbird_lookup", "subfinder_lookup", "theharvester_lookup",
+                "gitfive_lookup", "ghunt_email",
+                "social_analyzer_lookup", "dnsrecon_lookup", "spiderfoot_lookup",
+                "nexfil_lookup", "marple_lookup", "prot1ntelligence_lookup",
+                "slash_lookup", "torbot_lookup", "crosslinked_lookup", "sublist3r_lookup",
+                "sherlock_lookup", "holehe_lookup", "pymeta_lookup",
+            ]
         case .browser:
             return [
                 "browser_open", "browser_list", "browser_focus", "browser_close",
@@ -484,6 +496,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         case .reminders: return [.reminders]
         case .contacts: return [.contacts]
         case .bus: return [.busMonitor]
+        case .osint: return []
         case .file, .server, .index, .memory, .messaging,
              .system, .mcp, .sqlite, .workspace, .rules, .time,
              .news, .web, .scraping,
@@ -502,7 +515,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
         switch kind {
         case .navigator:
             return [
-                .workspace, .memory, .bus, .system, .rules, .time, .web, .browser, .scraping, .vault, .documents, .books,
+                .workspace, .memory, .bus, .system, .rules, .time, .web, .browser, .scraping, .osint, .vault, .documents, .books,
                 .notes, .kanban, .excalidraw, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky, .mastodon, .patreon, .facebook, .instagram, .threads, .twitter, .linkedin, .tumblr,
                 .youtube, .vimeo, .dailymotion, .peertube, .tiktok, .vk,
                 .database, .dam, .blockchain,
@@ -511,7 +524,7 @@ enum ToolCategory: String, CaseIterable, Identifiable, Codable, Hashable {
             ]
         case .project:
             return [
-                .file, .documents, .books, .shell, .server, .index, .memory, .messaging, .bus, .system, .mcp, .sqlite, .web, .browser, .scraping, .vault,
+                .file, .documents, .books, .shell, .server, .index, .memory, .messaging, .bus, .system, .mcp, .sqlite, .web, .browser, .scraping, .osint, .vault,
                 .notes, .kanban, .excalidraw, .numbers, .maps, .photos, .stocks, .news, .mail, .whatsapp, .discord, .bluesky, .mastodon, .patreon, .facebook, .instagram, .threads, .twitter, .linkedin, .tumblr,
                 .youtube, .vimeo, .dailymotion, .peertube, .tiktok, .vk,
                 .database, .dam, .blockchain,

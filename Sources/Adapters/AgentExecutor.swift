@@ -1061,6 +1061,15 @@ final class AgentExecutor: Sendable {
                         }
                         round += 1
                     }
+                    // If the agent produced a final answer without explicitly marking
+                    // its checklist done, complete any remaining tasks so the UI reflects
+                    // that the work finished.
+                    if let agentID = agentID,
+                       let agentUUID = UUID(uuidString: agentID) {
+                        await MainActor.run {
+                            MaestroTools.todoStore?.markAllDone(for: agentUUID)
+                        }
+                    }
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -2189,12 +2198,23 @@ final class AgentExecutor: Sendable {
         return string
     }
 
-    /// Per-agent tools (live todo checklist + plan docs) keyed by the calling
-    /// agent. The id is always injected (overwriting any model-supplied value)
-    /// since the model can't know it.
+    /// Per-agent tools (live todo checklist + plan docs + OSINT profile) keyed
+    /// by the calling agent. The id is always injected (overwriting any
+    /// model-supplied value) since the model can't know it.
     private static let agentScopedTools: Set<String> = [
         "create_todo_list", "add_todos", "update_todo_status", "read_todos",
+        "add_profile_finding", "read_profile", "update_finding_status",
+        "create_osint_profile", "switch_osint_profile", "list_osint_profiles",
+        "rename_osint_profile", "delete_osint_profile",
         "create_plan", "edit_plan", "read_plans", "read_plan",
+        // Native external OSINT tools: they record findings to the per-agent
+        // profile store, so they need the caller's agent_id.
+        "blackbird_lookup", "subfinder_lookup", "theharvester_lookup",
+        "gitfive_lookup", "ghunt_email",
+        "social_analyzer_lookup", "dnsrecon_lookup", "spiderfoot_lookup",
+        "nexfil_lookup", "marple_lookup", "prot1ntelligence_lookup",
+        "slash_lookup", "torbot_lookup", "crosslinked_lookup", "sublist3r_lookup",
+        "sherlock_lookup", "holehe_lookup", "pymeta_lookup",
         // Messaging: agent_id identifies the sender / the inbox owner.
         "send_agent_message", "read_agent_messages",
         // Bus: agent_id identifies the publisher/subscriber/replier.

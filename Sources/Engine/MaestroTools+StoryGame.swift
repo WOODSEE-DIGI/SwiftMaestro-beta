@@ -72,7 +72,8 @@ extension MaestroTools {
             let status: String
             switch result {
             case .dockedDirectly, .floated:
-                layout.dock(.storyGame)
+                NotificationCenter.default.post(
+                    name: .openWorkspacePanel, object: WorkspacePanelKind.storyGame)
                 status = "opened"
             case .alreadyOpen:
                 NotificationCenter.default.post(name: .bringWorkspacePanelToFront, object: WorkspacePanelKind.storyGame)

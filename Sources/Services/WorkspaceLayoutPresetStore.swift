@@ -18,6 +18,11 @@ struct WorkspaceLayoutPreset: Identifiable, Codable, Hashable, Sendable {
     var canvasTiles: [CanvasTile]
     /// Panels that were floating in their own windows.
     var floatingPanels: [WorkspacePanelKind]
+    /// Saved window frames (`WorkspacePanelKind.storageKey` → frame) for the
+    /// panels in this layout — what makes a recall reposition windows on the
+    /// right display instead of only re-tiling the canvas. Empty for the
+    /// built-in presets, which predate frame storage.
+    var windowFrames: [String: StoredFrame]
     /// Whether the workspace was locked.
     var isLocked: Bool
 
@@ -32,6 +37,7 @@ struct WorkspaceLayoutPreset: Identifiable, Codable, Hashable, Sendable {
         updatedAt: Date = Date(),
         canvasTiles: [CanvasTile],
         floatingPanels: [WorkspacePanelKind],
+        windowFrames: [String: StoredFrame] = [:],
         isLocked: Bool,
         isBuiltIn: Bool = false
     ) {
@@ -42,13 +48,14 @@ struct WorkspaceLayoutPreset: Identifiable, Codable, Hashable, Sendable {
         self.updatedAt = updatedAt
         self.canvasTiles = canvasTiles
         self.floatingPanels = floatingPanels
+        self.windowFrames = windowFrames
         self.isLocked = isLocked
         self.isBuiltIn = isBuiltIn
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, slot, createdAt, updatedAt
-        case canvasTiles, floatingPanels, isLocked, isBuiltIn
+        case canvasTiles, floatingPanels, windowFrames, isLocked, isBuiltIn
     }
 
     init(from decoder: Decoder) throws {
@@ -60,6 +67,7 @@ struct WorkspaceLayoutPreset: Identifiable, Codable, Hashable, Sendable {
         updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
         canvasTiles = try container.decodeIfPresent([CanvasTile].self, forKey: .canvasTiles) ?? []
         floatingPanels = try container.decodeIfPresent([WorkspacePanelKind].self, forKey: .floatingPanels) ?? []
+        windowFrames = try container.decodeIfPresent([String: StoredFrame].self, forKey: .windowFrames) ?? [:]
         isLocked = try container.decodeIfPresent(Bool.self, forKey: .isLocked) ?? false
         isBuiltIn = try container.decodeIfPresent(Bool.self, forKey: .isBuiltIn) ?? false
     }
@@ -73,6 +81,7 @@ struct WorkspaceLayoutPreset: Identifiable, Codable, Hashable, Sendable {
         try container.encode(updatedAt, forKey: .updatedAt)
         try container.encode(canvasTiles, forKey: .canvasTiles)
         try container.encode(floatingPanels, forKey: .floatingPanels)
+        try container.encode(windowFrames, forKey: .windowFrames)
         try container.encode(isLocked, forKey: .isLocked)
         try container.encode(isBuiltIn, forKey: .isBuiltIn)
     }
@@ -114,6 +123,7 @@ final class WorkspaceLayoutPresetStore {
             name: name,
             canvasTiles: layout.canvasTiles,
             floatingPanels: Array(layout.floatingPanels),
+            windowFrames: currentWindowFrames(),
             isLocked: layout.isLocked
         )
         // Assign built-in status if this matches a known default.
@@ -140,6 +150,7 @@ final class WorkspaceLayoutPresetStore {
             slot: slot,
             canvasTiles: layout.canvasTiles,
             floatingPanels: Array(layout.floatingPanels),
+            windowFrames: currentWindowFrames(),
             isLocked: layout.isLocked
         )
         // Assign built-in status if this matches a known default.
@@ -162,6 +173,7 @@ final class WorkspaceLayoutPresetStore {
         guard let idx = presets.firstIndex(where: { $0.id == id }) else { return }
         presets[idx].canvasTiles = layout.canvasTiles
         presets[idx].floatingPanels = Array(layout.floatingPanels)
+        presets[idx].windowFrames = currentWindowFrames()
         presets[idx].isLocked = layout.isLocked
         presets[idx].updatedAt = Date()
         activePresetID = id
@@ -174,7 +186,22 @@ final class WorkspaceLayoutPresetStore {
     func recall(_ id: UUID) {
         guard let preset = presets.first(where: { $0.id == id }) else { return }
         layout.restorePreset(preset)
+        // Reposition any open panel windows to the frames this layout was
+        // saved with (no-op for the built-in presets, which predate frames).
+        // This must happen BEFORE the windows are presented below, so panels
+        // opening fresh come back on the right display at the right spot.
+        FloatingWindowFrameStore.shared.restore(
+            preset.windowFrames,
+            applyingToOpenPanels: layout.allOpenPanels)
         activePresetID = id
+        // Present every panel the recalled layout now has open (and let the
+        // ones it dropped close themselves).
+        NotificationCenter.default.post(name: .workspaceLayoutRecalled, object: nil)
+    }
+
+    /// Frames of the panels currently open — the position half of a preset.
+    private func currentWindowFrames() -> [String: StoredFrame] {
+        FloatingWindowFrameStore.shared.snapshot(kinds: layout.allOpenPanels)
     }
 
     // MARK: - Rename / Delete
@@ -213,36 +240,17 @@ final class WorkspaceLayoutPresetStore {
             }
         }
 
-        func tiles(agentID: UUID) -> [CanvasTile] {
+        /// The panels that make up this built-in preset. The canvas/tiling
+        /// system is gone, so everything opens as a floating window; the old
+        /// grid geometry is no longer meaningful.
+        func panels(agentID: UUID) -> [WorkspacePanelKind] {
             switch self {
             case .default:
-                // Agents (4 cols, 10 rows) + Apps (4 cols, 6 rows) left,
-                // Navigator chat (20 cols, 16 rows) center.
-                return [
-                    CanvasTile(kinds: [.agents], col: 0, row: 0, colSpan: 4, rowSpan: 10, z: 1),
-                    CanvasTile(kinds: [.appLauncher], col: 0, row: 10, colSpan: 4, rowSpan: 6, z: 2),
-                    CanvasTile(kinds: [.agentChat(agentID)], col: 4, row: 0, colSpan: 20, rowSpan: 16, z: 3),
-                ]
+                return [.agents, .appLauncher, .agentChat(agentID)]
             case .focus:
-                // Single full-screen chat, no chrome — maximum focus.
-                return [
-                    CanvasTile(kinds: [.agentChat(agentID)], col: 0, row: 0, colSpan: 24, rowSpan: 16, z: 1),
-                ]
+                return [.agentChat(agentID)]
             case .dashboard:
-                // Agents + Apps left column, chat center, tasks right.
-                return [
-                    CanvasTile(kinds: [.agents], col: 0, row: 0, colSpan: 4, rowSpan: 8, z: 1),
-                    CanvasTile(kinds: [.appLauncher], col: 0, row: 8, colSpan: 4, rowSpan: 8, z: 2),
-                    CanvasTile(kinds: [.agentChat(agentID)], col: 4, row: 0, colSpan: 14, rowSpan: 16, z: 3),
-                    CanvasTile(kinds: [.kanban], col: 18, row: 0, colSpan: 6, rowSpan: 8, z: 4),
-                    CanvasTile(kinds: [.notesMD], col: 18, row: 8, colSpan: 6, rowSpan: 8, z: 5),
-                ]
-            }
-        }
-
-        var floatingPanels: [WorkspacePanelKind] {
-            switch self {
-            case .default, .focus, .dashboard: return []
+                return [.agents, .appLauncher, .agentChat(agentID), .kanban, .notesMD]
             }
         }
     }
@@ -250,16 +258,17 @@ final class WorkspaceLayoutPresetStore {
     private func ensureBuiltInPresets() {
         let navigatorID = WorkspaceStore().navigator.id
         for builtIn in BuiltInPreset.allCases {
+            let panels = builtIn.panels(agentID: navigatorID)
             if let idx = presets.firstIndex(where: { $0.name == builtIn.displayName }) {
-                // Refresh built-in presets so their navigator chat tile always
-                // points to the current navigator agent. Stale IDs cause
-                // "Agent Not Found" when the preset is recalled.
+                // Refresh built-in presets so their navigator chat panel
+                // always points to the current navigator agent. Stale IDs
+                // cause "Agent Not Found" when the preset is recalled.
                 var refreshed = WorkspaceLayoutPreset(
                     id: presets[idx].id,
                     name: builtIn.displayName,
                     slot: builtIn.slot,
-                    canvasTiles: builtIn.tiles(agentID: navigatorID),
-                    floatingPanels: builtIn.floatingPanels,
+                    canvasTiles: [],
+                    floatingPanels: panels,
                     isLocked: false
                 )
                 refreshed.isBuiltIn = true
@@ -268,8 +277,8 @@ final class WorkspaceLayoutPresetStore {
                 var preset = WorkspaceLayoutPreset(
                     name: builtIn.displayName,
                     slot: builtIn.slot,
-                    canvasTiles: builtIn.tiles(agentID: navigatorID),
-                    floatingPanels: builtIn.floatingPanels,
+                    canvasTiles: [],
+                    floatingPanels: panels,
                     isLocked: false
                 )
                 preset.isBuiltIn = true

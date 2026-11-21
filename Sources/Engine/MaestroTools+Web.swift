@@ -187,9 +187,16 @@ extension MaestroTools {
                         // Keep only results whose title or snippet mentions at least one
                         // query term, so a random QUT education page doesn't satisfy a
                         // weather query.
+                        let stopwords = Set([
+                            "a", "an", "the", "in", "on", "at", "of", "for", "and",
+                            "or", "to", "is", "are", "was", "were", "be", "been",
+                            "being", "it", "its", "this", "that", "with", "as", "by",
+                            "from", "about", "into", "through", "during", "before",
+                            "after", "above", "below", "between", "under", "over",
+                        ])
                         let queryTerms = query.lowercased()
-                            .components(separatedBy: .whitespacesAndNewlines)
-                            .filter { !$0.isEmpty }
+                            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                            .filter { !$0.isEmpty && !stopwords.contains($0) }
                         results = parsed.filter { r in
                             let haystack = (r.title + " " + r.snippet).lowercased()
                             return queryTerms.contains { haystack.contains($0) }
@@ -244,7 +251,7 @@ extension MaestroTools {
 
     // MARK: - Brave Search fallback
 
-    private static let braveSecretReference = "secret://BSABHBvKujhsdWMuaQhJb8P8hJpkbUM"
+    private static let braveSecretReference = "secret://Brave Search"
 
     private static func braveSearch(query: String, limit: Int) async -> [SearchResult] {
         guard let apiKey = SecretsStore.resolve(reference: braveSecretReference, currentProject: nil),

@@ -13,6 +13,23 @@ struct WindowSizeConfigurator: NSViewRepresentable {
     let minSize: CGSize
     let defaultSize: CGSize
     let backgroundColor: Color?
+    /// When true, the configurator always resizes the window to `defaultSize`
+    /// on first configure. Use this for windows whose default size is
+    /// intentional (e.g. the Agents control centre); leave false for windows
+    /// whose size should be user-persistent.
+    let forceDefaultSize: Bool
+
+    init(
+        minSize: CGSize,
+        defaultSize: CGSize,
+        backgroundColor: Color?,
+        forceDefaultSize: Bool = false
+    ) {
+        self.minSize = minSize
+        self.defaultSize = defaultSize
+        self.backgroundColor = backgroundColor
+        self.forceDefaultSize = forceDefaultSize
+    }
 
     func makeNSView(context: Context) -> NSView {
         WindowObserverView()
@@ -57,7 +74,11 @@ struct WindowSizeConfigurator: NSViewRepresentable {
         window.setFrameAutosaveName("")
 
         let current = window.frame.size
-        if current.width < minSize.width || current.height < minSize.height {
+        let needsResize = current.width < minSize.width
+            || current.height < minSize.height
+            || (forceDefaultSize && (current.width != defaultSize.width || current.height != defaultSize.height))
+
+        if needsResize {
             let targetSize = NSSize(width: defaultSize.width, height: defaultSize.height)
             var frame = window.frame
             frame.origin.y += frame.size.height - targetSize.height

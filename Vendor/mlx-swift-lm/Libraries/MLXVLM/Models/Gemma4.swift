@@ -1734,7 +1734,29 @@ public final class Gemma4: Module, VLMModel, KVCacheDimensionProvider {
             )
             return .logits(result)
         } else {
-            let result = languageModel(input.text.tokens, cache: convertedCache)
+            // Chunk text prefill so long prompts (common in agentic tool-call
+            // loops) don't materialize a full L×L attention score matrix in one
+            // shot. Gemma 4's language-model path ignores `windowSize` otherwise,
+            // which caused metal::malloc failures on ~55K-token prompts on an
+            // M1 Ultra (single-buffer limit ~80 GB).
+            //
+            // Gemma4Processor.prepare returns 2-D tokens [1, L]; materialize the
+            // flat token list, feed it in `windowSize` chunks as fresh 2-D arrays,
+            // and keep the KV cache async-evaluated between chunks.
+            let prefillStepSize = windowSize ?? 512
+            let tokenIds = input.text.tokens.asArray(Int.self)
+            var position = 0
+            while position + prefillStepSize < tokenIds.count {
+                let chunkIds = Array(tokenIds[position..<position+prefillStepSize])
+                let chunk = MLXArray(chunkIds).expandedDimensions(axis: 0)
+                let _ = languageModel(chunk, cache: convertedCache)
+                asyncEval(convertedCache)
+                position += prefillStepSize
+            }
+            let tailIds = Array(tokenIds[position...])
+            let tail = MLXArray(tailIds).expandedDimensions(axis: 0)
+            eval(convertedCache)
+            let result = languageModel(tail, cache: convertedCache)
             return .logits(result)
         }
     }

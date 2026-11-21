@@ -143,17 +143,12 @@ struct ChatPanelHeaderToolbar: View {
     /// an untracked `AgentChatWindow` that the sidebar can't find later.
     private func floatOrFocus() {
         let kind = WorkspacePanelKind.agentChat(agentID)
-        if layout.isFloating(kind) {
-            NotificationCenter.default.post(name: .bringWorkspacePanelToFront, object: kind)
-            return
-        }
         if layout.isOpen(kind) {
-            layout.float(kind)
+            // Front an existing window; `openWindow` below is the reliable
+            // fallback when the notification arrives before the window exists.
+            NotificationCenter.default.post(name: .bringWorkspacePanelToFront, object: kind)
         } else {
-            let result = layout.open(kind)
-            if result == .dockedDirectly {
-                layout.float(kind)
-            }
+            layout.open(kind)
         }
         openWindow(id: "workspace-panel-window", value: WorkspacePanelWindowID(kind: kind))
     }

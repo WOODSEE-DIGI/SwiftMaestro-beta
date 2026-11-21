@@ -8,6 +8,7 @@ enum PanelType: String, CaseIterable, Identifiable, Codable, Sendable {
     case chat
     case tasks
     case macros
+    case osintProfile
     // Terminal moved out of this per-agent chat panel system entirely â it's
     // now a top-level `WorkspacePanelKind.terminal` under "Swift Apps",
     // openable/dockable/floatable independent of any specific agent's chat.
@@ -20,6 +21,7 @@ enum PanelType: String, CaseIterable, Identifiable, Codable, Sendable {
         case .chat: return "Chat"
         case .tasks: return "Tasks"
         case .macros: return "Macros"
+        case .osintProfile: return "Profile"
         }
     }
 
@@ -29,24 +31,35 @@ enum PanelType: String, CaseIterable, Identifiable, Codable, Sendable {
         case .chat: return "bubble.left.and.bubble.right"
         case .tasks: return "checklist"
         case .macros: return "button.programmable"
+        case .osintProfile: return "person.crop.rectangle.stack"
         }
     }
 
     /// Whether this panel can be popped out to a floating window.
     var supportsFloat: Bool {
         switch self {
-        case .plans, .tasks, .macros: return true
+        case .plans, .tasks, .macros, .osintProfile: return true
         case .chat: return false
         }
     }
 
     /// Default docked width before the user drags a divider. `chat` is always
     /// flexible and ignores width entirely.
-    var defaultWidth: CGFloat { 280 }
+    var defaultWidth: CGFloat {
+        switch self {
+        case .osintProfile: return 380
+        default: return 280
+        }
+    }
     /// Minimum docked width a divider drag can shrink this panel to.
     var minWidth: CGFloat { 200 }
     /// Maximum docked width a divider drag can grow this panel to.
-    var maxWidth: CGFloat { 520 }
+    var maxWidth: CGFloat {
+        switch self {
+        case .osintProfile: return 700
+        default: return 520
+        }
+    }
 }
 
 // MARK: - Panel Slot
@@ -92,6 +105,7 @@ final class PanelLayoutState {
 
     init() {
         loadWidths()
+        loadHiddenPanels()
     }
 
     // MARK: - Pane Widths
@@ -116,6 +130,7 @@ final class PanelLayoutState {
         } else {
             hiddenPanels.insert(panel)
         }
+        saveHiddenPanels()
     }
 
     func isFloating(_ panel: PanelType) -> Bool {
@@ -155,6 +170,19 @@ final class PanelLayoutState {
             paneWidths = Dictionary(uniqueKeysWithValues: widthsByRawValue.compactMap { key, value in
                 PanelType(rawValue: key).map { ($0, CGFloat(value)) }
             })
+        }
+    }
+
+    // MARK: - Hidden Panels Persistence
+
+    private func saveHiddenPanels() {
+        let rawValues = Array(hiddenPanels.map(\.rawValue))
+        UserDefaults.standard.set(rawValues, forKey: defaultsKey + ".hiddenPanels")
+    }
+
+    private func loadHiddenPanels() {
+        if let rawValues = UserDefaults.standard.array(forKey: defaultsKey + ".hiddenPanels") as? [String] {
+            hiddenPanels = Set(rawValues.compactMap(PanelType.init(rawValue:)))
         }
     }
 }

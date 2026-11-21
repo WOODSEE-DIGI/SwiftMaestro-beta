@@ -1,9 +1,10 @@
 import SwiftUI
 
-/// Resolves a `WorkspacePanelKind` to its actual content view. Shared between
-/// the docked grid (`ContentView`) and floating panel windows
-/// (`WorkspacePanelWindowView`) so both render identically and neither
-/// duplicates this switch.
+/// Resolves a `WorkspacePanelKind` to its actual content view. Used by every
+/// floating panel window (`WorkspacePanelWindowView`) so panel content is
+/// rendered consistently. The view is marked as workspace-embedded so child
+/// panels avoid adding toolbar items that would fight with the panel window's
+/// own header.
 struct WorkspacePanelContentView: View {
     let kind: WorkspacePanelKind
 
@@ -13,6 +14,11 @@ struct WorkspacePanelContentView: View {
     @Environment(DiscordService.self) private var discordService
 
     var body: some View {
+        content
+            .environment(\.isWorkspaceEmbedded, true)
+    }
+
+    @ViewBuilder private var content: some View {
         // Studio add-on panels render a locked placeholder until the add-on is
         // enabled (Settings → Add-ons). Everything else resolves normally.
         if kind.isStudioApp && !StudioAddon.shared.isAvailable {

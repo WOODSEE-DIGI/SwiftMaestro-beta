@@ -1374,6 +1374,47 @@ class ChatViewModel: ObservableObject {
             """
     }
 
+    /// Accepted/rejected findings from the currently active OSINT profile.
+    /// Prepended to the system prompt for OSINT agents so the model cannot miss
+    /// what the investigator has already reviewed and accepted.
+    static func osintProfileSection(for agentID: UUID) -> String {
+        guard let store = MaestroTools.osintProfileStore else { return "" }
+        let profile = store.profile(for: agentID)
+        let accepted = profile.findings.filter { $0.verificationStatus == .accepted }
+        let rejected = profile.findings.filter { $0.verificationStatus == .rejected }
+        let allProfiles = store.allProfiles(for: agentID)
+
+        var lines: [String] = ["", "═══ ACTIVE OSINT PROFILE (investigator-reviewed findings) ═══"]
+        if let subjectName = profile.subjectName, !subjectName.isEmpty {
+            lines.append("Active subject: \(subjectName)")
+        } else {
+            lines.append("Active profile id: \(profile.id.uuidString)")
+        }
+        if allProfiles.count > 1 {
+            lines.append("Other saved profiles: \(allProfiles.count - 1). Use list_osint_profiles / switch_osint_profile if you need a different subject.")
+        }
+        if !accepted.isEmpty {
+            lines.append("ACCEPTED findings — treat these as confirmed and build on them:")
+            for finding in accepted {
+                let label = finding.label.map { " — \($0)" } ?? ""
+                let source = finding.source.isEmpty ? "" : " [source: \(finding.source)]"
+                lines.append("- [\(finding.entityType.displayName)] \(finding.value)\(label)\(source)")
+            }
+        }
+        if !rejected.isEmpty {
+            lines.append("REJECTED findings — do NOT mention or build on these:")
+            for finding in rejected {
+                let label = finding.label.map { " — \($0)" } ?? ""
+                lines.append("- [\(finding.entityType.displayName)] \(finding.value)\(label)")
+            }
+        }
+        if accepted.isEmpty && rejected.isEmpty {
+            lines.append("No reviewed findings yet. Record discoveries with add_profile_finding and the investigator will review them.")
+        }
+        lines.append("═══ END ACTIVE PROFILE ═══")
+        return lines.joined(separator: "\n") + "\n"
+    }
+
     /// The SwiftHelper's system prompt — SwiftMaestro's built-in support engineer.
     /// A scoped runbook identity: internal diagnostics, MCP configuration help,
     /// and restore-to-last-known-good via the settings backup. Kept separate
@@ -2234,8 +2275,9 @@ class ChatViewModel: ObservableObject {
         let systemMessage = Self.systemMessage(
             for: agent, projectName: projectName, workingDirectory: workingDirectory,
             modelDescription: modelDescription, model: model, modelID: model.huggingFaceID,
-            usesXMLTools: model.toolCallFormat == .xmlFunction || model.toolCallFormat == .gemma4)
+            usesXMLTools: model.toolCallFormat == .xmlFunction)
         var inferenceSystemMessage = systemMessage
+        var promptPrefix = ""
         if let attachedPlan {
             // Refresh from disk so the agent's mid-session plan edits are
             // reflected; fall back to the attach-time copy if the plan (or
@@ -2246,10 +2288,21 @@ class ChatViewModel: ObservableObject {
             // models (Gemma 4 26B-A4B etc.) attend strongly to prompt head;
             // content appended after thousands of tokens of tool definitions
             // is effectively invisible.
-            inferenceSystemMessage.content = Self.attachedPlanSection(
-                planForPrompt, scope: attachedPlan.scope)
-                + inferenceSystemMessage.content
+            promptPrefix += Self.attachedPlanSection(planForPrompt, scope: attachedPlan.scope)
             NSLog("[PLANATTACH] injecting '\(planForPrompt.title)' (\(planForPrompt.content.count) chars) at system-prompt head")
+        }
+        // For OSINT agents, always inject the investigator-reviewed profile so
+        // the model cannot miss accepted findings when planning the next angle.
+        let category = agent.category ?? AgentCategory.infer(from: agent.name)
+        if category == .osint {
+            let profileSection = Self.osintProfileSection(for: agent.id)
+            if !profileSection.isEmpty {
+                promptPrefix += profileSection
+                NSLog("[OSINT] injecting accepted profile findings for agent \(agent.id.uuidString)")
+            }
+        }
+        if !promptPrefix.isEmpty {
+            inferenceSystemMessage.content = promptPrefix + inferenceSystemMessage.content
         }
         // Keep the visible/serialized system prompt in sync with the regenerated
         // inference prompt so the user sees the correct model-capacity guidance.
