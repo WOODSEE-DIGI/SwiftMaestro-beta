@@ -1334,13 +1334,13 @@ struct ModelsSettingsTab: View {
                             }
                             GridRow {
                                 Text("coding-router/plan").font(.caption.monospaced())
-                                Text("Qwen3.8-Flash-Next").font(.caption)
+                                Text("Qwen3.8-Flash-Next 125B-A6B-Q4_K_M").font(.caption)
                                 Text("Best all-around").font(.caption)
                             }
                             GridRow {
                                 Text("coding-router/deep").font(.caption.monospaced())
-                                Text("DeepSeek V4.1 Flash").font(.caption)
-                                Text("Hardest problems").font(.caption)
+                                Text("DeepSeek-R1 32B-Qwen-Distill-Q4_K_M").font(.caption)
+                                Text("Hardest reasoning problems").font(.caption)
                             }
                             GridRow {
                                 Text("coding-router/vision").font(.caption.monospaced())
