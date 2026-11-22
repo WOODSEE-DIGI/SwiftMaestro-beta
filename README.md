@@ -44,19 +44,29 @@ Currently SwiftMaestro is A native macOS AI assistant that runs large language m
 
 ---
 
-## What's New in 0.7.2
+## What's New in 1.0.0
 
-### Fixes
+### Workspace
 
-- **Launch crash fixed**: `ThemeStore` no longer dereferences the `NSApp` global before `NSApplication` exists, preventing the "Unexpectedly found nil while implicitly unwrapping an Optional value" trap at startup.
-- **Xcode build fixed**: the `Bundle WhisperKit Models` script phase now resolves the app bundle from `BUILT_PRODUCTS_DIR`, skips Debug builds by default, and never fails the build over optional assets.
-- **Web search reliability**: `web_search` now falls back to the Brave Search API when Firecrawl is unavailable, filters irrelevant Bing results, and instructs the model to use `fetch_url` or `browser_open` instead of giving up.
+- **Floating-window workspace**: the canvas/tiling workspace has been removed in favour of free-floating panels. The Agents window is now a fixed-size control centre, and every panel can be moved, resized, and pinned independently.
+- **Per-mode Apps launcher frames**: List, Grid, and Icons view modes each remember their own size and position, with sensible snap-to-edge defaults.
+- **Workspace state preservation**: switching workspaces no longer loses panel positions or MaestroDAM state.
 
-### Experimental
+### Agents & Apps
 
-- StoryGame engine and editor.
-- XAttr service.
-- DAMAgent chat panel.
+- **Apps launcher refresh**: new Auto/List/Grid/Icons modes, a header view-mode picker, and dynamic grid layout.
+- **Duplicate + button removed**: only the toolbar + remains for creating new project agents.
+- **Craft apps catalog updated**: SwiftMaestro now ships all 17 official ArtCraft Crafting Apps.
+
+### OSINT & DAM
+
+- **OSINT foundation**: local/offline OSINT tools with per-tool `.venv`s, authenticated tools (GitFive/GHunt), slow-tool timeouts, and findings recorded to `OSINTProfileStore`.
+- **OSINT profiles & graph**: multiple named profiles per agent with an Obsidian-style relationship graph.
+- **MaestroDAM accuracy**: accurate grid counts, zero-results reporting, and state preservation across workspace switches.
+
+### Models
+
+- **Local Coding Router docs**: Settings → Models now documents the local Ollama + LiteLLM router aliases available on this Mac.
 
 See [CHANGELOG.md](CHANGELOG.md) for earlier releases.
 
