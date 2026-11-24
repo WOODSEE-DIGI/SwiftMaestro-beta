@@ -75069,7 +75069,7 @@
         }
       }
     },
-    "DeepSeek V4.1 Flash" : {
+    "DeepSeek-R1 32B-Qwen-Distill-Q4_K_M" : {
 
     },
     "Default" : {
@@ -108839,7 +108839,7 @@
         }
       }
     },
-    "Hardest problems" : {
+    "Hardest reasoning problems" : {
 
     },
     "Hash: %@… · %@ reclaimable" : {
@@ -183467,7 +183467,7 @@
     "Qwen3.8 27B" : {
 
     },
-    "Qwen3.8-Flash-Next" : {
+    "Qwen3.8-Flash-Next 125B-A6B-Q4_K_M" : {
 
     },
     "Rating" : {
