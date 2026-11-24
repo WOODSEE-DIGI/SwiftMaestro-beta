@@ -13,8 +13,9 @@ struct AppsLauncherPanel: View {
     private var workspaceLayout = WorkspaceLayoutState.shared
     private var appEnablement = AppEnablementStore.shared
 
-    /// User-selected view mode for the Apps panel. `automatic` follows the panel
-    /// shape; `list`, `grid`, and `icon` force the corresponding layout.
+    /// User-selected view mode for the Apps panel. `automatic` is legacy
+    /// (kept only so old persisted values don't crash); the picker offers
+    /// `list`, `grid`, and `icon`.
     enum ViewMode: String, CaseIterable {
         case automatic
         case list
@@ -40,8 +41,11 @@ struct AppsLauncherPanel: View {
         }
     }
 
+    /// Modes shown in the picker — excludes the legacy `.automatic`.
+    private static let selectableModes: [ViewMode] = [.list, .grid, .icon]
+
     /// Persisted view mode preference for the Apps panel.
-    @AppStorage("appsLauncher.viewMode") private var viewMode: ViewMode = .automatic
+    @AppStorage("appsLauncher.viewMode") private var viewMode: ViewMode = .grid
 
     /// Titles of the sections the user has collapsed (expanded by default).
     @State private var collapsed: Set<String> = []
@@ -74,14 +78,16 @@ struct AppsLauncherPanel: View {
 
     /// The header toolbar shown for this panel in its floating window.
     var headerToolbar: some View {
-        Picker("View", selection: $viewMode) {
-            ForEach(ViewMode.allCases, id: \.self) { mode in
+        Picker(selection: $viewMode) {
+            ForEach(Self.selectableModes, id: \.self) { mode in
                 Label(mode.title, systemImage: mode.icon).tag(mode)
             }
+        } label: {
+            EmptyView()
         }
         .pickerStyle(.segmented)
-        .frame(width: 180)
-        .help("Switch between automatic, list, grid, and icon views")
+        .frame(width: 210)
+        .help("Switch between list, grid, and icon views")
     }
 
     var body: some View {
@@ -116,6 +122,8 @@ struct AppsLauncherPanel: View {
             }
             .onAppear {
                 migrateViewModeIfNeeded()
+                // Legacy: .automatic was removed from the picker — snap to .grid.
+                if viewMode == .automatic { viewMode = .grid }
             }
         }
     }
