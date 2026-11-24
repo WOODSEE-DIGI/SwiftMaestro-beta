@@ -44,29 +44,14 @@ Currently SwiftMaestro is A native macOS AI assistant that runs large language m
 
 ---
 
-## What's New in 1.0.0
+## What's New in 1.0.1
 
-### Workspace
+### Fixes
 
-- **Floating-window workspace**: the canvas/tiling workspace has been removed in favour of free-floating panels. The Agents window is now a fixed-size control centre, and every panel can be moved, resized, and pinned independently.
-- **Per-mode Apps launcher frames**: List, Grid, and Icons view modes each remember their own size and position, with sensible snap-to-edge defaults.
-- **Workspace state preservation**: switching workspaces no longer loses panel positions or MaestroDAM state.
-
-### Agents & Apps
-
-- **Apps launcher refresh**: new Auto/List/Grid/Icons modes, a header view-mode picker, and dynamic grid layout.
-- **Duplicate + button removed**: only the toolbar + remains for creating new project agents.
-- **Craft apps catalog updated**: SwiftMaestro now ships all 17 official ArtCraft Crafting Apps.
-
-### OSINT & DAM
-
-- **OSINT foundation**: local/offline OSINT tools with per-tool `.venv`s, authenticated tools (GitFive/GHunt), slow-tool timeouts, and findings recorded to `OSINTProfileStore`.
-- **OSINT profiles & graph**: multiple named profiles per agent with an Obsidian-style relationship graph.
-- **MaestroDAM accuracy**: accurate grid counts, zero-results reporting, and state preservation across workspace switches.
-
-### Models
-
-- **Local Coding Router docs**: Settings → Models now documents the local Ollama + LiteLLM router aliases available on this Mac.
+- **Duplicate bases/tables prevented**: `db_create_base` and `db_create_table` are now idempotent — creating a base or table that already exists returns the existing one instead of duplicating. A uniqueness guard in the database layer enforces this regardless of caller.
+- **MaestroDB sidebar clarity**: base headers now use a folder icon instead of the table icon, making bases and tables visually distinct.
+- **Markdown rendering hardened**: the chat markdown parser now handles malformed model output — partial table separators (`:--`), header/separator lines mashed together, and stray `**` bold markers on list items and table cells.
+- **Apps panel toolbar fixed**: removed the non-functional Auto view mode; List/Grid/Icons picker no longer overlaps the Keep on Top button.
 
 See [CHANGELOG.md](CHANGELOG.md) for earlier releases.
 
