@@ -533,6 +533,8 @@ enum MarkdownBlockParser {
             checked = true
             text = String(text.dropFirst(4))
         }
+        // Strip stray bold markers models leave on bullet items.
+        while text.hasSuffix("**") { text = String(text.dropLast(2)) }
         return (text, indent, checked)
     }
 
@@ -551,7 +553,11 @@ enum MarkdownBlockParser {
         guard rest.first == "." || rest.first == ")" else { return nil }
         let afterMarker = rest.dropFirst()
         guard afterMarker.first == " " else { return nil }
-        return (index, afterMarker.trimmingCharacters(in: .whitespaces), indent)
+        var text = afterMarker.trimmingCharacters(in: .whitespaces)
+        // Models sometimes leave stray bold markers on list items
+        // (e.g. "Discovery**" → "Discovery").
+        while text.hasSuffix("**") { text = String(text.dropLast(2)) }
+        return (index, text, indent)
     }
 
     /// Parse a markdown table starting at `startIndex`. Returns the header row,
@@ -560,13 +566,31 @@ enum MarkdownBlockParser {
     private static func parseTable(lines: [String], startIndex: Int) -> (header: [String], rows: [[String]], linesConsumed: Int)? {
         guard startIndex + 1 < lines.count else { return nil }
 
-        let headerLine = lines[startIndex].trimmingCharacters(in: .whitespaces)
-        let separatorLine = lines[startIndex + 1].trimmingCharacters(in: .whitespaces)
+        var headerLine = lines[startIndex].trimmingCharacters(in: .whitespaces)
+        var separatorLine = lines[startIndex + 1].trimmingCharacters(in: .whitespaces)
 
-        // Separator must be |---|---|... (dashes, pipes, colons for alignment, spaces)
+        // Some models mash the header and separator onto one line:
+        // "| Step | Action | :--" — split them apart.
+        if headerLine.contains(":--") || headerLine.contains(":---") {
+            if let pipeIdx = headerLine.lastIndex(of: "|") {
+                let candidate = String(headerLine[headerLine.index(after: pipeIdx)...])
+                    .trimmingCharacters(in: .whitespaces)
+                if candidate.allSatisfy({ $0 == "-" || $0 == ":" || $0 == " " || $0 == "|" }) {
+                    separatorLine = candidate
+                    headerLine = String(headerLine[..<pipeIdx]).trimmingCharacters(in: .whitespaces)
+                }
+            }
+        }
+
+        // Separator must look like |---|---|... (dashes, pipes, colons, spaces).
+        // Models sometimes output partial separators like ":--" — accept them
+        // as long as cells contain only separator characters.
         let isSeparator: Bool = {
-            let s = separatorLine.dropFirst().dropLast()  // strip outer pipes
-            return s.split(separator: "|").allSatisfy { cell in
+            let s = separatorLine.hasPrefix("|") ? String(separatorLine.dropFirst()) : separatorLine
+            let s2 = s.hasSuffix("|") ? String(s.dropLast()) : s
+            let cells = s2.split(separator: "|")
+            guard !cells.isEmpty else { return false }
+            return cells.allSatisfy { cell in
                 let trimmed = cell.trimmingCharacters(in: .whitespaces)
                 return trimmed.allSatisfy { $0 == "-" || $0 == ":" } && trimmed.count >= 1
             }
@@ -577,7 +601,16 @@ enum MarkdownBlockParser {
             let inner = line.trimmingCharacters(in: .whitespaces)
             let dropped = inner.hasPrefix("|") ? String(inner.dropFirst()) : inner
             let final = dropped.hasSuffix("|") ? String(dropped.dropLast()) : dropped
-            return final.split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }
+            return final.split(separator: "|").map { cleanCell($0) }
+        }
+
+        /// Strips stray bold markers that models leave in table cells
+        /// (e.g. "Discovery**" → "Discovery").
+        func cleanCell(_ raw: Substring) -> String {
+            var s = raw.trimmingCharacters(in: .whitespaces)
+            while s.hasSuffix("**") { s = String(s.dropLast(2)) }
+            while s.hasPrefix("**") { s = String(s.dropFirst(2)) }
+            return s.trimmingCharacters(in: .whitespaces)
         }
 
         let header = splitCells(headerLine)
