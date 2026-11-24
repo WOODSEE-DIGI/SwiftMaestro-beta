@@ -1,3 +1,12 @@
+# SwiftMaestro 1.0.1
+
+## Fixes
+
+- **Duplicate bases/tables prevented**: `db_create_base` and `db_create_table` are now idempotent — creating a base or table that already exists returns the existing one instead of duplicating. A uniqueness guard in the database layer enforces this regardless of caller.
+- **MaestroDB sidebar clarity**: base headers now use a folder icon instead of the table icon, making bases and tables visually distinct.
+- **Markdown rendering hardened**: the chat markdown parser now handles malformed model output — partial table separators (`:--`), header/separator lines mashed together, and stray `**` bold markers on list items and table cells.
+- **Apps panel toolbar fixed**: removed the non-functional Auto view mode; List/Grid/Icons picker no longer overlaps the Keep on Top button.
+
 # SwiftMaestro 1.0.0
 
 ## Workspace
