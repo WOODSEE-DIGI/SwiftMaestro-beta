@@ -105,7 +105,8 @@ extension MaestroTools {
                 + "with their tables. Start here to discover what databases exist.",
                 properties: [:], required: []),
             rawSpec("db_create_base",
-                "Create a new MaestroDB base. Returns the base id.",
+                "Create a new MaestroDB base. Idempotent: if a base with this name "
+                + "already exists, returns it with status 'exists' instead of duplicating.",
                 properties: [
                     "name": ["type": "string"],
                     "icon": ["type": "string", "description": "SF Symbol name (default 'tablecells')"],
@@ -116,7 +117,9 @@ extension MaestroTools {
                 properties: ["base": ["type": "string", "description": baseRefDesc]],
                 required: ["base"]),
             rawSpec("db_create_table",
-                "Create a table in a base. Add fields next with db_add_field, or "
+                "Create a table in a base. Idempotent: if a table with this name "
+                + "already exists in the base, returns it with status 'exists' instead "
+                + "of duplicating. Add fields next with db_add_field, or "
                 + "import a spreadsheet directly with db_import_csv (create='true').",
                 properties: [
                     "base": ["type": "string", "description": baseRefDesc],
@@ -857,12 +860,26 @@ extension MaestroTools {
             return errorJSON("db_create_base requires 'name'")
         }
         do {
-            let base = try MaestroDBDatabase.shared.createBase(
+            let database = MaestroDBDatabase.shared
+            let base = try database.createBase(
                 name: name, icon: args.icon?.isEmpty == false ? args.icon! : "tablecells")
             return jsonString([
                 "status": "created", "base_id": base.id, "name": base.name,
                 "next": "create a table with db_create_table, then add fields with db_add_field",
             ])
+        } catch let error as MaestroDBError {
+            // Idempotent: return the existing base instead of failing.
+            if case .duplicateBaseName = error,
+               let existing = try? MaestroDBDatabase.shared.bases().first(where: {
+                   $0.name.caseInsensitiveCompare(name) == .orderedSame
+               }) {
+                return jsonString([
+                    "status": "exists", "base_id": existing.id, "name": existing.name,
+                    "note": "Base already existed — use it instead of creating another.",
+                    "next": "list its tables with db_list_tables, then add fields with db_add_field",
+                ])
+            }
+            return errorJSON(error.localizedDescription)
         } catch { return errorJSON("could not create base: \(error.localizedDescription)") }
     }
 
@@ -907,6 +924,21 @@ extension MaestroTools {
                     + "from a spreadsheet. Then research with browser_open — and call db_add_rows "
                     + "after EVERY page you read, BEFORE opening the next one.",
             ])
+        } catch let error as MaestroDBError {
+            // Idempotent: return the existing table instead of failing.
+            if case .duplicateTableName = error,
+               let database = try? MaestroDBDatabase.shared,
+               let base = try? resolveBase(baseRef, database: database),
+               let existing = try? database.tables(baseID: base.id).first(where: {
+                   $0.name.caseInsensitiveCompare(name) == .orderedSame
+               }) {
+                return jsonString([
+                    "status": "exists", "table_id": existing.id, "name": existing.name,
+                    "base": base.name,
+                    "note": "Table already existed — use it instead of creating another.",
+                ])
+            }
+            return errorJSON(error.localizedDescription)
         } catch { return errorJSON("could not create table: \(error.localizedDescription)") }
     }
 

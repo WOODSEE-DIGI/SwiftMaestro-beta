@@ -119,7 +119,7 @@ struct MaestroDBView: View {
                         }
                     } header: {
                         Button { viewModel.selectedBaseID = base.id } label: {
-                            Label(base.name, systemImage: base.icon)
+                            Label(base.name, systemImage: "folder")
                                 .font(.callout.weight(.semibold))
                                 .foregroundStyle(theme.chatText)
                         }

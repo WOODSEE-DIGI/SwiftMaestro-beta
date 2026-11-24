@@ -17,6 +17,20 @@ extension Notification.Name {
         "com.woodseedigi.swiftmaestro.maestroDBDidChange")
 }
 
+enum MaestroDBError: Error, LocalizedError {
+    case duplicateBaseName(String)
+    case duplicateTableName(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .duplicateBaseName(let name):
+            return "A base named '\(name)' already exists"
+        case .duplicateTableName(let name):
+            return "A table named '\(name)' already exists in this base"
+        }
+    }
+}
+
 final class MaestroDBDatabase: Sendable {
 
     nonisolated(unsafe) private(set) static var isDemoMode = false
@@ -145,6 +159,10 @@ final class MaestroDBDatabase: Sendable {
 
     @discardableResult
     func createBase(name: String, icon: String = "tablecells") throws -> MaestroBase {
+        let existing = try bases().first {
+            $0.name.caseInsensitiveCompare(name) == .orderedSame
+        }
+        if let existing { throw MaestroDBError.duplicateBaseName(existing.name) }
         let base = MaestroBase(id: UUID().uuidString, name: name, icon: icon, createdAt: Date())
         try dbQueue.write { db in
             try db.execute(
@@ -189,6 +207,10 @@ final class MaestroDBDatabase: Sendable {
 
     @discardableResult
     func createTable(baseID: String, name: String) throws -> DBTable {
+        let existing = try tables(baseID: baseID).first {
+            $0.name.caseInsensitiveCompare(name) == .orderedSame
+        }
+        if let existing { throw MaestroDBError.duplicateTableName(existing.name) }
         let table = DBTable(
             id: UUID().uuidString, baseID: baseID, name: name,
             position: try nextPosition("db_table", "base_id", baseID))
