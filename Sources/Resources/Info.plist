@@ -4,6 +4,78 @@
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeExtensions</key>
+			<array>
+				<string>excalidraw</string>
+			</array>
+			<key>CFBundleTypeName</key>
+			<string>Excalidraw Drawing</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.woodseedigi.swiftmaestro.excalidraw</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeExtensions</key>
+			<array>
+				<string>md</string>
+				<string>markdown</string>
+			</array>
+			<key>CFBundleTypeName</key>
+			<string>Markdown Note</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>net.daringfireball.markdown</string>
+				<string>public.plain-text</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeExtensions</key>
+			<array>
+				<string>html</string>
+				<string>htm</string>
+			</array>
+			<key>CFBundleTypeName</key>
+			<string>HTML Document</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.html</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeExtensions</key>
+			<array>
+				<string>docx</string>
+				<string>doc</string>
+			</array>
+			<key>CFBundleTypeName</key>
+			<string>Microsoft Word Document</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>org.openxmlformats.wordprocessingml.document</string>
+				<string>com.microsoft.word.doc</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIconFile</key>
@@ -17,9 +89,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.0</string>
+	<string>1.0.1</string>
 	<key>CFBundleVersion</key>
-	<string>53</string>
+	<string>54</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.utilities</string>
 	<key>LSMinimumSystemVersion</key>
@@ -59,78 +131,6 @@
 	<string>EXGKAotTuYwRmUIiiZaeGnr+Tk5vF0MFFuCB+0V2ZzU=</string>
 	<key>SUScheduledCheckInterval</key>
 	<integer>86400</integer>
-	<key>CFBundleDocumentTypes</key>
-	<array>
-		<dict>
-			<key>CFBundleTypeName</key>
-			<string>Excalidraw Drawing</string>
-			<key>CFBundleTypeRole</key>
-			<string>Editor</string>
-			<key>LSHandlerRank</key>
-			<string>Owner</string>
-			<key>LSItemContentTypes</key>
-			<array>
-				<string>com.woodseedigi.swiftmaestro.excalidraw</string>
-			</array>
-			<key>CFBundleTypeExtensions</key>
-			<array>
-				<string>excalidraw</string>
-			</array>
-		</dict>
-		<dict>
-			<key>CFBundleTypeName</key>
-			<string>Markdown Note</string>
-			<key>CFBundleTypeRole</key>
-			<string>Editor</string>
-			<key>LSHandlerRank</key>
-			<string>Alternate</string>
-			<key>LSItemContentTypes</key>
-			<array>
-				<string>net.daringfireball.markdown</string>
-				<string>public.plain-text</string>
-			</array>
-			<key>CFBundleTypeExtensions</key>
-			<array>
-				<string>md</string>
-				<string>markdown</string>
-			</array>
-		</dict>
-		<dict>
-			<key>CFBundleTypeName</key>
-			<string>HTML Document</string>
-			<key>CFBundleTypeRole</key>
-			<string>Editor</string>
-			<key>LSHandlerRank</key>
-			<string>Alternate</string>
-			<key>LSItemContentTypes</key>
-			<array>
-				<string>public.html</string>
-			</array>
-			<key>CFBundleTypeExtensions</key>
-			<array>
-				<string>html</string>
-				<string>htm</string>
-			</array>
-		</dict>
-		<dict>
-			<key>CFBundleTypeName</key>
-			<string>Microsoft Word Document</string>
-			<key>CFBundleTypeRole</key>
-			<string>Editor</string>
-			<key>LSHandlerRank</key>
-			<string>Alternate</string>
-			<key>LSItemContentTypes</key>
-			<array>
-				<string>org.openxmlformats.wordprocessingml.document</string>
-				<string>com.microsoft.word.doc</string>
-			</array>
-			<key>CFBundleTypeExtensions</key>
-			<array>
-				<string>docx</string>
-				<string>doc</string>
-			</array>
-		</dict>
-	</array>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
 		<dict>
