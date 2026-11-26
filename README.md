@@ -23,7 +23,9 @@ Currently SwiftMaestro is A native macOS AI assistant that runs large language m
 
 [![Watch “What is SwiftMaestro” on YouTube](https://img.youtube.com/vi/uef6pAXRENI/hqdefault.jpg)](https://youtu.be/uef6pAXRENI)
 
-A short introduction to SwiftMaestro — the local, on-device AI assistant and its built-in apps.
+A quick summary of what SwiftMaestro is & where it came from.
+
+The bigger idea: an open, local-first foundation that grassroots journalists and independent researchers can build on for OSINT and monitoring local politics — private, offline-capable, and yours to customise.
 
 ---
 
