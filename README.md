@@ -19,6 +19,12 @@ Currently SwiftMaestro is A native macOS AI assistant that runs large language m
 | **13** agent categories | **11** bundled MCP servers |
 | **Zero** external dependencies | **Zero** cloud required |
 
+## Watch: What is SwiftMaestro
+
+[![Watch “What is SwiftMaestro” on YouTube](https://img.youtube.com/vi/uef6pAXRENI/hqdefault.jpg)](https://youtu.be/uef6pAXRENI)
+
+A short introduction to SwiftMaestro — the local, on-device AI assistant and its built-in apps.
+
 ---
 
 ## Highlights
