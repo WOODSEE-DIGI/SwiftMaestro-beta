@@ -5,7 +5,7 @@ import SwiftMaestroKit
 // MARK: - External OSINT Tools
 
 /// Native tool wrappers around the local OSINT tools installed in
-/// `/Users/shootyultra/GitHub/OSINT-Cybersecurity`.
+/// `~/GitHub/OSINT-Cybersecurity`.
 ///
 /// These tools delegate the actual intelligence gathering to the original
 /// Python/Go implementations and feed discovered entities back into the

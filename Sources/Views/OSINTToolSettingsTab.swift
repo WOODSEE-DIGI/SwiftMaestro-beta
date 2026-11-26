@@ -3,7 +3,7 @@ import SwiftUI
 // MARK: - OSINT Tool Settings Tab
 
 /// Configuration UI for the local OSINT tools integrated from
-/// `/Users/shootyultra/GitHub/OSINT-Cybersecurity`.
+/// `~/GitHub/OSINT-Cybersecurity`.
 struct OSINTToolSettingsTab: View {
     @Environment(ThemeStore.self) private var theme
 
@@ -34,7 +34,7 @@ struct OSINTToolSettingsTab: View {
             Text("OSINT Tools")
                 .font(.title2.bold())
 
-            Text("Configure paths to the local OSINT tools in /Users/shootyultra/GitHub/OSINT-Cybersecurity. Disabled tools are hidden from the OSINT agent.")
+            Text("Configure paths to the local OSINT tools in ~/GitHub/OSINT-Cybersecurity. Disabled tools are hidden from the OSINT agent.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

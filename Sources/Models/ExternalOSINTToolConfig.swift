@@ -3,7 +3,7 @@ import Foundation
 // MARK: - External OSINT Tool Configuration
 
 /// Paths and settings for the local OSINT tools installed under
-/// `/Users/shootyultra/GitHub/OSINT-Cybersecurity` (or elsewhere).
+/// `~/GitHub/OSINT-Cybersecurity` (or elsewhere).
 ///
 /// The config is stored in UserDefaults as JSON so it survives launches and
 /// can be edited from Settings → OSINT Tools.
@@ -124,7 +124,7 @@ enum ExternalOSINTTool: String, Codable, CaseIterable, Identifiable, Sendable {
 
     /// Suggested default path relative to the user's OSINT-Cybersecurity repo.
     var defaultPath: String {
-        let base = "/Users/shootyultra/GitHub/OSINT-Cybersecurity"
+        let base = "~/GitHub/OSINT-Cybersecurity"
         switch self {
         case .blackbird:
             return "\(base)/blackbird/blackbird.py"
